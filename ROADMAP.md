@@ -210,8 +210,16 @@ backend-owned workspaces, multi-right-hand-side fusion, and block or Nystrom
 preconditioners remain the next accelerator gates. The refreshed extended
 plots are recorded in `fortml-bench/results/rbf_cg_scaling_extended_cpu.png`
 and `fortml-bench/results/rbf_cg_scaling_extended_cuda.png`. Public copies are
-https://box.sloppy.at/fd393.png for CPU and
-https://box.sloppy.at/dc1a3.png for CUDA.
+https://box.sloppy.at/9cef6.png for CPU and
+https://box.sloppy.at/4d9a5.png for CUDA.
+
+The fused matmat benchmark records one, two, four, and eight right-hand sides
+at 2,048 samples in `fortml-bench/results/rbf_matmat.csv`. The native CUDA
+resident path takes 1.363 ms for four RHS and 1.405 ms for eight RHS, compared
+with 3.666 ms and 7.327 ms for the OpenACC loop. The CPU and GPU plots are
+published at https://box.sloppy.at/98dcc.png and
+https://box.sloppy.at/aabb5.png. Every row passes the direct pairwise oracle
+for every RHS.
 
 The optional native CUDA bridge is now correctness-gated by the direct MVM and
 matmat benchmarks and the benchmark profiler. Its four-warp block loads each
@@ -219,7 +227,7 @@ matmat benchmarks and the benchmark profiler. Its four-warp block loads each
 2,048 samples, Nsight Systems measured 915.6 us for the native MVM kernel and
 922.1 us for OpenACC. The application measured 940.7 us and 946.4 us per
 resident MVM, respectively. For four right-hand sides, the native matmat path
-took 1.363 ms per resident call versus 3.655 ms for the OpenACC loop. Every
+took 1.363 ms per resident call versus 3.666 ms for the OpenACC loop. Every
 native result passed the direct pairwise oracle. The native MVM path is within
 the current OpenACC timing envelope, while the fused matmat path shows the
 expected block reuse. OpenACC remains the comparison backend for CG.
