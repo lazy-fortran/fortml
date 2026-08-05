@@ -12,8 +12,7 @@ program fortml_bench_rbf_operator
     real(dp), parameter :: variance = 1.4_dp
     real(dp), parameter :: lengthscale = 0.7_dp
     real(dp), parameter :: diagonal_shift = 0.08_dp
-    real(dp), allocatable :: sample_points(:, :), input(:), output(:)
-    real(dp) :: expected_first, expected_last
+    real(dp), allocatable :: sample_points(:, :), input(:), output(:), expected(:)
     real(dp) :: elapsed, sink, scale
     integer(int64) :: clock_start, clock_end, clock_rate
     character(16) :: mode
@@ -32,7 +31,8 @@ program fortml_bench_rbf_operator
     call read_optional_integer(2, n_samples)
     call read_optional_integer(3, n_features)
     call read_optional_integer(4, repetitions)
-    allocate(sample_points(n_samples, n_features), input(n_samples), output(n_samples))
+    allocate(sample_points(n_samples, n_features), input(n_samples), output(n_samples), &
+        expected(n_samples))
 
     do feature = 1, n_features
         do i = 1, n_samples
@@ -50,11 +50,11 @@ program fortml_bench_rbf_operator
     if (status%code /= FORTNUM_OK) error stop "RBF operator initialization failed"
 
     call rbf_operator%matvec(input, output)
-    call direct_value(1, expected_first)
-    call direct_value(n_samples, expected_last)
-    scale = max(1.0_dp, abs(expected_first), abs(expected_last))
-    if (max(abs(output(1) - expected_first), &
-        abs(output(n_samples) - expected_last)) > 2.0e-12_dp*scale) then
+    do i = 1, n_samples
+        call direct_value(i, expected(i))
+    end do
+    scale = max(1.0_dp, maxval(abs(expected)))
+    if (maxval(abs(output - expected)) > 2.0e-12_dp*scale) then
         error stop "RBF benchmark correctness oracle failed"
     end if
 
