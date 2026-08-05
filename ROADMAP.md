@@ -144,15 +144,16 @@ suite and the independent direct pairwise oracle, and are published on main
 in fortml commit a205898.
 
 The refreshed matched sweep uses 256, 512, 1024, 2048, and 4096 samples,
-float64, twelve repetitions, 16 physical CPU cores, and nvfortran 26.5 on an
-RTX 5060 Ti. The resident GPU curve is below dense PyTorch, KeOps, and
-GPyTorch-KeOps at every tested size. At 4096 it takes 4.37 ms versus 6.63 ms
+float64, twelve repetitions, nvfortran 26.5 on 16 physical CPU cores and an
+RTX 5060 Ti. The CPU lane uses nvfortran -O3 -mp and the GPU lane uses
+nvfortran -O3 -acc. The resident GPU curve is below dense PyTorch, KeOps, and
+GPyTorch-KeOps at every tested size. At 4096 it takes 4.32 ms versus 6.31 ms
 for GPyTorch-KeOps, while dense PyTorch is out of memory. The CPU endpoint is
-7.85 ms versus 6.27 ms for GPyTorch-KeOps, which remains within the 30 percent
-gate but is not yet the lowest point on this shared node.
+4.66 ms versus 6.22 ms for GPyTorch-KeOps and 7.56 ms for KeOps. The Fortran
+curve is lowest at every tested size on both devices.
 
 The current CPU and GPU plots are
-https://box.sloppy.at/d69f0.png and https://box.sloppy.at/076a0.png.
+https://box.sloppy.at/0f460.png and https://box.sloppy.at/e1f7f.png.
 Operation-level findings and raw traces are recorded in the fortml-bench
 operation profile. Nsight Compute is installed but blocked by
 ERR_NVGPUCTRPERM. Occupancy and memory-counter work remains open until the
