@@ -158,3 +158,15 @@ Operation-level findings and raw traces are recorded in the fortml-bench
 operation profile. Nsight Compute is installed but blocked by
 ERR_NVGPUCTRPERM. Occupancy and memory-counter work remains open until the
 cluster grants performance-counter access.
+
+A high-N follow-up now extends the same float64 RBF workload through 16,384
+samples. The resident nvfortran/OpenACC GPU timings scale with local slopes
+1.992 and 1.997 from 4,096 to 8,192 and 16,384 samples, respectively. Three
+additional unpinned nvfortran CPU runs per size give median timings of 5.707,
+16.202, and 59.851 ms, with local slopes 1.505 and 1.885. The CPU result is
+approaching the expected quadratic regime but remains sensitive to host
+affinity. Dense PyTorch is OOM on the GPU at these high-N points, while KeOps
+and GPyTorch-KeOps pass the independent oracle.
+
+The extended CPU and GPU plots are
+https://box.sloppy.at/c7d09.png and https://box.sloppy.at/465d6.png.
