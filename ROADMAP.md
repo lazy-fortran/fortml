@@ -56,6 +56,8 @@ missing report leaves the item open.
 - [x] Add multi-output exact Gaussian-process regression with Cholesky
   inference, predictive variance, log marginal likelihood, hyperparameter
   gradients, prediction JVPs, and prediction VJPs.
+- [x] Add a correctness-gated Fortran-native tiled RBF matrix-vector product
+  with OpenACC GPU execution and resident-data support.
 - [ ] Connect the kernel and GP product contracts to `fortad`-generated
   JVP/VJP/HVP code and compare generated kernels with the explicit baseline.
 - [ ] Add function-value and derivative observations/predictions using kernel
@@ -109,3 +111,11 @@ JVP/VJP, prediction, likelihood, and multi-output checks with gfortran and
 solve. The host results are 0.722 ms with gfortran and 0.633 ms with
 `nvfortran`. GPU offload, matched GPyTorch comparisons, and the 30% runtime
 target remain open.
+
+The first Fortran-native tiled RBF MVM also passes its direct pairwise oracle
+with gfortran and an OpenACC `nvfortran` build. For 2,048 samples, 8 features,
+and 12 MVM repetitions, the host result was 24.74 ms per MVM; the RTX 5060 Ti
+result was 1.225 ms transfer-inclusive and 1.168 ms with resident data in one
+run. The GPU compile report shows one gang per output tile and 128 vector
+threads reducing over each neighbor tile. This is kernel-only evidence, not a
+matched GPyTorch comparison, so the 30% target remains open.

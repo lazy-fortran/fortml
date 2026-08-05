@@ -1,0 +1,172 @@
+module fortml_kernel_operator
+    use fortnum_kinds, only: dp
+    use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
+        FORTNUM_DOMAIN_ERROR
+    implicit none
+    private
+
+    integer, parameter :: DEFAULT_TILE_SIZE = 128
+
+    type, public :: rbf_operator_t
+        ! Device-friendly layout: feature index is contiguous, then sample.
+        real(dp), allocatable :: points(:, :)
+        real(dp) :: variance = 1.0_dp
+        real(dp) :: lengthscale = 1.0_dp
+        real(dp) :: diagonal_shift = 0.0_dp
+        integer :: tile_size = DEFAULT_TILE_SIZE
+    contains
+        procedure, public :: initialize => rbf_operator_initialize
+        procedure, public :: matvec => rbf_operator_matvec
+        procedure, public :: matmat => rbf_operator_matmat
+        procedure, public :: diagonal => rbf_operator_diagonal
+        procedure, public :: sample_count => rbf_operator_sample_count
+    end type rbf_operator_t
+
+    public :: rbf_matvec_tiled
+    public :: rbf_matmat_tiled
+
+contains
+
+    subroutine rbf_operator_initialize( &
+            self, sample_points, variance, lengthscale, diagonal_shift, &
+            status, tile_size)
+        class(rbf_operator_t), intent(out) :: self
+        real(dp), intent(in) :: sample_points(:, :)
+        real(dp), intent(in) :: variance, lengthscale, diagonal_shift
+        type(fortnum_status_t), intent(out) :: status
+        integer, intent(in), optional :: tile_size
+
+        if (size(sample_points, 1) < 1 .or. size(sample_points, 2) < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "RBF operator: sample points must be nonempty")
+            return
+        end if
+        if (variance <= 0.0_dp .or. lengthscale <= 0.0_dp .or. &
+            diagonal_shift < 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "RBF operator: scale and diagonal shift are invalid")
+            return
+        end if
+        self%variance = variance
+        self%lengthscale = lengthscale
+        self%diagonal_shift = diagonal_shift
+        self%tile_size = DEFAULT_TILE_SIZE
+        if (present(tile_size)) self%tile_size = tile_size
+        if (self%tile_size < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "RBF operator: tile size must be positive")
+            return
+        end if
+        allocate(self%points(size(sample_points, 2), size(sample_points, 1)))
+        self%points = transpose(sample_points)
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine rbf_operator_initialize
+
+    subroutine rbf_operator_matvec(self, input, output)
+        class(rbf_operator_t), intent(in) :: self
+        real(dp), intent(in) :: input(:)
+        real(dp), intent(out) :: output(:)
+
+        call rbf_matvec_tiled( &
+            self%points, input, output, self%variance, self%lengthscale, &
+            self%diagonal_shift, self%tile_size)
+    end subroutine rbf_operator_matvec
+
+    subroutine rbf_operator_matmat(self, input, output)
+        class(rbf_operator_t), intent(in) :: self
+        real(dp), intent(in) :: input(:, :)
+        real(dp), intent(out) :: output(:, :)
+
+        call rbf_matmat_tiled( &
+            self%points, input, output, self%variance, self%lengthscale, &
+            self%diagonal_shift, self%tile_size)
+    end subroutine rbf_operator_matmat
+
+    function rbf_operator_diagonal(self) result(values)
+        class(rbf_operator_t), intent(in) :: self
+        real(dp), allocatable :: values(:)
+
+        allocate(values(self%sample_count()))
+        values = self%variance + self%diagonal_shift
+    end function rbf_operator_diagonal
+
+    integer function rbf_operator_sample_count(self) result(count)
+        class(rbf_operator_t), intent(in) :: self
+
+        if (allocated(self%points)) then
+            count = size(self%points, 2)
+        else
+            count = 0
+        end if
+    end function rbf_operator_sample_count
+
+    subroutine rbf_matvec_tiled( &
+            points, input, output, variance, lengthscale, diagonal_shift, &
+            tile_size)
+        real(dp), intent(in) :: points(:, :), input(:)
+        real(dp), intent(out) :: output(:)
+        real(dp), intent(in) :: variance, lengthscale, diagonal_shift
+        integer, intent(in) :: tile_size
+        real(dp) :: inverse_two_lengthscale_squared
+        real(dp) :: accumulated, distance, difference, kernel_value
+        integer :: block_size, first_neighbor, last_neighbor
+        integer :: feature, i, j, n_features, n_samples
+
+        output = 0.0_dp
+        if (size(points, 1) < 1 .or. size(points, 2) < 1) return
+        if (size(input) /= size(points, 2)) return
+        if (size(output) /= size(input)) return
+        if (variance <= 0.0_dp .or. lengthscale <= 0.0_dp) return
+        if (tile_size < 1) return
+
+        n_features = size(points, 1)
+        n_samples = size(points, 2)
+        block_size = tile_size
+        inverse_two_lengthscale_squared = &
+            0.5_dp/(lengthscale*lengthscale)
+
+        ! Without an enclosing data region the compiler maps the arrays for
+        ! this call. An enclosing resident region suppresses those transfers.
+        !$acc parallel loop
+        !$omp target teams distribute parallel do &
+        !$omp& map(to: points, input) map(from: output)
+        do i = 1, n_samples
+            accumulated = diagonal_shift*input(i)
+            do first_neighbor = 1, n_samples, block_size
+                last_neighbor = min(n_samples, first_neighbor + block_size - 1)
+                !$acc loop vector reduction(+:accumulated)
+                do j = first_neighbor, last_neighbor
+                    distance = 0.0_dp
+                    do feature = 1, n_features
+                        difference = points(feature, i) - points(feature, j)
+                        distance = distance + difference*difference
+                    end do
+                    kernel_value = variance*exp( &
+                        -inverse_two_lengthscale_squared*distance)
+                    accumulated = accumulated + kernel_value*input(j)
+                end do
+            end do
+            output(i) = accumulated
+        end do
+    end subroutine rbf_matvec_tiled
+
+    subroutine rbf_matmat_tiled( &
+            points, input, output, variance, lengthscale, diagonal_shift, &
+            tile_size)
+        real(dp), intent(in) :: points(:, :), input(:, :)
+        real(dp), intent(out) :: output(:, :)
+        real(dp), intent(in) :: variance, lengthscale, diagonal_shift
+        integer, intent(in) :: tile_size
+        integer :: right_hand_side
+
+        output = 0.0_dp
+        if (size(output, 1) /= size(points, 2)) return
+        if (size(output, 2) /= size(input, 2)) return
+        do right_hand_side = 1, size(input, 2)
+            call rbf_matvec_tiled( &
+                points, input(:, right_hand_side), output(:, right_hand_side), &
+                variance, lengthscale, diagonal_shift, tile_size)
+        end do
+    end subroutine rbf_matmat_tiled
+
+end module fortml_kernel_operator
