@@ -66,6 +66,25 @@ multiple outputs, and exposes predictive mean/variance, log marginal
 likelihood, and hyperparameter products. Its tests use direct covariance
 formulas and an independent finite-difference/LU oracle.
 
+## Lazy operators and iterative solves
+
+`fortml_linear_operator` defines the matrix-free boundary used by scalable<!-- slop-ok -->
+GP inference. An operator exposes vector products, batched products, a
+diagonal, and its sample count. The caller never needs to know whether the
+product uses a dense array, a tiled CPU loop, OpenACC, an FFT, a Kronecker
+contraction, or a sparse backend. The first concrete implementation is
+`rbf_operator_t`, which evaluates the RBF reduction without allocating a
+covariance matrix.
+
+The operator also delegates SPD solves to `fortnum`'s generic
+preconditioned CG routine. The default preconditioner is the operator
+diagonal. This keeps the KeOps-style split explicit: FortML owns the kernel
+formula and data, while FortNum owns Krylov iteration and convergence status.
+The RBF MVM, batched MVM, diagonal, and CG result are checked against direct
+pairwise formulas and an independent dense solve. Persistent device-data
+ownership, block and Nystrom preconditioners, stochastic log determinants, and
+autodiff rules for the iterative solve remain separate milestones.
+
 ## Model sequence
 
 The implementation order follows numerical dependencies:

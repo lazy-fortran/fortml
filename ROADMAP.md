@@ -67,12 +67,17 @@ missing report leaves the item open.
 - [ ] Add function-value and derivative observations/predictions using kernel
   partial derivatives verified against symbolic expressions and independent
   finite differences.
-- [ ] Add a public lazy-operator contract with kernel MVM, MVM batching,
-  diagonal, and persistent host/device data. Hide tiling and backend choice
-  from GP callers in the style of the KeOps/GPyTorch split.
-- [ ] Use `fortnum` CG with diagonal/block/Nystrom preconditioners for large
-  exact-GP solves, and add stochastic Lanczos log-determinant and LOVE-style
-  predictive-variance products.
+- [x] Add the first public lazy-operator contract with kernel MVM, MVM
+  batching, diagonal, sample count, and a backend-independent CG entry point.
+  The RBF implementation keeps the covariance matrix implicit and delegates
+  Krylov iteration to `fortnum`.
+- [ ] Add backend-owned persistent host/device data and hide data movement,
+  tiling, and backend choice from GP callers in the style of the
+  KeOps/GPyTorch split.
+- [x] Connect the RBF operator to `fortnum` CG with a diagonal
+  preconditioner and an independent dense-solve oracle.
+- [ ] Add block/Nystrom preconditioners, stochastic Lanczos log determinants,
+  and LOVE-style predictive-variance products for large exact-GP solves.
 - [ ] Add compact-support sparse covariance/precision dispatch through
   `fortsparse` or iterative sparse MVM, with fill-in and memory diagnostics.
 - [ ] Add regular-grid operators: 1-D and multilevel Toeplitz FFT products,

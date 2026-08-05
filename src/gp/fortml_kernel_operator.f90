@@ -2,12 +2,13 @@ module fortml_kernel_operator
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
         FORTNUM_DOMAIN_ERROR
+    use fortml_linear_operator, only: linear_operator_t
     implicit none
     private
 
     integer, parameter :: DEFAULT_TILE_SIZE = 128
 
-    type, public :: rbf_operator_t
+    type, extends(linear_operator_t), public :: rbf_operator_t
         ! Neighbor index is contiguous for the matrix-free inner reduction.
         real(dp), allocatable :: points(:, :)
         real(dp) :: variance = 1.0_dp
