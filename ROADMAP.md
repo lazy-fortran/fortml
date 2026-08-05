@@ -205,4 +205,6 @@ its high-N slope still reflects a quadratic dense pair interaction. A shared
 neighbor tile, persistent backend-owned workspaces, and block or Nystrom
 preconditioners remain the next accelerator gates. The refreshed extended
 plots are recorded in `fortml-bench/results/rbf_cg_scaling_extended_cpu.png`
-and `fortml-bench/results/rbf_cg_scaling_extended_cuda.png`.
+and `fortml-bench/results/rbf_cg_scaling_extended_cuda.png`. Public copies are
+https://box.sloppy.at/fd393.png for CPU and
+https://box.sloppy.at/dc1a3.png for CUDA.
