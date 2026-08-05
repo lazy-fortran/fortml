@@ -61,8 +61,18 @@ missing report leaves the item open.
 - [ ] Add function-value and derivative observations/predictions using kernel
   partial derivatives verified against symbolic expressions and independent
   finite differences.
-- [ ] Add multi-output GPs, inducing-point variational GPs, structured/lazy
-  linear operators, and stochastic trace/log-determinant estimators.
+- [ ] Add a public lazy-operator contract with kernel MVM, MVM batching,
+  diagonal, and persistent host/device data; hide tiling and backend choice
+  from GP callers in the style of the KeOps/GPyTorch split.
+- [ ] Use `fortnum` CG with diagonal/block/Nystrom preconditioners for large
+  exact-GP solves, and add stochastic Lanczos log-determinant and LOVE-style
+  predictive-variance products.
+- [ ] Add compact-support sparse covariance/precision dispatch through
+  `fortsparse` or iterative sparse MVM, with fill-in and memory diagnostics.
+- [ ] Add regular-grid operators: 1-D and multilevel Toeplitz FFT products,
+  Kronecker/tensor-product contractions, and banded Markov-precision paths.
+- [ ] Add multi-output GPs, inducing-point variational GPs, and the structured
+  inference policies that sit above these operator contracts.
 - [ ] Add variational autoencoders and deep recurrent networks after the
   regression and GP contracts are stable. Their likelihoods, reparameterized
   gradients, scan/backpropagation, and higher-order derivative behavior each
