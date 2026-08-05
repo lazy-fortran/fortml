@@ -102,10 +102,9 @@ backend-owned data and general accelerator kernels are added.
 
 The eight-feature OpenACC RBF MVM maps two output rows to worker lanes inside
 each gang. This keeps the sample-major neighbor loop contiguous while reducing
-gang count and improving reuse of the neighbor tile. The tail condition is
-covered by a five-row, eight-feature direct pairwise oracle test. The mapping
-is specialized to the fixed eight-feature path; other feature counts retain
-the general tiled implementation.
+gang count. The tail condition is covered by a five-row, eight-feature direct
+pairwise oracle test. The mapping is specialized to the fixed eight-feature
+path, while other feature counts retain the general tiled implementation.
 
 ## Model sequence
 

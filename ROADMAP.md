@@ -181,25 +181,28 @@ The extended CPU and GPU plots are
 https://box.sloppy.at/c7d09.png and https://box.sloppy.at/465d6.png.
 
 The accelerator follow-up adds a two-row worker tile to the eight-feature
-OpenACC reduction and checks its tail with an independent five-row oracle. A
-local nvfortran run reduced the matrix-free CG time from 0.218 s to 0.187 s at
-2,048 samples and from 1.074 s to 0.873 s at 4,096 samples. Persistent
-backend-owned workspaces and larger two-dimensional tiling remain open.
+OpenACC reduction and checks its tail with an independent five-row oracle. The
+change is published in fortml commit `e3068a3`. The refreshed 2,048-sample
+matrix-free CG run takes 0.158 s on the 16-thread nvfortran CPU lane and
+0.187 s on the RTX 5060 Ti. At 4,096 samples it takes 0.893 s on CPU and
+0.879 s on CUDA. The corresponding KeOps and GPyTorch-KeOps CUDA times at
+4,096 are 1.947 s and 1.500 s. Dense PyTorch is OOM at that CUDA size.
 
-The first matched matrix-free CG run uses the same float64 RBF parameters,
-diagonal shift, unpreconditioned CG recurrence, tolerance `1e-8`, and
-500-iteration cap for dense PyTorch, KeOps, GPyTorch-KeOps, and the specialized
-RBF operator. At 2,048 samples, all rows pass the blocked NumPy residual check.
-the small-size lane additionally compares against `numpy.linalg.solve`. The
-nvfortran/OpenACC FortML solve takes 0.218 s per solve on the RTX 5060 Ti,
-versus 0.774 s for the explicit KeOps CG loop and 0.611 s for the matching
-GPyTorch-KeOps loop. These timings include a true-residual check and are
-operator-level evidence, not a full GP training claim. The raw record and
-scaling plots are in `fortml-bench/results/rbf_cg.csv` and its CG plot files.
-The extended sweep through 4,096 samples records 1.074 s for FortML on CUDA,
-1.878 s for KeOps, and 1.450 s for GPyTorch-KeOps. Dense PyTorch is OOM at
-that CUDA size. FortML remains fastest, but its final doubling slope is 2.30
-versus 1.28 and 1.25 for the Python KeOps lanes. Two-dimensional point tiling
-and reuse in the OpenACC reduction are now the next accelerator optimization
-gate. The extended plots are https://box.sloppy.at/1bd60.png (CPU) and
-https://box.sloppy.at/f5812.png (CUDA).
+The matched CG workload uses the same float64 RBF parameters, diagonal shift,
+unpreconditioned recurrence, tolerance `1e-8`, and 500-iteration cap for all
+four implementations. Every non-OOM row passes the blocked NumPy residual
+check. The 2,048-sample rows also use an independent dense solve in the
+correctness suite. These measurements include a true-residual check and are
+operator-level evidence for the KeOps-style matrix-free path. They do not
+close preconditioned solves, stochastic log determinants, or full GP training.
+The raw record and scaling plots are in `fortml-bench/results/rbf_cg.csv` and
+its CG plot files.
+
+From 2,048 to 4,096 samples, the FortML CUDA solve has a local doubling slope
+of 2.20. KeOps and GPyTorch-KeOps have slopes of 1.33 and 1.31 on the same
+run. The FortML kernel is below both KeOps lanes at every tested CG size, but
+its high-N slope still reflects a quadratic dense pair interaction. A shared
+neighbor tile, persistent backend-owned workspaces, and block or Nystrom
+preconditioners remain the next accelerator gates. The refreshed extended
+plots are recorded in `fortml-bench/results/rbf_cg_scaling_extended_cpu.png`
+and `fortml-bench/results/rbf_cg_scaling_extended_cuda.png`.
