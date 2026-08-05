@@ -8,7 +8,7 @@ module fortml_kernel_operator
     integer, parameter :: DEFAULT_TILE_SIZE = 128
 
     type, public :: rbf_operator_t
-        ! Device-friendly layout: feature index is contiguous, then sample.
+        ! Neighbor index is contiguous for the matrix-free inner reduction.
         real(dp), allocatable :: points(:, :)
         real(dp) :: variance = 1.0_dp
         real(dp) :: lengthscale = 1.0_dp
@@ -57,8 +57,8 @@ contains
                 "RBF operator: tile size must be positive")
             return
         end if
-        allocate(self%points(size(sample_points, 2), size(sample_points, 1)))
-        self%points = transpose(sample_points)
+        allocate(self%points(size(sample_points, 1), size(sample_points, 2)))
+        self%points = sample_points
         call status_set(status, FORTNUM_OK, "")
     end subroutine rbf_operator_initialize
 
@@ -94,7 +94,7 @@ contains
         class(rbf_operator_t), intent(in) :: self
 
         if (allocated(self%points)) then
-            count = size(self%points, 2)
+            count = size(self%points, 1)
         else
             count = 0
         end if
@@ -114,13 +114,13 @@ contains
 
         output = 0.0_dp
         if (size(points, 1) < 1 .or. size(points, 2) < 1) return
-        if (size(input) /= size(points, 2)) return
+        if (size(input) /= size(points, 1)) return
         if (size(output) /= size(input)) return
         if (variance <= 0.0_dp .or. lengthscale <= 0.0_dp) return
         if (tile_size < 1) return
 
-        n_features = size(points, 1)
-        n_samples = size(points, 2)
+        n_samples = size(points, 1)
+        n_features = size(points, 2)
         block_size = tile_size
         inverse_two_lengthscale_squared = &
             0.5_dp/(lengthscale*lengthscale)
@@ -147,7 +147,7 @@ contains
                 do j = first_neighbor, last_neighbor
                     distance = 0.0_dp
                     do feature = 1, n_features
-                        difference = points(feature, i) - points(feature, j)
+                        difference = points(i, feature) - points(j, feature)
                         distance = distance + difference*difference
                     end do
                     kernel_value = variance*exp( &
@@ -173,7 +173,7 @@ contains
         integer :: block_size, first_neighbor, last_neighbor
         integer :: i, j, n_samples
 
-        n_samples = size(points, 2)
+        n_samples = size(points, 1)
         block_size = tile_size
         inverse_two_lengthscale_squared = &
             0.5_dp/(lengthscale*lengthscale)
@@ -185,28 +185,28 @@ contains
         !$omp& point_3, point_4, point_5, point_6, point_7, point_8, &
         !$omp& first_neighbor, last_neighbor, j)
         do i = 1, n_samples
-            point_1 = points(1, i)
-            point_2 = points(2, i)
-            point_3 = points(3, i)
-            point_4 = points(4, i)
-            point_5 = points(5, i)
-            point_6 = points(6, i)
-            point_7 = points(7, i)
-            point_8 = points(8, i)
+            point_1 = points(i, 1)
+            point_2 = points(i, 2)
+            point_3 = points(i, 3)
+            point_4 = points(i, 4)
+            point_5 = points(i, 5)
+            point_6 = points(i, 6)
+            point_7 = points(i, 7)
+            point_8 = points(i, 8)
             accumulated = diagonal_shift*input(i)
             do first_neighbor = 1, n_samples, block_size
                 last_neighbor = min(n_samples, first_neighbor + block_size - 1)
                 !$acc loop vector reduction(+:accumulated)
                 !$omp simd reduction(+:accumulated)
                 do j = first_neighbor, last_neighbor
-                    distance = (point_1 - points(1, j))**2 + &
-                        (point_2 - points(2, j))**2 + &
-                        (point_3 - points(3, j))**2 + &
-                        (point_4 - points(4, j))**2 + &
-                        (point_5 - points(5, j))**2 + &
-                        (point_6 - points(6, j))**2 + &
-                        (point_7 - points(7, j))**2 + &
-                        (point_8 - points(8, j))**2
+                    distance = (point_1 - points(j, 1))**2 + &
+                        (point_2 - points(j, 2))**2 + &
+                        (point_3 - points(j, 3))**2 + &
+                        (point_4 - points(j, 4))**2 + &
+                        (point_5 - points(j, 5))**2 + &
+                        (point_6 - points(j, 6))**2 + &
+                        (point_7 - points(j, 7))**2 + &
+                        (point_8 - points(j, 8))**2
                     kernel_value = variance*exp( &
                         -inverse_two_lengthscale_squared*distance)
                     accumulated = accumulated + kernel_value*input(j)
@@ -226,7 +226,7 @@ contains
         integer :: right_hand_side
 
         output = 0.0_dp
-        if (size(output, 1) /= size(points, 2)) return
+        if (size(output, 1) /= size(points, 1)) return
         if (size(output, 2) /= size(input, 2)) return
         do right_hand_side = 1, size(input, 2)
             call rbf_matvec_tiled( &
