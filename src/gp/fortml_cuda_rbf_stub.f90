@@ -21,3 +21,17 @@ function fortml_cuda_rbf_matvec( &
 
     status = 1_c_int
 end function fortml_cuda_rbf_matvec
+
+function fortml_cuda_rbf_matmat( &
+        points, input, output, n_samples, n_rhs, variance, inverse_scale, &
+        diagonal_shift) bind(C, name="fortml_cuda_rbf_matmat") result(status)
+    use, intrinsic :: iso_c_binding, only: c_double, c_int, c_ptr
+    implicit none
+
+    type(c_ptr), value :: points, input, output
+    integer(c_int), value :: n_samples, n_rhs
+    real(c_double), value :: variance, inverse_scale, diagonal_shift
+    integer(c_int) :: status
+
+    status = 1_c_int
+end function fortml_cuda_rbf_matmat

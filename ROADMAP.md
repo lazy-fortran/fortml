@@ -79,9 +79,10 @@ missing report leaves the item open.
 - [x] Add an OpenACC `nvfortran` RBF CG path that keeps the sample points and
   right-hand side resident across repeated solves, with device reductions and
   an automated residual benchmark.
-- [x] Add an optional native CUDA shared-neighbor tile for the fixed
-  eight-feature path, linked into the `nvfortran` benchmark through a Fortran
-  C binding and retained behind the OpenACC fallback.
+- [x] Add optional native CUDA shared-neighbor tiles for the fixed eight-feature
+  matrix-vector and up-to-eight-right-hand-side matrix-matrix paths, linked
+  into the `nvfortran` benchmark through a Fortran C binding and retained
+  behind the OpenACC fallback.
 - [ ] Add block/Nystrom preconditioners, stochastic Lanczos log determinants,
   and LOVE-style predictive-variance products for large exact-GP solves.
 - [ ] Add compact-support sparse covariance/precision dispatch through
@@ -186,10 +187,10 @@ https://box.sloppy.at/c7d09.png and https://box.sloppy.at/465d6.png.
 The accelerator follow-up adds a two-row worker tile to the eight-feature
 OpenACC reduction and checks its tail with an independent five-row oracle. The
 change is published in fortml commit `e3068a3`. The refreshed 2,048-sample
-matrix-free CG run takes 0.158 s on the 16-thread nvfortran CPU lane and
-0.187 s on the RTX 5060 Ti. At 4,096 samples it takes 0.893 s on CPU and
-0.879 s on CUDA. The corresponding KeOps and GPyTorch-KeOps CUDA times at
-4,096 are 1.947 s and 1.500 s. Dense PyTorch is OOM at that CUDA size.
+matrix-free CG run takes 0.162 s on the 16-thread nvfortran CPU lane and
+0.187 s on the RTX 5060 Ti. At 4,096 samples it takes 0.829 s on CPU and
+0.872 s on CUDA. The corresponding KeOps and GPyTorch-KeOps CUDA times at
+4,096 are 1.876 s and 1.446 s. Dense PyTorch is OOM at that CUDA size.
 
 The matched CG workload uses the same float64 RBF parameters, diagonal shift,
 unpreconditioned recurrence, tolerance `1e-8`, and 500-iteration cap for all
@@ -202,19 +203,23 @@ The raw record and scaling plots are in `fortml-bench/results/rbf_cg.csv` and
 its CG plot files.
 
 From 2,048 to 4,096 samples, the FortML CUDA solve has a local doubling slope
-of 2.20. KeOps and GPyTorch-KeOps have slopes of 1.33 and 1.31 on the same
+of 2.22. KeOps and GPyTorch-KeOps have slopes of 1.31 and 1.28 on the same
 run. The FortML kernel is below both KeOps lanes at every tested CG size, but
-its high-N slope still reflects a quadratic dense pair interaction. A shared
-neighbor tile, persistent backend-owned workspaces, and block or Nystrom
+its high-N slope still reflects a quadratic dense pair interaction. Persistent
+backend-owned workspaces, multi-right-hand-side fusion, and block or Nystrom
 preconditioners remain the next accelerator gates. The refreshed extended
 plots are recorded in `fortml-bench/results/rbf_cg_scaling_extended_cpu.png`
 and `fortml-bench/results/rbf_cg_scaling_extended_cuda.png`. Public copies are
 https://box.sloppy.at/fd393.png for CPU and
 https://box.sloppy.at/dc1a3.png for CUDA.
 
-The optional native CUDA bridge is now correctness-gated by the direct MVM
-benchmark. Its four-warp block loads each 128-neighbor tile once into shared
-memory and uses one warp per output row. The initial implementation is within
-the OpenACC timing envelope but is not yet the default benchmark backend. The
-OpenACC path remains the current comparison result while the native kernel is
-optimized further.
+The optional native CUDA bridge is now correctness-gated by the direct MVM and
+matmat benchmarks and the benchmark profiler. Its four-warp block loads each
+128-neighbor tile once into shared memory and uses one warp per output row. At
+2,048 samples, Nsight Systems measured 915.6 us for the native MVM kernel and
+922.1 us for OpenACC. The application measured 940.7 us and 946.4 us per
+resident MVM, respectively. For four right-hand sides, the native matmat path
+took 1.363 ms per resident call versus 3.655 ms for the OpenACC loop. Every
+native result passed the direct pairwise oracle. The native MVM path is within
+the current OpenACC timing envelope, while the fused matmat path shows the
+expected block reuse. OpenACC remains the comparison backend for CG.

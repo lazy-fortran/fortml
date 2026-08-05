@@ -7,6 +7,7 @@ namespace {
 constexpr int kTileSize = 128;
 constexpr int kFeatures = 8;
 constexpr int kRowsPerBlock = 4;
+constexpr int kMaxRhs = 8;
 
 __global__ void rbf_matvec_kernel(
     const double* __restrict__ points,
@@ -108,6 +109,117 @@ __global__ void rbf_matvec_kernel(
   }
 }
 
+__global__ void rbf_matmat_kernel(
+    const double* __restrict__ points,
+    const double* __restrict__ input,
+    double* __restrict__ output,
+    int n_samples,
+    int n_rhs,
+    double variance,
+    double inverse_scale,
+    double diagonal_shift) {
+  __shared__ double tile_points[kFeatures * kTileSize];
+  __shared__ double tile_input[kMaxRhs * kTileSize];
+  __shared__ double row_points[kRowsPerBlock * kFeatures];
+
+  const int lane = threadIdx.x & 31;
+  const int row_slot = threadIdx.x >> 5;
+  const int row = blockIdx.x * kRowsPerBlock + row_slot;
+  double accumulated[kMaxRhs] = {};
+
+  if (lane < kFeatures) {
+    row_points[row_slot * kFeatures + lane] =
+        row < n_samples ? points[lane * n_samples + row] : 0.0;
+  }
+  __syncthreads();
+
+  for (int first_neighbor = 0; first_neighbor < n_samples;
+       first_neighbor += kTileSize) {
+    if (threadIdx.x < kTileSize) {
+      const int neighbor = first_neighbor + threadIdx.x;
+      for (int rhs = 0; rhs < kMaxRhs; ++rhs) {
+        tile_input[rhs * kTileSize + threadIdx.x] =
+            neighbor < n_samples && rhs < n_rhs
+                ? input[rhs * n_samples + neighbor]
+                : 0.0;
+      }
+      if (neighbor < n_samples) {
+        for (int feature = 0; feature < kFeatures; ++feature) {
+          tile_points[feature * kTileSize + threadIdx.x] =
+              points[feature * n_samples + neighbor];
+        }
+      } else {
+        for (int feature = 0; feature < kFeatures; ++feature) {
+          tile_points[feature * kTileSize + threadIdx.x] = 0.0;
+        }
+      }
+    }
+    __syncthreads();
+
+    double partial[kMaxRhs] = {};
+    if (row < n_samples) {
+      const int tile_count =
+          (n_samples - first_neighbor < kTileSize)
+              ? n_samples - first_neighbor
+              : kTileSize;
+      const double point_1 = row_points[row_slot * kFeatures];
+      const double point_2 = row_points[row_slot * kFeatures + 1];
+      const double point_3 = row_points[row_slot * kFeatures + 2];
+      const double point_4 = row_points[row_slot * kFeatures + 3];
+      const double point_5 = row_points[row_slot * kFeatures + 4];
+      const double point_6 = row_points[row_slot * kFeatures + 5];
+      const double point_7 = row_points[row_slot * kFeatures + 6];
+      const double point_8 = row_points[row_slot * kFeatures + 7];
+      for (int local_neighbor = lane; local_neighbor < tile_count;
+           local_neighbor += 32) {
+        const double difference_1 =
+            point_1 - tile_points[local_neighbor];
+        const double difference_2 =
+            point_2 - tile_points[kTileSize + local_neighbor];
+        const double difference_3 =
+            point_3 - tile_points[2 * kTileSize + local_neighbor];
+        const double difference_4 =
+            point_4 - tile_points[3 * kTileSize + local_neighbor];
+        const double difference_5 =
+            point_5 - tile_points[4 * kTileSize + local_neighbor];
+        const double difference_6 =
+            point_6 - tile_points[5 * kTileSize + local_neighbor];
+        const double difference_7 =
+            point_7 - tile_points[6 * kTileSize + local_neighbor];
+        const double difference_8 =
+            point_8 - tile_points[7 * kTileSize + local_neighbor];
+        const double distance =
+            difference_1 * difference_1 + difference_2 * difference_2 +
+            difference_3 * difference_3 + difference_4 * difference_4 +
+            difference_5 * difference_5 + difference_6 * difference_6 +
+            difference_7 * difference_7 + difference_8 * difference_8;
+        const double kernel_value =
+            variance * exp(-inverse_scale * distance);
+        for (int rhs = 0; rhs < kMaxRhs; ++rhs) {
+          partial[rhs] +=
+              kernel_value * tile_input[rhs * kTileSize + local_neighbor];
+        }
+      }
+    }
+    for (int rhs = 0; rhs < kMaxRhs; ++rhs) {
+      for (int offset = 16; offset > 0; offset >>= 1) {
+        partial[rhs] += __shfl_down_sync(0xffffffff, partial[rhs], offset);
+      }
+      if (lane == 0) accumulated[rhs] += partial[rhs];
+    }
+    __syncthreads();
+  }
+
+  if (lane == 0 && row < n_samples) {
+    for (int rhs = 0; rhs < kMaxRhs; ++rhs) {
+      if (rhs < n_rhs) {
+        output[rhs * n_samples + row] =
+            diagonal_shift * input[rhs * n_samples + row] + accumulated[rhs];
+      }
+    }
+  }
+}
+
 }  // namespace
 
 extern "C" int fortml_cuda_rbf_available() { return 1; }
@@ -124,6 +236,31 @@ extern "C" int fortml_cuda_rbf_matvec(
   const int grid_size = (n_samples + kRowsPerBlock - 1) / kRowsPerBlock;
   rbf_matvec_kernel<<<grid_size, block_size>>>(
       points, input, output, n_samples, variance, inverse_scale,
+      diagonal_shift);
+  cudaError_t status = cudaGetLastError();
+  if (status != cudaSuccess) {
+    return static_cast<int>(status);
+  }
+  status = cudaStreamSynchronize(0);
+  return status == cudaSuccess ? 0 : static_cast<int>(status);
+}
+
+extern "C" int fortml_cuda_rbf_matmat(
+    const double* points,
+    const double* input,
+    double* output,
+    int n_samples,
+    int n_rhs,
+    double variance,
+    double inverse_scale,
+    double diagonal_shift) {
+  if (n_rhs < 1 || n_rhs > kMaxRhs) {
+    return static_cast<int>(cudaErrorInvalidValue);
+  }
+  constexpr int block_size = kRowsPerBlock * 32;
+  const int grid_size = (n_samples + kRowsPerBlock - 1) / kRowsPerBlock;
+  rbf_matmat_kernel<<<grid_size, block_size>>>(
+      points, input, output, n_samples, n_rhs, variance, inverse_scale,
       diagonal_shift);
   cudaError_t status = cudaGetLastError();
   if (status != cudaSuccess) {

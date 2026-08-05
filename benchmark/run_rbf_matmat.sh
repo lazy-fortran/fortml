@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+fortnum_dir=$(cd "$repo_dir/../fortnum" && pwd)
+fc=${FC:-nvfortran}
+flags=${FFLAGS:--O3 -acc}
+native_cuda=${FORTML_NATIVE_CUDA:-0}
+out=${OUT:-$repo_dir/.provenance/benchmarks/fortml_rbf_matmat_nvfortran.csv}
+meta=${META:-${out%.csv}.meta}
+build_dir=$(mktemp -d)
+trap 'rm -rf "$build_dir"' EXIT
+
+command -v "$fc" >/dev/null
+if [[ "$(basename "$fc")" == "gfortran" ]]; then
+    module_flag=(-J "$build_dir")
+else
+    module_flag=(-module "$build_dir")
+fi
+sources=(
+    "$fortnum_dir/src/fortnum_kinds.f90"
+    "$fortnum_dir/src/fortnum_status.f90"
+    "$fortnum_dir/src/linalg/fortnum_krylov.f90"
+    "$repo_dir/src/gp/fortml_kernels.f90"
+    "$repo_dir/src/gp/fortml_linear_operator.f90"
+    "$repo_dir/src/gp/fortml_kernel_operator.f90"
+    "$repo_dir/app/fortml_bench_rbf_matmat.f90"
+)
+link_inputs=()
+if [[ "$native_cuda" == "1" ]]; then
+    if [[ "$(basename "$fc")" != "nvfortran" ]]; then
+        echo "FORTML_NATIVE_CUDA requires nvfortran" >&2
+        exit 1
+    fi
+    if [[ "$flags" != *-acc* ]]; then
+        echo "FORTML_NATIVE_CUDA requires an OpenACC build" >&2
+        exit 1
+    fi
+    command -v nvcc >/dev/null
+    cuda_root=${CUDA_HOME:-/opt/cuda}
+    nvcc_flags=${NVCCFLAGS:--O3 -arch=native}
+    nvcc $nvcc_flags -c "$repo_dir/src/gp/fortml_cuda_rbf.cu" \
+        -o "$build_dir/fortml_cuda_rbf.o"
+    link_inputs=(
+        "$build_dir/fortml_cuda_rbf.o"
+        "-L$cuda_root/lib64"
+        -lcudart
+        -c++libs
+    )
+else
+    sources+=("$repo_dir/src/gp/fortml_cuda_rbf_stub.f90")
+fi
+mkdir -p "$(dirname "$out")"
+"$fc" $flags "${module_flag[@]}" -o "$build_dir/fortml_bench_rbf_matmat" \
+    "${sources[@]}" "${link_inputs[@]}"
+
+transfer=$("$build_dir/fortml_bench_rbf_matmat" transfer \
+    "${N_SAMPLES:-2048}" "${N_FEATURES:-8}" "${N_RHS:-4}" \
+    "${REPETITIONS:-12}")
+resident=$("$build_dir/fortml_bench_rbf_matmat" resident \
+    "${N_SAMPLES:-2048}" "${N_FEATURES:-8}" "${N_RHS:-4}" \
+    "${REPETITIONS:-12}")
+compiler_version=$($fc --version 2>&1 | awk 'NF {print; exit}')
+printf 'model,samples,features,rhs,residency,repetitions,seconds_per_operation,compiler,flags\n' >"$out"
+printf '%s,%s,%s\n' "$transfer" "$fc" "$flags" >>"$out"
+printf '%s,%s,%s\n' "$resident" "$fc" "$flags" >>"$out"
+{
+    printf 'target=fortml_bench_rbf_matmat\n'
+    printf 'compiler=%s\n' "$fc"
+    printf 'compiler_version=%s\n' "$compiler_version"
+    printf 'flags=%s\n' "$flags"
+    printf 'native_cuda_kernel=%s\n' "$native_cuda"
+    printf 'correctness_oracle=direct_RBF_pairwise_sum_for_each_RHS\n'
+} >"$meta"
+cat "$out"
+cat "$meta"

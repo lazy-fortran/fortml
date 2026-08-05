@@ -15,6 +15,8 @@ program test_kernel_operator
     real(dp) :: dense_solution(5), residual_norm
     real(dp) :: generic_output(5), generic_expected(5)
     real(dp) :: sample_points_8(5, 8), input_8(5), output_8(5), expected_8(5)
+    real(dp) :: matrix_input_8(5, 2), matrix_output_8(5, 2)
+    real(dp) :: matrix_expected_8(5, 2)
     real(dp), parameter :: variance = 1.7_dp, lengthscale = 0.8_dp
     real(dp), parameter :: diagonal_shift = 0.03_dp
     type(rbf_operator_t) :: rbf_operator
@@ -93,6 +95,24 @@ program test_kernel_operator
     end do
     call require(maxval(abs(output_8 - expected_8)) < 2.0e-14_dp, &
         "8-feature RBF MVM matches the direct pairwise oracle")
+    matrix_input_8(:, 1) = input_8
+    matrix_input_8(:, 2) = [0.6_dp, -0.2_dp, 0.8_dp, -1.4_dp, 0.3_dp]
+    call rbf_operator_8%matmat(matrix_input_8, matrix_output_8)
+    do column = 1, 2
+        do i = 1, 5
+            matrix_expected_8(i, column) = &
+                diagonal_shift*matrix_input_8(i, column)
+            do j = 1, 5
+                matrix_expected_8(i, column) = &
+                    matrix_expected_8(i, column) + variance*exp( &
+                    -0.5_dp*sum((sample_points_8(i, :) - &
+                    sample_points_8(j, :))**2)/(lengthscale*lengthscale))* &
+                    matrix_input_8(j, column)
+            end do
+        end do
+    end do
+    call require(maxval(abs(matrix_output_8 - matrix_expected_8)) < 2.0e-14_dp, &
+        "8-feature RBF batched MVM matches the direct pairwise oracle")
 
     rbf_kernel = make_rbf_kernel(2, variance, lengthscale, status)
     call require(status%code == FORTNUM_OK, "generic RBF kernel initializes")

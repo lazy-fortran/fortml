@@ -62,6 +62,17 @@ module fortml_kernel_operator
             real(c_double), value :: variance, inverse_scale, diagonal_shift
             integer(c_int) :: status
         end function fortml_cuda_rbf_matvec
+
+        function fortml_cuda_rbf_matmat( &
+                points, input, output, n_samples, n_rhs, variance, &
+                inverse_scale, diagonal_shift) bind(C, &
+                name="fortml_cuda_rbf_matmat") result(status)
+            import :: c_double, c_int, c_ptr
+            type(c_ptr), value :: points, input, output
+            integer(c_int), value :: n_samples, n_rhs
+            real(c_double), value :: variance, inverse_scale, diagonal_shift
+            integer(c_int) :: status
+        end function fortml_cuda_rbf_matmat
     end interface
 
 contains
@@ -609,8 +620,8 @@ contains
     subroutine rbf_matmat_tiled( &
             points, input, output, variance, lengthscale, diagonal_shift, &
             tile_size)
-        real(dp), intent(in) :: points(:, :), input(:, :)
-        real(dp), intent(out) :: output(:, :)
+        real(dp), intent(in), target :: points(:, :), input(:, :)
+        real(dp), intent(out), target :: output(:, :)
         real(dp), intent(in) :: variance, lengthscale, diagonal_shift
         integer, intent(in) :: tile_size
         integer :: right_hand_side
@@ -618,11 +629,37 @@ contains
         output = 0.0_dp
         if (size(output, 1) /= size(points, 1)) return
         if (size(output, 2) /= size(input, 2)) return
+        if (size(points, 2) == 8 .and. size(input, 2) > 1 .and. &
+            size(input, 2) <= 8 .and. fortml_cuda_rbf_available() /= 0_c_int) then
+            if (rbf_matmat_cuda( &
+                points, input, output, variance, &
+                0.5_dp/(lengthscale*lengthscale), diagonal_shift)) return
+        end if
         do right_hand_side = 1, size(input, 2)
             call rbf_matvec_tiled( &
                 points, input(:, right_hand_side), output(:, right_hand_side), &
                 variance, lengthscale, diagonal_shift, tile_size)
         end do
     end subroutine rbf_matmat_tiled
+
+    logical function rbf_matmat_cuda( &
+            points, input, output, variance, inverse_scale, diagonal_shift)
+        real(dp), intent(in), target :: points(:, :), input(:, :)
+        real(dp), intent(out), target :: output(:, :)
+        real(dp), intent(in) :: variance, inverse_scale, diagonal_shift
+        integer(c_int) :: status
+
+        rbf_matmat_cuda = .false.
+        !$acc data copyin(points, input) copyout(output)
+        !$acc host_data use_device(points, input, output)
+        status = fortml_cuda_rbf_matmat( &
+            c_loc(points), c_loc(input), c_loc(output), &
+            int(size(points, 1), c_int), int(size(input, 2), c_int), &
+            real(variance, c_double), real(inverse_scale, c_double), &
+            real(diagonal_shift, c_double))
+        !$acc end host_data
+        !$acc end data
+        if (status == 0_c_int) rbf_matmat_cuda = .true.
+    end function rbf_matmat_cuda
 
 end module fortml_kernel_operator
