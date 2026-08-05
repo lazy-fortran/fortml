@@ -1,6 +1,5 @@
 module fortml_linear_regression
     use fortnum_kinds, only: dp
-    use fortnum_linalg, only: dense_solve
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
         FORTNUM_DOMAIN_ERROR, FORTNUM_CONVERGENCE_ERROR
     implicit none
@@ -24,6 +23,19 @@ module fortml_linear_regression
     public :: linear_predict_jvp
     public :: linear_predict_vjp
 
+    interface
+        subroutine dgelss(m, n, nrhs, a, lda, b, ldb, s, rcond, rank, &
+            work, lwork, info)
+            import :: dp
+            integer, intent(in) :: m, n, nrhs, lda, ldb, lwork
+            real(dp), intent(inout) :: a(lda, *), b(ldb, *)
+            real(dp), intent(out) :: s(*)
+            real(dp), intent(in) :: rcond
+            integer, intent(out) :: rank, info
+            real(dp), intent(inout) :: work(*)
+        end subroutine dgelss
+    end interface
+
 contains
 
     subroutine linear_fit_matrix(self, x, y, status, ridge, fit_intercept)
@@ -32,8 +44,11 @@ contains
         type(fortnum_status_t), intent(out) :: status
         real(dp), intent(in), optional :: ridge
         logical, intent(in), optional :: fit_intercept
-        real(dp), allocatable :: design(:, :), gram(:, :), rhs(:, :)
-        integer :: n_samples, n_features, n_outputs, info
+        real(dp), allocatable :: design(:, :), rhs(:, :), singular_values(:)
+        real(dp), allocatable :: work(:)
+        real(dp) :: work_query(1)
+        integer :: n_samples, n_features, n_outputs, n_parameters, n_rows
+        integer :: lwork, rank, info, j
         real(dp) :: lambda
         logical :: intercept
 
@@ -52,31 +67,46 @@ contains
             return
         end if
 
-        allocate(design(n_samples, n_features + 1))
-        call make_design(x, intercept, design)
-        gram = matmul(transpose(design), design)
-        rhs = matmul(transpose(design), y)
-        if (.not. intercept) then
-            ! Keep the public parameter layout stable while pinning the unused
-            ! intercept coefficient to zero instead of solving a singular row.
-            gram(1, :) = 0.0_dp
-            gram(:, 1) = 0.0_dp
-            gram(1, 1) = 1.0_dp
-            rhs(1, :) = 0.0_dp
+        n_parameters = n_features + 1
+        n_rows = n_samples
+        if (lambda > 0.0_dp) n_rows = n_rows + n_features
+        allocate(design(n_rows, n_parameters))
+        allocate(rhs(max(n_rows, n_parameters), n_outputs))
+        allocate(singular_values(min(n_rows, n_parameters)))
+        design = 0.0_dp
+        rhs = 0.0_dp
+        call make_design(x, intercept, design(1:n_samples, :))
+        rhs(1:n_samples, :) = y
+        if (lambda > 0.0_dp) then
+            do j = 1, size(x, 2)
+                design(n_samples + j, j + 1) = sqrt(lambda)
+            end do
         end if
-        if (lambda > 0.0_dp) gram(2:, 2:) = gram(2:, 2:) + &
-            lambda*identity_matrix(n_features)
 
-        allocate(self%coef(n_features + 1, n_outputs))
-        call dense_solve(gram, rhs, self%coef, info)
+        lwork = -1
+        call dgelss(n_rows, n_parameters, n_outputs, design, n_rows, rhs, &
+            max(n_rows, n_parameters), singular_values, -1.0_dp, rank, &
+            work_query, lwork, info)
         if (info /= 0) then
-            deallocate(self%coef)
-            self%n_features = 0
-            self%n_outputs = 0
             call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
-                "linear fit: design matrix is singular")
+                "linear fit: SVD workspace query failed")
             return
         end if
+        lwork = max(1, int(work_query(1)))
+        allocate(work(lwork))
+        call dgelss(n_rows, n_parameters, n_outputs, design, n_rows, rhs, &
+            max(n_rows, n_parameters), singular_values, -1.0_dp, rank, work, &
+            lwork, info)
+
+        if (info /= 0) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "linear fit: SVD least-squares solve failed")
+            return
+        end if
+
+        allocate(self%coef(n_parameters, n_outputs))
+        self%coef = rhs(1:n_parameters, :)
+        if (.not. intercept) self%coef(1, :) = 0.0_dp
 
         self%n_features = n_features
         self%n_outputs = n_outputs
@@ -179,15 +209,5 @@ contains
         if (intercept) design(:, 1) = 1.0_dp
         design(:, 2:) = x
     end subroutine make_design
-
-    pure function identity_matrix(n) result(identity)
-        integer, intent(in) :: n
-        real(dp) :: identity(n, n)
-        integer :: i
-        identity = 0.0_dp
-        do i = 1, n
-            identity(i, i) = 1.0_dp
-        end do
-    end function identity_matrix
 
 end module fortml_linear_regression

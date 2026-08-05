@@ -38,7 +38,7 @@ missing report leaves the item open.
   regularization using the existing `fortnum` dense solve.
 - [x] Implement linear prediction JVP and VJP products and check them against
   finite differences and the adjoint identity.
-- [ ] Replace the normal-equation fitting path with QR or SVD and benchmark
+- [x] Replace the normal-equation fitting path with SVD and benchmark
   conditioning against a high-precision reference.
 - [ ] Add basis-function maps with value, JVP, and VJP products. The initial
   set is polynomial, Fourier, radial, spline, and user-supplied differentiable
@@ -72,6 +72,6 @@ publisher or DOI metadata rather than copied files.
 ## Current evidence
 
 The first local CPU/compiler plot is available at
-https://box.sloppy.at/5af04.png. It compares only host/LAPACK execution for the
-fixed linear-regression smoke workload. It does not close the GPyTorch, GPU
+https://box.sloppy.at/d4f68.png. It compares only host/LAPACK execution for the
+SVD-based linear-regression smoke workload. It does not close the GPyTorch, GPU
 offload, peak-memory, or generated-code-size gates.

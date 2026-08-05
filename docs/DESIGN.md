@@ -16,10 +16,12 @@ likelihoods, kernels, and inference. A model may call a `fortnum` operation only
 through its public interface, with the derivative boundary named in the model
 documentation.
 
-The current least-squares fit uses a dense solve of the regularized normal
-equations. It is an explicitly gated baseline. QR or SVD must replace it before
-the regression implementation is presented as numerically robust for ill
-conditioned design matrices.
+The least-squares fit uses LAPACK SVD least squares. Ridge regularization adds
+`sqrt(lambda)` rows for the slope parameters, so the fit does not square the
+condition number through normal equations. Rank-deficient designs return the
+minimum-norm SVD solution and are checked by an independent prediction oracle.
+The SVD path is still a dense baseline. A future structured or randomized path
+must retain its rank and residual checks.
 
 ## Differentiable model contract
 

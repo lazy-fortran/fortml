@@ -9,6 +9,7 @@ program test_linear_regression
     failures = 0
     call test_fit_and_predict(failures)
     call test_fit_without_intercept(failures)
+    call test_rank_deficient_fit(failures)
     call test_products(failures)
     if (failures /= 0) then
         write (error_unit, '(i0,a)') failures, " regression test(s) failed"
@@ -70,6 +71,23 @@ contains
             failures = failures + 1
         end if
     end subroutine test_fit_without_intercept
+
+    subroutine test_rank_deficient_fit(failures)
+        integer, intent(inout) :: failures
+        real(dp) :: x(6, 2), y(6), prediction(6)
+        type(linear_regression_t) :: model
+        type(fortnum_status_t) :: status
+
+        x(:, 1) = [-2.0_dp, -1.0_dp, 0.0_dp, 1.0_dp, 2.0_dp, 3.0_dp]
+        x(:, 2) = x(:, 1)
+        y = 3.0_dp + 5.0_dp*x(:, 1)
+        call model%fit(x, y, status)
+        call model%predict(x, prediction, status)
+        if (.not. status_ok(status) .or. maxval(abs(prediction - y)) > 1.0e-11_dp) then
+            write (error_unit, '(a)') "FAIL [fit] rank-deficient least squares"
+            failures = failures + 1
+        end if
+    end subroutine test_rank_deficient_fit
 
     subroutine test_products(failures)
         integer, intent(inout) :: failures
