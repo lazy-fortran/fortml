@@ -32,6 +32,10 @@ missing report leaves the item open.
 
 ## Work order
 
+- [x] Add automated operation-level comparison traces for dense PyTorch,
+  KeOps, GPyTorch-KeOps, gfortran, and nvfortran using torch.profiler,
+  perf, NV_ACC_TIME, and Nsight Systems.
+
 - [x] Establish the package, MIT license, local `fortnum` dependency, and the
   oracle/performance/`nvfortran` rules.
 - [x] Implement multi-output linear regression with intercept and ridge
@@ -130,3 +134,26 @@ result was 1.225 ms transfer-inclusive and 1.168 ms with resident data in one
 run. The GPU compile report shows one gang per output tile and 128 vector
 threads reducing over each neighbor tile. This is kernel-only evidence, not a
 matched GPyTorch comparison, so the 30% target remains open.
+
+## Optimization update
+
+The RBF operator now stores samples contiguously for the neighbor reduction,
+uses an eight-feature unrolled distance path, and replaces explicit square
+power operations with multiplies. The changes passed the full gfortran test
+suite and the independent direct pairwise oracle, and are published on main
+in fortml commit a205898.
+
+The refreshed matched sweep uses 256, 512, 1024, 2048, and 4096 samples,
+float64, twelve repetitions, 16 physical CPU cores, and nvfortran 26.5 on an
+RTX 5060 Ti. The resident GPU curve is below dense PyTorch, KeOps, and
+GPyTorch-KeOps at every tested size. At 4096 it takes 4.37 ms versus 6.63 ms
+for GPyTorch-KeOps, while dense PyTorch is out of memory. The CPU endpoint is
+7.85 ms versus 6.27 ms for GPyTorch-KeOps, which remains within the 30 percent
+gate but is not yet the lowest point on this shared node.
+
+The current CPU and GPU plots are
+https://box.sloppy.at/d69f0.png and https://box.sloppy.at/076a0.png.
+Operation-level findings and raw traces are recorded in the fortml-bench
+operation profile. Nsight Compute is installed but blocked by
+ERR_NVGPUCTRPERM. Occupancy and memory-counter work remains open until the
+cluster grants performance-counter access.
