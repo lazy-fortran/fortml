@@ -125,16 +125,25 @@ contains
         inverse_two_lengthscale_squared = &
             0.5_dp/(lengthscale*lengthscale)
 
+        if (n_features == 8) then
+            call rbf_matvec_tiled_8( &
+                points, input, output, variance, lengthscale, diagonal_shift, &
+                tile_size)
+            return
+        end if
+
         ! Without an enclosing data region the compiler maps the arrays for
         ! this call. An enclosing resident region suppresses those transfers.
         !$acc parallel loop
-        !$omp target teams distribute parallel do &
-        !$omp& map(to: points, input) map(from: output)
+        !$omp parallel do schedule(static) private( &
+        !$omp& accumulated, distance, difference, kernel_value, &
+        !$omp& first_neighbor, last_neighbor, feature, j)
         do i = 1, n_samples
             accumulated = diagonal_shift*input(i)
             do first_neighbor = 1, n_samples, block_size
                 last_neighbor = min(n_samples, first_neighbor + block_size - 1)
                 !$acc loop vector reduction(+:accumulated)
+                !$omp simd reduction(+:accumulated)
                 do j = first_neighbor, last_neighbor
                     distance = 0.0_dp
                     do feature = 1, n_features
@@ -149,6 +158,63 @@ contains
             output(i) = accumulated
         end do
     end subroutine rbf_matvec_tiled
+
+    subroutine rbf_matvec_tiled_8( &
+            points, input, output, variance, lengthscale, diagonal_shift, &
+            tile_size)
+        real(dp), intent(in) :: points(:, :), input(:)
+        real(dp), intent(out) :: output(:)
+        real(dp), intent(in) :: variance, lengthscale, diagonal_shift
+        integer, intent(in) :: tile_size
+        real(dp) :: inverse_two_lengthscale_squared
+        real(dp) :: accumulated, distance, kernel_value
+        real(dp) :: point_1, point_2, point_3, point_4
+        real(dp) :: point_5, point_6, point_7, point_8
+        integer :: block_size, first_neighbor, last_neighbor
+        integer :: i, j, n_samples
+
+        n_samples = size(points, 2)
+        block_size = tile_size
+        inverse_two_lengthscale_squared = &
+            0.5_dp/(lengthscale*lengthscale)
+        output = 0.0_dp
+
+        !$acc parallel loop
+        !$omp parallel do schedule(static) private( &
+        !$omp& accumulated, distance, kernel_value, point_1, point_2, &
+        !$omp& point_3, point_4, point_5, point_6, point_7, point_8, &
+        !$omp& first_neighbor, last_neighbor, j)
+        do i = 1, n_samples
+            point_1 = points(1, i)
+            point_2 = points(2, i)
+            point_3 = points(3, i)
+            point_4 = points(4, i)
+            point_5 = points(5, i)
+            point_6 = points(6, i)
+            point_7 = points(7, i)
+            point_8 = points(8, i)
+            accumulated = diagonal_shift*input(i)
+            do first_neighbor = 1, n_samples, block_size
+                last_neighbor = min(n_samples, first_neighbor + block_size - 1)
+                !$acc loop vector reduction(+:accumulated)
+                !$omp simd reduction(+:accumulated)
+                do j = first_neighbor, last_neighbor
+                    distance = (point_1 - points(1, j))**2 + &
+                        (point_2 - points(2, j))**2 + &
+                        (point_3 - points(3, j))**2 + &
+                        (point_4 - points(4, j))**2 + &
+                        (point_5 - points(5, j))**2 + &
+                        (point_6 - points(6, j))**2 + &
+                        (point_7 - points(7, j))**2 + &
+                        (point_8 - points(8, j))**2
+                    kernel_value = variance*exp( &
+                        -inverse_two_lengthscale_squared*distance)
+                    accumulated = accumulated + kernel_value*input(j)
+                end do
+            end do
+            output(i) = accumulated
+        end do
+    end subroutine rbf_matvec_tiled_8
 
     subroutine rbf_matmat_tiled( &
             points, input, output, variance, lengthscale, diagonal_shift, &
