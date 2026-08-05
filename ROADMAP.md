@@ -38,8 +38,9 @@ missing report leaves the item open.
   regularization using the existing `fortnum` dense solve.
 - [x] Implement linear prediction JVP and VJP products and check them against
   finite differences and the adjoint identity.
-- [x] Replace the normal-equation fitting path with SVD and benchmark
-  conditioning against a high-precision reference.
+- [x] Replace the normal-equation fitting path with SVD for stable dense
+  least-squares fits.
+- [ ] Benchmark conditioning against a high-precision reference.
 - [ ] Add basis-function maps with value, JVP, and VJP products. The initial
   set is polynomial, Fourier, radial, spline, and user-supplied differentiable
   maps.
