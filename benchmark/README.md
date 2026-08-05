@@ -1,12 +1,16 @@
 # fortml benchmark protocol
 
-Benchmark programs are correctness-gated before timing. The initial
+Benchmark programs are correctness-gated before timing. The
 `fortml_bench_linear` program fits a deterministic 512-sample, 16-feature,
-4-output workload and reports CSV rows with model, samples, features, outputs,
-measured repetitions, and wall time. The runner writes a sidecar metadata file
-with compiler version, flags, compiler/build duration, CUDA version, and GPU
-identity when available. Peak memory and generated-code size remain separate
-benchmark fields to add before the performance gate closes.
+4-output workload. The `fortml_bench_mlp` program evaluates and reverse-
+propagates through a deterministic 16-32-4 MLP on the same batch. Both report
+CSV rows with model, samples, features, outputs, measured repetitions, and wall
+time. Select the workload with `TARGET=fortml_bench_mlp`.
+
+The runner writes a sidecar metadata file with target, compiler version, flags,
+compiler/build duration, CUDA version, and GPU identity when available. Peak
+memory and generated-code size remain separate benchmark fields to add before
+the performance gate closes.
 
 The CPU reference is a pinned GPyTorch/PyTorch program using the same data
 layout and mathematical operation. The GPU reference uses the same dtype,

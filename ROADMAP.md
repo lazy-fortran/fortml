@@ -35,7 +35,7 @@ missing report leaves the item open.
 - [x] Establish the package, MIT license, local `fortnum` dependency, and the
   oracle/performance/`nvfortran` rules.
 - [x] Implement multi-output linear regression with intercept and ridge
-  regularization using the existing `fortnum` dense solve.
+  regularization using an SVD least-squares solve.
 - [x] Implement linear prediction JVP and VJP products and check them against
   finite differences and the adjoint identity.
 - [x] Replace the normal-equation fitting path with SVD for stable dense
@@ -44,9 +44,13 @@ missing report leaves the item open.
 - [ ] Add basis-function maps with value, JVP, and VJP products. The initial
   set is polynomial, Fourier, radial, spline, and user-supplied differentiable
   maps.
-- [ ] Add an MLP module with explicit parameter layout, common smooth and
-  nonsmooth activations, batched forward products, and backpropagation through
-  `fortad`.
+- [x] Add the explicit MLP baseline: flat column-major parameters, batched
+  forward products, `tanh`/linear/ReLU activations, JVPs, VJPs, and
+  backpropagation, with independent finite-difference and adjoint checks.
+- [x] Exercise the MLP parameter/VJP seam with the separate `fortopt_adam`
+  implementation on a known squared-loss objective.
+- [ ] Connect the MLP product contract to `fortad`-generated JVP/VJP/HVP code
+  and compare the generated kernels with the explicit baseline.
 - [ ] Add exact Gaussian-process regression with a composable kernel API,
   Cholesky prediction, log marginal likelihood, and hyperparameter gradients.
 - [ ] Add function-value and derivative observations/predictions using kernel
@@ -76,3 +80,7 @@ The first local CPU/compiler plot is available at
 https://box.sloppy.at/d4f68.png. It compares only host/LAPACK execution for the
 SVD-based linear-regression smoke workload. It does not close the GPyTorch, GPU
 offload, peak-memory, or generated-code-size gates.
+
+The explicit MLP and its `fortopt_adam` training seam pass the focused test
+suite with gfortran and `nvfortran` 26.5. No MLP performance claim is made yet.
+The matched PyTorch/GPyTorch reference and accelerator plot remain open.

@@ -1,0 +1,358 @@
+module fortml_mlp
+    use fortnum_kinds, only: dp
+    use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
+        FORTNUM_DOMAIN_ERROR
+    implicit none
+    private
+
+    integer, parameter, public :: MLP_LINEAR = 1
+    integer, parameter, public :: MLP_TANH = 2
+    integer, parameter, public :: MLP_RELU = 3
+
+    type :: matrix_holder_t
+        real(dp), allocatable :: value(:, :)
+    end type matrix_holder_t
+
+    type :: dense_layer_t
+        real(dp), allocatable :: weight(:, :)
+        real(dp), allocatable :: bias(:)
+    end type dense_layer_t
+
+    type, public :: mlp_t
+        integer, allocatable :: layer_sizes(:)
+        type(dense_layer_t), allocatable :: layer(:)
+        integer :: hidden_activation = MLP_TANH
+        integer :: output_activation = MLP_LINEAR
+    contains
+        procedure, public :: initialize => mlp_initialize
+        procedure, public :: parameter_count => mlp_parameter_count
+        procedure, public :: parameters => mlp_parameters
+        procedure, public :: set_parameters => mlp_set_parameters
+        procedure, public :: predict => mlp_predict
+        procedure, public :: jvp => mlp_jvp
+        procedure, public :: vjp => mlp_vjp
+        procedure, public :: backprop => mlp_vjp
+    end type mlp_t
+
+    public :: mlp_jvp
+    public :: mlp_vjp
+
+contains
+
+    subroutine mlp_initialize(self, layer_sizes, status, hidden_activation, &
+        output_activation)
+        class(mlp_t), intent(out) :: self
+        integer, intent(in) :: layer_sizes(:)
+        type(fortnum_status_t), intent(out) :: status
+        integer, intent(in), optional :: hidden_activation, output_activation
+        integer :: i, hidden_kind, output_kind
+
+        hidden_kind = MLP_TANH
+        if (present(hidden_activation)) hidden_kind = hidden_activation
+        output_kind = MLP_LINEAR
+        if (present(output_activation)) output_kind = output_activation
+
+        if (size(layer_sizes) < 2 .or. any(layer_sizes < 1) .or. &
+            .not. valid_activation(hidden_kind) .or. &
+            .not. valid_activation(output_kind)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP initialize: invalid layer sizes or activation")
+            return
+        end if
+
+        allocate(self%layer_sizes(size(layer_sizes)))
+        self%layer_sizes = layer_sizes
+        allocate(self%layer(size(layer_sizes) - 1))
+        do i = 1, size(self%layer)
+            allocate(self%layer(i)%weight(layer_sizes(i), layer_sizes(i + 1)))
+            allocate(self%layer(i)%bias(layer_sizes(i + 1)))
+            self%layer(i)%weight = 0.0_dp
+            self%layer(i)%bias = 0.0_dp
+        end do
+        self%hidden_activation = hidden_kind
+        self%output_activation = output_kind
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine mlp_initialize
+
+    integer function mlp_parameter_count(self) result(count)
+        class(mlp_t), intent(in) :: self
+        integer :: i
+
+        count = 0
+        if (.not. allocated(self%layer)) return
+        do i = 1, size(self%layer)
+            count = count + size(self%layer(i)%weight) + size(self%layer(i)%bias)
+        end do
+    end function mlp_parameter_count
+
+    function mlp_parameters(self) result(theta)
+        class(mlp_t), intent(in) :: self
+        real(dp), allocatable :: theta(:)
+        integer :: i, position, nweight, nbias
+
+        allocate(theta(self%parameter_count()))
+        position = 1
+        do i = 1, size(self%layer)
+            nweight = size(self%layer(i)%weight)
+            nbias = size(self%layer(i)%bias)
+            theta(position:position + nweight - 1) = &
+                reshape(self%layer(i)%weight, [nweight])
+            position = position + nweight
+            theta(position:position + nbias - 1) = self%layer(i)%bias
+            position = position + nbias
+        end do
+    end function mlp_parameters
+
+    subroutine mlp_set_parameters(self, theta, status)
+        class(mlp_t), intent(inout) :: self
+        real(dp), intent(in) :: theta(:)
+        type(fortnum_status_t), intent(out) :: status
+        integer :: i, position, nweight, nbias
+
+        if (.not. model_allocated(self) .or. size(theta) /= self%parameter_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP set_parameters: model or parameter shape is invalid")
+            return
+        end if
+
+        position = 1
+        do i = 1, size(self%layer)
+            nweight = size(self%layer(i)%weight)
+            nbias = size(self%layer(i)%bias)
+            self%layer(i)%weight = reshape(theta(position:position + nweight - 1), &
+                shape(self%layer(i)%weight))
+            position = position + nweight
+            self%layer(i)%bias = theta(position:position + nbias - 1)
+            position = position + nbias
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine mlp_set_parameters
+
+    subroutine mlp_predict(self, x, y, status)
+        class(mlp_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: y(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        type(matrix_holder_t), allocatable :: activations(:), preactivations(:)
+
+        if (.not. valid_batch_shape(self, x, y)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP predict: model or batch shape is invalid")
+            return
+        end if
+        call forward_cache(self, x, activations, preactivations, status)
+        if (status%code /= FORTNUM_OK) return
+        y = activations(size(activations))%value
+    end subroutine mlp_predict
+
+    subroutine mlp_jvp(self, x, dtheta, dx, y, dy, status)
+        class(mlp_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), dtheta(:), dx(:, :)
+        real(dp), intent(out) :: y(:, :), dy(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        type(matrix_holder_t), allocatable :: activations(:), preactivations(:)
+        real(dp), allocatable :: da(:, :), dz(:, :), next_da(:, :), derivative(:, :)
+        real(dp), allocatable :: dweight(:, :), dbias(:)
+        integer :: i, position, nweight, nbias
+
+        if (.not. valid_batch_shape(self, x, y) .or. any(shape(dx) /= shape(x)) .or. &
+            any(shape(dy) /= shape(y)) .or. size(dtheta) /= self%parameter_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP jvp: model, tangent, or batch shape is invalid")
+            return
+        end if
+        call forward_cache(self, x, activations, preactivations, status)
+        if (status%code /= FORTNUM_OK) return
+
+        allocate(da(size(x, 1), size(x, 2)))
+        da = dx
+        position = 1
+        do i = 1, size(self%layer)
+            nweight = size(self%layer(i)%weight)
+            nbias = size(self%layer(i)%bias)
+            allocate(dweight, mold=self%layer(i)%weight)
+            allocate(dbias, mold=self%layer(i)%bias)
+            dweight = reshape(dtheta(position:position + nweight - 1), &
+                shape(dweight))
+            position = position + nweight
+            dbias = dtheta(position:position + nbias - 1)
+            position = position + nbias
+
+            allocate(dz(size(x, 1), size(self%layer(i)%bias)))
+            dz = matmul(da, self%layer(i)%weight) + &
+                matmul(activations(i)%value, dweight)
+            dz = dz + spread(dbias, dim=1, ncopies=size(x, 1))
+            allocate(derivative, mold=dz)
+            call activation_derivative(preactivations(i)%value, derivative, &
+                layer_activation(self, i))
+            allocate(next_da, mold=dz)
+            next_da = dz*derivative
+            deallocate(dweight, dbias, dz, derivative, da)
+            call move_alloc(next_da, da)
+        end do
+        y = activations(size(activations))%value
+        dy = da
+    end subroutine mlp_jvp
+
+    subroutine mlp_vjp(self, x, u, parameter_bar, x_bar, status)
+        class(mlp_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), u(:, :)
+        real(dp), intent(out) :: parameter_bar(:), x_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        type(matrix_holder_t), allocatable :: activations(:), preactivations(:)
+        real(dp), allocatable :: adjoint(:, :), dz(:, :), derivative(:, :)
+        real(dp), allocatable :: weight_bar(:, :), bias_bar(:), previous_adjoint(:, :)
+        integer :: i, position, nweight, nbias
+
+        if (.not. valid_batch_shape(self, x, u) .or. &
+            any(shape(x_bar) /= shape(x)) .or. &
+            size(parameter_bar) /= self%parameter_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP vjp: model, cotangent, or output shape is invalid")
+            return
+        end if
+        call forward_cache(self, x, activations, preactivations, status)
+        if (status%code /= FORTNUM_OK) return
+
+        allocate(adjoint, mold=u)
+        adjoint = u
+        parameter_bar = 0.0_dp
+        position = self%parameter_count()
+        do i = size(self%layer), 1, -1
+            allocate(dz, mold=adjoint)
+            dz = adjoint
+            allocate(derivative, mold=dz)
+            call activation_derivative(preactivations(i)%value, derivative, &
+                layer_activation(self, i))
+            dz = dz*derivative
+
+            allocate(weight_bar, mold=self%layer(i)%weight)
+            allocate(bias_bar, mold=self%layer(i)%bias)
+            weight_bar = matmul(transpose(activations(i)%value), dz)
+            bias_bar = sum(dz, dim=1)
+            nweight = size(weight_bar)
+            nbias = size(bias_bar)
+            parameter_bar(position - nbias + 1:position) = bias_bar
+            position = position - nbias
+            parameter_bar(position - nweight + 1:position) = &
+                reshape(weight_bar, [nweight])
+            position = position - nweight
+
+            allocate(previous_adjoint(size(x, 1), size(self%layer(i)%weight, 1)))
+            previous_adjoint = matmul(dz, transpose(self%layer(i)%weight))
+            deallocate(dz, derivative, weight_bar, bias_bar, adjoint)
+            call move_alloc(previous_adjoint, adjoint)
+        end do
+        x_bar = adjoint
+    end subroutine mlp_vjp
+
+    subroutine forward_cache(self, x, activations, preactivations, status)
+        class(mlp_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        type(matrix_holder_t), allocatable, intent(out) :: activations(:), &
+            preactivations(:)
+        type(fortnum_status_t), intent(out) :: status
+        integer :: i, n_samples, n_outputs
+
+        if (.not. model_allocated(self) .or. size(x, 2) /= self%layer_sizes(1)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP forward: model or input shape is invalid")
+            return
+        end if
+
+        n_samples = size(x, 1)
+        allocate(activations(size(self%layer) + 1))
+        allocate(preactivations(size(self%layer)))
+        allocate(activations(1)%value, source=x)
+        do i = 1, size(self%layer)
+            n_outputs = self%layer_sizes(i + 1)
+            allocate(preactivations(i)%value(n_samples, n_outputs))
+            allocate(activations(i + 1)%value(n_samples, n_outputs))
+            preactivations(i)%value = matmul(activations(i)%value, &
+                self%layer(i)%weight) + &
+                spread(self%layer(i)%bias, dim=1, ncopies=n_samples)
+            call apply_activation(preactivations(i)%value, activations(i + 1)%value, &
+                layer_activation(self, i))
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine forward_cache
+
+    integer function layer_activation(self, index) result(kind)
+        class(mlp_t), intent(in) :: self
+        integer, intent(in) :: index
+
+        if (index < size(self%layer)) then
+            kind = self%hidden_activation
+        else
+            kind = self%output_activation
+        end if
+    end function layer_activation
+
+    logical function valid_batch_shape(self, x, y) result(valid)
+        class(mlp_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), y(:, :)
+
+        valid = model_allocated(self)
+        if (.not. valid) return
+        valid = size(x, 1) > 0 .and. size(x, 2) == self%layer_sizes(1) .and. &
+            all(shape(y) == [size(x, 1), self%layer_sizes(size(self%layer_sizes))])
+    end function valid_batch_shape
+
+    logical function model_allocated(self) result(valid)
+        class(mlp_t), intent(in) :: self
+
+        valid = allocated(self%layer_sizes) .and. allocated(self%layer)
+        if (.not. valid) return
+        valid = size(self%layer_sizes) >= 2 .and. &
+            size(self%layer) == size(self%layer_sizes) - 1
+    end function model_allocated
+
+    logical function valid_activation(kind) result(valid)
+        integer, intent(in) :: kind
+
+        valid = kind == MLP_LINEAR .or. kind == MLP_TANH .or. kind == MLP_RELU
+    end function valid_activation
+
+    subroutine apply_activation(input, output, kind)
+        real(dp), intent(in) :: input(:, :)
+        real(dp), intent(out) :: output(:, :)
+        integer, intent(in) :: kind
+        integer :: i, j
+
+        do j = 1, size(input, 2)
+            do i = 1, size(input, 1)
+                select case (kind)
+                case (MLP_LINEAR)
+                    output(i, j) = input(i, j)
+                case (MLP_TANH)
+                    output(i, j) = tanh(input(i, j))
+                case (MLP_RELU)
+                    output(i, j) = max(0.0_dp, input(i, j))
+                end select
+            end do
+        end do
+    end subroutine apply_activation
+
+    subroutine activation_derivative(input, output, kind)
+        real(dp), intent(in) :: input(:, :)
+        real(dp), intent(out) :: output(:, :)
+        integer, intent(in) :: kind
+        integer :: i, j
+        real(dp) :: value
+
+        do j = 1, size(input, 2)
+            do i = 1, size(input, 1)
+                select case (kind)
+                case (MLP_LINEAR)
+                    output(i, j) = 1.0_dp
+                case (MLP_TANH)
+                    value = tanh(input(i, j))
+                    output(i, j) = 1.0_dp - value*value
+                case (MLP_RELU)
+                    output(i, j) = merge(1.0_dp, 0.0_dp, input(i, j) > 0.0_dp)
+                end select
+            end do
+        end do
+    end subroutine activation_derivative
+
+end module fortml_mlp

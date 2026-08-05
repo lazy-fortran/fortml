@@ -5,8 +5,9 @@ builds on `fortnum` for numerical kernels and on `fortad` for generated
 derivative code. Models expose value, JVP, and VJP products where the
 mathematics has been verified.
 
-The first implemented model is multi-output ridge/ordinary least-squares
-regression. The planned model families are MLPs, derivative-aware Gaussian
+The implemented baselines are multi-output ridge/ordinary least-squares
+regression and an explicit-parameter MLP with value/JVP/VJP products. The
+planned model families are derivative-aware Gaussian
 processes, scalable<!-- slop-ok --> and multi-output GPs, variational autoencoders, and deep
 recurrent networks. Bayesian global optimization is outside this repository's
 current scope.

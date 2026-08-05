@@ -39,6 +39,22 @@ finite difference or a high-precision reference. VJPs satisfy
 computed gradient or by Hessian symmetry. `fortad` generated code and `fortsym`
 derivations are production candidates, never the sole correctness oracle.
 
+## MLP baseline
+
+The MLP baseline stores each dense weight as `(input_width, output_width)` and
+each bias as `(output_width)`. Samples are rows, so a layer evaluates `A W + b`.
+The flat parameter vector stores every weight in Fortran column-major order,
+followed by that layer's bias, from input to output. This layout is stable for
+`fortopt` updates and can be mapped to a `fortad` active vector without a
+structure-specific optimizer adapter.
+
+The current implementation provides batched prediction, parameter/input JVPs,
+parameter/input VJPs, and a `backprop` alias for the reverse product. Hidden
+layers support `tanh` and ReLU. The output layer also supports linear and ReLU.
+The ReLU derivative is defined as zero at its kink, and finite-difference tests
+stay away from that point. The explicit products are the reference
+implementation for the open `fortad`-generated-kernel comparison.
+
 ## Model sequence
 
 The implementation order follows numerical dependencies:

@@ -3,6 +3,7 @@ set -euo pipefail
 
 fc=${FC:-gfortran}
 flags=${FFLAGS:--O3 -march=native}
+target=${TARGET:-fortml_bench_linear}
 out=${OUT:-benchmark/results.csv}
 meta=${META:-${out%.csv}.meta}
 
@@ -12,15 +13,20 @@ compiler_version=$("$fc" --version 2>&1 | awk 'NF {print; exit}')
 log=$(mktemp)
 trap 'rm -f "$log"' EXIT
 start=$SECONDS
-if ! FC="$fc" fpm run --profile release --flag "$flags" >"$log" 2>&1; then
+if ! FC="$fc" fpm run --target "$target" --profile release --flag "$flags" >"$log" 2>&1; then
     cat "$log" >&2
     exit 1
 fi
 build_seconds=$((SECONDS - start))
-row=$(grep '^linear_regression,' "$log")
-printf 'model,samples,features,outputs,repetitions,seconds_per_fit,compiler,flags\n' >"$out"
+case "$target" in
+    fortml_bench_linear) row=$(grep '^linear_regression,' "$log") ;;
+    fortml_bench_mlp) row=$(grep '^mlp,' "$log") ;;
+    *) printf 'unknown benchmark target: %s\n' "$target" >&2; exit 1 ;;
+esac
+printf 'model,samples,features,outputs,repetitions,seconds_per_operation,compiler,flags\n' >"$out"
 printf '%s,%s,%s\n' "$row" "$fc" "$flags" >>"$out"
 {
+    printf 'target=%s\n' "$target"
     printf 'compiler=%s\n' "$fc"
     printf 'compiler_version=%s\n' "$compiler_version"
     printf 'flags=%s\n' "$flags"
