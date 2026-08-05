@@ -13,7 +13,7 @@ compiler_version=$("$fc" --version 2>&1 | awk 'NF {print; exit}')
 log=$(mktemp)
 trap 'rm -f "$log"' EXIT
 start=$SECONDS
-if ! FC="$fc" fpm run --target "$target" --profile release --flag "$flags" >"$log" 2>&1; then
+if ! FPM_FC="$fc" fpm run --target "$target" --profile release --flag "$flags" >"$log" 2>&1; then
     cat "$log" >&2
     exit 1
 fi
@@ -21,6 +21,7 @@ build_seconds=$((SECONDS - start))
 case "$target" in
     fortml_bench_linear) row=$(grep '^linear_regression,' "$log") ;;
     fortml_bench_mlp) row=$(grep '^mlp,' "$log") ;;
+    fortml_bench_gp) row=$(grep '^gp,' "$log") ;;
     *) printf 'unknown benchmark target: %s\n' "$target" >&2; exit 1 ;;
 esac
 printf 'model,samples,features,outputs,repetitions,seconds_per_operation,compiler,flags\n' >"$out"

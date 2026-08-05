@@ -6,8 +6,9 @@ derivative code. Models expose value, JVP, and VJP products where the
 mathematics has been verified.
 
 The implemented baselines are multi-output ridge/ordinary least-squares
-regression and an explicit-parameter MLP with value/JVP/VJP products. The
-planned model families are derivative-aware Gaussian
+regression, an explicit-parameter MLP, and a multi-output exact Gaussian
+process with composable kernels. The MLP and GP expose value/JVP/VJP products.
+The planned model families are derivative-aware Gaussian
 processes, scalable<!-- slop-ok --> and multi-output GPs, variational autoencoders, and deep
 recurrent networks. Bayesian global optimization is outside this repository's
 current scope.

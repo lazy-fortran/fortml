@@ -5,7 +5,10 @@ Benchmark programs are correctness-gated before timing. The
 4-output workload. The `fortml_bench_mlp` program evaluates and reverse-
 propagates through a deterministic 16-32-4 MLP on the same batch. Both report
 CSV rows with model, samples, features, outputs, measured repetitions, and wall
-time. Select the workload with `TARGET=fortml_bench_mlp`.
+time. The `fortml_bench_gp` program fits and predicts with a deterministic
+128-sample, 4-feature, 2-output exact GP and checks the result against an
+independent dense LU reference. Select a workload with
+`TARGET=fortml_bench_mlp` or `TARGET=fortml_bench_gp`.
 
 The runner writes a sidecar metadata file with target, compiler version, flags,
 compiler/build duration, CUDA version, and GPU identity when available. Peak

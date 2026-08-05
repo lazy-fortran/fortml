@@ -55,6 +55,17 @@ The ReLU derivative is defined as zero at its kink, and finite-difference tests
 stay away from that point. The explicit products are the reference
 implementation for the open `fortad`-generated-kernel comparison.
 
+## Exact GP baseline
+
+`fortml_kernels` represents stationary and algebraic kernels as a recursive
+expression tree. Positive variance and lengthscale parameters use logarithmic
+storage, while sum and product nodes apply the corresponding product rules to
+values, JVPs, and VJPs. The initial exact GP uses this kernel API with a dense
+Cholesky factorization from `fortnum`, supports shared covariance across
+multiple outputs, and exposes predictive mean/variance, log marginal
+likelihood, and hyperparameter products. Its tests use direct covariance
+formulas and an independent finite-difference/LU oracle.
+
 ## Model sequence
 
 The implementation order follows numerical dependencies:

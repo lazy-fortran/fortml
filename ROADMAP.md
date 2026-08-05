@@ -51,8 +51,13 @@ missing report leaves the item open.
   implementation on a known squared-loss objective.
 - [ ] Connect the MLP product contract to `fortad`-generated JVP/VJP/HVP code
   and compare the generated kernels with the explicit baseline.
-- [ ] Add exact Gaussian-process regression with a composable kernel API,
-  Cholesky prediction, log marginal likelihood, and hyperparameter gradients.
+- [x] Add RBF, Matern, linear, constant, white-noise, sum, and product kernels
+  with log-parameter layouts and independent value/product checks.
+- [x] Add multi-output exact Gaussian-process regression with Cholesky
+  inference, predictive variance, log marginal likelihood, hyperparameter
+  gradients, prediction JVPs, and prediction VJPs.
+- [ ] Connect the kernel and GP product contracts to `fortad`-generated
+  JVP/VJP/HVP code and compare generated kernels with the explicit baseline.
 - [ ] Add function-value and derivative observations/predictions using kernel
   partial derivatives verified against symbolic expressions and independent
   finite differences.
@@ -62,7 +67,9 @@ missing report leaves the item open.
   regression and GP contracts are stable. Their likelihoods, reparameterized
   gradients, scan/backpropagation, and higher-order derivative behavior each
   require separate oracle cases.
-- [ ] Add CPU benchmark harnesses and GPyTorch reference runs.
+- [x] Add correctness-gated CPU benchmark targets for linear regression, MLP,
+  and exact GP workloads.
+- [ ] Add matched CPU benchmark harnesses and GPyTorch reference runs.
 - [ ] Add `nvfortran` cluster builds, GPU correctness checks, and CPU/GPU plots.
 - [ ] Publish the repository and verified benchmark artifacts under the MIT
   license.
@@ -84,3 +91,11 @@ offload, peak-memory, or generated-code-size gates.
 The explicit MLP and its `fortopt_adam` training seam pass the focused test
 suite with gfortran and `nvfortran` 26.5. No MLP performance claim is made yet.
 The matched PyTorch/GPyTorch reference and accelerator plot remain open.
+
+The exact GP baseline now passes independent kernel-value, kernel-product,
+JVP/VJP, prediction, likelihood, and multi-output checks with gfortran and
+`nvfortran` 26.5. Its correctness-gated benchmark covers a 128-sample,
+4-feature, 2-output workload and checks predictions against an independent LU
+solve. The host results are 0.722 ms with gfortran and 0.633 ms with
+`nvfortran`. GPU offload, matched GPyTorch comparisons, and the 30% runtime
+target remain open.
