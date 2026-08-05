@@ -42,6 +42,10 @@ contains
             write (error_unit, '(a)') "FAIL [rbf] value"
             failures = failures + 1
         end if
+        if (abs(rbf%value(x1(1, :), x2(1, :)) - matrix(1, 1)) > 2.0e-14_dp) then
+            write (error_unit, '(a)') "FAIL [rbf] scalar value"
+            failures = failures + 1
+        end if
 
         matern = make_matern32_kernel(2, 1.5_dp, 0.8_dp, status)
         call matern%matrix(x1, x2, matrix, status)
@@ -56,6 +60,10 @@ contains
             write (error_unit, '(a)') "FAIL [matern32] value"
             failures = failures + 1
         end if
+        if (abs(matern%value(x1(1, :), x2(1, :)) - matrix(1, 1)) > 2.0e-14_dp) then
+            write (error_unit, '(a)') "FAIL [matern32] scalar value"
+            failures = failures + 1
+        end if
 
         linear = make_linear_kernel(2, 0.7_dp, status)
         call linear%matrix(x1, x2, matrix, status)
@@ -64,12 +72,20 @@ contains
             write (error_unit, '(a)') "FAIL [linear] value"
             failures = failures + 1
         end if
+        if (abs(linear%value(x1(1, :), x2(1, :)) - matrix(1, 1)) > 2.0e-14_dp) then
+            write (error_unit, '(a)') "FAIL [linear] scalar value"
+            failures = failures + 1
+        end if
 
         constant = make_constant_kernel(2, 0.3_dp, status)
         call constant%matrix(x1, x2, matrix, status)
         expected = 0.3_dp
         if (.not. status_ok(status) .or. maxval(abs(matrix - expected)) > 2.0e-14_dp) then
             write (error_unit, '(a)') "FAIL [constant] value"
+            failures = failures + 1
+        end if
+        if (abs(constant%value(x1(1, :), x2(1, :)) - matrix(1, 1)) > 2.0e-14_dp) then
+            write (error_unit, '(a)') "FAIL [constant] scalar value"
             failures = failures + 1
         end if
 
@@ -82,6 +98,11 @@ contains
         if (.not. status_ok(status) .or. maxval(abs(white_matrix - white_expected)) > &
             2.0e-14_dp) then
             write (error_unit, '(a)') "FAIL [white_noise] value"
+            failures = failures + 1
+        end if
+        if (abs(white_noise%value(x1(1, :), x1(1, :)) - 0.2_dp) > 2.0e-14_dp .or. &
+            abs(white_noise%value(x1(1, :), x1(2, :))) > 2.0e-14_dp) then
+            write (error_unit, '(a)') "FAIL [white_noise] scalar value"
             failures = failures + 1
         end if
     end subroutine test_leaf_values
@@ -109,6 +130,13 @@ contains
         if (.not. status_ok(status) .or. maxval(abs(matrix - rbf_matrix* &
             constant_matrix)) > 2.0e-14_dp) then
             write (error_unit, '(a)') "FAIL [product] composition"
+            failures = failures + 1
+        end if
+        if (abs(sum_kernel%value(x(1, :), x(2, :)) - &
+            (rbf_matrix(1, 2) + constant_matrix(1, 2))) > 2.0e-14_dp .or. &
+            abs(product_kernel%value(x(1, :), x(2, :)) - &
+            rbf_matrix(1, 2)*constant_matrix(1, 2)) > 2.0e-14_dp) then
+            write (error_unit, '(a)') "FAIL [composition] scalar value"
             failures = failures + 1
         end if
     end subroutine test_composition

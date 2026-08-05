@@ -25,6 +25,7 @@ module fortml_kernels
         procedure, public :: parameter_count => kernel_parameter_count
         procedure, public :: parameters => kernel_parameters
         procedure, public :: set_parameters => kernel_set_parameters
+        procedure, public :: value => kernel_value
         procedure, public :: matrix => kernel_matrix
         procedure, public :: matrix_jvp => kernel_matrix_jvp
         procedure, public :: parameter_vjp => kernel_parameter_vjp
@@ -190,6 +191,42 @@ contains
         call kernel_matrix_impl(self, x1, x2, matrix)
         call status_set(status, FORTNUM_OK, "")
     end subroutine kernel_matrix
+
+    recursive function kernel_value(self, x1, x2) result(value)
+        class(kernel_t), intent(in) :: self
+        real(dp), intent(in) :: x1(:), x2(:)
+        real(dp) :: value
+        real(dp) :: variance, lengthscale, r2, length_derivative
+
+        value = 0.0_dp
+        if (size(x1) /= self%input_dim) return
+        if (size(x2) /= self%input_dim) return
+        if (.not. kernel_valid(self)) return
+        select case (self%kind)
+        case (KERNEL_SUM)
+            value = self%left%value(x1, x2) + self%right%value(x1, x2)
+        case (KERNEL_PRODUCT)
+            value = self%left%value(x1, x2)*self%right%value(x1, x2)
+        case default
+            variance = exp(self%log_parameters(1))
+            if (self%kind == KERNEL_RBF .or. self%kind == KERNEL_MATERN12 .or. &
+                self%kind == KERNEL_MATERN32 .or. self%kind == KERNEL_MATERN52) then
+                lengthscale = exp(self%log_parameters(2))
+            else
+                lengthscale = 1.0_dp
+            end if
+            r2 = sum((x1 - x2)**2)
+            call leaf_value_and_length_derivative(self%kind, variance, &
+                lengthscale, r2, value, length_derivative)
+            if (self%kind == KERNEL_LINEAR) then
+                value = variance*dot_product(x1, x2)
+            else if (self%kind == KERNEL_CONSTANT) then
+                value = variance
+            else if (self%kind == KERNEL_WHITE_NOISE) then
+                value = variance*merge(1.0_dp, 0.0_dp, all(x1 == x2))
+            end if
+        end select
+    end function kernel_value
 
     subroutine kernel_matrix_jvp(self, x1, x2, direction, matrix, matrix_dot, status)
         class(kernel_t), intent(in) :: self
