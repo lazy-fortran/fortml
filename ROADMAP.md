@@ -64,7 +64,7 @@ missing report leaves the item open.
   partial derivatives verified against symbolic expressions and independent
   finite differences.
 - [ ] Add a public lazy-operator contract with kernel MVM, MVM batching,
-  diagonal, and persistent host/device data; hide tiling and backend choice
+  diagonal, and persistent host/device data. Hide tiling and backend choice
   from GP callers in the style of the KeOps/GPyTorch split.
 - [ ] Use `fortnum` CG with diagonal/block/Nystrom preconditioners for large
   exact-GP solves, and add stochastic Lanczos log-determinant and LOVE-style
@@ -81,9 +81,11 @@ missing report leaves the item open.
   require separate oracle cases.
 - [x] Add correctness-gated CPU benchmark targets for linear regression, MLP,
   and exact GP workloads.
-- [ ] Add matched CPU benchmark harnesses and GPyTorch reference runs.
-- [ ] Add `nvfortran` cluster builds, GPU correctness checks, and CPU/GPU plots.
-- [ ] Publish the repository and verified benchmark artifacts under the MIT
+- [x] Add matched CPU benchmark harnesses and GPyTorch reference runs through
+  the separate `fortml-bench` repository.
+- [x] Add `nvfortran` cluster builds, GPU correctness checks, and CPU/GPU plots
+  for the first RBF matrix-vector workload.
+- [x] Publish the repository and verified benchmark artifacts under the MIT
   license.
 
 ## Research record
@@ -102,7 +104,16 @@ offload, peak-memory, or generated-code-size gates.
 
 The explicit MLP and its `fortopt_adam` training seam pass the focused test
 suite with gfortran and `nvfortran` 26.5. No MLP performance claim is made yet.
-The matched PyTorch/GPyTorch reference and accelerator plot remain open.
+The MLP reference and accelerator plot remain open.
+
+The first matched RBF matrix-vector benchmark is now recorded in
+`lazy-fortran/fortml-bench`. It uses 2048 samples, 8 features, float64, and
+12 repetitions. With 16 physical CPU cores, the Fortran operator is 9 percent
+slower than GPyTorch-KeOps. On the RTX 5060 Ti it is 68 percent faster on the
+resident GPU lane. Every row passes the independent blocked NumPy oracle.
+The comparison plot is https://box.sloppy.at/8ba9a.png and the raw CSV is
+committed beside it in the benchmark repository. Matched CG, log-determinant,
+and full-GP training evidence remain open.
 
 The exact GP baseline now passes independent kernel-value, kernel-product,
 JVP/VJP, prediction, likelihood, and multi-output checks with gfortran and
@@ -114,7 +125,7 @@ target remain open.
 
 The first Fortran-native tiled RBF MVM also passes its direct pairwise oracle
 with gfortran and an OpenACC `nvfortran` build. For 2,048 samples, 8 features,
-and 12 MVM repetitions, the host result was 24.74 ms per MVM; the RTX 5060 Ti
+and 12 MVM repetitions, the host result was 24.74 ms per MVM. The RTX 5060 Ti
 result was 1.225 ms transfer-inclusive and 1.168 ms with resident data in one
 run. The GPU compile report shows one gang per output tile and 128 vector
 threads reducing over each neighbor tile. This is kernel-only evidence, not a
