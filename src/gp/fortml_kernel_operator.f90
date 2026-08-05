@@ -504,8 +504,9 @@ contains
         real(dp) :: accumulated, distance, kernel_value
         real(dp) :: point_1, point_2, point_3, point_4
         real(dp) :: point_5, point_6, point_7, point_8
-        integer :: block_size, first_neighbor, last_neighbor
-        integer :: i, j, n_samples
+        integer, parameter :: output_tile_size = 2
+        integer :: block_size, first_neighbor, first_output, last_neighbor
+        integer :: i, j, local_output, n_samples
 
         n_samples = size(points, 1)
         block_size = tile_size
@@ -513,40 +514,49 @@ contains
             0.5_dp/(lengthscale*lengthscale)
         output = 0.0_dp
 
-        !$acc parallel loop
-        !$omp parallel do schedule(static) private( &
+        !$acc parallel loop gang
+        !$omp parallel do schedule(static) collapse(2) private( &
         !$omp& accumulated, distance, kernel_value, point_1, point_2, &
         !$omp& point_3, point_4, point_5, point_6, point_7, point_8, &
-        !$omp& first_neighbor, last_neighbor, j)
-        do i = 1, n_samples
-            point_1 = points(i, 1)
-            point_2 = points(i, 2)
-            point_3 = points(i, 3)
-            point_4 = points(i, 4)
-            point_5 = points(i, 5)
-            point_6 = points(i, 6)
-            point_7 = points(i, 7)
-            point_8 = points(i, 8)
-            accumulated = diagonal_shift*input(i)
-            do first_neighbor = 1, n_samples, block_size
-                last_neighbor = min(n_samples, first_neighbor + block_size - 1)
-                !$acc loop vector reduction(+:accumulated)
-                !$omp simd reduction(+:accumulated)
-                do j = first_neighbor, last_neighbor
-                    distance = (point_1 - points(j, 1))*(point_1 - points(j, 1)) + &
-                        (point_2 - points(j, 2))*(point_2 - points(j, 2)) + &
-                        (point_3 - points(j, 3))*(point_3 - points(j, 3)) + &
-                        (point_4 - points(j, 4))*(point_4 - points(j, 4)) + &
-                        (point_5 - points(j, 5))*(point_5 - points(j, 5)) + &
-                        (point_6 - points(j, 6))*(point_6 - points(j, 6)) + &
-                        (point_7 - points(j, 7))*(point_7 - points(j, 7)) + &
-                        (point_8 - points(j, 8))*(point_8 - points(j, 8))
-                    kernel_value = variance*exp( &
-                        -inverse_two_lengthscale_squared*distance)
-                    accumulated = accumulated + kernel_value*input(j)
-                end do
+        !$omp& first_neighbor, first_output, i, j, last_neighbor, &
+        !$omp& local_output)
+        do first_output = 1, n_samples, output_tile_size
+            !$acc loop worker
+            do local_output = 1, output_tile_size
+                i = first_output + local_output - 1
+                if (i <= n_samples) then
+                    point_1 = points(i, 1)
+                    point_2 = points(i, 2)
+                    point_3 = points(i, 3)
+                    point_4 = points(i, 4)
+                    point_5 = points(i, 5)
+                    point_6 = points(i, 6)
+                    point_7 = points(i, 7)
+                    point_8 = points(i, 8)
+                    accumulated = diagonal_shift*input(i)
+                    do first_neighbor = 1, n_samples, block_size
+                        last_neighbor = min( &
+                            n_samples, first_neighbor + block_size - 1)
+                        !$acc loop vector reduction(+:accumulated)
+                        !$omp simd reduction(+:accumulated)
+                        do j = first_neighbor, last_neighbor
+                            distance = &
+                                (point_1 - points(j, 1))*(point_1 - points(j, 1)) + &
+                                (point_2 - points(j, 2))*(point_2 - points(j, 2)) + &
+                                (point_3 - points(j, 3))*(point_3 - points(j, 3)) + &
+                                (point_4 - points(j, 4))*(point_4 - points(j, 4)) + &
+                                (point_5 - points(j, 5))*(point_5 - points(j, 5)) + &
+                                (point_6 - points(j, 6))*(point_6 - points(j, 6)) + &
+                                (point_7 - points(j, 7))*(point_7 - points(j, 7)) + &
+                                (point_8 - points(j, 8))*(point_8 - points(j, 8))
+                            kernel_value = variance*exp( &
+                                -inverse_two_lengthscale_squared*distance)
+                            accumulated = accumulated + kernel_value*input(j)
+                        end do
+                    end do
+                    output(i) = accumulated
+                end if
             end do
-            output(i) = accumulated
         end do
     end subroutine rbf_matvec_tiled_8
 

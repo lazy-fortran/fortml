@@ -14,13 +14,15 @@ program test_kernel_operator
     real(dp) :: covariance(5, 5), right_hand_side(5), solution(5)
     real(dp) :: dense_solution(5), residual_norm
     real(dp) :: generic_output(5), generic_expected(5)
+    real(dp) :: sample_points_8(5, 8), input_8(5), output_8(5), expected_8(5)
     real(dp), parameter :: variance = 1.7_dp, lengthscale = 0.8_dp
     real(dp), parameter :: diagonal_shift = 0.03_dp
     type(rbf_operator_t) :: rbf_operator
+    type(rbf_operator_t) :: rbf_operator_8
     type(kernel_operator_t) :: generic_operator
     type(kernel_t) :: rbf_kernel, constant_kernel, sum_kernel
     type(fortnum_status_t) :: status
-    integer :: i, j, column, info, iterations
+    integer :: i, j, column, feature, info, iterations
 
     sample_points = reshape([ &
         -0.7_dp, 0.1_dp, 0.4_dp, 1.2_dp, 1.8_dp, &
@@ -66,6 +68,31 @@ program test_kernel_operator
     diagonal = rbf_operator%diagonal()
     call require(maxval(abs(diagonal - (variance + diagonal_shift))) < 2.0e-14_dp, &
         "RBF diagonal is returned without materializing a matrix")
+
+    do feature = 1, 8
+        do i = 1, 5
+            sample_points_8(i, feature) = &
+                sin(0.11_dp*real(i + 2*feature, dp)) + &
+                0.03_dp*cos(0.07_dp*real(i*feature, dp))
+        end do
+    end do
+    input_8 = [0.4_dp, -0.9_dp, 1.2_dp, 0.1_dp, -0.5_dp]
+    call rbf_operator_8%initialize( &
+        sample_points_8, variance, lengthscale, diagonal_shift, status, 2)
+    call require(status%code == FORTNUM_OK, "8-feature RBF operator initializes")
+    !$acc data copyin(rbf_operator_8%points, input_8) copyout(output_8)
+    call rbf_operator_8%matvec(input_8, output_8)
+    !$acc end data
+    do i = 1, 5
+        expected_8(i) = diagonal_shift*input_8(i)
+        do j = 1, 5
+            expected_8(i) = expected_8(i) + variance*exp( &
+                -0.5_dp*sum((sample_points_8(i, :) - sample_points_8(j, :))**2)/ &
+                (lengthscale*lengthscale))*input_8(j)
+        end do
+    end do
+    call require(maxval(abs(output_8 - expected_8)) < 2.0e-14_dp, &
+        "8-feature RBF MVM matches the direct pairwise oracle")
 
     rbf_kernel = make_rbf_kernel(2, variance, lengthscale, status)
     call require(status%code == FORTNUM_OK, "generic RBF kernel initializes")

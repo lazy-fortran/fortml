@@ -180,6 +180,12 @@ and GPyTorch-KeOps pass the independent oracle.
 The extended CPU and GPU plots are
 https://box.sloppy.at/c7d09.png and https://box.sloppy.at/465d6.png.
 
+The accelerator follow-up adds a two-row worker tile to the eight-feature
+OpenACC reduction and checks its tail with an independent five-row oracle. A
+local nvfortran run reduced the matrix-free CG time from 0.218 s to 0.187 s at
+2,048 samples and from 1.074 s to 0.873 s at 4,096 samples. Persistent
+backend-owned workspaces and larger two-dimensional tiling remain open.
+
 The first matched matrix-free CG run uses the same float64 RBF parameters,
 diagonal shift, unpreconditioned CG recurrence, tolerance `1e-8`, and
 500-iteration cap for dense PyTorch, KeOps, GPyTorch-KeOps, and the specialized

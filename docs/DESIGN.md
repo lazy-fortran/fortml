@@ -100,6 +100,13 @@ iteration cap, and true-residual check are directly comparable. The generic
 `kernel_operator_t` remains a blocked host-reference path until persistent
 backend-owned data and general accelerator kernels are added.
 
+The eight-feature OpenACC RBF MVM maps two output rows to worker lanes inside
+each gang. This keeps the sample-major neighbor loop contiguous while reducing
+gang count and improving reuse of the neighbor tile. The tail condition is
+covered by a five-row, eight-feature direct pairwise oracle test. The mapping
+is specialized to the fixed eight-feature path; other feature counts retain
+the general tiled implementation.
+
 ## Model sequence
 
 The implementation order follows numerical dependencies:
