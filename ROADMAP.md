@@ -76,6 +76,9 @@ missing report leaves the item open.
   KeOps/GPyTorch split.
 - [x] Connect the RBF operator to `fortnum` CG with a diagonal
   preconditioner and an independent dense-solve oracle.
+- [x] Add an OpenACC `nvfortran` RBF CG path that keeps the sample points and
+  right-hand side resident across repeated solves, with device reductions and
+  an automated residual benchmark.
 - [ ] Add block/Nystrom preconditioners, stochastic Lanczos log determinants,
   and LOVE-style predictive-variance products for large exact-GP solves.
 - [ ] Add compact-support sparse covariance/precision dispatch through
@@ -121,8 +124,9 @@ The first matched RBF matrix-vector benchmark is now recorded in
 slower than GPyTorch-KeOps. On the RTX 5060 Ti it is 68 percent faster on the
 resident GPU lane. Every row passes the independent blocked NumPy oracle.
 The comparison plot is https://box.sloppy.at/8ba9a.png and the raw CSV is
-committed beside it in the benchmark repository. Matched CG, log-determinant,
-and full-GP training evidence remain open.
+committed beside it in the benchmark repository. Matched log-determinant and
+full-GP training evidence remain open. The matched CG harness is now recorded
+in the benchmark repository as a separate workload.
 
 The exact GP baseline now passes independent kernel-value, kernel-product,
 JVP/VJP, prediction, likelihood, and multi-output checks with gfortran and
@@ -175,3 +179,21 @@ and GPyTorch-KeOps pass the independent oracle.
 
 The extended CPU and GPU plots are
 https://box.sloppy.at/c7d09.png and https://box.sloppy.at/465d6.png.
+
+The first matched matrix-free CG run uses the same float64 RBF parameters,
+diagonal shift, unpreconditioned CG recurrence, tolerance `1e-8`, and
+500-iteration cap for dense PyTorch, KeOps, GPyTorch-KeOps, and the specialized
+RBF operator. At 2,048 samples, all rows pass the blocked NumPy residual check.
+the small-size lane additionally compares against `numpy.linalg.solve`. The
+nvfortran/OpenACC FortML solve takes 0.218 s per solve on the RTX 5060 Ti,
+versus 0.774 s for the explicit KeOps CG loop and 0.611 s for the matching
+GPyTorch-KeOps loop. These timings include a true-residual check and are
+operator-level evidence, not a full GP training claim. The raw record and
+scaling plots are in `fortml-bench/results/rbf_cg.csv` and its CG plot files.
+The extended sweep through 4,096 samples records 1.074 s for FortML on CUDA,
+1.878 s for KeOps, and 1.450 s for GPyTorch-KeOps. Dense PyTorch is OOM at
+that CUDA size. FortML remains fastest, but its final doubling slope is 2.30
+versus 1.28 and 1.25 for the Python KeOps lanes. Two-dimensional point tiling
+and reuse in the OpenACC reduction are now the next accelerator optimization
+gate. The extended plots are https://box.sloppy.at/1bd60.png (CPU) and
+https://box.sloppy.at/f5812.png (CUDA).

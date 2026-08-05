@@ -91,6 +91,15 @@ pairwise formulas and an independent dense solve. Persistent device-data
 ownership, block and Nystrom preconditioners, stochastic log determinants, and
 autodiff rules for the iterative solve remain separate milestones.
 
+The specialized RBF type also has an OpenACC CG override. Its Krylov vectors,
+reductions, and repeated RBF products execute inside one accelerator data
+region, while an enclosing benchmark region keeps the sample points and
+right-hand side resident across repeated solves. The benchmark uses the same
+unpreconditioned recurrence for the Python comparison lanes so its tolerance,
+iteration cap, and true-residual check are directly comparable. The generic
+`kernel_operator_t` remains a blocked host-reference path until persistent
+backend-owned data and general accelerator kernels are added.
+
 ## Model sequence
 
 The implementation order follows numerical dependencies:

@@ -114,6 +114,13 @@ program test_kernel_operator
         "lazy RBF CG matches the independent dense solve")
     call require(residual_norm < 2.0e-11_dp, &
         "lazy RBF CG reports the true residual")
+    solution = 0.0_dp
+    call rbf_operator%solve_cg( &
+        right_hand_side, solution, 1.0e-12_dp, 30, info, iterations, &
+        residual_norm, use_diagonal_preconditioner=.false.)
+    call require(info == KRYLOV_OK, "unpreconditioned lazy RBF CG converges")
+    call require(maxval(abs(solution - dense_solution)) < 2.0e-11_dp, &
+        "unpreconditioned lazy RBF CG matches the dense solve")
 
 contains
 

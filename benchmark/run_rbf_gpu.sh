@@ -15,6 +15,9 @@ mkdir -p "$(dirname "$out")"
 if ! "$fc" $flags -module "$build_dir" -o "$build_dir/fortml_bench_rbf_operator" \
         "$fortnum_dir/src/fortnum_kinds.f90" \
         "$fortnum_dir/src/fortnum_status.f90" \
+        "$fortnum_dir/src/linalg/fortnum_krylov.f90" \
+        "$repo_dir/src/gp/fortml_kernels.f90" \
+        "$repo_dir/src/gp/fortml_linear_operator.f90" \
         "$repo_dir/src/gp/fortml_kernel_operator.f90" \
         "$repo_dir/app/fortml_bench_rbf_operator.f90"; then
     exit 1

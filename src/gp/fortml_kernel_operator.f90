@@ -1,5 +1,8 @@
 module fortml_kernel_operator
+    use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     use fortnum_kinds, only: dp
+    use fortnum_krylov, only: KRYLOV_BREAKDOWN, KRYLOV_INVALID_ARGUMENT, &
+        KRYLOV_MAX_ITERATIONS, KRYLOV_OK
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
         FORTNUM_DOMAIN_ERROR
     use fortml_linear_operator, only: linear_operator_t
@@ -22,6 +25,7 @@ module fortml_kernel_operator
         procedure, public :: matmat => rbf_operator_matmat
         procedure, public :: diagonal => rbf_operator_diagonal
         procedure, public :: sample_count => rbf_operator_sample_count
+        procedure, public :: solve_cg => rbf_operator_solve_cg
     end type rbf_operator_t
 
     type, extends(linear_operator_t), public :: kernel_operator_t
@@ -114,6 +118,223 @@ contains
             count = 0
         end if
     end function rbf_operator_sample_count
+
+    subroutine rbf_operator_solve_cg( &
+            self, right_hand_side, solution, tolerance, max_iterations, &
+            info, iterations, residual_norm, use_diagonal_preconditioner)
+        class(rbf_operator_t), intent(in) :: self
+        real(dp), intent(in) :: right_hand_side(:)
+        real(dp), intent(inout) :: solution(:)
+        real(dp), intent(in) :: tolerance
+        integer, intent(in) :: max_iterations
+        integer, intent(out) :: info, iterations
+        real(dp), intent(out) :: residual_norm
+        logical, intent(in), optional :: use_diagonal_preconditioner
+
+        logical :: use_preconditioner, done
+        real(dp), allocatable :: residual(:), direction(:), preconditioned(:)
+        real(dp), allocatable :: operator_direction(:), work(:), diagonal_values(:)
+        real(dp) :: right_hand_side_norm, target, rho, next_rho
+        real(dp) :: denominator, step, beta
+        integer :: n_samples
+
+        info = KRYLOV_INVALID_ARGUMENT
+        iterations = 0
+        residual_norm = huge(1.0_dp)
+        n_samples = self%sample_count()
+        if (n_samples < 1) return
+        if (size(right_hand_side) /= n_samples) return
+        if (size(solution) /= n_samples) return
+        if (tolerance <= 0.0_dp .or. max_iterations < 1) return
+
+        use_preconditioner = .true.
+        if (present(use_diagonal_preconditioner)) then
+            use_preconditioner = use_diagonal_preconditioner
+        end if
+        allocate( &
+            residual(n_samples), direction(n_samples), &
+            preconditioned(n_samples), operator_direction(n_samples), &
+            work(n_samples), diagonal_values(n_samples))
+        diagonal_values = 1.0_dp
+        if (use_preconditioner) then
+            diagonal_values = self%diagonal()
+            if (size(diagonal_values) /= n_samples) return
+            if (any(diagonal_values <= 0.0_dp)) return
+        end if
+
+        right_hand_side_norm = sqrt(sum(right_hand_side*right_hand_side))
+        target = tolerance*max(right_hand_side_norm, 1.0_dp)
+        if (right_hand_side_norm == 0.0_dp) then
+            solution = 0.0_dp
+            residual_norm = 0.0_dp
+            info = KRYLOV_OK
+            return
+        end if
+
+        done = .false.
+        info = KRYLOV_MAX_ITERATIONS
+        !$acc data copyin(self%points, right_hand_side, diagonal_values) &
+        !$acc& copy(solution) create(residual, direction, preconditioned, &
+        !$acc& operator_direction, work)
+        call self%matvec(solution, work)
+        call subtract_vectors(right_hand_side, work, residual)
+        residual_norm = acc_norm2(residual)
+        if (residual_norm <= target) then
+            info = KRYLOV_OK
+            done = .true.
+        else
+            call apply_diagonal_preconditioner(residual, preconditioned)
+            rho = acc_dot(residual, preconditioned)
+            if (rho <= 0.0_dp .or. .not. ieee_is_finite(rho)) then
+                info = KRYLOV_BREAKDOWN
+                done = .true.
+            else
+                call copy_vector(direction, preconditioned)
+                do while (iterations < max_iterations .and. .not. done)
+                    call self%matvec(direction, operator_direction)
+                    denominator = acc_dot(direction, operator_direction)
+                    if (denominator <= 0.0_dp .or. &
+                        .not. ieee_is_finite(denominator)) then
+                        info = KRYLOV_BREAKDOWN
+                        done = .true.
+                    else
+                        step = rho/denominator
+                        call update_solution(solution, step, direction)
+                        call subtract_scaled( &
+                            residual, step, operator_direction)
+                        iterations = iterations + 1
+                        residual_norm = acc_norm2(residual)
+                        if (residual_norm <= target) then
+                            call self%matvec(solution, work)
+                            call subtract_vectors(right_hand_side, work, residual)
+                            residual_norm = acc_norm2(residual)
+                            if (residual_norm <= target) then
+                                info = KRYLOV_OK
+                                done = .true.
+                            end if
+                        end if
+                        if (.not. done) then
+                            call apply_diagonal_preconditioner( &
+                                residual, preconditioned)
+                            next_rho = acc_dot(residual, preconditioned)
+                            if (next_rho <= 0.0_dp .or. &
+                                .not. ieee_is_finite(next_rho)) then
+                                info = KRYLOV_BREAKDOWN
+                                done = .true.
+                            else
+                                beta = next_rho/rho
+                                call combine_direction( &
+                                    direction, preconditioned, beta)
+                                rho = next_rho
+                            end if
+                        end if
+                    end if
+                end do
+            end if
+        end if
+        if (.not. done) then
+            call self%matvec(solution, work)
+            call subtract_vectors(right_hand_side, work, residual)
+            residual_norm = acc_norm2(residual)
+            if (residual_norm <= target) info = KRYLOV_OK
+        end if
+        !$acc end data
+
+    contains
+
+        function acc_dot(left, right) result(value)
+            real(dp), intent(in) :: left(:), right(:)
+            real(dp) :: value
+            integer :: i
+
+            value = 0.0_dp
+            !$acc parallel loop reduction(+:value)
+            !$omp parallel do reduction(+:value)
+            do i = 1, size(left)
+                value = value + left(i)*right(i)
+            end do
+        end function acc_dot
+
+        function acc_norm2(vector) result(value)
+            real(dp), intent(in) :: vector(:)
+            real(dp) :: value
+
+            value = sqrt(acc_dot(vector, vector))
+        end function acc_norm2
+
+        subroutine subtract_vectors(left, right, result)
+            real(dp), intent(in) :: left(:), right(:)
+            real(dp), intent(out) :: result(:)
+            integer :: i
+
+            !$acc parallel loop
+            !$omp parallel do
+            do i = 1, size(result)
+                result(i) = left(i) - right(i)
+            end do
+        end subroutine subtract_vectors
+
+        subroutine copy_vector(target, source)
+            real(dp), intent(out) :: target(:)
+            real(dp), intent(in) :: source(:)
+            integer :: i
+
+            !$acc parallel loop
+            !$omp parallel do
+            do i = 1, size(target)
+                target(i) = source(i)
+            end do
+        end subroutine copy_vector
+
+        subroutine apply_diagonal_preconditioner(input, output)
+            real(dp), intent(in) :: input(:)
+            real(dp), intent(out) :: output(:)
+            integer :: i
+
+            !$acc parallel loop
+            !$omp parallel do
+            do i = 1, size(output)
+                output(i) = input(i)/diagonal_values(i)
+            end do
+        end subroutine apply_diagonal_preconditioner
+
+        subroutine update_solution(current, scale, vector)
+            real(dp), intent(inout) :: current(:)
+            real(dp), intent(in) :: scale, vector(:)
+            integer :: i
+
+            !$acc parallel loop
+            !$omp parallel do
+            do i = 1, size(current)
+                current(i) = current(i) + scale*vector(i)
+            end do
+        end subroutine update_solution
+
+        subroutine subtract_scaled(current, scale, vector)
+            real(dp), intent(inout) :: current(:)
+            real(dp), intent(in) :: scale, vector(:)
+            integer :: i
+
+            !$acc parallel loop
+            !$omp parallel do
+            do i = 1, size(current)
+                current(i) = current(i) - scale*vector(i)
+            end do
+        end subroutine subtract_scaled
+
+        subroutine combine_direction(current, preconditioned, scale)
+            real(dp), intent(inout) :: current(:)
+            real(dp), intent(in) :: preconditioned(:), scale
+            integer :: i
+
+            !$acc parallel loop
+            !$omp parallel do
+            do i = 1, size(current)
+                current(i) = preconditioned(i) + scale*current(i)
+            end do
+        end subroutine combine_direction
+
+    end subroutine rbf_operator_solve_cg
 
     subroutine kernel_operator_initialize( &
             self, sample_points, kernel, diagonal_shift, status, tile_size)
