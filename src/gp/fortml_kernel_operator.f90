@@ -199,14 +199,14 @@ contains
                 !$acc loop vector reduction(+:accumulated)
                 !$omp simd reduction(+:accumulated)
                 do j = first_neighbor, last_neighbor
-                    distance = (point_1 - points(j, 1))**2 + &
-                        (point_2 - points(j, 2))**2 + &
-                        (point_3 - points(j, 3))**2 + &
-                        (point_4 - points(j, 4))**2 + &
-                        (point_5 - points(j, 5))**2 + &
-                        (point_6 - points(j, 6))**2 + &
-                        (point_7 - points(j, 7))**2 + &
-                        (point_8 - points(j, 8))**2
+                    distance = (point_1 - points(j, 1))*(point_1 - points(j, 1)) + &
+                        (point_2 - points(j, 2))*(point_2 - points(j, 2)) + &
+                        (point_3 - points(j, 3))*(point_3 - points(j, 3)) + &
+                        (point_4 - points(j, 4))*(point_4 - points(j, 4)) + &
+                        (point_5 - points(j, 5))*(point_5 - points(j, 5)) + &
+                        (point_6 - points(j, 6))*(point_6 - points(j, 6)) + &
+                        (point_7 - points(j, 7))*(point_7 - points(j, 7)) + &
+                        (point_8 - points(j, 8))*(point_8 - points(j, 8))
                     kernel_value = variance*exp( &
                         -inverse_two_lengthscale_squared*distance)
                     accumulated = accumulated + kernel_value*input(j)
