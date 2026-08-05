@@ -100,6 +100,16 @@ iteration cap, and true-residual check are directly comparable. The generic
 `kernel_operator_t` remains a blocked host-reference path until persistent
 backend-owned data and general accelerator kernels are added.
 
+The eight-feature path also has an optional native CUDA bridge. The benchmark
+drivers enable it with `FORTML_NATIVE_CUDA=1`, compile
+`src/gp/fortml_cuda_rbf.cu` with `nvcc`, and link the object into the
+`nvfortran` executable. The kernel assigns one warp to each of four output
+rows, loads a 128-neighbor tile into shared memory, and reduces the tile in
+warp lanes. The default Fortran build links
+`fortml_cuda_rbf_stub.f90`, so gfortran and ordinary nvfortran/OpenACC builds
+remain self-contained. The direct MVM benchmark checks the native path against
+the same host pairwise oracle before timing it.
+
 The eight-feature OpenACC RBF MVM maps two output rows to worker lanes inside
 each gang. This keeps the sample-major neighbor loop contiguous while reducing
 gang count. The tail condition is covered by a five-row, eight-feature direct

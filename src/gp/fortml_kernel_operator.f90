@@ -1,5 +1,6 @@
 module fortml_kernel_operator
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+    use, intrinsic :: iso_c_binding, only: c_double, c_int, c_loc, c_ptr
     use fortnum_kinds, only: dp
     use fortnum_krylov, only: KRYLOV_BREAKDOWN, KRYLOV_INVALID_ARGUMENT, &
         KRYLOV_MAX_ITERATIONS, KRYLOV_OK
@@ -43,6 +44,25 @@ module fortml_kernel_operator
 
     public :: rbf_matvec_tiled
     public :: rbf_matmat_tiled
+
+    interface
+        function fortml_cuda_rbf_available() bind(C, &
+                name="fortml_cuda_rbf_available") result(available)
+            import :: c_int
+            integer(c_int) :: available
+        end function fortml_cuda_rbf_available
+
+        function fortml_cuda_rbf_matvec( &
+                points, input, output, n_samples, variance, inverse_scale, &
+                diagonal_shift) bind(C, name="fortml_cuda_rbf_matvec") &
+                result(status)
+            import :: c_double, c_int, c_ptr
+            type(c_ptr), value :: points, input, output
+            integer(c_int), value :: n_samples
+            real(c_double), value :: variance, inverse_scale, diagonal_shift
+            integer(c_int) :: status
+        end function fortml_cuda_rbf_matvec
+    end interface
 
 contains
 
@@ -437,8 +457,8 @@ contains
     subroutine rbf_matvec_tiled( &
             points, input, output, variance, lengthscale, diagonal_shift, &
             tile_size)
-        real(dp), intent(in) :: points(:, :), input(:)
-        real(dp), intent(out) :: output(:)
+        real(dp), intent(in), target :: points(:, :), input(:)
+        real(dp), intent(out), target :: output(:)
         real(dp), intent(in) :: variance, lengthscale, diagonal_shift
         integer, intent(in) :: tile_size
         real(dp) :: inverse_two_lengthscale_squared
@@ -460,6 +480,11 @@ contains
             0.5_dp/(lengthscale*lengthscale)
 
         if (n_features == 8) then
+            if (fortml_cuda_rbf_available() /= 0_c_int) then
+                if (rbf_matvec_cuda( &
+                    points, input, output, variance, &
+                    inverse_two_lengthscale_squared, diagonal_shift)) return
+            end if
             call rbf_matvec_tiled_8( &
                 points, input, output, variance, lengthscale, diagonal_shift, &
                 tile_size)
@@ -492,6 +517,27 @@ contains
             output(i) = accumulated
         end do
     end subroutine rbf_matvec_tiled
+
+    logical function rbf_matvec_cuda( &
+            points, input, output, variance, inverse_scale, diagonal_shift)
+        real(dp), intent(in), target :: points(:, :), input(:)
+        real(dp), intent(out), target :: output(:)
+        real(dp), intent(in) :: variance, inverse_scale, diagonal_shift
+        integer(c_int) :: status
+
+        rbf_matvec_cuda = .false.
+        !$acc data copyin(points, input) copyout(output)
+        !$acc host_data use_device(points, input, output)
+        status = fortml_cuda_rbf_matvec( &
+            c_loc(points), c_loc(input), c_loc(output), &
+            int(size(points, 1), c_int), real(variance, c_double), &
+            real(inverse_scale, c_double), real(diagonal_shift, c_double))
+        !$acc end host_data
+        !$acc end data
+        if (status == 0_c_int) then
+            rbf_matvec_cuda = .true.
+        end if
+    end function rbf_matvec_cuda
 
     subroutine rbf_matvec_tiled_8( &
             points, input, output, variance, lengthscale, diagonal_shift, &

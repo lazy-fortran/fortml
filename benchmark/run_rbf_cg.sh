@@ -5,6 +5,7 @@ repo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 fortnum_dir=$(cd "$repo_dir/../fortnum" && pwd)
 fc=${FC:-nvfortran}
 flags=${FFLAGS:--O3 -acc}
+native_cuda=${FORTML_NATIVE_CUDA:-0}
 out=${OUT:-$repo_dir/.provenance/benchmarks/fortml_rbf_cg_nvfortran.csv}
 meta=${META:-${out%.csv}.meta}
 build_dir=$(mktemp -d)
@@ -17,14 +18,41 @@ if [[ "$(basename "$fc")" == "nvfortran" ]]; then
 else
     module_flag=(-J "$build_dir")
 fi
-"$fc" $flags "${module_flag[@]}" -o "$build_dir/fortml_bench_rbf_cg" \
-    "$fortnum_dir/src/fortnum_kinds.f90" \
-    "$fortnum_dir/src/fortnum_status.f90" \
-    "$fortnum_dir/src/linalg/fortnum_krylov.f90" \
-    "$repo_dir/src/gp/fortml_kernels.f90" \
-    "$repo_dir/src/gp/fortml_linear_operator.f90" \
-    "$repo_dir/src/gp/fortml_kernel_operator.f90" \
+sources=(
+    "$fortnum_dir/src/fortnum_kinds.f90"
+    "$fortnum_dir/src/fortnum_status.f90"
+    "$fortnum_dir/src/linalg/fortnum_krylov.f90"
+    "$repo_dir/src/gp/fortml_kernels.f90"
+    "$repo_dir/src/gp/fortml_linear_operator.f90"
+    "$repo_dir/src/gp/fortml_kernel_operator.f90"
     "$repo_dir/app/fortml_bench_rbf_cg.f90"
+)
+link_inputs=()
+if [[ "$native_cuda" == "1" ]]; then
+    if [[ "$(basename "$fc")" != "nvfortran" ]]; then
+        echo "FORTML_NATIVE_CUDA requires nvfortran" >&2
+        exit 1
+    fi
+    if [[ "$flags" != *-acc* ]]; then
+        echo "FORTML_NATIVE_CUDA requires an OpenACC build" >&2
+        exit 1
+    fi
+    command -v nvcc >/dev/null
+    cuda_root=${CUDA_HOME:-/opt/cuda}
+    nvcc_flags=${NVCCFLAGS:--O3 -arch=native}
+    nvcc $nvcc_flags -c "$repo_dir/src/gp/fortml_cuda_rbf.cu" \
+        -o "$build_dir/fortml_cuda_rbf.o"
+    link_inputs=(
+        "$build_dir/fortml_cuda_rbf.o"
+        "-L$cuda_root/lib64"
+        -lcudart
+        -c++libs
+    )
+else
+    sources+=("$repo_dir/src/gp/fortml_cuda_rbf_stub.f90")
+fi
+"$fc" $flags "${module_flag[@]}" -o "$build_dir/fortml_bench_rbf_cg" \
+    "${sources[@]}" "${link_inputs[@]}"
 row=$("$build_dir/fortml_bench_rbf_cg" \
     "${N_SAMPLES:-2048}" "${N_FEATURES:-8}" "${REPETITIONS:-8}")
 compiler_version=$($fc --version 2>&1 | awk 'NF {print; exit}')
@@ -35,6 +63,7 @@ printf '%s,%s,%s\n' "$row" "$fc" "$flags" >>"$out"
     printf 'compiler=%s\n' "$fc"
     printf 'compiler_version=%s\n' "$compiler_version"
     printf 'flags=%s\n' "$flags"
+    printf 'native_cuda_kernel=%s\n' "$native_cuda"
     printf 'correctness_check=converged_residual\n'
     if command -v nvidia-smi >/dev/null 2>&1; then
         printf 'gpu=%s\n' "$(nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader | paste -sd ';' -)"

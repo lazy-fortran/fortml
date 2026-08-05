@@ -79,6 +79,9 @@ missing report leaves the item open.
 - [x] Add an OpenACC `nvfortran` RBF CG path that keeps the sample points and
   right-hand side resident across repeated solves, with device reductions and
   an automated residual benchmark.
+- [x] Add an optional native CUDA shared-neighbor tile for the fixed
+  eight-feature path, linked into the `nvfortran` benchmark through a Fortran
+  C binding and retained behind the OpenACC fallback.
 - [ ] Add block/Nystrom preconditioners, stochastic Lanczos log determinants,
   and LOVE-style predictive-variance products for large exact-GP solves.
 - [ ] Add compact-support sparse covariance/precision dispatch through
@@ -208,3 +211,10 @@ plots are recorded in `fortml-bench/results/rbf_cg_scaling_extended_cpu.png`
 and `fortml-bench/results/rbf_cg_scaling_extended_cuda.png`. Public copies are
 https://box.sloppy.at/fd393.png for CPU and
 https://box.sloppy.at/dc1a3.png for CUDA.
+
+The optional native CUDA bridge is now correctness-gated by the direct MVM
+benchmark. Its four-warp block loads each 128-neighbor tile once into shared
+memory and uses one warp per output row. The initial implementation is within
+the OpenACC timing envelope but is not yet the default benchmark backend. The
+OpenACC path remains the current comparison result while the native kernel is
+optimized further.
