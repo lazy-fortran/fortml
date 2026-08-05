@@ -16,7 +16,7 @@ trap 'rm -f "$log"' EXIT
 start=$SECONDS
 run_args=()
 if [[ "$target" == "fortml_bench_rbf_operator" ]]; then
-    run_args=(-- "$mode")
+    run_args=(-- "$mode" "${N_SAMPLES:-2048}" "${N_FEATURES:-8}" "${REPETITIONS:-12}")
 fi
 if ! FPM_FC="$fc" fpm run --target "$target" --profile release --flag "$flags" \
         "${run_args[@]}" >"$log" 2>&1; then

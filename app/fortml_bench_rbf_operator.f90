@@ -4,15 +4,16 @@ program fortml_bench_rbf_operator
     use fortnum_status, only: FORTNUM_OK, fortnum_status_t
     implicit none
 
-    integer, parameter :: n_samples = 2048
-    integer, parameter :: n_features = 8
-    integer, parameter :: repetitions = 12
+    integer, parameter :: default_n_samples = 2048
+    integer, parameter :: default_n_features = 8
+    integer, parameter :: default_repetitions = 12
     integer, parameter :: tile_size = 128
+    integer :: n_samples, n_features, repetitions
     real(dp), parameter :: variance = 1.4_dp
     real(dp), parameter :: lengthscale = 0.7_dp
     real(dp), parameter :: diagonal_shift = 0.08_dp
-    real(dp) :: sample_points(n_samples, n_features), input(n_samples)
-    real(dp) :: output(n_samples), expected_first, expected_last
+    real(dp), allocatable :: sample_points(:, :), input(:), output(:)
+    real(dp) :: expected_first, expected_last
     real(dp) :: elapsed, sink, scale
     integer(int64) :: clock_start, clock_end, clock_rate
     character(16) :: mode
@@ -25,6 +26,13 @@ program fortml_bench_rbf_operator
         trim(mode) /= "resident") then
         error stop "mode must be cpu, transfer, or resident"
     end if
+    n_samples = default_n_samples
+    n_features = default_n_features
+    repetitions = default_repetitions
+    call read_optional_integer(2, n_samples)
+    call read_optional_integer(3, n_features)
+    call read_optional_integer(4, repetitions)
+    allocate(sample_points(n_samples, n_features), input(n_samples), output(n_samples))
 
     do feature = 1, n_features
         do i = 1, n_samples
@@ -90,5 +98,19 @@ contains
                 -0.5_dp*squared_distance/(lengthscale*lengthscale))*input(j)
         end do
     end subroutine direct_value
+
+    subroutine read_optional_integer(number, value)
+        integer, intent(in) :: number
+        integer, intent(inout) :: value
+        character(64) :: argument
+        integer :: candidate, io_status
+
+        call get_command_argument(number, argument)
+        if (len_trim(argument) == 0) return
+        read(argument, *, iostat=io_status) candidate
+        if (io_status /= 0) error stop "invalid integer benchmark argument"
+        if (candidate < 1) error stop "benchmark argument must be positive"
+        value = candidate
+    end subroutine read_optional_integer
 
 end program fortml_bench_rbf_operator

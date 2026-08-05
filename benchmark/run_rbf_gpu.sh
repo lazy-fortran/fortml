@@ -20,8 +20,10 @@ if ! "$fc" $flags -module "$build_dir" -o "$build_dir/fortml_bench_rbf_operator"
     exit 1
 fi
 
-transfer=$("$build_dir/fortml_bench_rbf_operator" transfer)
-resident=$("$build_dir/fortml_bench_rbf_operator" resident)
+transfer=$("$build_dir/fortml_bench_rbf_operator" transfer \
+    "${N_SAMPLES:-2048}" "${N_FEATURES:-8}" "${REPETITIONS:-12}")
+resident=$("$build_dir/fortml_bench_rbf_operator" resident \
+    "${N_SAMPLES:-2048}" "${N_FEATURES:-8}" "${REPETITIONS:-12}")
 compiler_version=$($fc --version 2>&1 | awk 'NF {print; exit}')
 printf 'model,samples,features,outputs,repetitions,seconds_per_operation,compiler,flags\n' >"$out"
 printf '%s,%s,%s\n' "$transfer" "$fc" "$flags" >>"$out"
