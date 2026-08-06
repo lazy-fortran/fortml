@@ -268,3 +268,10 @@ https://box.sloppy.at/2344d.png for OpenACC. The raw records and exact
 workload are in `fortml-bench/results/rbf_cg_multi_scaling.csv` and
 `fortml-bench/results/rbf_cg_multi_scaling.md`. The native GPU slope remains
 the next optimization target under block or Nystrom preconditioning.
+
+The reusable higher-dimensional tensor-product contraction primitive is now
+implemented and independently tested in `fortnum` as
+`fortnum_tensor_product`. FortML has not yet wrapped it in a structured GP
+covariance operator, so the regular-grid item remains open here. The next
+integration must add structured GP inference, derivative products, and matched
+scaling evidence.
