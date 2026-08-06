@@ -92,6 +92,11 @@ products, Matérn variants, and future derivative blocks. The specialized RBF
 operator remains the accelerator path because its fixed formula can be
 unrolled and lowered directly to OpenACC.
 
+Its batched product evaluates each kernel block once and multiplies that block
+by all right-hand sides together. This keeps the generic KeOps-style operation
+boundary intact for composite kernels: changing from one to several right-hand
+sides increases the block contraction, not the pairwise kernel evaluation.
+
 `rbf_operator_t%enter_data` and `%exit_data` own the device lifetime of the
 reusable sample-point array. Calls through the same operator keep the
 OpenACC/native-CUDA backend choice internal to the operator. Right-hand-side

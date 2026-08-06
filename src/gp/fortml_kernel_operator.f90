@@ -766,13 +766,32 @@ contains
         class(kernel_operator_t), intent(in) :: self
         real(dp), intent(in) :: input(:, :)
         real(dp), intent(out) :: output(:, :)
-        integer :: right_hand_side
+        real(dp), allocatable :: matrix_block(:, :)
+        type(fortnum_status_t) :: status
+        integer :: block_size, first_row, last_row, n_samples
 
         output = 0.0_dp
-        if (size(output, 1) /= self%sample_count()) return
+        n_samples = self%sample_count()
+        if (n_samples < 1) return
+        if (size(output, 1) /= n_samples) return
         if (size(output, 2) /= size(input, 2)) return
-        do right_hand_side = 1, size(input, 2)
-            call self%matvec(input(:, right_hand_side), output(:, right_hand_side))
+        if (size(input, 1) /= n_samples) return
+        if (self%tile_size < 1) return
+
+        block_size = min(self%tile_size, n_samples)
+        allocate(matrix_block(block_size, n_samples))
+        do first_row = 1, n_samples, block_size
+            last_row = min(n_samples, first_row + block_size - 1)
+            call self%kernel%matrix( &
+                self%points(first_row:last_row, :), self%points, &
+                matrix_block(:last_row - first_row + 1, :), status)
+            if (status%code /= FORTNUM_OK) then
+                output = 0.0_dp
+                return
+            end if
+            output(first_row:last_row, :) = self%diagonal_shift* &
+                input(first_row:last_row, :) + matmul( &
+                matrix_block(:last_row - first_row + 1, :), input)
         end do
     end subroutine kernel_operator_matmat
 

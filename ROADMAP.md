@@ -89,6 +89,8 @@ missing report leaves the item open.
 - [x] Add fused multi-right-hand-side RBF CG with an independent PCG recurrence
   per output column and one batched operator product per iteration, checked
   against independent dense multi-RHS solves.
+- [x] Fuse generic composable-kernel operator products across all right-hand
+  sides so blocked kernel evaluation is not repeated per output column.
 - [ ] Add block/Nystrom preconditioners, stochastic Lanczos log determinants,
   and LOVE-style predictive-variance products for large exact-GP solves.
 - [ ] Add compact-support sparse covariance/precision dispatch through

@@ -11,6 +11,7 @@ program test_kernel_operator
     real(dp) :: sample_points(5, 2), input(5), output(5), expected(5)
     real(dp) :: matrix_input(5, 2), matrix_output(5, 2)
     real(dp) :: matrix_expected(5, 2), diagonal(5)
+    real(dp) :: generic_matrix_output(5, 2), generic_matrix_expected(5, 2)
     real(dp) :: covariance(5, 5), right_hand_side(5), solution(5)
     real(dp) :: dense_solution(5), residual_norm
     real(dp) :: multi_solution(5, 2), dense_multi_solution(5, 2)
@@ -145,6 +146,24 @@ program test_kernel_operator
     end do
     call require(maxval(abs(generic_output - generic_expected)) < 2.0e-14_dp, &
         "generic composite operator matches the direct oracle")
+    call generic_operator%matmat(matrix_input, generic_matrix_output)
+    do column = 1, 2
+        do i = 1, 5
+            generic_matrix_expected(i, column) = diagonal_shift* &
+                matrix_input(i, column)
+            do j = 1, 5
+                generic_matrix_expected(i, column) = &
+                    generic_matrix_expected(i, column) + &
+                    (0.2_dp + variance*exp( &
+                    -0.5_dp*sum((sample_points(i, :) - &
+                    sample_points(j, :))**2)/(lengthscale*lengthscale)))* &
+                    matrix_input(j, column)
+            end do
+        end do
+    end do
+    call require(maxval(abs(generic_matrix_output - &
+        generic_matrix_expected)) < 2.0e-14_dp, &
+        "generic fused batched operator matches the direct oracle")
     diagonal = generic_operator%diagonal()
     call require(maxval(abs(diagonal - (variance + 0.2_dp + diagonal_shift))) < &
         2.0e-14_dp, "generic operator diagonal uses the kernel value API")
