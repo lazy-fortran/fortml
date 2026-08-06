@@ -75,8 +75,11 @@ missing report leaves the item open.
   Krylov iteration to `fortnum`.
 - [x] Add operator-owned `enter_data`/`exit_data` hooks for reusable RBF
   sample points, keeping the OpenACC/native CUDA choice inside the operator.
-- [ ] Extend operator-owned residency to right-hand sides, workspaces, and
-  generic kernel backends in the style of the KeOps/GPyTorch split.
+- [x] Add a resident generic leaf-RBF backend with fused matrix-free vector
+  and multi-right-hand-side products, matching the specialized KeOps-style
+  formula under `nvfortran`/OpenACC.
+- [ ] Extend operator-owned residency and static device lowering to composite
+  kernel expression trees and user-supplied kernel formulas.
 - [x] Connect the RBF operator to `fortnum` CG with a diagonal
   preconditioner and an independent dense-solve oracle.
 - [x] Add an OpenACC `nvfortran` RBF CG path that keeps the sample points and
@@ -301,3 +304,11 @@ tested size. On the RTX 5060 Ti, resident CUDA takes 0.0687 ms at N=512,
 against dense PyTorch and KeOps in `fortml-bench`. This sparse comparison is
 not a claim about the Gaussian pairwise benchmark: KeOps still evaluates all
 pairs here, while FortML exploits the explicit compact-support sparsity.
+
+The generic `kernel_operator_t` now lowers leaf RBF kernels to the same fused
+matrix-free reduction as `rbf_operator_t`. Its sample points have explicit
+`enter_data`/`exit_data` lifetime hooks, and vector/multi-RHS products are
+available through `matvec_device`/`matmat_device`. A direct pairwise vector and
+matrix oracle checks the path with gfortran and direct `nvfortran`/OpenACC.
+Composite kernel trees intentionally remain on the blocked host reference
+until their recursive expression is flattened into a static device formula.

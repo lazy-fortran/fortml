@@ -7,7 +7,7 @@ module fortml_kernel_operator
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
         FORTNUM_DOMAIN_ERROR
     use fortml_linear_operator, only: linear_operator_t
-    use fortml_kernels, only: kernel_t
+    use fortml_kernels, only: KERNEL_RBF, kernel_t
     implicit none
     private
 
@@ -71,10 +71,16 @@ module fortml_kernel_operator
         real(dp), allocatable :: points(:, :)
         real(dp) :: diagonal_shift = 0.0_dp
         integer :: tile_size = DEFAULT_TILE_SIZE
+        logical :: points_device_resident = .false.
     contains
         procedure, public :: initialize => kernel_operator_initialize
+        procedure, public :: enter_data => kernel_operator_enter_data
+        procedure, public :: exit_data => kernel_operator_exit_data
         procedure, public :: matvec => kernel_operator_matvec
         procedure, public :: matmat => kernel_operator_matmat
+        procedure, public :: matvec_device => kernel_operator_matvec_device
+        procedure, public :: matmat_device => kernel_operator_matmat_device
+        procedure, public :: device_supported => kernel_operator_device_supported
         procedure, public :: diagonal => kernel_operator_diagonal
         procedure, public :: sample_count => kernel_operator_sample_count
     end type kernel_operator_t
@@ -1296,6 +1302,7 @@ contains
         self%kernel = kernel
         self%diagonal_shift = diagonal_shift
         self%tile_size = DEFAULT_TILE_SIZE
+        self%points_device_resident = .false.
         if (present(tile_size)) self%tile_size = tile_size
         if (self%tile_size < 1) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -1306,6 +1313,113 @@ contains
         self%points = sample_points
         call status_set(status, FORTNUM_OK, "")
     end subroutine kernel_operator_initialize
+
+    subroutine kernel_operator_enter_data(self, status)
+        class(kernel_operator_t), intent(inout) :: self
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. allocated(self%points)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "kernel operator: cannot enter data before initialize")
+            return
+        end if
+        if (.not. self%device_supported()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "kernel operator: device backend supports leaf RBF kernels only")
+            return
+        end if
+        if (.not. self%points_device_resident) then
+            !$acc enter data copyin(self%points)
+            self%points_device_resident = .true.
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine kernel_operator_enter_data
+
+    subroutine kernel_operator_exit_data(self, status)
+        class(kernel_operator_t), intent(inout) :: self
+        type(fortnum_status_t), intent(out) :: status
+
+        if (self%points_device_resident) then
+            !$acc exit data delete(self%points)
+            self%points_device_resident = .false.
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine kernel_operator_exit_data
+
+    logical function kernel_operator_device_supported(self)
+        class(kernel_operator_t), intent(in) :: self
+
+        kernel_operator_device_supported = .false.
+        if (self%kernel%kind /= KERNEL_RBF) return
+        if (.not. allocated(self%kernel%log_parameters)) return
+        if (size(self%kernel%log_parameters) /= 2) return
+        if (associated(self%kernel%left)) return
+        if (associated(self%kernel%right)) return
+        kernel_operator_device_supported = .true.
+    end function kernel_operator_device_supported
+
+    subroutine kernel_operator_matvec_device(self, input, output, status)
+        class(kernel_operator_t), intent(in) :: self
+        real(dp), intent(in) :: input(:)
+        real(dp), intent(out) :: output(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: variance, lengthscale
+
+        if (.not. self%device_supported()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "kernel operator: device backend supports leaf RBF kernels only")
+            return
+        end if
+        if (.not. self%points_device_resident) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "kernel operator: enter_data is required before device products")
+            return
+        end if
+        if (size(input) /= self%sample_count() .or. &
+            size(output) /= self%sample_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "kernel operator: device vector shape is invalid")
+            return
+        end if
+        variance = exp(self%kernel%log_parameters(1))
+        lengthscale = exp(self%kernel%log_parameters(2))
+        call rbf_matvec_tiled( &
+            self%points, input, output, variance, lengthscale, &
+            self%diagonal_shift, self%tile_size)
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine kernel_operator_matvec_device
+
+    subroutine kernel_operator_matmat_device(self, input, output, status)
+        class(kernel_operator_t), intent(in) :: self
+        real(dp), intent(in) :: input(:, :)
+        real(dp), intent(out) :: output(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: variance, lengthscale
+
+        if (.not. self%device_supported()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "kernel operator: device backend supports leaf RBF kernels only")
+            return
+        end if
+        if (.not. self%points_device_resident) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "kernel operator: enter_data is required before device products")
+            return
+        end if
+        if (size(input, 1) /= self%sample_count() .or. &
+            size(output, 1) /= self%sample_count() .or. &
+            size(output, 2) /= size(input, 2)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "kernel operator: device matrix shape is invalid")
+            return
+        end if
+        variance = exp(self%kernel%log_parameters(1))
+        lengthscale = exp(self%kernel%log_parameters(2))
+        call rbf_matmat_tiled( &
+            self%points, input, output, variance, lengthscale, &
+            self%diagonal_shift, self%tile_size)
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine kernel_operator_matmat_device
 
     subroutine kernel_operator_matvec(self, input, output)
         class(kernel_operator_t), intent(in) :: self
@@ -1321,6 +1435,14 @@ contains
         if (n_samples < 1) return
         if (size(input) /= n_samples .or. size(output) /= n_samples) return
         if (self%tile_size < 1) return
+        if (self%device_supported()) then
+            call rbf_matvec_tiled( &
+                self%points, input, output, &
+                exp(self%kernel%log_parameters(1)), &
+                exp(self%kernel%log_parameters(2)), self%diagonal_shift, &
+                self%tile_size)
+            return
+        end if
         block_size = min(self%tile_size, n_samples)
         allocate(matrix_block(block_size, n_samples))
         do first_row = 1, n_samples, block_size
@@ -1350,6 +1472,14 @@ contains
         if (size(output, 2) /= size(input, 2)) return
         if (size(input, 1) /= n_samples) return
         if (self%tile_size < 1) return
+        if (self%device_supported()) then
+            call rbf_matmat_tiled( &
+                self%points, input, output, &
+                exp(self%kernel%log_parameters(1)), &
+                exp(self%kernel%log_parameters(2)), self%diagonal_shift, &
+                self%tile_size)
+            return
+        end if
 
         block_size = min(self%tile_size, n_samples)
         allocate(matrix_block(block_size, n_samples))

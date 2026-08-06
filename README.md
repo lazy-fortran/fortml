@@ -15,6 +15,10 @@ factors and reuses the matrix-free CG contract; the Toeplitz GP operator wraps
 the cached FFT grid product for one-dimensional covariance structures. The
 compact-support sparse GP operator consumes `fortsparse` triplets, retains a
 CSR view for row-owned products, and has a resident OpenACC path. The
+generic kernel operator lowers leaf RBF expressions to the same fused,
+matrix-free OpenACC/native-CUDA product and exposes explicit device-data
+lifetime hooks; composite kernel trees retain the validated blocked host path
+until a static device lowering is available. The
 planned model families are
 scalable<!-- slop-ok --> and multi-output GPs,
 variational autoencoders, and deep recurrent networks. Bayesian global
