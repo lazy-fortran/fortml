@@ -86,6 +86,9 @@ missing report leaves the item open.
   matrix-vector and up-to-eight-right-hand-side matrix-matrix paths, linked
   into the `nvfortran` benchmark through a Fortran C binding and retained
   behind the OpenACC fallback.
+- [x] Add fused multi-right-hand-side RBF CG with an independent PCG recurrence
+  per output column and one batched operator product per iteration, checked
+  against independent dense multi-RHS solves.
 - [ ] Add block/Nystrom preconditioners, stochastic Lanczos log determinants,
   and LOVE-style predictive-variance products for large exact-GP solves.
 - [ ] Add compact-support sparse covariance/precision dispatch through

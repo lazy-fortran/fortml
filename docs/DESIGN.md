@@ -107,6 +107,13 @@ pairwise formulas and an independent dense solve. Persistent device-data
 ownership, block and Nystrom preconditioners, stochastic log determinants, and
 autodiff rules for the iterative solve remain separate milestones.
 
+`rbf_operator_t%solve_cg_multi` applies the same PCG recurrence independently
+to each right-hand side while evaluating all active search directions with one
+batched operator product per iteration. This preserves the scalar CG
+convergence contract and exposes the matrix-matrix fusion used by the native
+CUDA path. Its preconditioned and unpreconditioned results are checked against
+independent dense multi-RHS solves.
+
 The specialized RBF type also has an OpenACC CG override. Its Krylov vectors,
 reductions, and repeated RBF products execute inside one accelerator data
 region, while an enclosing benchmark region keeps the sample points and

@@ -30,6 +30,7 @@ module fortml_kernel_operator
         procedure, public :: diagonal => rbf_operator_diagonal
         procedure, public :: sample_count => rbf_operator_sample_count
         procedure, public :: solve_cg => rbf_operator_solve_cg
+        procedure, public :: solve_cg_multi => rbf_operator_solve_cg_multi
     end type rbf_operator_t
 
     type, extends(linear_operator_t), public :: kernel_operator_t
@@ -397,6 +398,307 @@ contains
         end subroutine combine_direction
 
     end subroutine rbf_operator_solve_cg
+
+    subroutine rbf_operator_solve_cg_multi( &
+            self, right_hand_side, solution, tolerance, max_iterations, &
+            info, iterations, residual_norm, use_diagonal_preconditioner)
+        class(rbf_operator_t), intent(in) :: self
+        real(dp), intent(in) :: right_hand_side(:, :)
+        real(dp), intent(inout) :: solution(:, :)
+        real(dp), intent(in) :: tolerance
+        integer, intent(in) :: max_iterations
+        integer, intent(out) :: info(:), iterations(:)
+        real(dp), intent(out) :: residual_norm(:)
+        logical, intent(in), optional :: use_diagonal_preconditioner
+
+        logical :: use_preconditioner
+        logical, allocatable :: active(:), candidate(:)
+        real(dp), allocatable :: residual(:, :), direction(:, :)
+        real(dp), allocatable :: preconditioned(:, :), operator_direction(:, :)
+        real(dp), allocatable :: work(:, :), diagonal_values(:)
+        real(dp), allocatable :: right_hand_side_norm(:), target(:)
+        real(dp), allocatable :: rho(:), next_rho(:), denominator(:)
+        real(dp) :: step, beta
+        integer :: n_samples, n_rhs, column
+
+        info = KRYLOV_INVALID_ARGUMENT
+        iterations = 0
+        residual_norm = huge(1.0_dp)
+        n_samples = self%sample_count()
+        n_rhs = size(right_hand_side, 2)
+        if (n_samples < 1 .or. n_rhs < 1 .or. &
+            size(right_hand_side, 1) /= n_samples .or. &
+            any(shape(solution) /= [n_samples, n_rhs]) .or. &
+            size(info) /= n_rhs .or. size(iterations) /= n_rhs .or. &
+            size(residual_norm) /= n_rhs .or. tolerance <= 0.0_dp .or. &
+            max_iterations < 1) return
+
+        use_preconditioner = .true.
+        if (present(use_diagonal_preconditioner)) then
+            use_preconditioner = use_diagonal_preconditioner
+        end if
+        allocate( &
+            residual(n_samples, n_rhs), direction(n_samples, n_rhs), &
+            preconditioned(n_samples, n_rhs), &
+            operator_direction(n_samples, n_rhs), work(n_samples, n_rhs), &
+            diagonal_values(n_samples), active(n_rhs), candidate(n_rhs), &
+            right_hand_side_norm(n_rhs), target(n_rhs), rho(n_rhs), &
+            next_rho(n_rhs), denominator(n_rhs))
+        diagonal_values = 1.0_dp
+        if (use_preconditioner) then
+            diagonal_values = self%diagonal()
+            if (size(diagonal_values) /= n_samples) return
+            if (any(diagonal_values <= 0.0_dp)) return
+        end if
+        do column = 1, n_rhs
+            right_hand_side_norm(column) = sqrt(sum( &
+                right_hand_side(:, column)*right_hand_side(:, column)))
+            target(column) = tolerance*max(right_hand_side_norm(column), 1.0_dp)
+        end do
+        info = KRYLOV_MAX_ITERATIONS
+        iterations = 0
+        residual_norm = huge(1.0_dp)
+        active = .false.
+        candidate = .false.
+
+        !$acc data copyin(self%points, right_hand_side, diagonal_values) &
+        !$acc& copy(solution) create(residual, direction, preconditioned, &
+        !$acc& operator_direction, work)
+        call self%matmat(solution, work)
+        call subtract_matrix(right_hand_side, work, residual)
+        do column = 1, n_rhs
+            residual_norm(column) = acc_norm2_column(residual, column)
+            if (residual_norm(column) <= target(column)) then
+                info(column) = KRYLOV_OK
+            else
+                call apply_preconditioner_column( &
+                    residual, preconditioned, column)
+                rho(column) = acc_dot_column(residual, preconditioned, column)
+                if (rho(column) <= 0.0_dp .or. &
+                    .not. ieee_is_finite(rho(column))) then
+                    info(column) = KRYLOV_BREAKDOWN
+                else
+                    call copy_column(direction, preconditioned, column)
+                    active(column) = .true.
+                end if
+            end if
+        end do
+
+        do while (any(active))
+            call self%matmat(direction, operator_direction)
+            candidate = .false.
+            do column = 1, n_rhs
+                if (active(column)) then
+                    denominator(column) = acc_dot_column( &
+                        direction, operator_direction, column)
+                    if (denominator(column) <= 0.0_dp .or. &
+                        .not. ieee_is_finite(denominator(column))) then
+                        info(column) = KRYLOV_BREAKDOWN
+                        active(column) = .false.
+                    else
+                        step = rho(column)/denominator(column)
+                        call update_column( &
+                            solution, step, direction, column)
+                        call subtract_scaled_column( &
+                            residual, step, operator_direction, column)
+                        iterations(column) = iterations(column) + 1
+                        residual_norm(column) = &
+                            acc_norm2_column(residual, column)
+                        if (residual_norm(column) <= target(column) .or. &
+                            iterations(column) >= max_iterations) then
+                            candidate(column) = .true.
+                        end if
+                    end if
+                end if
+            end do
+
+            if (any(candidate)) then
+                call self%matmat(solution, work)
+                do column = 1, n_rhs
+                    if (candidate(column)) then
+                        call subtract_column( &
+                            right_hand_side, work, residual, column)
+                        residual_norm(column) = &
+                            acc_norm2_column(residual, column)
+                        if (residual_norm(column) <= target(column)) then
+                            info(column) = KRYLOV_OK
+                            active(column) = .false.
+                            call zero_column(direction, column)
+                        else if (iterations(column) >= max_iterations) then
+                            info(column) = KRYLOV_MAX_ITERATIONS
+                            active(column) = .false.
+                            call zero_column(direction, column)
+                        else
+                            candidate(column) = .false.
+                        end if
+                    end if
+                end do
+            end if
+
+            do column = 1, n_rhs
+                if (active(column)) then
+                    call apply_preconditioner_column( &
+                        residual, preconditioned, column)
+                    next_rho(column) = acc_dot_column( &
+                        residual, preconditioned, column)
+                    if (next_rho(column) <= 0.0_dp .or. &
+                        .not. ieee_is_finite(next_rho(column))) then
+                        info(column) = KRYLOV_BREAKDOWN
+                        active(column) = .false.
+                    else
+                        beta = next_rho(column)/rho(column)
+                        call combine_column( &
+                            direction, preconditioned, beta, column)
+                        rho(column) = next_rho(column)
+                    end if
+                end if
+            end do
+        end do
+
+        call self%matmat(solution, work)
+        do column = 1, n_rhs
+            call subtract_column( &
+                right_hand_side, work, residual, column)
+            residual_norm(column) = acc_norm2_column(residual, column)
+            if (residual_norm(column) <= target(column)) then
+                info(column) = KRYLOV_OK
+            end if
+        end do
+        !$acc end data
+
+    contains
+
+        function acc_dot_column(left, right, column) result(value)
+            real(dp), intent(in) :: left(:, :), right(:, :)
+            integer, intent(in) :: column
+            real(dp) :: value
+            integer :: i
+
+            value = 0.0_dp
+            !$acc parallel loop reduction(+:value)
+            !$omp parallel do reduction(+:value)
+            do i = 1, size(left, 1)
+                value = value + left(i, column)*right(i, column)
+            end do
+        end function acc_dot_column
+
+        function acc_norm2_column(vector, column) result(value)
+            real(dp), intent(in) :: vector(:, :)
+            integer, intent(in) :: column
+            real(dp) :: value
+
+            value = sqrt(acc_dot_column(vector, vector, column))
+        end function acc_norm2_column
+
+        subroutine subtract_matrix(left, right, result)
+            real(dp), intent(in) :: left(:, :), right(:, :)
+            real(dp), intent(out) :: result(:, :)
+            integer :: i, j
+
+            do j = 1, size(result, 2)
+                !$acc parallel loop
+                !$omp parallel do
+                do i = 1, size(result, 1)
+                    result(i, j) = left(i, j) - right(i, j)
+                end do
+            end do
+        end subroutine subtract_matrix
+
+        subroutine subtract_column(left, right, result, column)
+            real(dp), intent(in) :: left(:, :), right(:, :)
+            real(dp), intent(inout) :: result(:, :)
+            integer, intent(in) :: column
+            integer :: i
+
+            !$acc parallel loop
+            !$omp parallel do
+            do i = 1, size(result, 1)
+                result(i, column) = left(i, column) - right(i, column)
+            end do
+        end subroutine subtract_column
+
+        subroutine apply_preconditioner_column(input, output, column)
+            real(dp), intent(in) :: input(:, :)
+            real(dp), intent(out) :: output(:, :)
+            integer, intent(in) :: column
+            integer :: i
+
+            !$acc parallel loop
+            !$omp parallel do
+            do i = 1, size(output, 1)
+                output(i, column) = input(i, column)/diagonal_values(i)
+            end do
+        end subroutine apply_preconditioner_column
+
+        subroutine copy_column(target, source, column)
+            real(dp), intent(out) :: target(:, :)
+            real(dp), intent(in) :: source(:, :)
+            integer, intent(in) :: column
+            integer :: i
+
+            !$acc parallel loop
+            !$omp parallel do
+            do i = 1, size(target, 1)
+                target(i, column) = source(i, column)
+            end do
+        end subroutine copy_column
+
+        subroutine zero_column(target, column)
+            real(dp), intent(inout) :: target(:, :)
+            integer, intent(in) :: column
+            integer :: i
+
+            !$acc parallel loop
+            !$omp parallel do
+            do i = 1, size(target, 1)
+                target(i, column) = 0.0_dp
+            end do
+        end subroutine zero_column
+
+        subroutine update_column(target, scale, vector, column)
+            real(dp), intent(inout) :: target(:, :)
+            real(dp), intent(in) :: scale, vector(:, :)
+            integer, intent(in) :: column
+            integer :: i
+
+            !$acc parallel loop
+            !$omp parallel do
+            do i = 1, size(target, 1)
+                target(i, column) = target(i, column) + &
+                    scale*vector(i, column)
+            end do
+        end subroutine update_column
+
+        subroutine subtract_scaled_column(target, scale, vector, column)
+            real(dp), intent(inout) :: target(:, :)
+            real(dp), intent(in) :: scale, vector(:, :)
+            integer, intent(in) :: column
+            integer :: i
+
+            !$acc parallel loop
+            !$omp parallel do
+            do i = 1, size(target, 1)
+                target(i, column) = target(i, column) - &
+                    scale*vector(i, column)
+            end do
+        end subroutine subtract_scaled_column
+
+        subroutine combine_column(target, source, scale, column)
+            real(dp), intent(inout) :: target(:, :)
+            real(dp), intent(in) :: source(:, :)
+            real(dp), intent(in) :: scale
+            integer, intent(in) :: column
+            integer :: i
+
+            !$acc parallel loop
+            !$omp parallel do
+            do i = 1, size(target, 1)
+                target(i, column) = source(i, column) + &
+                    scale*target(i, column)
+            end do
+        end subroutine combine_column
+
+    end subroutine rbf_operator_solve_cg_multi
 
     subroutine kernel_operator_initialize( &
             self, sample_points, kernel, diagonal_shift, status, tile_size)

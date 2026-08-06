@@ -13,6 +13,8 @@ program test_kernel_operator
     real(dp) :: matrix_expected(5, 2), diagonal(5)
     real(dp) :: covariance(5, 5), right_hand_side(5), solution(5)
     real(dp) :: dense_solution(5), residual_norm
+    real(dp) :: multi_solution(5, 2), dense_multi_solution(5, 2)
+    real(dp) :: multi_residual_norm(2)
     real(dp) :: generic_output(5), generic_expected(5)
     real(dp) :: sample_points_8(5, 8), input_8(5), output_8(5), expected_8(5)
     real(dp) :: matrix_input_8(5, 2), matrix_output_8(5, 2)
@@ -25,6 +27,7 @@ program test_kernel_operator
     type(kernel_t) :: rbf_kernel, constant_kernel, sum_kernel
     type(fortnum_status_t) :: status
     integer :: i, j, column, feature, info, iterations
+    integer :: multi_info(2), multi_iterations(2)
 
     sample_points = reshape([ &
         -0.7_dp, 0.1_dp, 0.4_dp, 1.2_dp, 1.8_dp, &
@@ -175,6 +178,35 @@ program test_kernel_operator
     call require(info == KRYLOV_OK, "unpreconditioned lazy RBF CG converges")
     call require(maxval(abs(solution - dense_solution)) < 2.0e-11_dp, &
         "unpreconditioned lazy RBF CG matches the dense solve")
+
+    call dense_solve(covariance, matrix_input, dense_multi_solution, info)
+    call require(info == LINALG_OK, "dense multi-RHS solve provides the oracle")
+    multi_solution = 0.0_dp
+    call rbf_operator%solve_cg_multi( &
+        matrix_input, multi_solution, 1.0e-12_dp, 30, multi_info, &
+        multi_iterations, multi_residual_norm)
+    do column = 1, 2
+        call require(multi_info(column) == KRYLOV_OK, &
+            "multi-RHS lazy RBF CG converges")
+        call require(multi_iterations(column) > 0 .and. &
+            multi_iterations(column) <= 30, &
+            "multi-RHS lazy RBF CG reports bounded iterations")
+    end do
+    call require(maxval(abs(multi_solution - dense_multi_solution)) < 2.0e-11_dp, &
+        "multi-RHS lazy RBF CG matches independent dense solves")
+    call require(maxval(multi_residual_norm) < 2.0e-11_dp, &
+        "multi-RHS lazy RBF CG reports true residuals")
+    multi_solution = 0.0_dp
+    call rbf_operator%solve_cg_multi( &
+        matrix_input, multi_solution, 1.0e-12_dp, 30, multi_info, &
+        multi_iterations, multi_residual_norm, &
+        use_diagonal_preconditioner=.false.)
+    do column = 1, 2
+        call require(multi_info(column) == KRYLOV_OK, &
+            "unpreconditioned multi-RHS lazy RBF CG converges")
+    end do
+    call require(maxval(abs(multi_solution - dense_multi_solution)) < 2.0e-11_dp, &
+        "unpreconditioned multi-RHS CG matches independent dense solves")
 
 contains
 
