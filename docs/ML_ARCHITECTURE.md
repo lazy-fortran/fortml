@@ -154,6 +154,15 @@ until `fortad` can emit a safe static kernel. No performance claim is accepted
 without compiler/device metadata, precision, memory, correctness error, and a
 scaling record in `fortml-bench`.
 
+The portable accelerator boundary is an opaque C ABI owned by the Fortran
+operator: flat coordinates, right-hand sides, postfix kernel opcodes,
+parameters, residency, and status codes. The CPU reference remains Fortran.
+Fixed hot reductions use native CUDA C++ first, with HIP and SYCL adapters kept
+possible behind the same ABI. These backends share the same independent oracle
+and operation-level benchmark; they do not duplicate model semantics. The
+forward reduction is not runtime-autodiffed: derivative products are separate
+backend kernels generated or specialized from the same static plan.
+
 ## Implementation order
 
 1. Basis maps and objective/gradient callback contracts.

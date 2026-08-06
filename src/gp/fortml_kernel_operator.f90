@@ -29,6 +29,16 @@ module fortml_kernel_operator
         logical :: device_resident = .false.
     end type rbf_krylov_workspace_t
 
+    type :: kernel_krylov_workspace_t
+        real(dp), allocatable :: residual(:, :), direction(:, :)
+        real(dp), allocatable :: preconditioned(:, :)
+        real(dp), allocatable :: operator_direction(:, :), work(:, :)
+        real(dp), allocatable :: step_values(:), beta_values(:)
+        integer :: n_samples = 0
+        integer :: n_rhs = 0
+        logical :: device_resident = .false.
+    end type kernel_krylov_workspace_t
+
     type :: rbf_block_preconditioner_t
         real(dp), allocatable :: factors(:, :, :)
         integer :: block_size = 0
@@ -78,6 +88,7 @@ module fortml_kernel_operator
         integer, allocatable :: program_kind(:)
         real(dp), allocatable :: program_variance(:), program_lengthscale(:)
         logical :: program_device_resident = .false.
+        type(kernel_krylov_workspace_t) :: krylov_workspace
     contains
         procedure, public :: initialize => kernel_operator_initialize
         procedure, public :: enter_data => kernel_operator_enter_data
@@ -841,7 +852,7 @@ contains
             !$acc enter data copyin(self%block_preconditioner%factors)
         end if
         !$acc data copyin(self%points, right_hand_side, diagonal_values) &
-        !$acc& copy(solution) create( &
+        !$acc& copy(solution) present_or_create( &
         !$acc& self%krylov_workspace%residual, &
         !$acc& self%krylov_workspace%direction, &
         !$acc& self%krylov_workspace%preconditioned, &
@@ -1441,9 +1452,10 @@ contains
         end select
     end subroutine append_kernel_program
 
-    subroutine kernel_operator_enter_data(self, status)
+    subroutine kernel_operator_enter_data(self, status, n_rhs)
         class(kernel_operator_t), intent(inout) :: self
         type(fortnum_status_t), intent(out) :: status
+        integer, intent(in), optional :: n_rhs
 
         if (.not. allocated(self%points)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -1465,6 +1477,22 @@ contains
             !$acc& self%program_lengthscale)
             self%program_device_resident = .true.
         end if
+        if (present(n_rhs)) then
+            call ensure_kernel_krylov_workspace(self, n_rhs, status)
+            if (status%code /= FORTNUM_OK) return
+        end if
+        if (allocated(self%krylov_workspace%residual) .and. &
+            .not. self%krylov_workspace%device_resident) then
+            !$acc enter data create( &
+            !$acc& self%krylov_workspace%residual, &
+            !$acc& self%krylov_workspace%direction, &
+            !$acc& self%krylov_workspace%preconditioned, &
+            !$acc& self%krylov_workspace%operator_direction, &
+            !$acc& self%krylov_workspace%work, &
+            !$acc& self%krylov_workspace%step_values, &
+            !$acc& self%krylov_workspace%beta_values)
+            self%krylov_workspace%device_resident = .true.
+        end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine kernel_operator_enter_data
 
@@ -1482,8 +1510,65 @@ contains
             !$acc& self%program_lengthscale)
             self%program_device_resident = .false.
         end if
+        if (self%krylov_workspace%device_resident) then
+            !$acc exit data delete( &
+            !$acc& self%krylov_workspace%residual, &
+            !$acc& self%krylov_workspace%direction, &
+            !$acc& self%krylov_workspace%preconditioned, &
+            !$acc& self%krylov_workspace%operator_direction, &
+            !$acc& self%krylov_workspace%work, &
+            !$acc& self%krylov_workspace%step_values, &
+            !$acc& self%krylov_workspace%beta_values)
+            self%krylov_workspace%device_resident = .false.
+        end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine kernel_operator_exit_data
+
+    subroutine ensure_kernel_krylov_workspace(self, n_rhs, status)
+        class(kernel_operator_t), intent(inout) :: self
+        integer, intent(in) :: n_rhs
+        type(fortnum_status_t), intent(out) :: status
+        integer :: n_samples
+
+        n_samples = self%sample_count()
+        if (n_samples < 1 .or. n_rhs < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "kernel operator: Krylov workspace shape is invalid")
+            return
+        end if
+        if (allocated(self%krylov_workspace%residual)) then
+            if (self%krylov_workspace%n_samples == n_samples .and. &
+                self%krylov_workspace%n_rhs == n_rhs) then
+                call status_set(status, FORTNUM_OK, "")
+                return
+            end if
+            if (self%krylov_workspace%device_resident) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "kernel operator: exit device data before resizing workspace")
+                return
+            end if
+            deallocate( &
+                self%krylov_workspace%residual, &
+                self%krylov_workspace%direction, &
+                self%krylov_workspace%preconditioned, &
+                self%krylov_workspace%operator_direction, &
+                self%krylov_workspace%work, &
+                self%krylov_workspace%step_values, &
+                self%krylov_workspace%beta_values)
+        end if
+        allocate( &
+            self%krylov_workspace%residual(n_samples, n_rhs), &
+            self%krylov_workspace%direction(n_samples, n_rhs), &
+            self%krylov_workspace%preconditioned(n_samples, n_rhs), &
+            self%krylov_workspace%operator_direction(n_samples, n_rhs), &
+            self%krylov_workspace%work(n_samples, n_rhs), &
+            self%krylov_workspace%step_values(n_rhs), &
+            self%krylov_workspace%beta_values(n_rhs))
+        self%krylov_workspace%n_samples = n_samples
+        self%krylov_workspace%n_rhs = n_rhs
+        self%krylov_workspace%device_resident = .false.
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine ensure_kernel_krylov_workspace
 
     logical function kernel_operator_device_supported(self)
         class(kernel_operator_t), intent(in) :: self
@@ -1837,7 +1922,7 @@ contains
     subroutine kernel_operator_solve_cg_multi_device( &
             self, right_hand_side, solution, tolerance, max_iterations, &
             info, iterations, residual_norm, use_diagonal_preconditioner)
-        class(kernel_operator_t), intent(in) :: self
+        class(kernel_operator_t), intent(inout) :: self
         real(dp), intent(in) :: right_hand_side(:, :)
         real(dp), intent(inout) :: solution(:, :)
         real(dp), intent(in) :: tolerance
@@ -1847,15 +1932,12 @@ contains
         logical, intent(in), optional :: use_diagonal_preconditioner
 
         logical :: use_preconditioner
-        real(dp), allocatable :: residual(:, :), direction(:, :)
-        real(dp), allocatable :: preconditioned(:, :)
-        real(dp), allocatable :: operator_direction(:, :), work(:, :)
         real(dp), allocatable :: diagonal_values(:), target(:), rho(:)
-        real(dp), allocatable :: next_rho(:), denominator(:), step_values(:)
-        real(dp), allocatable :: beta_values(:)
+        real(dp), allocatable :: next_rho(:), denominator(:)
         logical, allocatable :: active(:), candidate(:)
         logical :: done
         integer :: n_samples, n_rhs, column
+        type(fortnum_status_t) :: status
 
         info = KRYLOV_INVALID_ARGUMENT
         iterations = 0
@@ -1873,17 +1955,25 @@ contains
         if (.not. self%points_device_resident) return
         if (.not. self%program_device_resident) return
 
+        call ensure_kernel_krylov_workspace(self, n_rhs, status)
+        if (status%code /= FORTNUM_OK) return
+
+        associate( &
+            residual => self%krylov_workspace%residual, &
+            direction => self%krylov_workspace%direction, &
+            preconditioned => self%krylov_workspace%preconditioned, &
+            operator_direction => self%krylov_workspace%operator_direction, &
+            work => self%krylov_workspace%work, &
+            step_values => self%krylov_workspace%step_values, &
+            beta_values => self%krylov_workspace%beta_values)
+
         use_preconditioner = .true.
         if (present(use_diagonal_preconditioner)) then
             use_preconditioner = use_diagonal_preconditioner
         end if
         allocate( &
-            residual(n_samples, n_rhs), direction(n_samples, n_rhs), &
-            preconditioned(n_samples, n_rhs), &
-            operator_direction(n_samples, n_rhs), work(n_samples, n_rhs), &
             diagonal_values(n_samples), target(n_rhs), rho(n_rhs), &
-            next_rho(n_rhs), denominator(n_rhs), step_values(n_rhs), &
-            beta_values(n_rhs), active(n_rhs), candidate(n_rhs))
+            next_rho(n_rhs), denominator(n_rhs), active(n_rhs), candidate(n_rhs))
         diagonal_values = 1.0_dp
         if (use_preconditioner) then
             diagonal_values = self%diagonal()
@@ -2021,6 +2111,8 @@ contains
             end if
         end do
         !$acc end data
+
+        end associate
 
     contains
 

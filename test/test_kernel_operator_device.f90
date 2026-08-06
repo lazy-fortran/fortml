@@ -114,7 +114,7 @@ program test_kernel_operator_device
         composite_expected_matrix(:, column) = expected_matrix(:, column) + &
             0.2_dp*sum(inputs(:, column))
     end do
-    call composite_operator%enter_data(status)
+    call composite_operator%enter_data(status, n_rhs)
     call require(status%code == FORTNUM_OK, &
         "composite kernel enters persistent device data", nfail)
     !$acc data copyin(input) copyout(output)
@@ -158,6 +158,16 @@ program test_kernel_operator_device
         "generic device multi-RHS CG matches the independent solutions", nfail)
     call require(maxval(multi_residual_norm) < 3.0e-11_dp, &
         "generic device multi-RHS CG reports true residuals", nfail)
+    multi_solution = 0.0_dp
+    call composite_operator%solve_cg_multi_device( &
+        composite_expected_matrix, multi_solution, 1.0e-12_dp, 50, &
+        multi_info, multi_iterations, multi_residual_norm)
+    call require(all(multi_info == KRYLOV_OK), &
+        "generic resident multi-RHS CG can be reused", nfail)
+    call require(maxval(abs(multi_solution - inputs)) < 3.0e-11_dp, &
+        "generic resident multi-RHS CG reuses the independent solutions", nfail)
+    call require(maxval(multi_residual_norm) < 3.0e-11_dp, &
+        "generic resident multi-RHS CG reuse reports a true residual", nfail)
     call composite_operator%exit_data(status)
     call require(status%code == FORTNUM_OK, &
         "composite kernel exits persistent device data", nfail)
