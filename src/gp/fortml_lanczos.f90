@@ -54,7 +54,7 @@ contains
         real(dp), allocatable :: alpha(:), beta(:), eigenvalues(:)
         real(dp), allocatable :: eigenvectors(:, :), work(:), offdiagonal(:)
         real(dp) :: draw, quadrature, total
-        integer :: n_samples, steps, probe_index, i, j, info
+        integer :: n_samples, requested_steps, steps, probe_index, i, j, info
 
         value = 0.0_dp
         n_samples = operator%sample_count()
@@ -63,14 +63,16 @@ contains
                 "Lanczos log determinant: shape is invalid")
             return
         end if
-        steps = min(n_steps, n_samples)
+        requested_steps = min(n_steps, n_samples)
         call rng_seed(generator, int(seed, int64), status)
         if (status%code /= FORTNUM_OK) return
 
-        allocate(probe(n_samples), basis(n_samples, steps))
-        allocate(alpha(steps), beta(max(steps - 1, 1)))
-        allocate(eigenvalues(steps), offdiagonal(max(steps - 1, 1)))
-        allocate(eigenvectors(steps, steps), work(max(2*steps - 2, 1)))
+        allocate(probe(n_samples), basis(n_samples, requested_steps))
+        allocate(alpha(requested_steps), beta(max(requested_steps - 1, 1)))
+        allocate(eigenvalues(requested_steps))
+        allocate(offdiagonal(max(requested_steps - 1, 1)))
+        allocate(eigenvectors(requested_steps, requested_steps))
+        allocate(work(max(2*requested_steps - 2, 1)))
 
         total = 0.0_dp
         do probe_index = 1, n_probes
@@ -78,13 +80,14 @@ contains
                 call rng_uniform(generator, draw)
                 probe(i) = merge(1.0_dp, -1.0_dp, draw >= 0.5_dp)
             end do
-            call run_lanczos(operator, probe, steps, basis, alpha, beta, status)
+            call run_lanczos(operator, probe, requested_steps, basis, alpha, &
+                beta, steps, status)
             if (status%code /= FORTNUM_OK) return
 
-            eigenvalues = alpha(1:steps)
+            eigenvalues(1:steps) = alpha(1:steps)
             if (steps > 1) offdiagonal(1:steps - 1) = beta(1:steps - 1)
             call dstev('V', steps, eigenvalues, offdiagonal, eigenvectors, &
-                steps, work, info)
+                requested_steps, work, info)
             if (info /= 0) then
                 call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
                     "Lanczos log determinant: tridiagonal eigensolve failed")
@@ -121,7 +124,7 @@ contains
         real(dp), allocatable :: basis(:, :), alpha(:), beta(:)
         real(dp), allocatable :: diagonal(:), lower(:), rhs(:)
         real(dp) :: norm_squared, factor
-        integer :: n_samples, steps, i
+        integer :: n_samples, requested_steps, steps, i
 
         variance = 0.0_dp
         n_samples = operator%sample_count()
@@ -138,10 +141,11 @@ contains
             return
         end if
 
-        steps = min(n_steps, n_samples)
-        allocate(basis(n_samples, steps), alpha(steps), beta(max(steps - 1, 1)))
-        call run_lanczos(operator, cross_covariance, steps, basis, alpha, beta, &
-            status)
+        requested_steps = min(n_steps, n_samples)
+        allocate(basis(n_samples, requested_steps), alpha(requested_steps))
+        allocate(beta(max(requested_steps - 1, 1)))
+        call run_lanczos(operator, cross_covariance, requested_steps, basis, &
+            alpha, beta, steps, status)
         if (status%code /= FORTNUM_OK) return
 
         ! Solve T y = e_1 by Thomas elimination; y(1) is e_1^T T^{-1} e_1.
@@ -174,7 +178,8 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine lanczos_predictive_variance
 
-    subroutine run_lanczos(operator, start, steps, basis, alpha, beta, status)
+    subroutine run_lanczos(operator, start, steps, basis, alpha, beta, &
+            actual_steps, status)
         !! Symmetric Lanczos with full reorthogonalization. The step count is
         !! small by construction here, so keeping the basis orthogonal costs
         !! little and keeps the quadrature weights meaningful.
@@ -182,13 +187,14 @@ contains
         real(dp), intent(in) :: start(:)
         integer, intent(in) :: steps
         real(dp), intent(out) :: basis(:, :), alpha(:), beta(:)
+        integer, intent(out) :: actual_steps
         type(fortnum_status_t), intent(out) :: status
 
-        real(dp), allocatable :: work(:), previous(:)
+        real(dp), allocatable :: work(:)
         real(dp) :: norm, projection
         integer :: i, j
 
-        allocate(work(size(start)), previous(size(start)))
+        allocate(work(size(start)))
         norm = sqrt(sum(start*start))
         if (norm <= 0.0_dp) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -198,6 +204,7 @@ contains
         basis = 0.0_dp
         alpha = 0.0_dp
         beta = 0.0_dp
+        actual_steps = steps
         basis(:, 1) = start/norm
 
         do i = 1, steps
@@ -212,13 +219,12 @@ contains
             end do
             beta(i) = sqrt(sum(work*work))
             if (beta(i) <= 1.0e-14_dp*max(abs(alpha(i)), 1.0_dp)) then
-                ! An invariant subspace: the remaining entries stay zero, which
-                ! makes the tridiagonal block diagonal and the quadrature exact
-                ! on the space reached so far.
+                ! The start vector reached an invariant subspace. The reduced
+                ! tridiagonal is already exact on that subspace; padding it
+                ! with zero rows would introduce false zero eigenvalues.
                 beta(i) = 0.0_dp
-                previous = 0.0_dp
-                basis(:, i + 1) = 0.0_dp
-                cycle
+                actual_steps = i
+                exit
             end if
             basis(:, i + 1) = work/beta(i)
         end do

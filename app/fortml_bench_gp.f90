@@ -11,6 +11,8 @@ program fortml_bench_gp
     integer, parameter :: n_outputs = 2
     integer, parameter :: n_test = 32
     integer, parameter :: repetitions = 4
+    integer, parameter :: fit_repetitions = 8
+    integer, parameter :: predict_repetitions = 32
     real(dp), parameter :: signal_variance = 1.4_dp
     real(dp), parameter :: lengthscale = 0.9_dp
     real(dp), parameter :: noise_variance = 0.08_dp
@@ -20,9 +22,10 @@ program fortml_bench_gp
     real(dp) :: variance(n_test), reference_mean(n_test, n_outputs)
     real(dp) :: reference_variance(n_test)
     real(dp) :: covariance(n_samples, n_samples), cross(n_samples, n_test)
-    real(dp) :: reference_rhs(n_samples, n_outputs), reference_alpha(n_samples, n_outputs)
+    real(dp) :: reference_rhs(n_samples, n_outputs)
+    real(dp) :: reference_alpha(n_samples, n_outputs)
     real(dp) :: reference_cross(n_samples, n_test)
-    real(dp) :: residual, variance_residual, elapsed
+    real(dp) :: residual, variance_residual, elapsed, fit_elapsed, predict_elapsed
     integer(int64) :: clock_start, clock_end, clock_rate
     integer :: i, j, k, info
     type(kernel_t) :: kernel
@@ -56,6 +59,22 @@ program fortml_bench_gp
         variance_residual > 2.0e-10_dp) then
         error stop "GP benchmark correctness oracle failed"
     end if
+    call write_oracle(prediction, variance)
+    if (oracle_only_requested()) stop
+
+    call system_clock(clock_start, clock_rate)
+    do k = 1, fit_repetitions
+        call model%fit(x, y, kernel, noise_variance, status, jitter=jitter)
+    end do
+    call system_clock(clock_end)
+    fit_elapsed = real(clock_end - clock_start, dp)/real(clock_rate, dp)
+
+    call system_clock(clock_start, clock_rate)
+    do k = 1, predict_repetitions
+        call model%predict(x_test, prediction, variance, status)
+    end do
+    call system_clock(clock_end)
+    predict_elapsed = real(clock_end - clock_start, dp)/real(clock_rate, dp)
 
     call system_clock(clock_start, clock_rate)
     do k = 1, repetitions
@@ -64,6 +83,12 @@ program fortml_bench_gp
     end do
     call system_clock(clock_end)
     elapsed = real(clock_end - clock_start, dp)/real(clock_rate, dp)
+    write (*, '(a,i0,a,i0,a,i0,a,i0,a,es24.16)') &
+        "gp_fit,", n_samples, ",", n_features, ",", n_outputs, ",", &
+        fit_repetitions, ",", fit_elapsed/real(fit_repetitions, dp)
+    write (*, '(a,i0,a,i0,a,i0,a,i0,a,es24.16)') &
+        "gp_predict,", n_samples, ",", n_features, ",", n_outputs, ",", &
+        predict_repetitions, ",", predict_elapsed/real(predict_repetitions, dp)
     write (*, '(a,i0,a,i0,a,i0,a,i0,a,es24.16)') &
         "gp,", n_samples, ",", n_features, ",", n_outputs, ",", &
         repetitions, ",", elapsed/real(repetitions, dp)
@@ -98,5 +123,39 @@ contains
         prior = signal_variance
         latent_variance = prior - sum(cross*reference_cross, dim=1)
     end subroutine reference_gp
+
+    subroutine write_oracle(mean, latent_variance)
+        real(dp), intent(in) :: mean(:, :), latent_variance(:)
+        character(len=1024) :: path
+        integer :: column, row, unit, environment_status
+
+        call get_environment_variable("FORTML_BENCH_ORACLE", path, &
+            status=environment_status)
+        if (environment_status /= 0 .or. len_trim(path) == 0) return
+
+        open (newunit=unit, file=trim(path), status="replace", action="write")
+        write (unit, '(a)') "quantity,row,column,value"
+        do column = 1, size(mean, 2)
+            do row = 1, size(mean, 1)
+                write (unit, '(a,i0,a,i0,a,es26.17e3)') &
+                    "mean,", row, ",", column, ",", mean(row, column)
+            end do
+        end do
+        do row = 1, size(latent_variance)
+            write (unit, '(a,i0,a,es26.17e3)') &
+                "variance,", row, ",1,", latent_variance(row)
+        end do
+        close (unit)
+    end subroutine write_oracle
+
+    logical function oracle_only_requested()
+        character(len=16) :: value
+        integer :: environment_status
+
+        call get_environment_variable("FORTML_BENCH_ORACLE_ONLY", value, &
+            status=environment_status)
+        oracle_only_requested = environment_status == 0 .and. &
+            trim(value) == "1"
+    end function oracle_only_requested
 
 end program fortml_bench_gp

@@ -9,6 +9,8 @@ program fortml_bench_mlp
     integer, parameter :: n_hidden = 32
     integer, parameter :: n_outputs = 4
     integer, parameter :: repetitions = 32
+    integer, parameter :: forward_repetitions = 64
+    integer, parameter :: vjp_repetitions = 32
     integer, parameter :: n_parameters = n_features*n_hidden + n_hidden + &
         n_hidden*n_outputs + n_outputs
     real(dp) :: x(n_samples, n_features), target(n_samples, n_outputs)
@@ -18,6 +20,7 @@ program fortml_bench_mlp
     real(dp) :: y_plus(n_samples, n_outputs), y_minus(n_samples, n_outputs)
     real(dp) :: dx(n_samples, n_features), dy(n_samples, n_outputs)
     real(dp) :: residual, adjoint_error, finite_difference_error, elapsed
+    real(dp) :: forward_elapsed, vjp_elapsed
     real(dp) :: h
     integer(int64) :: clock_start, clock_end, clock_rate
     integer :: i, j, k
@@ -61,6 +64,22 @@ program fortml_bench_mlp
         adjoint_error > 2.0e-10_dp) then
         error stop "MLP benchmark product oracle failed"
     end if
+    call write_oracle(prediction, parameter_bar, x_bar)
+    if (oracle_only_requested()) stop
+
+    call system_clock(clock_start, clock_rate)
+    do k = 1, forward_repetitions
+        call model%predict(x, prediction, status)
+    end do
+    call system_clock(clock_end)
+    forward_elapsed = real(clock_end - clock_start, dp)/real(clock_rate, dp)
+
+    call system_clock(clock_start, clock_rate)
+    do k = 1, vjp_repetitions
+        call model%vjp(x, u, parameter_bar, x_bar, status)
+    end do
+    call system_clock(clock_end)
+    vjp_elapsed = real(clock_end - clock_start, dp)/real(clock_rate, dp)
 
     call system_clock(clock_start, clock_rate)
     do k = 1, repetitions
@@ -69,6 +88,12 @@ program fortml_bench_mlp
     end do
     call system_clock(clock_end)
     elapsed = real(clock_end - clock_start, dp)/real(clock_rate, dp)
+    write (*, '(a,i0,a,i0,a,i0,a,i0,a,es24.16)') &
+        "mlp_forward,", n_samples, ",", n_features, ",", n_outputs, ",", &
+        forward_repetitions, ",", forward_elapsed/real(forward_repetitions, dp)
+    write (*, '(a,i0,a,i0,a,i0,a,i0,a,es24.16)') &
+        "mlp_vjp,", n_samples, ",", n_features, ",", n_outputs, ",", &
+        vjp_repetitions, ",", vjp_elapsed/real(vjp_repetitions, dp)
     write (*, '(a,i0,a,i0,a,i0,a,i0,a,es24.16)') &
         "mlp,", n_samples, ",", n_features, ",", n_outputs, ",", &
         repetitions, ",", elapsed/real(repetitions, dp)
@@ -104,5 +129,45 @@ contains
             end do
         end do
     end subroutine reference_predict
+
+    subroutine write_oracle(output, theta_bar, input_bar)
+        real(dp), intent(in) :: output(:, :), theta_bar(:), input_bar(:, :)
+        character(len=1024) :: path
+        integer :: column, row, unit, environment_status
+
+        call get_environment_variable("FORTML_BENCH_ORACLE", path, &
+            status=environment_status)
+        if (environment_status /= 0 .or. len_trim(path) == 0) return
+
+        open (newunit=unit, file=trim(path), status="replace", action="write")
+        write (unit, '(a)') "quantity,row,column,value"
+        do column = 1, size(output, 2)
+            do row = 1, size(output, 1)
+                write (unit, '(a,i0,a,i0,a,es26.17e3)') &
+                    "prediction,", row, ",", column, ",", output(row, column)
+            end do
+        end do
+        do row = 1, size(theta_bar)
+            write (unit, '(a,i0,a,es26.17e3)') &
+                "parameter_bar,", row, ",1,", theta_bar(row)
+        end do
+        do column = 1, size(input_bar, 2)
+            do row = 1, size(input_bar, 1)
+                write (unit, '(a,i0,a,i0,a,es26.17e3)') &
+                    "input_bar,", row, ",", column, ",", input_bar(row, column)
+            end do
+        end do
+        close (unit)
+    end subroutine write_oracle
+
+    logical function oracle_only_requested()
+        character(len=16) :: value
+        integer :: environment_status
+
+        call get_environment_variable("FORTML_BENCH_ORACLE_ONLY", value, &
+            status=environment_status)
+        oracle_only_requested = environment_status == 0 .and. &
+            trim(value) == "1"
+    end function oracle_only_requested
 
 end program fortml_bench_mlp

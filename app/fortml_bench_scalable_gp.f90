@@ -9,9 +9,11 @@ program fortml_bench_scalable_gp
     !! and wrong is visible as such.
     !!
     !! Usage: fortml_bench_scalable_gp <method> <n> <m> <M> <d> <repetitions>
-    !! where `m` is the inducing or subset size and `M` the expert count.
+    !! where `m` is the inducing/subset size (the maximum total SKI grid
+    !! budget in `d > 1`) and `M` the expert count.
     !! The method names are the paper's: full, sod, sor, dtc, fitc, pitc, vfe,
-    !! ski, nle, poe, gpoe, bcm, rbcm, grbcm, moe, keops.
+    !! ski, nle, poe, gpoe, bcm, rbcm, grbcm, moe, keops. Every local method
+    !! also has a `_clustered` variant, for example `poe_clustered`.
     use, intrinsic :: iso_fortran_env, only: dp => real64, int64, output_unit
     use fortml_kernels, only: kernel_t, make_rbf_kernel
     use fortml_gaussian_process, only: gp_regression_t
@@ -85,25 +87,49 @@ program fortml_bench_scalable_gp
 contains
 
     subroutine refuse_infeasible()
-        !! A dense method needs an n-by-n matrix. Refuse by name rather than
-        !! asking the allocator for a terabyte and taking the machine with it.
+        !! Refuse known-infeasible dense storage, tensor-grid budgets, and
+        !! expert counts before allocating or entering a timed region.
         real(dp) :: gigabytes
 
         gigabytes = 8.0_dp*real(n_samples, dp)*real(n_samples, dp)/1.0e9_dp
         select case (trim(method))
         case ("full")
             if (gigabytes > DENSE_BUDGET_GB) then
-                ! Report a full row so a sweep records the refusal in place
-                ! rather than failing to parse it. NaN marks "did not run".
-                write (output_unit, &
-                    '(a,a,i0,a,i0,a,i0,a,i0,a,a,a,a,a,a,a,a,a,a)') &
-                    trim(method), ",", n_samples, ",", n_inducing, ",", &
-                    n_experts, ",", n_features, ",", "NaN", ",", "NaN", ",", &
-                    "NaN", ",", "NaN", ",", "NaN"
-                stop 0
+                call report_refusal()
             end if
+        case ("ski")
+            if (.not. ski_budget_is_feasible(n_inducing, &
+                n_features)) call report_refusal()
+        case ("grbcm", "grbcm_clustered")
+            if (min(n_experts, n_samples) < 2) call report_refusal()
         end select
     end subroutine refuse_infeasible
+
+    subroutine report_refusal()
+        !! Report a full row so a sweep records the refusal in place rather
+        !! than failing to parse it. NaN marks "did not run".
+        write (output_unit, &
+            '(a,a,i0,a,i0,a,i0,a,i0,a,a,a,a,a,a,a,a,a,a)') &
+            trim(method), ",", n_samples, ",", n_inducing, ",", n_experts, &
+            ",", n_features, ",", "NaN", ",", "NaN", ",", "NaN", ",", &
+            "NaN", ",", "NaN"
+        stop 0
+    end subroutine report_refusal
+
+    logical function ski_budget_is_feasible(grid_budget, dimensions) &
+            result(feasible)
+        integer, intent(in) :: grid_budget, dimensions
+        integer :: dimension, minimum_points
+
+        feasible = .false.
+        if (grid_budget < 1 .or. dimensions < 1) return
+        minimum_points = 1
+        do dimension = 1, dimensions
+            if (minimum_points > grid_budget/2) return
+            minimum_points = 2*minimum_points
+        end do
+        feasible = .true.
+    end function ski_budget_is_feasible
 
     integer function integer_argument(position, fallback) result(value)
         integer, intent(in) :: position, fallback
@@ -182,6 +208,20 @@ contains
             call run_local(AGGREGATE_GRBCM, train_time, predict_time)
         case ("moe")
             call run_local(AGGREGATE_MOE, train_time, predict_time)
+        case ("nle_clustered")
+            call run_local(AGGREGATE_NLE, train_time, predict_time, .true.)
+        case ("poe_clustered")
+            call run_local(AGGREGATE_POE, train_time, predict_time, .true.)
+        case ("gpoe_clustered")
+            call run_local(AGGREGATE_GPOE, train_time, predict_time, .true.)
+        case ("bcm_clustered")
+            call run_local(AGGREGATE_BCM, train_time, predict_time, .true.)
+        case ("rbcm_clustered")
+            call run_local(AGGREGATE_RBCM, train_time, predict_time, .true.)
+        case ("grbcm_clustered")
+            call run_local(AGGREGATE_GRBCM, train_time, predict_time, .true.)
+        case ("moe_clustered")
+            call run_local(AGGREGATE_MOE, train_time, predict_time, .true.)
         case ("keops")
             call run_keops_style(train_time, predict_time, .false.)
         case ("keops_gpu")
@@ -325,23 +365,14 @@ contains
         real(dp), intent(out) :: train_time, predict_time
         type(ski_operator_t) :: operator
         type(kernel_t) :: kernel
-        real(dp), allocatable :: weights(:), residual_norm_holder(:)
+        real(dp), allocatable :: weights(:)
         real(dp) :: residual_norm
-        integer :: info, iterations, i, j
+        integer :: info, iterations
 
-        if (n_features /= 1) then
-            ! The grid path here covers one dimension; report the refusal
-            ! rather than a misleading timing.
-            train_time = 0.0_dp
-            predict_time = 0.0_dp
-            mean = 0.0_dp
-            variance = SIGNAL_VARIANCE
-            return
-        end if
-        kernel = make_rbf_kernel(1, SIGNAL_VARIANCE, LENGTHSCALE, status)
+        kernel = make_rbf_kernel(n_features, SIGNAL_VARIANCE, LENGTHSCALE, status)
         allocate(weights(n_samples))
         call tic()
-        call operator%initialize(x, kernel, max(n_inducing, 2), &
+        call operator%initialize(x, kernel, n_inducing, &
             REVIEW_TOY_NOISE_VARIANCE, status)
         if (.not. status_ok(status)) error stop "benchmark: SKI init failed"
         weights = 0.0_dp
@@ -354,29 +385,34 @@ contains
         ! and clips. SKI therefore reports a mean only, and its predictive
         ! density is left undefined rather than fabricated.
         call tic()
-        do i = 1, n_test
-            mean(i) = 0.0_dp
-            do j = 1, n_samples
-                mean(i) = mean(i) + &
-                    kernel%value(test_points(i, :), x(j, :))*weights(j)
-            end do
-            variance(i) = -1.0_dp
-        end do
+        call operator%cross_matvec(test_points, weights, mean, status)
+        variance = -1.0_dp
         call toc(predict_time)
+        if (.not. status_ok(status)) then
+            error stop "benchmark: SKI cross-covariance product failed"
+        end if
     end subroutine run_ski
 
-    subroutine run_local(aggregation, train_time, predict_time)
+    subroutine run_local(aggregation, train_time, predict_time, clustered)
         integer, intent(in) :: aggregation
         real(dp), intent(out) :: train_time, predict_time
+        logical, intent(in), optional :: clustered
         type(local_expert_gp_t) :: model
         type(kernel_t) :: kernel
+        logical :: use_clusters
 
+        use_clusters = .false.
+        if (present(clustered)) use_clusters = clustered
         kernel = make_rbf_kernel(n_features, SIGNAL_VARIANCE, LENGTHSCALE, status)
         call model%initialize(kernel, REVIEW_TOY_NOISE_VARIANCE, aggregation, &
             status)
         if (.not. status_ok(status)) error stop "benchmark: local init failed"
         call tic()
-        call model%fit(x, y, min(n_experts, n_samples), status)
+        if (use_clusters) then
+            call model%fit_clustered(x, y, min(n_experts, n_samples), status)
+        else
+            call model%fit(x, y, min(n_experts, n_samples), status)
+        end if
         call toc(train_time)
         if (.not. status_ok(status)) error stop "benchmark: local fit failed"
         call tic()
@@ -471,10 +507,10 @@ contains
                 cycle
             end if
             select type (operator)
-            type is (kernel_operator_t)
+                type is (kernel_operator_t)
                 call lanczos_predictive_variance(operator, cross, &
                     SIGNAL_VARIANCE, LANCZOS_STEPS, variance(i), status)
-            type is (ski_operator_t)
+                type is (ski_operator_t)
                 call lanczos_predictive_variance(operator, cross, &
                     SIGNAL_VARIANCE, LANCZOS_STEPS, variance(i), status)
             end select

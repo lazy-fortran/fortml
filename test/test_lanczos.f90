@@ -12,6 +12,7 @@ program test_lanczos
     use fortml_kernels, only: kernel_t, make_rbf_kernel
     use fortml_kernel_operator, only: kernel_operator_t
     use fortml_lanczos, only: lanczos_log_determinant, lanczos_predictive_variance
+    use fortml_banded_precision, only: banded_precision_operator_t
     use fortnum_status, only: fortnum_status_t, status_ok
     implicit none
 
@@ -27,6 +28,7 @@ program test_lanczos
     failures = 0
     call test_log_determinant(failures)
     call test_predictive_variance(failures)
+    call test_invariant_subspace_breakdown(failures)
     call test_refusals(failures)
     if (failures /= 0) then
         write (error_unit, '(i0,a)') failures, " Lanczos test(s) failed"
@@ -212,6 +214,37 @@ contains
             failures = failures + 1
         end if
     end subroutine test_predictive_variance
+
+    subroutine test_invariant_subspace_breakdown(failures)
+        !! Every vector is an eigenvector of a scaled identity, so Lanczos
+        !! terminates after one step. The completed one-by-one tridiagonal must
+        !! be used directly instead of padding the requested rank with zeros.
+        integer, intent(inout) :: failures
+        type(banded_precision_operator_t) :: operator
+        type(fortnum_status_t) :: status
+        real(dp) :: band(0:0, n), cross(n), logdet, variance_out
+        real(dp) :: expected_logdet, expected_variance
+        integer :: i
+
+        band = 2.0_dp
+        call operator%initialize(band, status)
+        call lanczos_log_determinant(operator, 8, n, 41, logdet, status)
+        expected_logdet = real(n, dp)*log(2.0_dp)
+        do i = 1, n
+            cross(i) = 0.1_dp*sin(real(i, dp))
+        end do
+        expected_variance = 3.0_dp - 0.5_dp*sum(cross*cross)
+        call lanczos_predictive_variance(operator, cross, 3.0_dp, n, &
+            variance_out, status)
+        if (.not. status_ok(status) .or. &
+            abs(logdet - expected_logdet) > 1.0e-12_dp .or. &
+            abs(variance_out - expected_variance) > 1.0e-12_dp) then
+            write (error_unit, '(a,4es12.4)') &
+                "FAIL [breakdown] reduced tridiagonal ", logdet, &
+                expected_logdet, variance_out, expected_variance
+            failures = failures + 1
+        end if
+    end subroutine test_invariant_subspace_breakdown
 
     subroutine test_refusals(failures)
         integer, intent(inout) :: failures
