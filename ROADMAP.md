@@ -153,6 +153,9 @@ missing report leaves the item open.
   residency. Keep the Fortran CPU reference, implement generic postfix
   matvec/matmat reductions in native CUDA C++ first, and leave HIP and SYCL
   adapters open behind the same oracle and operation-level benchmark contract.
+  FortSym's validated shared-IR emitter is the source-generation boundary for
+  future static user formulas; this runtime ABI remains independent of
+  FortSym and keeps launch policy, residency, and autodiff outside the leaf.
 - [ ] Add persistent generic multi-RHS workspaces and block/Nystrom
   preconditioners.
 - [ ] Add block/Nystrom preconditioners, stochastic Lanczos log determinants,
