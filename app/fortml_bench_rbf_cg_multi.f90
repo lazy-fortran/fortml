@@ -57,6 +57,8 @@ program fortml_bench_rbf_cg_multi
     call rbf_operator%initialize( &
         sample_points, variance, lengthscale, diagonal_shift, status, tile_size)
     if (status%code /= FORTNUM_OK) error stop "RBF operator initialization failed"
+    call rbf_operator%enter_data(status, n_rhs)
+    if (status%code /= FORTNUM_OK) error stop "RBF operator data setup failed"
 
     solution = 0.0_dp
     call rbf_operator%solve_cg_multi( &
@@ -81,6 +83,8 @@ program fortml_bench_rbf_cg_multi
         end if
     end do
     !$acc end data
+    call rbf_operator%exit_data(status)
+    if (status%code /= FORTNUM_OK) error stop "RBF operator data teardown failed"
     call system_clock(clock_end)
     elapsed = real(clock_end - clock_start, dp)/real(clock_rate, dp)
     write (*, '(a,i0,a,i0,a,i0,a,i0,a,es24.16,a,i0,a,es24.16)') &

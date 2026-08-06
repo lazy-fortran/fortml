@@ -89,6 +89,9 @@ missing report leaves the item open.
 - [x] Fuse the OpenACC RBF matrix-matrix fallback for up to eight right-hand
   sides so the default GPU lane reuses each pairwise distance even without the
   native CUDA bridge.
+- [x] Add operator-owned reusable multi-RHS Krylov workspaces with explicit
+  `enter_data(status, n_rhs)` and `exit_data(status)` lifetime hooks, checked
+  by repeated resident solves against the dense multi-RHS oracle.
 - [x] Add fused multi-right-hand-side RBF CG with an independent PCG recurrence
   per output column and one batched operator product per iteration, checked
   against independent dense multi-RHS solves.

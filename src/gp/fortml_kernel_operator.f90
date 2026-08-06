@@ -14,6 +14,18 @@ module fortml_kernel_operator
     integer, parameter :: DEFAULT_TILE_SIZE = 128
     integer, parameter :: MAX_FUSED_RHS = 8
 
+    type :: rbf_krylov_workspace_t
+        real(dp), allocatable :: residual(:, :), direction(:, :)
+        real(dp), allocatable :: preconditioned(:, :)
+        real(dp), allocatable :: operator_direction(:, :), work(:, :)
+        real(dp), allocatable :: right_hand_side_norm(:), target(:)
+        real(dp), allocatable :: rho(:), next_rho(:), denominator(:)
+        logical, allocatable :: active(:), candidate(:)
+        integer :: n_samples = 0
+        integer :: n_rhs = 0
+        logical :: device_resident = .false.
+    end type rbf_krylov_workspace_t
+
     type, extends(linear_operator_t), public :: rbf_operator_t
         ! Neighbor index is contiguous for the matrix-free inner reduction.
         real(dp), allocatable :: points(:, :)
@@ -22,6 +34,7 @@ module fortml_kernel_operator
         real(dp) :: diagonal_shift = 0.0_dp
         integer :: tile_size = DEFAULT_TILE_SIZE
         logical :: points_device_resident = .false.
+        type(rbf_krylov_workspace_t) :: krylov_workspace
     contains
         procedure, public :: initialize => rbf_operator_initialize
         procedure, public :: enter_data => rbf_operator_enter_data
@@ -118,9 +131,10 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine rbf_operator_initialize
 
-    subroutine rbf_operator_enter_data(self, status)
+    subroutine rbf_operator_enter_data(self, status, n_rhs)
         class(rbf_operator_t), intent(inout) :: self
         type(fortnum_status_t), intent(out) :: status
+        integer, intent(in), optional :: n_rhs
 
         if (.not. allocated(self%points)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -130,6 +144,20 @@ contains
         if (.not. self%points_device_resident) then
             !$acc enter data copyin(self%points)
             self%points_device_resident = .true.
+        end if
+        if (present(n_rhs)) then
+            call ensure_krylov_workspace(self, n_rhs, status)
+            if (status%code /= FORTNUM_OK) return
+        end if
+        if (allocated(self%krylov_workspace%residual) .and. &
+            .not. self%krylov_workspace%device_resident) then
+            !$acc enter data create( &
+            !$acc& self%krylov_workspace%residual, &
+            !$acc& self%krylov_workspace%direction, &
+            !$acc& self%krylov_workspace%preconditioned, &
+            !$acc& self%krylov_workspace%operator_direction, &
+            !$acc& self%krylov_workspace%work)
+            self%krylov_workspace%device_resident = .true.
         end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine rbf_operator_enter_data
@@ -142,8 +170,71 @@ contains
             !$acc exit data delete(self%points)
             self%points_device_resident = .false.
         end if
+        if (self%krylov_workspace%device_resident) then
+            !$acc exit data delete( &
+            !$acc& self%krylov_workspace%residual, &
+            !$acc& self%krylov_workspace%direction, &
+            !$acc& self%krylov_workspace%preconditioned, &
+            !$acc& self%krylov_workspace%operator_direction, &
+            !$acc& self%krylov_workspace%work)
+            self%krylov_workspace%device_resident = .false.
+        end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine rbf_operator_exit_data
+
+    subroutine ensure_krylov_workspace(self, n_rhs, status)
+        class(rbf_operator_t), intent(inout) :: self
+        integer, intent(in) :: n_rhs
+        type(fortnum_status_t), intent(out) :: status
+        integer :: n_samples
+
+        n_samples = self%sample_count()
+        if (n_samples < 1 .or. n_rhs < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "RBF operator: Krylov workspace shape is invalid")
+            return
+        end if
+        if (allocated(self%krylov_workspace%residual)) then
+            if (self%krylov_workspace%n_samples == n_samples .and. &
+                self%krylov_workspace%n_rhs == n_rhs) then
+                call status_set(status, FORTNUM_OK, "")
+                return
+            end if
+            if (self%krylov_workspace%device_resident) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "RBF operator: exit device data before resizing workspace")
+                return
+            end if
+            deallocate( &
+                self%krylov_workspace%residual, &
+                self%krylov_workspace%direction, &
+                self%krylov_workspace%preconditioned, &
+                self%krylov_workspace%operator_direction, &
+                self%krylov_workspace%work, &
+                self%krylov_workspace%right_hand_side_norm, &
+                self%krylov_workspace%target, self%krylov_workspace%rho, &
+                self%krylov_workspace%next_rho, &
+                self%krylov_workspace%denominator, &
+                self%krylov_workspace%active, &
+                self%krylov_workspace%candidate)
+        end if
+        allocate( &
+            self%krylov_workspace%residual(n_samples, n_rhs), &
+            self%krylov_workspace%direction(n_samples, n_rhs), &
+            self%krylov_workspace%preconditioned(n_samples, n_rhs), &
+            self%krylov_workspace%operator_direction(n_samples, n_rhs), &
+            self%krylov_workspace%work(n_samples, n_rhs), &
+            self%krylov_workspace%right_hand_side_norm(n_rhs), &
+            self%krylov_workspace%target(n_rhs), &
+            self%krylov_workspace%rho(n_rhs), &
+            self%krylov_workspace%next_rho(n_rhs), &
+            self%krylov_workspace%denominator(n_rhs), &
+            self%krylov_workspace%active(n_rhs), &
+            self%krylov_workspace%candidate(n_rhs))
+        self%krylov_workspace%n_samples = n_samples
+        self%krylov_workspace%n_rhs = n_rhs
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine ensure_krylov_workspace
 
     subroutine rbf_operator_matvec(self, input, output)
         class(rbf_operator_t), intent(in) :: self
@@ -403,7 +494,7 @@ contains
     subroutine rbf_operator_solve_cg_multi( &
             self, right_hand_side, solution, tolerance, max_iterations, &
             info, iterations, residual_norm, use_diagonal_preconditioner)
-        class(rbf_operator_t), intent(in) :: self
+        class(rbf_operator_t), intent(inout) :: self
         real(dp), intent(in) :: right_hand_side(:, :)
         real(dp), intent(inout) :: solution(:, :)
         real(dp), intent(in) :: tolerance
@@ -413,12 +504,8 @@ contains
         logical, intent(in), optional :: use_diagonal_preconditioner
 
         logical :: use_preconditioner
-        logical, allocatable :: active(:), candidate(:)
-        real(dp), allocatable :: residual(:, :), direction(:, :)
-        real(dp), allocatable :: preconditioned(:, :), operator_direction(:, :)
-        real(dp), allocatable :: work(:, :), diagonal_values(:)
-        real(dp), allocatable :: right_hand_side_norm(:), target(:)
-        real(dp), allocatable :: rho(:), next_rho(:), denominator(:)
+        real(dp), allocatable :: diagonal_values(:)
+        type(fortnum_status_t) :: status
         real(dp) :: step, beta
         integer :: n_samples, n_rhs, column
 
@@ -434,17 +521,14 @@ contains
             size(residual_norm) /= n_rhs .or. tolerance <= 0.0_dp .or. &
             max_iterations < 1) return
 
+        call ensure_krylov_workspace(self, n_rhs, status)
+        if (status%code /= FORTNUM_OK) return
+
         use_preconditioner = .true.
         if (present(use_diagonal_preconditioner)) then
             use_preconditioner = use_diagonal_preconditioner
         end if
-        allocate( &
-            residual(n_samples, n_rhs), direction(n_samples, n_rhs), &
-            preconditioned(n_samples, n_rhs), &
-            operator_direction(n_samples, n_rhs), work(n_samples, n_rhs), &
-            diagonal_values(n_samples), active(n_rhs), candidate(n_rhs), &
-            right_hand_side_norm(n_rhs), target(n_rhs), rho(n_rhs), &
-            next_rho(n_rhs), denominator(n_rhs))
+        allocate(diagonal_values(n_samples))
         diagonal_values = 1.0_dp
         if (use_preconditioner) then
             diagonal_values = self%diagonal()
@@ -452,116 +536,155 @@ contains
             if (any(diagonal_values <= 0.0_dp)) return
         end if
         do column = 1, n_rhs
-            right_hand_side_norm(column) = sqrt(sum( &
+            self%krylov_workspace%right_hand_side_norm(column) = sqrt(sum( &
                 right_hand_side(:, column)*right_hand_side(:, column)))
-            target(column) = tolerance*max(right_hand_side_norm(column), 1.0_dp)
+            self%krylov_workspace%target(column) = tolerance*max( &
+                self%krylov_workspace%right_hand_side_norm(column), 1.0_dp)
         end do
         info = KRYLOV_MAX_ITERATIONS
         iterations = 0
         residual_norm = huge(1.0_dp)
-        active = .false.
-        candidate = .false.
+        self%krylov_workspace%active = .false.
+        self%krylov_workspace%candidate = .false.
 
         !$acc data copyin(self%points, right_hand_side, diagonal_values) &
-        !$acc& copy(solution) create(residual, direction, preconditioned, &
-        !$acc& operator_direction, work)
-        call self%matmat(solution, work)
-        call subtract_matrix(right_hand_side, work, residual)
+        !$acc& copy(solution) create( &
+        !$acc& self%krylov_workspace%residual, &
+        !$acc& self%krylov_workspace%direction, &
+        !$acc& self%krylov_workspace%preconditioned, &
+        !$acc& self%krylov_workspace%operator_direction, &
+        !$acc& self%krylov_workspace%work)
+        call self%matmat( &
+            solution, self%krylov_workspace%work)
+        call subtract_matrix( &
+            right_hand_side, self%krylov_workspace%work, &
+            self%krylov_workspace%residual)
         do column = 1, n_rhs
-            residual_norm(column) = acc_norm2_column(residual, column)
-            if (residual_norm(column) <= target(column)) then
+            residual_norm(column) = acc_norm2_column( &
+                self%krylov_workspace%residual, column)
+            if (residual_norm(column) <= self%krylov_workspace%target(column)) then
                 info(column) = KRYLOV_OK
             else
                 call apply_preconditioner_column( &
-                    residual, preconditioned, column)
-                rho(column) = acc_dot_column(residual, preconditioned, column)
-                if (rho(column) <= 0.0_dp .or. &
-                    .not. ieee_is_finite(rho(column))) then
+                    self%krylov_workspace%residual, &
+                    self%krylov_workspace%preconditioned, column)
+                self%krylov_workspace%rho(column) = acc_dot_column( &
+                    self%krylov_workspace%residual, &
+                    self%krylov_workspace%preconditioned, column)
+                if (self%krylov_workspace%rho(column) <= 0.0_dp .or. &
+                    .not. ieee_is_finite(self%krylov_workspace%rho(column))) then
                     info(column) = KRYLOV_BREAKDOWN
                 else
-                    call copy_column(direction, preconditioned, column)
-                    active(column) = .true.
+                    call copy_column( &
+                        self%krylov_workspace%direction, &
+                        self%krylov_workspace%preconditioned, column)
+                    self%krylov_workspace%active(column) = .true.
                 end if
             end if
         end do
 
-        do while (any(active))
-            call self%matmat(direction, operator_direction)
-            candidate = .false.
+        do while (any(self%krylov_workspace%active))
+            call self%matmat( &
+                self%krylov_workspace%direction, &
+                self%krylov_workspace%operator_direction)
+            self%krylov_workspace%candidate = .false.
             do column = 1, n_rhs
-                if (active(column)) then
-                    denominator(column) = acc_dot_column( &
-                        direction, operator_direction, column)
-                    if (denominator(column) <= 0.0_dp .or. &
-                        .not. ieee_is_finite(denominator(column))) then
+                if (self%krylov_workspace%active(column)) then
+                    self%krylov_workspace%denominator(column) = &
+                        acc_dot_column( &
+                        self%krylov_workspace%direction, &
+                        self%krylov_workspace%operator_direction, column)
+                    if (self%krylov_workspace%denominator(column) <= 0.0_dp .or. &
+                        .not. ieee_is_finite( &
+                        self%krylov_workspace%denominator(column))) then
                         info(column) = KRYLOV_BREAKDOWN
-                        active(column) = .false.
+                        self%krylov_workspace%active(column) = .false.
                     else
-                        step = rho(column)/denominator(column)
+                        step = self%krylov_workspace%rho(column)/ &
+                            self%krylov_workspace%denominator(column)
                         call update_column( &
-                            solution, step, direction, column)
+                            solution, step, self%krylov_workspace%direction, &
+                            column)
                         call subtract_scaled_column( &
-                            residual, step, operator_direction, column)
+                            self%krylov_workspace%residual, step, &
+                            self%krylov_workspace%operator_direction, column)
                         iterations(column) = iterations(column) + 1
                         residual_norm(column) = &
-                            acc_norm2_column(residual, column)
-                        if (residual_norm(column) <= target(column) .or. &
+                            acc_norm2_column( &
+                            self%krylov_workspace%residual, column)
+                        if (residual_norm(column) <= &
+                            self%krylov_workspace%target(column) .or. &
                             iterations(column) >= max_iterations) then
-                            candidate(column) = .true.
+                            self%krylov_workspace%candidate(column) = .true.
                         end if
                     end if
                 end if
             end do
 
-            if (any(candidate)) then
-                call self%matmat(solution, work)
+            if (any(self%krylov_workspace%candidate)) then
+                call self%matmat( &
+                    solution, self%krylov_workspace%work)
                 do column = 1, n_rhs
-                    if (candidate(column)) then
+                    if (self%krylov_workspace%candidate(column)) then
                         call subtract_column( &
-                            right_hand_side, work, residual, column)
+                            right_hand_side, self%krylov_workspace%work, &
+                            self%krylov_workspace%residual, column)
                         residual_norm(column) = &
-                            acc_norm2_column(residual, column)
-                        if (residual_norm(column) <= target(column)) then
+                            acc_norm2_column( &
+                            self%krylov_workspace%residual, column)
+                        if (residual_norm(column) <= &
+                            self%krylov_workspace%target(column)) then
                             info(column) = KRYLOV_OK
-                            active(column) = .false.
-                            call zero_column(direction, column)
+                            self%krylov_workspace%active(column) = .false.
+                            call zero_column( &
+                                self%krylov_workspace%direction, column)
                         else if (iterations(column) >= max_iterations) then
                             info(column) = KRYLOV_MAX_ITERATIONS
-                            active(column) = .false.
-                            call zero_column(direction, column)
+                            self%krylov_workspace%active(column) = .false.
+                            call zero_column( &
+                                self%krylov_workspace%direction, column)
                         else
-                            candidate(column) = .false.
+                            self%krylov_workspace%candidate(column) = .false.
                         end if
                     end if
                 end do
             end if
 
             do column = 1, n_rhs
-                if (active(column)) then
+                if (self%krylov_workspace%active(column)) then
                     call apply_preconditioner_column( &
-                        residual, preconditioned, column)
-                    next_rho(column) = acc_dot_column( &
-                        residual, preconditioned, column)
-                    if (next_rho(column) <= 0.0_dp .or. &
-                        .not. ieee_is_finite(next_rho(column))) then
+                        self%krylov_workspace%residual, &
+                        self%krylov_workspace%preconditioned, column)
+                    self%krylov_workspace%next_rho(column) = &
+                        acc_dot_column( &
+                        self%krylov_workspace%residual, &
+                        self%krylov_workspace%preconditioned, column)
+                    if (self%krylov_workspace%next_rho(column) <= 0.0_dp .or. &
+                        .not. ieee_is_finite( &
+                        self%krylov_workspace%next_rho(column))) then
                         info(column) = KRYLOV_BREAKDOWN
-                        active(column) = .false.
+                        self%krylov_workspace%active(column) = .false.
                     else
-                        beta = next_rho(column)/rho(column)
+                        beta = self%krylov_workspace%next_rho(column)/ &
+                            self%krylov_workspace%rho(column)
                         call combine_column( &
-                            direction, preconditioned, beta, column)
-                        rho(column) = next_rho(column)
+                            self%krylov_workspace%direction, &
+                            self%krylov_workspace%preconditioned, beta, column)
+                        self%krylov_workspace%rho(column) = &
+                            self%krylov_workspace%next_rho(column)
                     end if
                 end if
             end do
         end do
 
-        call self%matmat(solution, work)
+        call self%matmat(solution, self%krylov_workspace%work)
         do column = 1, n_rhs
             call subtract_column( &
-                right_hand_side, work, residual, column)
-            residual_norm(column) = acc_norm2_column(residual, column)
-            if (residual_norm(column) <= target(column)) then
+                right_hand_side, self%krylov_workspace%work, &
+                self%krylov_workspace%residual, column)
+            residual_norm(column) = acc_norm2_column( &
+                self%krylov_workspace%residual, column)
+            if (residual_norm(column) <= self%krylov_workspace%target(column)) then
                 info(column) = KRYLOV_OK
             end if
         end do

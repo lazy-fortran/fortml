@@ -122,7 +122,7 @@ contains
     subroutine linear_operator_solve_cg_multi( &
             self, right_hand_side, solution, tolerance, max_iterations, &
             info, iterations, residual_norm, use_diagonal_preconditioner)
-        class(linear_operator_t), intent(in) :: self
+        class(linear_operator_t), intent(inout) :: self
         real(dp), intent(in) :: right_hand_side(:, :)
         real(dp), intent(inout) :: solution(:, :)
         real(dp), intent(in) :: tolerance

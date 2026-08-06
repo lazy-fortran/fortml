@@ -100,8 +100,11 @@ sides increases the block contraction, not the pairwise kernel evaluation.
 `rbf_operator_t%enter_data` and `%exit_data` own the device lifetime of the
 reusable sample-point array. Calls through the same operator keep the
 OpenACC/native-CUDA backend choice internal to the operator. Right-hand-side
-and Krylov-workspace residency is the next extension because those arrays are
-currently scoped by each solve.
+and Krylov-workspace residency are now part of the same lifetime contract:
+`enter_data(status, n_rhs)` allocates and makes the five large Krylov matrices
+resident, while `exit_data(status)` releases them. The small recurrence scalars
+remain host-side control state. A solve without an explicit `enter_data` still
+manages the workspace through its local accelerator data region.
 
 The operator also delegates SPD solves to `fortnum`'s generic
 preconditioned CG routine. The default preconditioner is the operator

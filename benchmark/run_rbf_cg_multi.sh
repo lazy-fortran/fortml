@@ -65,6 +65,7 @@ printf '%s,%s,%s\n' "$row" "$fc" "$flags" >>"$out"
     printf 'compiler_version=%s\n' "$compiler_version"
     printf 'flags=%s\n' "$flags"
     printf 'native_cuda_kernel=%s\n' "$native_cuda"
+    printf 'workspace_residency=operator_owned_multi_rhs_krylov\n'
     printf 'correctness_check=converged_true_residual\n'
     if command -v nvidia-smi >/dev/null 2>&1; then
         printf 'gpu=%s\n' "$(nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader | paste -sd ';' -)"

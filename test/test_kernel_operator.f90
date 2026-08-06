@@ -228,6 +228,9 @@ program test_kernel_operator
 
     call dense_solve(covariance, matrix_input, dense_multi_solution, info)
     call require(info == LINALG_OK, "dense multi-RHS solve provides the oracle")
+    call rbf_operator%enter_data(status, 2)
+    call require(status%code == FORTNUM_OK, &
+        "RBF operator enters reusable multi-RHS workspace")
     multi_solution = 0.0_dp
     call rbf_operator%solve_cg_multi( &
         matrix_input, multi_solution, 1.0e-12_dp, 30, multi_info, &
@@ -254,6 +257,9 @@ program test_kernel_operator
     end do
     call require(maxval(abs(multi_solution - dense_multi_solution)) < 2.0e-11_dp, &
         "unpreconditioned multi-RHS CG matches independent dense solves")
+    call rbf_operator%exit_data(status)
+    call require(status%code == FORTNUM_OK, &
+        "RBF operator exits reusable multi-RHS workspace")
 
 contains
 
