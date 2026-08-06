@@ -6,6 +6,102 @@ automatic differentiation and generated JVP/VJP/HVP code. `fortopt` owns
 optimizers. This boundary keeps downstream numerical code stable while each
 repository can test its own contracts.
 
+## Status and handoff
+
+Last updated 2026-08-06. **Every item in the work order and in the scalable-GP
+benchmark below is complete on `main`.** The suite is green with gfortran and
+with `nvfortran` 26.5, and nine repositories are clean and pushed. An agent
+picking this up is starting from a finished state, not a half-finished one.
+
+### What exists
+
+| Area | Modules | Evidence |
+| --- | --- | --- |
+| Regression | `fortml_linear_regression`, `fortml_basis` | `test_linear_regression`, `test_basis` |
+| Neural | `fortml_mlp`, `fortml_bnn`, `fortml_vae`, `fortml_rnn` | `test_mlp`, `test_bnn`, `test_vae_rnn` |
+| Variational | `fortml_variational`, `fortml_sparse_gp` | `test_variational`, `test_sparse_gp` |
+| Exact GP | `fortml_gaussian_process`, `fortml_derivative_gaussian_process`, `fortml_multi_output_gp` | `test_gaussian_process`, `test_multi_output_gp` |
+| Kernels | `fortml_kernels`, `fortml_kernel_formula` | `test_kernels`, `test_kernel_formula` |
+| Operators | `fortml_kernel_operator`, `fortml_sparse_operator`, `fortml_structured_operator`, `fortml_toeplitz_operator`, `fortml_multilevel_grid`, `fortml_banded_precision` | `test_kernel_operator`, `test_sparse_operator`, `test_structured_multilevel`, `test_banded_precision` |
+| Scalable GP | `fortml_sparse_prior_gp`, `fortml_local_experts`, `fortml_ski_gp`, `fortml_review_toy`, `fortml_inference_policy` | `test_sparse_prior_gp`, `test_local_experts`, `test_ski_gp`, `test_review_toy` |
+| Spectral | `fortml_lanczos` | `test_lanczos` |
+| Registry | `fortml_parameter_registry`, `fortml_parameter_products` (in `src/`, not a subdirectory) | `test_parameter_registry`, `test_parameter_products` |
+
+### How to run it
+
+```sh
+fo                       # static, build, test, lint, format hint
+fo test <name>           # one test
+fo build --flag "-O3 -funroll-loops"   # release, for any timing
+FO_FC=nvfortran fo build --flag "-O3 -acc -gpu=cc89"   # device lane
+fo exec --no-build fortml_bench_scalable_gp <method> <n> <m> <M> <d> <reps>
+```
+
+Two traps that produced wrong numbers here and will again:
+
+* **The default `fo` profile is `-O0 -fcheck=all -fbacktrace`.** Any timing
+  taken without `--flag "-O3 ..."` is a debug-build timing. The first sweep in
+  this repository was one, and had to be discarded.
+* **`fo` shares `build/fo/bin` between compilers.** A later build with a
+  different compiler replaces the binary, so `FO_FC=nvfortran fo exec` can run
+  a gfortran binary. `fo` now clears the tree on a compiler switch (commit
+  `e3cff00`), but a device measurement should still rebuild immediately before
+  it runs and let nothing else build in between.
+
+### Where the evidence lives
+
+`fortml-bench` holds every expensive comparison: `results/SCALABLE_GP.md` is
+the scalable-GP study, `results/OPERATION_PROFILE.md` the operation-level
+traces, and `results/*.csv` the raw records. `benchmark/reference/` in this
+repository holds the small correctness-gated references. The `.provenance/`
+tree, ignored by git, holds upstream clones and the pinned revisions of the
+third-party implementations compared against.
+
+### Next steps, in the order worth doing them
+
+None of these is committed work; they are the open threads this study left, and
+each is stated with why it matters.
+
+1. **Separate the exact and approximate lanes on a target that needs it.** At
+   n = 131,072 on the review's 1-D `sinc`, the exact matrix-free solve is 529x
+   slower than FITC and no more accurate, because 64 inducing points already
+   summarize the target. That conclusion is problem-specific. A target with
+   structure a rank-64 summary cannot capture - a rough sample path, a
+   multi-scale function, higher input dimension - would separate them, and
+   until that is run the study cannot say when exactness is worth paying for.
+   This is the single most valuable open item.
+2. **Give the matrix-free lane a usable predictive variance.** LOVE costs one
+   Lanczos sweep per test point, which is why prediction there is three orders
+   of magnitude slower than everything else. A batched or preconditioned
+   variant, or the constant-time scheme of Pleiss et al., would remove the one
+   place where the exact lane is genuinely weak.
+3. **Implement the stochastic variational path for VFE.** The benchmark forms
+   the optimal `q(u)` in closed form with one dense solve per inducing column,
+   which is `O(m^4)`; the review's `O(n m^2)` needs the minibatch SVI bound of
+   its Section III-C2, eq. 18. The current row measures this implementation,
+   not the method, and the write-up says so.
+4. **Extend SKI past one dimension.** The grid path here is 1-D, so SKI is
+   excluded from the input-dimension sweep. The Kronecker structure of
+   `fortml_structured_operator` is the natural backing for `d > 1`.
+5. **Learn inducing locations and expert gating.** Inducing points are placed
+   on a fixed uniform grid and the MoE gate is a softmax over entropy scores
+   rather than a jointly learned gating function - the review's own
+   simplification for its Fig. 5, but a real limit on what the comparison says
+   about MoE.
+6. **Run the local aggregations against clustered partitions.** They currently
+   split on contiguous blocks of the input ordering, which is reproducible but
+   favours 1-D sorted data. `k`-means partitions are what the literature uses.
+7. **Close the remaining upstream gaps.** `fortfront` still rejects `do` and
+   `interface` as variable names (every other keyword now works). Nsight
+   Compute remains blocked by `ERR_NVGPUCTRPERM`, so no occupancy or
+   memory-counter claim is made anywhere. The `fo` native build tree is still
+   one directory shared by all compilers; the stamp guard prevents the silent
+   mix-up but per-compiler directories would be the real fix.
+8. **Re-check the `nvfortran` fpm graph.** The FortAD source-transformer ICE
+   noted below was the reason the device benchmarks use standalone build
+   scripts. The `acc routine` fix in `fortnum` removed one blocker; whether the
+   ICE itself is still present has not been re-tested.
+
 ## Completion rules
 
 Each item is completed on `main` with implementation, an independent
