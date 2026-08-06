@@ -33,6 +33,13 @@ including CUDA-aware numerical kernels where supported. A local compiler result
 does not close the cluster gate. The benchmark harness will accept `FC=nvfortran`
 and record `nvfortran --version`, CUDA version, GPU model, and compiler flags.
 
+The prerequisite build driver is `fo`'s four-way compiler dialect layer:
+GNU Fortran, NVIDIA `nvfortran`, Intel LLVM `ifx`, and LLVM Flang. FortML's
+nvfortran gate is now exercised through `FO_FC` using the cluster's nvfortran
+26.5 and the path-only dependency graph. Legacy `ifort` is not a supported
+Intel lane. Keep the ifx executable gate open until an ifx installation is
+available.
+
 When a benchmark plot is completed, report the public plot URL, workload,
 correctness result, and comparison table to Chris in the agreed Zulip DM. A
 missing report leaves the item open.
