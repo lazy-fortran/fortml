@@ -1830,11 +1830,11 @@ contains
         real(dp), allocatable :: preconditioned(:, :)
         real(dp), allocatable :: operator_direction(:, :), work(:, :)
         real(dp), allocatable :: diagonal_values(:), target(:), rho(:)
-        real(dp), allocatable :: next_rho(:), denominator(:)
+        real(dp), allocatable :: next_rho(:), denominator(:), step_values(:)
+        real(dp), allocatable :: beta_values(:)
         logical, allocatable :: active(:), candidate(:)
         logical :: done
         integer :: n_samples, n_rhs, column
-        real(dp) :: step, beta
 
         info = KRYLOV_INVALID_ARGUMENT
         iterations = 0
@@ -1861,8 +1861,8 @@ contains
             preconditioned(n_samples, n_rhs), &
             operator_direction(n_samples, n_rhs), work(n_samples, n_rhs), &
             diagonal_values(n_samples), target(n_rhs), rho(n_rhs), &
-            next_rho(n_rhs), denominator(n_rhs), active(n_rhs), &
-            candidate(n_rhs))
+            next_rho(n_rhs), denominator(n_rhs), step_values(n_rhs), &
+            beta_values(n_rhs), active(n_rhs), candidate(n_rhs))
         diagonal_values = 1.0_dp
         if (use_preconditioner) then
             diagonal_values = self%diagonal()
@@ -1885,7 +1885,8 @@ contains
         !$acc& self%points, self%program_kind, self%program_variance, &
         !$acc& self%program_lengthscale, right_hand_side, diagonal_values) &
         !$acc& copy(solution) create( &
-        !$acc& residual, direction, preconditioned, operator_direction, work)
+        !$acc& residual, direction, preconditioned, operator_direction, work, &
+        !$acc& step_values, beta_values)
         call self%matmat(solution, work)
         call subtract_kernel_matrices( &
             right_hand_side, work, residual)
@@ -1915,6 +1916,7 @@ contains
             call self%matmat(direction, operator_direction)
             call matrix_acc_dots( &
                 direction, operator_direction, denominator)
+            step_values = 0.0_dp
             candidate = .false.
             do column = 1, n_rhs
                 if (active(column)) then
@@ -1923,15 +1925,15 @@ contains
                         info(column) = KRYLOV_BREAKDOWN
                         active(column) = .false.
                     else
-                        step = rho(column)/denominator(column)
-                        call update_kernel_column( &
-                            solution, step, direction, column)
-                        call subtract_kernel_scaled_column( &
-                            residual, step, operator_direction, column)
+                        step_values(column) = rho(column)/denominator(column)
                         iterations(column) = iterations(column) + 1
                     end if
                 end if
             end do
+            !$acc update device(step_values)
+            call update_kernel_matrix(solution, step_values, direction)
+            call subtract_kernel_scaled_matrix( &
+                residual, step_values, operator_direction)
             call matrix_acc_norm2_columns(residual, residual_norm)
             do column = 1, n_rhs
                 if (active(column) .and. &
@@ -1970,6 +1972,7 @@ contains
                 call copy_kernel_matrix(preconditioned, residual)
             end if
             call matrix_acc_dots(residual, preconditioned, next_rho)
+            beta_values = 0.0_dp
             do column = 1, n_rhs
                 if (active(column)) then
                     if (next_rho(column) <= 0.0_dp .or. &
@@ -1977,13 +1980,13 @@ contains
                         info(column) = KRYLOV_BREAKDOWN
                         active(column) = .false.
                     else
-                        beta = next_rho(column)/rho(column)
-                        call combine_kernel_column( &
-                            direction, preconditioned, beta, column)
+                        beta_values(column) = next_rho(column)/rho(column)
                         rho(column) = next_rho(column)
                     end if
                 end if
             end do
+            !$acc update device(beta_values)
+            call combine_kernel_matrix(direction, preconditioned, beta_values)
             done = .not. any(active)
         end do
 
@@ -2081,48 +2084,51 @@ contains
             end do
         end subroutine zero_kernel_column
 
-        subroutine update_kernel_column(target, scale, vector, column)
+        subroutine update_kernel_matrix(target, scales, vector)
             real(dp), intent(inout) :: target(:, :)
-            real(dp), intent(in) :: scale, vector(:, :)
-            integer, intent(in) :: column
-            integer :: i
+            real(dp), intent(in) :: scales(:), vector(:, :)
+            integer :: i, column
 
-            !$acc parallel loop
-            !$omp parallel do
-            do i = 1, size(target, 1)
-                target(i, column) = target(i, column) + &
-                    scale*vector(i, column)
+            !$acc parallel loop collapse(2)
+            !$omp parallel do collapse(2)
+            do column = 1, size(target, 2)
+                do i = 1, size(target, 1)
+                    target(i, column) = target(i, column) + &
+                        scales(column)*vector(i, column)
+                end do
             end do
-        end subroutine update_kernel_column
+        end subroutine update_kernel_matrix
 
-        subroutine subtract_kernel_scaled_column(target, scale, vector, column)
+        subroutine subtract_kernel_scaled_matrix(target, scales, vector)
             real(dp), intent(inout) :: target(:, :)
-            real(dp), intent(in) :: scale, vector(:, :)
-            integer, intent(in) :: column
-            integer :: i
+            real(dp), intent(in) :: scales(:), vector(:, :)
+            integer :: i, column
 
-            !$acc parallel loop
-            !$omp parallel do
-            do i = 1, size(target, 1)
-                target(i, column) = target(i, column) - &
-                    scale*vector(i, column)
+            !$acc parallel loop collapse(2)
+            !$omp parallel do collapse(2)
+            do column = 1, size(target, 2)
+                do i = 1, size(target, 1)
+                    target(i, column) = target(i, column) - &
+                        scales(column)*vector(i, column)
+                end do
             end do
-        end subroutine subtract_kernel_scaled_column
+        end subroutine subtract_kernel_scaled_matrix
 
-        subroutine combine_kernel_column(target, source, scale, column)
+        subroutine combine_kernel_matrix(target, source, scales)
             real(dp), intent(inout) :: target(:, :)
             real(dp), intent(in) :: source(:, :)
-            real(dp), intent(in) :: scale
-            integer, intent(in) :: column
-            integer :: i
+            real(dp), intent(in) :: scales(:)
+            integer :: i, column
 
-            !$acc parallel loop
-            !$omp parallel do
-            do i = 1, size(target, 1)
-                target(i, column) = source(i, column) + &
-                    scale*target(i, column)
+            !$acc parallel loop collapse(2)
+            !$omp parallel do collapse(2)
+            do column = 1, size(target, 2)
+                do i = 1, size(target, 1)
+                    target(i, column) = source(i, column) + &
+                        scales(column)*target(i, column)
+                end do
             end do
-        end subroutine combine_kernel_column
+        end subroutine combine_kernel_matrix
 
     end subroutine kernel_operator_solve_cg_multi_device
 

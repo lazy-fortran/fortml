@@ -310,8 +310,8 @@ workspace ownership, derivative products, multilevel embeddings, and matched
 CPU/GPU scaling evidence for the Toeplitz GP path remain open.
 The direct `nvfortran` launch trace confirms that the pairwise composite
 evaluation remains one fused matrix-matrix kernel per product; per-column
-vector updates and host-controlled convergence are the next operation-level
-fusion target.
+step/beta updates are now fused across the RHS block, leaving host-controlled
+convergence and candidate-column cleanup as the next operation-level target.
 
 The compact-support sparse branch now consumes `fortsparse` triplets and
 retains a CSR view for row-owned host and OpenACC products. Its float64,

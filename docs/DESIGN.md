@@ -163,8 +163,9 @@ recurrence for each column. The independent device test constructs the
 right-hand sides from known solutions using a separate pairwise formula. A
 persistent generic multi-RHS workspace and low-rank/block preconditioners
 remain separate milestones. The direct `nvfortran` trace shows one fused
-composite matrix-matrix launch per product; the remaining operation-level
-overhead is per-column vector updates and host-controlled convergence.
+composite matrix-matrix launch per product and one fused step/beta vector
+update for the RHS block; the remaining operation-level overhead is
+host-controlled convergence and candidate-column cleanup.
 
 `structured_gp_operator_t` wraps the reusable `fortnum_tensor_product`
 contraction and exposes the same persistent OpenACC lifetime shape through
