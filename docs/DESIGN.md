@@ -1,7 +1,7 @@
 # fortml design
 
 The first interface is a matrix-oriented regression API. Samples occupy rows,
-features occupy columns, and outputs occupy columns. A model stores its
+features occupy columns, and outputs occupy columns. The linear model stores its
 parameters as a `(features + intercept, outputs)` array. This layout matches
 Fortran `matmul`, supports multiple outputs without a separate model type, and
 maps directly to a flat active-vector layout for `fortnum` and `fortad`.
@@ -25,8 +25,8 @@ must retain its rank and residual checks.
 
 ## Differentiable model contract
 
-Each smooth map will provide the following products over the same parameter
-layout:
+Smooth maps expose the products that their public contracts declare. Each
+declared product uses the same parameter layout:
 
 - `value`: evaluate the model or objective.
 - `jvp`: evaluate `J v` for a tangent direction.
@@ -50,9 +50,9 @@ accelerator regions until a generated static lowering exists.
 radial, spline, and callback maps implement the same deferred feature,
 parameter, value, JVP, and VJP operations. The façade owns intercept columns,
 shape checks, and the public parameter boundary. A new map implementation adds
-one type and its product methods. It does not add a case to every façade
-operation. The same separation is the target for the kernel expression tree,
-where explicit opcodes remain only at the static lowering boundary.
+one type and its product methods, not a case to every façade operation. The
+kernel expression tree follows the same separation. Explicit opcodes appear
+only at its static lowering boundary.
 
 ## MLP baseline
 
@@ -64,32 +64,33 @@ followed by that layer's bias, from input to output. This layout is stable for
 structure-specific optimizer adapter.
 
 The current implementation provides batched prediction, parameter/input JVPs,
-parameter/input VJPs, and a `backprop` alias for the reverse product. Hidden
-layers support `tanh` and ReLU. The output layer also supports linear and ReLU.
+parameter/input VJPs, HVPs, and a `backprop` alias for the reverse product.
+Hidden and output layers support linear, `tanh`, and ReLU activations.
 The ReLU derivative is defined as zero at its kink, and finite-difference tests
-stay away from that point. The explicit products are the reference
-implementation for the open `fortad`-generated-kernel comparison.
+stay away from that point. The explicit products are the reference for the
+`fortad`-generated scalar fixture comparison.
 
 ## Exact GP baseline
 
 `fortml_kernels` represents stationary and algebraic kernels as a recursive
 expression tree. Positive variance and lengthscale parameters use logarithmic
 storage, while sum and product nodes apply the corresponding product rules to
-values, JVPs, and VJPs. The initial exact GP uses this kernel API with a dense
+values, JVPs, VJPs, and HVPs. The exact GP uses this kernel API with a dense
 Cholesky factorization from `fortnum`, supports shared covariance across
 multiple outputs, and exposes predictive mean/variance, log marginal
 likelihood, and hyperparameter products. Its tests use direct covariance
 formulas and an independent finite-difference/LU oracle.
 
-The derivative-GP pilot extends the same kernel tree with input gradients and
-mixed input Hessians. RBF function-value and first-derivative observations are
-stored in one interleaved covariance system, so the same path supports
-derivative predictions and multiple output columns. The implementation is
+The derivative GP extends the same kernel tree with input gradients and mixed
+input Hessians. RBF, Matérn, linear, constant, and supported compositions store
+function-value and first-derivative observations in one covariance system,
+so the same path supports derivative predictions and multiple output columns.
+Component 0 denotes a function value and components 1 through the input
+dimension denote first derivatives. White-noise derivatives and undefined
+Matérn derivatives at coincident points are refused. The implementation is
 verified against an independent finite-difference kernel oracle and a
-hand-derived dense mixed-covariance solve. The RBF formulas are also recorded
-in `.provenance/derivations/rbf_input_derivatives.txt` from `fortsym`. Parameter
-JVP/VJP/HVP products for this extended covariance remain part of the open
-`fortad` integration gate.
+hand-derived dense mixed-covariance solve. Parameter JVP/VJP/HVP products for
+this extended covariance are not exposed.
 
 ## Lazy operators and iterative solves
 
@@ -103,12 +104,12 @@ covariance matrix.
 
 `kernel_operator_t` wraps any supported composable kernel in a blocked
 matrix-free host implementation. It is the reference path for kernel sums,
-products, Matérn variants, and future derivative blocks. Leaf RBF kernels now
-share the specialized operator's fused matrix-free reduction and explicit
-device-data lifetime, including a batched product path. Built-in composite
-expression trees are flattened into a static postfix program before device
-execution; user-supplied formulas remain on the blocked host reference until
-they have an explicit lowering contract.
+products, Matérn variants, and future derivative blocks. Leaf RBF kernels share
+the specialized operator's fused matrix-free reduction and explicit device-data
+lifetime, including a batched product path. Built-in composite expression trees
+are flattened into a static postfix program before device execution. A
+validated `kernel_formula_t` is copied into the same postfix program, including
+when it appears inside a sum or product.
 
 Its batched product evaluates each kernel block once and multiplies that block
 by all right-hand sides together. This keeps the generic KeOps-style operation
@@ -119,42 +120,44 @@ sides increases the block contraction, not the pairwise kernel evaluation.
 accepts coordinate triplets through `fortsparse`, retains a CSR view for
 row-owned sums, and therefore has no output-write atomics in its OpenACC
 product. Its resident device lifetime is explicit through `enter_data` and
-`exit_data`; the caller owns the input/output data region. This is an
+`exit_data`. The caller owns the input/output data region. This is an
 iterative product/CG backend, not a direct-solver wrapper. Matched dense
 PyTorch and KeOps measurements are kept as a separate compact-support
 workload in `fortml-bench`.
 
-`rbf_operator_t%enter_data` and `%exit_data` own the device lifetime of the
-reusable sample-point array. Calls through the same operator keep the
-OpenACC/native-CUDA backend choice internal to the operator. Right-hand-side
-and Krylov-workspace residency are now part of the same lifetime contract:
-`enter_data(status, n_rhs)` allocates and makes the five large Krylov matrices
-resident, while `exit_data(status)` releases them. The small recurrence scalars
-remain host-side control state. A solve without an explicit `enter_data` still
-manages the workspace through its local accelerator data region.
+`ski_operator_t` is the interpolation branch. One-dimensional input uses a
+cached Toeplitz grid and exposes its two interpolation weights. Higher
+dimensions use an equal-axis tensor grid whose `q**d` points fit the declared
+budget and accept one isotropic RBF leaf. Local experts offer contiguous groups
+or deterministic Lloyd clustering. GRBCM first draws a reproducible disjoint
+communication set, then trains each enhanced expert on that set plus one of
+the remaining groups. Its weights and communication correction follow the
+published aggregation rather than the ordinary prior-referenced expert rules.
+
+`rbf_operator_t%enter_data` and `%exit_data` own resident points and the
+optional five-matrix Krylov workspace selected by `n_rhs`. Backend choice stays
+internal and recurrence scalars stay on the host. A solve without an explicit
+resident lifetime uses a local data region.
 
 The operator also delegates SPD solves to `fortnum`'s generic
 preconditioned CG routine. The default preconditioner is the operator
 diagonal. This keeps the KeOps-style split explicit: FortML owns the kernel
 formula and data, while FortNum owns Krylov iteration and convergence status.
 The RBF MVM, batched MVM, diagonal, and CG result are checked against direct
-pairwise formulas and an independent dense solve. Persistent device-data
-ownership, block and Nystrom preconditioners, stochastic log determinants, and
-autodiff rules for the iterative solve remain separate milestones.
+pairwise formulas and an independent dense solve. Persistent device data,
+block and Nystrom preconditioners, stochastic Lanczos log determinants, and
+LOVE-style single-point predictive variance are implemented. Autodiff rules
+for the iterative solve remain outside this operator contract.
 
-The specialized RBF path also exposes `solve_cg_multi_block` as an experimental
-contiguous block-Jacobi variant. It factors each kernel block once and applies
-the two triangular solves to every right-hand side inside the accelerator data
-region. The path is correctness-gated against the independent dense solve, but
-it is not the default benchmark lane: the first matched workload showed that
-this ordering and block size can increase iterations, so a production
-preconditioner still needs a measured Nystrom or spatially reordered design.
+The experimental `solve_cg_multi_block` factors contiguous kernel blocks once
+and applies their triangular solves to every right-hand side. It passes the
+dense-solve oracle, but its first matched workload increased iterations. A
+production block preconditioner still needs measured spatial reordering.
 
-The same specialized path exposes `solve_cg_multi_nystrom`. It constructs a
-landmark RBF factor and applies the resulting Woodbury inverse to all right-hand
-sides in one fused projection. Its low-rank factors remain device-resident for
-the solve, but the matched benchmark gate is still open until rank and landmark
-selection are shown to improve the complete workload.
+`solve_cg_multi_nystrom` constructs a landmark RBF factor and applies its
+Woodbury inverse in one fused projection. The factors stay device-resident,
+but the benchmark gate remains open until rank and landmark selection improve
+the complete workload.
 
 `rbf_operator_t%solve_cg_multi` applies the same PCG recurrence independently
 to each right-hand side while evaluating all active search directions with one
@@ -163,96 +166,63 @@ convergence contract and exposes the matrix-matrix fusion used by the native
 CUDA path. Its preconditioned and unpreconditioned results are checked against
 independent dense multi-RHS solves.
 
-The same batched recurrence is now the default `linear_operator_t` multi-RHS
-contract. Generic composable-kernel operators therefore retain fusion all the
-way through CG, while `rbf_operator_t` keeps its specialized accelerator
-override.
+This batched recurrence is the default `linear_operator_t` multi-RHS contract.
+`rbf_operator_t` keeps its accelerator override.
 
 `kernel_operator_t%solve_cg_device` and `%solve_cg_multi_device` are the
-generic accelerator solve entry points. They require `enter_data` for the
-sample points and static kernel program, map only right-hand sides and
-per-solve Krylov vectors at the call boundary, and recompute true residuals
-before accepting convergence. The multi-RHS path evaluates one fused
-matrix-matrix product per iteration while retaining an independent scalar PCG
-recurrence for each column. The independent device test constructs the
-right-hand sides from known solutions using a separate pairwise formula. A
-persistent generic multi-RHS workspace and low-rank/block preconditioners
-remain separate milestones. The direct `nvfortran` trace shows one fused
-composite matrix-matrix launch per product and one fused step/beta vector
-update for the RHS block; the remaining operation-level overhead is
-host-controlled convergence and candidate-column cleanup.
+generic accelerator entry points. They require `enter_data`, fuse one
+matrix-matrix product per iteration, retain a scalar PCG recurrence per column,
+and verify true residuals. The independent device test builds right-hand sides
+from known solutions with a separate pairwise formula. Resident workspaces and
+low-rank/block preconditioners share the path. An `nvfortran` trace confirms
+the fused product and RHS-block updates. Convergence control remains host-side.
 
 `structured_gp_operator_t` wraps the reusable `fortnum_tensor_product`
 contraction and exposes the same persistent OpenACC lifetime shape through
 `enter_data(status, n_rhs)`, `exit_data(status)`, `matvec_device`, and
 `matmat_device`. Its factors and contraction workspaces remain resident while
 the caller owns the input/output data region. The nvfortran path is checked by
-an independent dense Kronecker oracle; the generic FortML CG recurrence has not
-yet been moved into that device data region.
+an independent dense Kronecker oracle. Its device data region currently
+excludes the generic FortML CG recurrence.
 
-The specialized RBF type also has an OpenACC CG override. Its Krylov vectors,
-reductions, and repeated RBF products execute inside one accelerator data
-region, while an enclosing benchmark region keeps the sample points and
-right-hand side resident across repeated solves. The benchmark uses the same
-unpreconditioned recurrence for the Python comparison lanes so its tolerance,
-iteration cap, and true-residual check are directly comparable. Generic
-user-supplied formulas remain a blocked host-reference path until persistent
-backend-owned data and a static accelerator lowering contract are added; the
-built-in static programs already use the resident accelerator path described
-above.
+The RBF OpenACC CG override keeps Krylov vectors and repeated products in one
+data region. Its matched Python lanes share the recurrence, tolerance, cap,
+and true-residual check. Validated user formulas use the built-in resident
+program path. Procedure callbacks remain host-only.
 
-The eight-feature path also has an optional native CUDA bridge. The benchmark
-drivers enable it with `FORTML_NATIVE_CUDA=1`, compile
-`src/gp/fortml_cuda_rbf.cu` with `nvcc`, and link the object into the
-`nvfortran` executable. The matrix-vector kernel assigns one warp to each of
-four output rows, loads a 128-neighbor tile into shared memory, and reduces the
-tile in warp lanes. The matrix-matrix kernel keeps up to eight right-hand sides
-in the same block, evaluates each pairwise distance once, and reduces the
-result for every right-hand side before writing the outputs. The default
-Fortran build links `fortml_cuda_rbf_stub.f90`, so gfortran and ordinary
-nvfortran/OpenACC builds remain self-contained. The direct MVM and matmat
-benchmarks check the native paths against host pairwise oracles before timing
-them.
+The eight-feature path has an optional native CUDA bridge enabled by
+`FORTML_NATIVE_CUDA=1`. Its matrix-vector kernel uses warp-owned output rows
+and 128-neighbor tiles. Its matrix-matrix kernel reuses each distance for up to
+eight right-hand sides. The default build links
+`fortml_cuda_rbf_stub.f90`. Direct MVM and matmat benchmarks check both native
+paths against host pairwise oracles before timing them.
 
 Generic static kernel programs have a separate opaque CUDA plan ABI in
-`src/gp/fortml_cuda_kernel.cu`. `enter_data` creates a plan that owns device
-copies of the sample points and postfix program; `exit_data` destroys it.
-`matvec_device` and `matmat_device` pass only caller-owned device pointers for
-the right-hand sides and outputs, so launch and residency policy remain outside
-the kernel semantics. The CUDA evaluator has the same nine operation codes as
-the Fortran postfix reference and is checked by
-`test/run_cuda_kernel_plan.sh` against an independently written pairwise
-matvec/matmat oracle. This is the first native CUDA backend behind the ABI;
-HIP and SYCL can implement the same plan contract later.
+`src/gp/fortml_cuda_kernel.cu`. The plan owns sample points and postfix data.
+device products accept caller-owned RHS and output pointers. Its ten opcodes
+pass the independent pairwise oracle in `test/run_cuda_kernel_plan.sh`. HIP and
+SYCL can use the same ABI.
 
-When the native bridge is disabled, the RBF matrix-matrix fallback still fuses
-up to eight right-hand sides in one OpenACC/CPU tiled reduction. Pairwise
-distances and the exponential are evaluated once per sample pair, then applied
-to scalar RHS accumulators. Larger RHS batches retain the conservative
-per-column fallback until a larger device workspace contract is added.
+Without the native bridge, the tiled OpenACC/CPU reduction reuses each RBF
+evaluation for up to eight right-hand sides. Larger batches use the per-column
+fallback. The eight-feature MVM maps two output rows per gang and has a
+five-row tail oracle. Other feature counts keep the general mapping.
 
-The eight-feature OpenACC RBF MVM maps two output rows to worker lanes inside
-each gang. This keeps the sample-major neighbor loop contiguous while reducing
-gang count. The tail condition is covered by a five-row, eight-feature direct
-pairwise oracle test. The mapping is specialized to the fixed eight-feature
-path, while other feature counts retain the general tiled implementation.
-
-## Model sequence
+## Implemented model sequence
 
 The implementation order follows numerical dependencies:
 
 1. Linear and basis-function regression.
 2. MLPs with a flat parameter layout and explicit activation smoothness.
-3. Exact GPs with composable means, kernels, likelihoods, and Cholesky
-   inference.
+3. Exact GPs with composable kernels, scalar Gaussian observation noise, and
+   Cholesky inference.
 4. Derivative observations and derivative prediction by differentiating the
-   kernel in both arguments. The covariance block ordering is function values,
-   input derivatives, and optional mixed derivatives.
-5. Multi-output GPs using an explicit linear model of coregionalization and
-   inducing-point variational inference. Structured linear operators stay lazy
-   until a dense result is required.
-6. Variational autoencoders and deep recurrent networks after reparameterized
-   gradients and recurrent scan/backpropagation have their own oracle suites.
+   kernel in both arguments. Each row records its function-value or first input
+   derivative component.
+5. A correlated multi-output GP, scalar inducing-point approximations, local
+   experts, and structured linear operators.
+6. A variational autoencoder and a single vanilla recurrent layer with
+   backpropagation through time.
 
 Bayesian global optimization is outside the current scope.
 

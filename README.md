@@ -1,31 +1,117 @@
 # fortml
 
-`fortml` is a differentiable machine-learning library for modern Fortran. It
-builds on `fortnum` for numerical kernels and on `fortad` for generated
-derivative code. Models expose value, JVP, and VJP products where the
-mathematics has been verified.
+`fortml` is a machine-learning library for modern Fortran. It provides dense
+regression, neural models, exact and approximate Gaussian processes, lazy
+linear operators, and optimizer-facing derivative products. Numerical kernels
+come from `fortnum`, optimization from `fortopt`, source-generated derivatives
+from `fortad`, and sparse storage from `fortsparse`.
 
-The implemented baselines are multi-output ridge/ordinary least-squares
-regression, an explicit-parameter MLP, a Bayesian neural network with a reparameterized
-Gaussian variational posterior and seeded Monte Carlo ELBO
-value/JVP/VJP/HVP products, and a multi-output exact Gaussian
-process with composable kernels. The MLP and GP expose value/JVP/VJP products.
-The RBF derivative-GP pilot now supports mixed function-value and first-input
-derivative observations and predictions, with symbolic and finite-difference
-checks. The structured GP operator accepts separable tensor-grid covariance
-factors and reuses the matrix-free CG contract; the Toeplitz GP operator wraps
-the cached FFT grid product for one-dimensional covariance structures. The
-compact-support sparse GP operator consumes `fortsparse` triplets, retains a
-CSR view for row-owned products, and has a resident OpenACC path. The
-generic kernel operator lowers leaf RBF expressions to the same fused,
-matrix-free OpenACC/native-CUDA product and exposes explicit device-data
-lifetime hooks. Built-in sum/product trees are flattened to a static postfix
-program for the same device path; user-supplied formulas remain a separate
-lowering milestone. The
-planned model families are
-scalable<!-- slop-ok --> and multi-output GPs,
-variational autoencoders, and deep recurrent networks. Bayesian global
-optimization is outside this repository's current scope.
+The library uses separate Fortran modules instead of an umbrella `fortml`
+module. For example, exact GP regression uses `fortml_kernels` and
+`fortml_gaussian_process`.
 
-See [ROADMAP.md](ROADMAP.md) for the gated work order and the local
-`.provenance/` directory for the ignored literature and upstream source corpus.
+## Build and test
+
+The development manifest resolves four sibling checkouts:
+
+```text
+parent/
+  fortad/
+  fortml/
+  fortnum/
+  fortopt/
+  fortsparse/
+```
+
+From the `fortml` directory, run the complete static, build, and test lane with
+`fo`:
+
+```sh
+fo
+```
+
+The direct fpm lane is:
+
+```sh
+fpm test
+```
+
+The default `fo` profile enables runtime checks and no optimization. Use an
+explicit release build for timings:
+
+```sh
+fo build --flag "-O3 -funroll-loops"
+```
+
+NVIDIA builds select `nvfortran` through `FO_FC`. The accelerator-specific
+drivers and flags are documented in [benchmark/README.md](benchmark/README.md).
+
+## Array and status conventions
+
+For matrix-oriented models, samples occupy rows, features occupy columns, and
+outputs occupy columns. A batch of `n` samples with `d` features and `p`
+outputs therefore uses `x(n,d)` and `y(n,p)`. Recurrent arrays use
+`(time,batch,feature)` order.
+
+Procedures that return a `fortnum_status_t` report success through
+`status_ok(status)`. Constructors and fits can fail without producing a usable
+object, so check the status before the next call. Sparse operator procedures
+use the corresponding `fortsparse_status_t`. Krylov solves return integer
+`info` values from `fortnum_krylov`.
+
+## Exact GP example
+
+This program fits two output columns with one shared RBF covariance. Predictive
+variance is the latent-function variance and does not include observation
+noise.
+
+```fortran
+program exact_gp_example
+    use, intrinsic :: iso_fortran_env, only: dp => real64
+    use fortml_gaussian_process, only: gp_regression_t
+    use fortml_kernels, only: kernel_t, make_rbf_kernel
+    use fortnum_status, only: fortnum_status_t, status_ok
+    implicit none
+
+    real(dp) :: x(4, 1), y(4, 2), query(2, 1)
+    real(dp) :: mean(2, 2), variance(2)
+    type(kernel_t) :: kernel
+    type(gp_regression_t) :: model
+    type(fortnum_status_t) :: status
+
+    x(:, 1) = [-1.0_dp, -0.25_dp, 0.5_dp, 1.25_dp]
+    y(:, 1) = x(:, 1)**2
+    y(:, 2) = sin(x(:, 1))
+    query(:, 1) = [0.0_dp, 1.0_dp]
+
+    kernel = make_rbf_kernel(1, 1.0_dp, 0.8_dp, status)
+    if (.not. status_ok(status)) error stop "kernel construction failed"
+    call model%fit(x, y, kernel, 1.0e-4_dp, status)
+    if (.not. status_ok(status)) error stop "GP fit failed"
+    call model%predict(query, mean, variance, status)
+    if (.not. status_ok(status)) error stop "GP prediction failed"
+end program exact_gp_example
+```
+
+## Implemented surface
+
+| Area | Public modules | Main limits |
+| --- | --- | --- |
+| Regression and features | `fortml_linear_regression`, `fortml_basis` | Dense SVD fit. Basis HVPs are not exposed. |
+| Neural models | `fortml_mlp`, `fortml_bnn`, `fortml_vae`, `fortml_rnn` | The recurrent model is one vanilla `tanh` RNN with a zero initial state |
+| Variational inference | `fortml_variational`, `fortml_sparse_gp` | `sparse_gp_t` has scalar targets and caller-supplied variational parameters |
+| Exact GPs | `fortml_kernels`, `fortml_gaussian_process`, `fortml_derivative_gaussian_process`, `fortml_multi_output_gp` | Derivative observations cover function values and first input derivatives |
+| Approximate GPs | `fortml_sparse_prior_gp`, `fortml_local_experts`, `fortml_ski_gp` | Multidimensional SKI requires one isotropic RBF leaf. Local experts support contiguous or deterministic clustered partitions. |
+| Lazy inference | `fortml_linear_operator`, `fortml_kernel_operator`, `fortml_sparse_operator`, `fortml_structured_operator`, `fortml_toeplitz_operator`, `fortml_banded_precision` | Toeplitz products are host-resident |
+| Supporting contracts | `fortml_kernel_formula`, `fortml_lanczos`, `fortml_multilevel_grid`, `fortml_inference_policy`, `fortml_parameter_registry`, `fortml_parameter_products` | Product availability depends on the wrapped model |
+
+Validated user kernel formulas are lowered into the same postfix program as
+built-in kernels. The generic kernel operator can run that program through its
+OpenACC path or native CUDA plan. Arbitrary basis callbacks remain host-only.
+
+See [docs/EXAMPLES.md](docs/EXAMPLES.md) for executable examples and
+[docs/API.md](docs/API.md) for the public module reference. The implementation
+boundaries are recorded in [docs/DESIGN.md](docs/DESIGN.md) and
+[docs/ML_ARCHITECTURE.md](docs/ML_ARCHITECTURE.md). Benchmark results and open
+research threads belong in [ROADMAP.md](ROADMAP.md). The package is distributed
+under the [MIT license](LICENSE).
