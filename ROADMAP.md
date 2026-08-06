@@ -250,7 +250,7 @@ that do not exist.
   still win.
 - [x] Record provenance for the paper and for every third-party implementation
   compared against, with download scripts and checksums.
-- [ ] Publish the plots and report the comparison to Chris on Zulip.
+- [x] Publish the plots and report the comparison to Chris on Zulip.
 
 ## Research record
 
