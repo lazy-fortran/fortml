@@ -121,7 +121,8 @@ contains
 
     subroutine linear_operator_solve_cg_multi( &
             self, right_hand_side, solution, tolerance, max_iterations, &
-            info, iterations, residual_norm, use_diagonal_preconditioner)
+            info, iterations, residual_norm, use_diagonal_preconditioner, &
+            preconditioner_block_size)
         class(linear_operator_t), intent(inout) :: self
         real(dp), intent(in) :: right_hand_side(:, :)
         real(dp), intent(inout) :: solution(:, :)
@@ -130,6 +131,7 @@ contains
         integer, intent(out) :: info(:), iterations(:)
         real(dp), intent(out) :: residual_norm(:)
         logical, intent(in), optional :: use_diagonal_preconditioner
+        integer, intent(in), optional :: preconditioner_block_size
 
         logical :: use_preconditioner
         real(dp), allocatable :: diagonal_values(:)
@@ -149,6 +151,14 @@ contains
             iterations = 0
             residual_norm = huge(1.0_dp)
             return
+        end if
+        if (present(preconditioner_block_size)) then
+            if (preconditioner_block_size /= 0) then
+                info = KRYLOV_INVALID_ARGUMENT
+                iterations = 0
+                residual_norm = huge(1.0_dp)
+                return
+            end if
         end if
         if (size(info) /= size(right_hand_side, 2) .or. &
             size(iterations) /= size(right_hand_side, 2) .or. &

@@ -30,3 +30,8 @@ The runner records `nvfortran --version`, CUDA version, GPU model, and compiler
 flags. A missing CUDA or GPU report leaves the GPU gate open. Plots consume the
 raw CSV and are published at a stable public URL before the result is reported
 in the Zulip DM.
+
+The focused `run_rbf_cg_multi.sh` driver accepts an optional `BLOCK_SIZE` for
+the experimental RBF block-Jacobi path. Leave it unset for the matched
+unpreconditioned comparison lane. Block timings are exploratory until their
+iteration and runtime behavior are competitive.

@@ -115,6 +115,14 @@ pairwise formulas and an independent dense solve. Persistent device-data
 ownership, block and Nystrom preconditioners, stochastic log determinants, and
 autodiff rules for the iterative solve remain separate milestones.
 
+The specialized RBF path also exposes `solve_cg_multi_block` as an experimental
+contiguous block-Jacobi variant. It factors each kernel block once and applies
+the two triangular solves to every right-hand side inside the accelerator data
+region. The path is correctness-gated against the independent dense solve, but
+it is not the default benchmark lane: the first matched workload showed that
+this ordering and block size can increase iterations, so a production
+preconditioner still needs a measured Nystrom or spatially reordered design.
+
 `rbf_operator_t%solve_cg_multi` applies the same PCG recurrence independently
 to each right-hand side while evaluating all active search directions with one
 batched operator product per iteration. This preserves the scalar CG

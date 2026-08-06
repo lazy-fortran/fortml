@@ -26,6 +26,12 @@ module fortml_kernel_operator
         logical :: device_resident = .false.
     end type rbf_krylov_workspace_t
 
+    type :: rbf_block_preconditioner_t
+        real(dp), allocatable :: factors(:, :, :)
+        integer :: block_size = 0
+        integer :: n_blocks = 0
+    end type rbf_block_preconditioner_t
+
     type, extends(linear_operator_t), public :: rbf_operator_t
         ! Neighbor index is contiguous for the matrix-free inner reduction.
         real(dp), allocatable :: points(:, :)
@@ -35,6 +41,7 @@ module fortml_kernel_operator
         integer :: tile_size = DEFAULT_TILE_SIZE
         logical :: points_device_resident = .false.
         type(rbf_krylov_workspace_t) :: krylov_workspace
+        type(rbf_block_preconditioner_t) :: block_preconditioner
     contains
         procedure, public :: initialize => rbf_operator_initialize
         procedure, public :: enter_data => rbf_operator_enter_data
@@ -45,6 +52,8 @@ module fortml_kernel_operator
         procedure, public :: sample_count => rbf_operator_sample_count
         procedure, public :: solve_cg => rbf_operator_solve_cg
         procedure, public :: solve_cg_multi => rbf_operator_solve_cg_multi
+        procedure, public :: solve_cg_multi_block => &
+            rbf_operator_solve_cg_multi_block
     end type rbf_operator_t
 
     type, extends(linear_operator_t), public :: kernel_operator_t
@@ -235,6 +244,78 @@ contains
         self%krylov_workspace%n_rhs = n_rhs
         call status_set(status, FORTNUM_OK, "")
     end subroutine ensure_krylov_workspace
+
+    subroutine ensure_block_preconditioner(self, block_size, status)
+        class(rbf_operator_t), intent(inout) :: self
+        integer, intent(in) :: block_size
+        type(fortnum_status_t), intent(out) :: status
+
+        integer :: block, column, first, last, local_size, row, k
+        integer :: n_blocks, n_samples
+        real(dp) :: distance, difference, value
+
+        n_samples = self%sample_count()
+        if (n_samples < 1 .or. block_size < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "RBF operator: block preconditioner shape is invalid")
+            return
+        end if
+        n_blocks = (n_samples + block_size - 1)/block_size
+        if (allocated(self%block_preconditioner%factors) .and. &
+            self%block_preconditioner%block_size == block_size .and. &
+            self%block_preconditioner%n_blocks == n_blocks) then
+            call status_set(status, FORTNUM_OK, "")
+            return
+        end if
+        if (allocated(self%block_preconditioner%factors)) then
+            deallocate(self%block_preconditioner%factors)
+        end if
+        allocate(self%block_preconditioner%factors( &
+            block_size, block_size, n_blocks))
+        self%block_preconditioner%factors = 0.0_dp
+        self%block_preconditioner%block_size = block_size
+        self%block_preconditioner%n_blocks = n_blocks
+
+        do block = 1, n_blocks
+            first = (block - 1)*block_size + 1
+            last = min(n_samples, first + block_size - 1)
+            local_size = last - first + 1
+            do row = 1, local_size
+                do column = 1, row
+                    distance = 0.0_dp
+                    do k = 1, size(self%points, 2)
+                        difference = self%points(first + row - 1, k) - &
+                            self%points(first + column - 1, k)
+                        distance = distance + difference*difference
+                    end do
+                    value = self%variance*exp( &
+                        -0.5_dp*distance/(self%lengthscale*self%lengthscale))
+                    if (row == column) value = value + self%diagonal_shift
+                    do k = 1, column - 1
+                        value = value - self%block_preconditioner%factors( &
+                            row, k, block)*self%block_preconditioner%factors( &
+                            column, k, block)
+                    end do
+                    if (row == column) then
+                        if (value <= 0.0_dp .or. .not. ieee_is_finite(value)) then
+                            deallocate(self%block_preconditioner%factors)
+                            self%block_preconditioner%block_size = 0
+                            self%block_preconditioner%n_blocks = 0
+                            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                                "RBF operator: block preconditioner is not SPD")
+                            return
+                        end if
+                        self%block_preconditioner%factors(row, column, block) = &
+                            sqrt(value)
+                    else
+                        self%block_preconditioner%factors(row, column, block) = &
+                            value/self%block_preconditioner%factors(column, column, block)
+                    end if
+                end do
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine ensure_block_preconditioner
 
     subroutine rbf_operator_matvec(self, input, output)
         class(rbf_operator_t), intent(in) :: self
@@ -493,7 +574,8 @@ contains
 
     subroutine rbf_operator_solve_cg_multi( &
             self, right_hand_side, solution, tolerance, max_iterations, &
-            info, iterations, residual_norm, use_diagonal_preconditioner)
+            info, iterations, residual_norm, use_diagonal_preconditioner, &
+            preconditioner_block_size)
         class(rbf_operator_t), intent(inout) :: self
         real(dp), intent(in) :: right_hand_side(:, :)
         real(dp), intent(inout) :: solution(:, :)
@@ -502,12 +584,14 @@ contains
         integer, intent(out) :: info(:), iterations(:)
         real(dp), intent(out) :: residual_norm(:)
         logical, intent(in), optional :: use_diagonal_preconditioner
+        integer, intent(in), optional :: preconditioner_block_size
 
         logical :: use_preconditioner
         real(dp), allocatable :: diagonal_values(:)
         type(fortnum_status_t) :: status
         real(dp) :: step, beta
-        integer :: n_samples, n_rhs, column
+        integer :: n_samples, n_rhs, column, block_size
+        logical :: use_block_preconditioner
 
         info = KRYLOV_INVALID_ARGUMENT
         iterations = 0
@@ -528,9 +612,20 @@ contains
         if (present(use_diagonal_preconditioner)) then
             use_preconditioner = use_diagonal_preconditioner
         end if
+        use_block_preconditioner = .false.
+        block_size = 0
+        if (present(preconditioner_block_size)) then
+            block_size = preconditioner_block_size
+            use_block_preconditioner = block_size > 0
+            if (block_size < 0 .or. (use_block_preconditioner .and. &
+                .not. use_preconditioner)) return
+        end if
         allocate(diagonal_values(n_samples))
         diagonal_values = 1.0_dp
-        if (use_preconditioner) then
+        if (use_block_preconditioner) then
+            call ensure_block_preconditioner(self, block_size, status)
+            if (status%code /= FORTNUM_OK) return
+        else if (use_preconditioner) then
             diagonal_values = self%diagonal()
             if (size(diagonal_values) /= n_samples) return
             if (any(diagonal_values <= 0.0_dp)) return
@@ -547,6 +642,9 @@ contains
         self%krylov_workspace%active = .false.
         self%krylov_workspace%candidate = .false.
 
+        if (use_block_preconditioner) then
+            !$acc enter data copyin(self%block_preconditioner%factors)
+        end if
         !$acc data copyin(self%points, right_hand_side, diagonal_values) &
         !$acc& copy(solution) create( &
         !$acc& self%krylov_workspace%residual, &
@@ -689,6 +787,9 @@ contains
             end if
         end do
         !$acc end data
+        if (use_block_preconditioner) then
+            !$acc exit data delete(self%block_preconditioner%factors)
+        end if
 
     contains
 
@@ -743,16 +844,61 @@ contains
 
         subroutine apply_preconditioner_column(input, output, column)
             real(dp), intent(in) :: input(:, :)
-            real(dp), intent(out) :: output(:, :)
+            real(dp), intent(inout) :: output(:, :)
             integer, intent(in) :: column
             integer :: i
 
-            !$acc parallel loop
-            !$omp parallel do
-            do i = 1, size(output, 1)
-                output(i, column) = input(i, column)/diagonal_values(i)
-            end do
+            if (use_block_preconditioner) then
+                call apply_block_preconditioner( &
+                    input, output, column, self%block_preconditioner%factors, &
+                    self%block_preconditioner%n_blocks)
+            else
+                !$acc parallel loop
+                !$omp parallel do
+                do i = 1, size(output, 1)
+                    output(i, column) = input(i, column)/diagonal_values(i)
+                end do
+            end if
         end subroutine apply_preconditioner_column
+
+        subroutine apply_block_preconditioner( &
+                input, output, column, factors, n_blocks)
+            real(dp), intent(in) :: input(:, :)
+            real(dp), intent(inout) :: output(:, :)
+            integer, intent(in) :: column
+            real(dp), intent(in) :: factors(:, :, :)
+            integer, intent(in) :: n_blocks
+            integer :: block, first, last, local_size, row, k
+            real(dp) :: value
+
+            !$acc parallel loop gang private(first, last, local_size, row, k, value)
+            !$omp parallel do schedule(static) private(first, last, local_size, row, k, value)
+            do block = 1, n_blocks
+                first = (block - 1)*block_size + 1
+                last = min(size(input, 1), first + block_size - 1)
+                local_size = last - first + 1
+                !$acc loop seq
+                do row = 1, local_size
+                    value = input(first + row - 1, column)
+                    do k = 1, row - 1
+                        value = value - factors( &
+                            row, k, block)*output(first + k - 1, column)
+                    end do
+                    output(first + row - 1, column) = value/ &
+                        factors(row, row, block)
+                end do
+                !$acc loop seq
+                do row = local_size, 1, -1
+                    value = output(first + row - 1, column)
+                    do k = row + 1, local_size
+                        value = value - factors( &
+                            k, row, block)*output(first + k - 1, column)
+                    end do
+                    output(first + row - 1, column) = value/ &
+                        factors(row, row, block)
+                end do
+            end do
+        end subroutine apply_block_preconditioner
 
         subroutine copy_column(target, source, column)
             real(dp), intent(out) :: target(:, :)
@@ -823,6 +969,23 @@ contains
         end subroutine combine_column
 
     end subroutine rbf_operator_solve_cg_multi
+
+    subroutine rbf_operator_solve_cg_multi_block( &
+            self, right_hand_side, solution, tolerance, max_iterations, &
+            block_size, info, iterations, residual_norm)
+        class(rbf_operator_t), intent(inout) :: self
+        real(dp), intent(in) :: right_hand_side(:, :)
+        real(dp), intent(inout) :: solution(:, :)
+        real(dp), intent(in) :: tolerance
+        integer, intent(in) :: max_iterations, block_size
+        integer, intent(out) :: info(:), iterations(:)
+        real(dp), intent(out) :: residual_norm(:)
+
+        call rbf_operator_solve_cg_multi( &
+            self, right_hand_side, solution, tolerance, max_iterations, &
+            info, iterations, residual_norm, &
+            preconditioner_block_size=block_size)
+    end subroutine rbf_operator_solve_cg_multi_block
 
     subroutine kernel_operator_initialize( &
             self, sample_points, kernel, diagonal_shift, status, tile_size)

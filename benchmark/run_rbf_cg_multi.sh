@@ -53,9 +53,12 @@ else
 fi
 "$fc" $flags "${module_flag[@]}" -o "$build_dir/fortml_bench_rbf_cg_multi" \
     "${sources[@]}" "${link_inputs[@]}"
-row=$("$build_dir/fortml_bench_rbf_cg_multi" \
-    "${N_SAMPLES:-2048}" "${N_FEATURES:-8}" "${N_RHS:-4}" \
+arguments=("${N_SAMPLES:-2048}" "${N_FEATURES:-8}" "${N_RHS:-4}" \
     "${REPETITIONS:-8}")
+if [[ -n "${BLOCK_SIZE:-}" ]]; then
+    arguments+=("$BLOCK_SIZE")
+fi
+row=$("$build_dir/fortml_bench_rbf_cg_multi" "${arguments[@]}")
 compiler_version=$($fc --version 2>&1 | awk 'NF {print; exit}')
 printf 'model,samples,features,rhs,repetitions,seconds_per_solve,iterations,residual_norm,compiler,flags\n' >"$out"
 printf '%s,%s,%s\n' "$row" "$fc" "$flags" >>"$out"
@@ -65,6 +68,7 @@ printf '%s,%s,%s\n' "$row" "$fc" "$flags" >>"$out"
     printf 'compiler_version=%s\n' "$compiler_version"
     printf 'flags=%s\n' "$flags"
     printf 'native_cuda_kernel=%s\n' "$native_cuda"
+    printf 'block_size=%s\n' "${BLOCK_SIZE:-0}"
     printf 'workspace_residency=operator_owned_multi_rhs_krylov\n'
     printf 'correctness_check=converged_true_residual\n'
     if command -v nvidia-smi >/dev/null 2>&1; then

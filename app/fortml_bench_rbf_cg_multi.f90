@@ -20,6 +20,7 @@ program fortml_bench_rbf_cg_multi
     real(dp) :: elapsed, target
     integer(int64) :: clock_start, clock_end, clock_rate
     integer :: feature, i, rhs, n_samples, n_features, n_rhs, repetitions
+    integer :: block_size
     integer, allocatable :: info(:), iterations(:)
     integer :: repetition
     type(rbf_operator_t) :: rbf_operator
@@ -29,10 +30,12 @@ program fortml_bench_rbf_cg_multi
     n_features = default_n_features
     n_rhs = default_n_rhs
     repetitions = default_repetitions
+    block_size = 0
     call read_optional_integer(1, n_samples)
     call read_optional_integer(2, n_features)
     call read_optional_integer(3, n_rhs)
     call read_optional_integer(4, repetitions)
+    call read_optional_integer(5, block_size)
     if (n_rhs > default_n_rhs) error stop "benchmark supports at most four RHS"
     allocate( &
         sample_points(n_samples, n_features), &
@@ -61,9 +64,15 @@ program fortml_bench_rbf_cg_multi
     if (status%code /= FORTNUM_OK) error stop "RBF operator data setup failed"
 
     solution = 0.0_dp
-    call rbf_operator%solve_cg_multi( &
-        right_hand_side, solution, tolerance, max_iterations, info, &
-        iterations, residual_norm, use_diagonal_preconditioner=.false.)
+    if (block_size > 0) then
+        call rbf_operator%solve_cg_multi_block( &
+            right_hand_side, solution, tolerance, max_iterations, block_size, &
+            info, iterations, residual_norm)
+    else
+        call rbf_operator%solve_cg_multi( &
+            right_hand_side, solution, tolerance, max_iterations, info, &
+            iterations, residual_norm, use_diagonal_preconditioner=.false.)
+    end if
     if (any(info /= KRYLOV_OK) .or. maxval(residual_norm) > target) then
         write (error_unit, '(a,i0,a,es24.16)') &
             "cg_multi_check_info=", maxval(info), ",residual=", &
@@ -75,9 +84,15 @@ program fortml_bench_rbf_cg_multi
     !$acc data copyin(rbf_operator%points, right_hand_side)
     do repetition = 1, repetitions
         solution = 0.0_dp
-        call rbf_operator%solve_cg_multi( &
-            right_hand_side, solution, tolerance, max_iterations, info, &
-            iterations, residual_norm, use_diagonal_preconditioner=.false.)
+        if (block_size > 0) then
+            call rbf_operator%solve_cg_multi_block( &
+                right_hand_side, solution, tolerance, max_iterations, &
+                block_size, info, iterations, residual_norm)
+        else
+            call rbf_operator%solve_cg_multi( &
+                right_hand_side, solution, tolerance, max_iterations, info, &
+                iterations, residual_norm, use_diagonal_preconditioner=.false.)
+        end if
         if (any(info /= KRYLOV_OK)) then
             error stop "multi-RHS matrix-free CG timed solve failed"
         end if

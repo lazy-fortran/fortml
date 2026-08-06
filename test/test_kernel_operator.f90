@@ -16,6 +16,7 @@ program test_kernel_operator
     real(dp) :: dense_solution(5), residual_norm
     real(dp) :: multi_solution(5, 2), dense_multi_solution(5, 2)
     real(dp) :: multi_residual_norm(2)
+    real(dp) :: block_solution(5, 2), block_residual_norm(2)
     real(dp) :: generic_covariance(5, 5)
     real(dp) :: generic_multi_solution(5, 2), generic_dense_multi_solution(5, 2)
     real(dp) :: generic_multi_residual_norm(2)
@@ -257,6 +258,18 @@ program test_kernel_operator
     end do
     call require(maxval(abs(multi_solution - dense_multi_solution)) < 2.0e-11_dp, &
         "unpreconditioned multi-RHS CG matches independent dense solves")
+    block_solution = 0.0_dp
+    call rbf_operator%solve_cg_multi_block( &
+        matrix_input, block_solution, 1.0e-12_dp, 30, 2, multi_info, &
+        multi_iterations, block_residual_norm)
+    do column = 1, 2
+        call require(multi_info(column) == KRYLOV_OK, &
+            "block-preconditioned multi-RHS lazy RBF CG converges")
+    end do
+    call require(maxval(abs(block_solution - dense_multi_solution)) < 2.0e-11_dp, &
+        "block-preconditioned multi-RHS CG matches independent dense solves")
+    call require(maxval(block_residual_norm) < 2.0e-11_dp, &
+        "block-preconditioned multi-RHS CG reports true residuals")
     call rbf_operator%exit_data(status)
     call require(status%code == FORTNUM_OK, &
         "RBF operator exits reusable multi-RHS workspace")
