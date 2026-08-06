@@ -9,6 +9,7 @@ copyright = "Copyright 2026 lazy-fortran"
 [dependencies]
 fortnum = { path = "../fortnum" }
 fortopt = { path = "../fortopt" }
+fortad = { path = "../fortad" }
 fortsparse = { path = "../fortsparse" }
 
 [dev-dependencies]

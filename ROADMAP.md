@@ -85,8 +85,9 @@ missing report leaves the item open.
 - [ ] Extend the registry-facing model contract with full-vector JVP/VJP/HVP
   products and check them against independent finite-difference, adjoint, and
   Hessian-symmetry oracles.
-- [ ] Connect the MLP product contract to `fortad`-generated JVP/VJP/HVP code
-  and compare the generated kernels with the explicit baseline.
+- [x] Connect the static scalar MLP product fixture to `fortad`-generated
+  JVP/VJP/HVP code and compare the generated kernels with the explicit
+  baseline. The dynamic registry-wide product routing remains open.
 - [ ] Add Bayesian neural networks with explicit priors over weights,
   reparameterized variational posteriors, deterministic seeded Monte Carlo, and
   optimizer-visible ELBO value/JVP/VJP/HVP products. Check the Gaussian KL term
@@ -226,7 +227,11 @@ JVP/VJP/HVP routing remains open and is not implied by this packing result.
 
 The explicit MLP now exposes a scalar-output-cotangent HVP over joint parameter
 and input directions. Its finite-difference VJP oracle passes with gfortran and
-nvfortran 26.5; the FortAD-generated MLP product path remains open.
+nvfortran 26.5. The FortAD-generated scalar MLP fixture now passes independent
+value, finite-difference VJP, finite-difference HVP, and Hessian-symmetry
+checks with gfortran. The downstream `nvfortran` gate is open because
+`nvfortran` 26.5 currently ICEs in FortAD's source transformer before the
+FortML test can link; this does not invalidate the generated-code oracle.
 
 The first basis-map slice is now implemented in `fortml_basis`. It provides polynomial
 powers, Fourier sine/cosine features, differentiable ARD radial features, and
