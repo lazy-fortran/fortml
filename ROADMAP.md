@@ -181,7 +181,7 @@ missing report leaves the item open.
   generated leaf through the full resident-plan ABI.
 - [x] Add persistent generic multi-RHS workspaces and block/Nystrom
   preconditioners.
-- [ ] Add block/Nystrom preconditioners, stochastic Lanczos log determinants,
+- [x] Add block/Nystrom preconditioners, stochastic Lanczos log determinants,
   and LOVE-style predictive-variance products for large exact-GP solves.
 - [x] Add compact-support sparse covariance/precision dispatch through
   `fortsparse` CSC construction and iterative sparse MVM, with independent
@@ -343,6 +343,23 @@ commits `5618a1e8`, `147aaceb`, `346813d3`). Two slow FortFront suites and one
 FortSym suite were renamed `*_slow`, and `fo` now gives a slow-marked test its
 own timeout budget instead of holding it to the fast one (`fo` commit
 `f36c429`).
+
+`fortml_lanczos` adds the two matrix-free spectral estimators over any
+`linear_operator_t`. The log determinant is stochastic Lanczos quadrature:
+seeded Rademacher probes, Lanczos with full reorthogonalization, and Gauss
+quadrature through the eigendecomposition of the tridiagonal, so an estimate is
+a reproducible function of its seed. The predictive variance is the LOVE form,
+running Lanczos from the cross-covariance itself so that `k_*^T A^{-1} k_*`
+becomes one tridiagonal solve.
+
+`test_lanczos` checks the log determinant against a hand-written Cholesky of
+the dense covariance, within 5 percent for 64 probes, for two independent
+seeds, and checks that the same seed reproduces exactly while a different seed
+does not. The full-rank predictive variance is checked against a
+partial-pivoting LU solve of the same system to 1e-9, which is an equality
+rather than a sampling tolerance; a truncated run is checked to stay within
+`[0, prior]`. Matched scaling evidence against GPyTorch for these two
+estimators remains open.
 
 The generic `kernel_operator_t` now has the same preconditioner contract as
 the specialized RBF operator, built from the lowered kernel program rather than
