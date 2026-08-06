@@ -17,8 +17,9 @@ program fortml_bench_rbf_cg_multi
     integer, parameter :: max_iterations = 500
     real(dp), allocatable :: sample_points(:, :), right_hand_side(:, :)
     real(dp), allocatable :: solution(:, :), residual_norm(:)
-    real(dp) :: elapsed, target
+    real(dp) :: elapsed, setup_elapsed, target
     integer(int64) :: clock_start, clock_end, clock_rate
+    integer(int64) :: setup_start, setup_end
     integer :: feature, i, rhs, n_samples, n_features, n_rhs, repetitions
     integer :: block_size, nystrom_rank
     integer, allocatable :: info(:), iterations(:)
@@ -68,6 +69,7 @@ program fortml_bench_rbf_cg_multi
     call rbf_operator%enter_data(status, n_rhs)
     if (status%code /= FORTNUM_OK) error stop "RBF operator data setup failed"
 
+    call system_clock(setup_start, clock_rate)
     solution = 0.0_dp
     if (block_size > 0) then
         call rbf_operator%solve_cg_multi_block( &
@@ -88,6 +90,8 @@ program fortml_bench_rbf_cg_multi
             maxval(residual_norm)
         error stop "multi-RHS matrix-free CG correctness check failed"
     end if
+    call system_clock(setup_end)
+    setup_elapsed = real(setup_end - setup_start, dp)/real(clock_rate, dp)
 
     call system_clock(clock_start, clock_rate)
     !$acc data copyin(rbf_operator%points, right_hand_side)
@@ -115,9 +119,9 @@ program fortml_bench_rbf_cg_multi
     if (status%code /= FORTNUM_OK) error stop "RBF operator data teardown failed"
     call system_clock(clock_end)
     elapsed = real(clock_end - clock_start, dp)/real(clock_rate, dp)
-    write (*, '(a,i0,a,i0,a,i0,a,i0,a,es24.16,a,i0,a,es24.16)') &
+    write (*, '(a,i0,a,i0,a,i0,a,i0,a,es24.16,a,es24.16,a,i0,a,es24.16)') &
         "rbf_cg_multi,", n_samples, ",", n_features, ",", n_rhs, ",", &
-        repetitions, ",", elapsed/real(repetitions, dp), ",", &
+        repetitions, ",", setup_elapsed, ",", elapsed/real(repetitions, dp), ",", &
         maxval(iterations), ",", maxval(residual_norm)
 
 contains

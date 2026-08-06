@@ -65,7 +65,7 @@ if [[ -n "${NYSTROM_RANK:-}" ]]; then
 fi
 row=$("$build_dir/fortml_bench_rbf_cg_multi" "${arguments[@]}")
 compiler_version=$($fc --version 2>&1 | awk 'NF {print; exit}')
-printf 'model,samples,features,rhs,repetitions,seconds_per_solve,iterations,residual_norm,compiler,flags\n' >"$out"
+printf 'model,samples,features,rhs,repetitions,setup_seconds,seconds_per_solve,iterations,residual_norm,compiler,flags\n' >"$out"
 printf '%s,%s,%s\n' "$row" "$fc" "$flags" >>"$out"
 {
     printf 'target=fortml_bench_rbf_cg_multi\n'
