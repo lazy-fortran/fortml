@@ -14,6 +14,13 @@ is never accepted as the test oracle. Correctness evidence must use a
 hand-derived result, a convergence-tested finite difference, a complex-step
 check, a dot-product adjoint identity, or a trusted high-precision reference.
 
+The differentiable parameter vector covers every quantity exposed to an
+optimizer: model weights, basis and kernel hyperparameters, likelihood
+parameters, inducing or structured-GP parameters, and variational parameters.
+Each such block must participate in value, JVP, VJP, and HVP products where the
+model declares the product, with an independent check for the complete packed
+vector.
+
 Every performance item records compiler, flags, CPU/GPU model, problem size,
 precision, wall time, peak memory, build time, and generated-code size. CPU and
 GPU runs use matched workloads and report a comparison against a pinned
@@ -60,8 +67,23 @@ missing report leaves the item open.
   backpropagation, with independent finite-difference and adjoint checks.
 - [x] Exercise the MLP parameter/VJP seam with the separate `fortopt_adam`
   implementation on a known squared-loss objective.
+- [ ] Define one optimizer-facing parameter registry and packing contract for
+  model weights, basis/kernel hyperparameters, likelihood parameters, inducing
+  variables, and variational parameters. Check full-vector JVP/VJP/HVP products
+  against independent finite-difference, adjoint, and Hessian-symmetry oracles.
 - [ ] Connect the MLP product contract to `fortad`-generated JVP/VJP/HVP code
   and compare the generated kernels with the explicit baseline.
+- [ ] Add Bayesian neural networks with explicit priors over weights,
+  reparameterized variational posteriors, deterministic seeded Monte Carlo, and
+  optimizer-visible ELBO value/JVP/VJP/HVP products. Check the Gaussian KL term
+  against its analytic formula and the complete ELBO gradient against an
+  independent finite-difference oracle.
+- [ ] Add a reusable variational-inference contract for GPs and neural models,
+  including variational means, covariance or factor parameters, inducing-point
+  parameters, likelihood parameters, minibatch scaling, and natural-gradient
+  or `fortopt` updates. Check ELBO decomposition, KL positivity, seeded
+  reparameterization, and convergence on a small conjugate model against an
+  analytic posterior.
 - [x] Add RBF, Matern, linear, constant, white-noise, sum, and product kernels
   with log-parameter layouts and independent value/product checks.
 - [x] Add multi-output exact Gaussian-process regression with Cholesky
@@ -146,9 +168,9 @@ missing report leaves the item open.
 - [ ] Add multi-output GPs, inducing-point variational GPs, and the structured
   inference policies that sit above these operator contracts.
 - [ ] Add variational autoencoders and deep recurrent networks after the
-  regression and GP contracts are stable. Their likelihoods, reparameterized
-  gradients, scan/backpropagation, and higher-order derivative behavior each
-  require separate oracle cases.
+  regression, GP, and variational-inference contracts are stable. Their
+  likelihoods, reparameterized gradients, scan/backpropagation, and
+  higher-order derivative behavior each require separate oracle cases.
 - [x] Add correctness-gated CPU benchmark targets for linear regression, MLP,
   and exact GP workloads.
 - [x] Add matched CPU benchmark harnesses and GPyTorch reference runs through
