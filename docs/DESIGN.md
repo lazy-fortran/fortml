@@ -153,13 +153,18 @@ contract. Generic composable-kernel operators therefore retain fusion all the
 way through CG, while `rbf_operator_t` keeps its specialized accelerator
 override.
 
-`kernel_operator_t%solve_cg_device` is the first generic accelerator solve
-entry point. It requires `enter_data` for the sample points and static kernel
-program, maps only the right-hand side and per-solve Krylov vectors at the
-call boundary, and recomputes the true residual before accepting convergence.
-The independent device test constructs the right-hand side from a known
-solution using a separate pairwise formula. A persistent generic multi-RHS
-workspace and low-rank/block preconditioners remain separate milestones.
+`kernel_operator_t%solve_cg_device` and `%solve_cg_multi_device` are the
+generic accelerator solve entry points. They require `enter_data` for the
+sample points and static kernel program, map only right-hand sides and
+per-solve Krylov vectors at the call boundary, and recompute true residuals
+before accepting convergence. The multi-RHS path evaluates one fused
+matrix-matrix product per iteration while retaining an independent scalar PCG
+recurrence for each column. The independent device test constructs the
+right-hand sides from known solutions using a separate pairwise formula. A
+persistent generic multi-RHS workspace and low-rank/block preconditioners
+remain separate milestones. The direct `nvfortran` trace shows one fused
+composite matrix-matrix launch per product; the remaining operation-level
+overhead is per-column vector updates and host-controlled convergence.
 
 `structured_gp_operator_t` wraps the reusable `fortnum_tensor_product`
 contraction and exposes the same persistent OpenACC lifetime shape through
@@ -174,10 +179,11 @@ reductions, and repeated RBF products execute inside one accelerator data
 region, while an enclosing benchmark region keeps the sample points and
 right-hand side resident across repeated solves. The benchmark uses the same
 unpreconditioned recurrence for the Python comparison lanes so its tolerance,
-iteration cap, and true-residual check are directly comparable. The generic
-`kernel_operator_t` remains a blocked host-reference path for user-supplied
-formulas until persistent backend-owned data and a static accelerator lowering
-contract are added.
+iteration cap, and true-residual check are directly comparable. Generic
+user-supplied formulas remain a blocked host-reference path until persistent
+backend-owned data and a static accelerator lowering contract are added; the
+built-in static programs already use the resident accelerator path described
+above.
 
 The eight-feature path also has an optional native CUDA bridge. The benchmark
 drivers enable it with `FORTML_NATIVE_CUDA=1`, compile

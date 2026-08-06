@@ -107,8 +107,11 @@ missing report leaves the item open.
 - [x] Add an explicit generic `solve_cg_device` path that keeps the lowered
   kernel program and sample points resident while Krylov products and vector
   updates execute through OpenACC.
-- [ ] Extend the generic resident CG override to multi-RHS workspaces and
-  block/Nystrom preconditioners.
+- [x] Extend the generic resident CG override to fused multi-RHS products with
+  one independent PCG recurrence per column and an independent true-residual
+  check.
+- [ ] Add persistent generic multi-RHS workspaces and block/Nystrom
+  preconditioners.
 - [ ] Add block/Nystrom preconditioners, stochastic Lanczos log determinants,
   and LOVE-style predictive-variance products for large exact-GP solves.
 - [x] Add compact-support sparse covariance/precision dispatch through
@@ -300,9 +303,15 @@ implemented and independently tested in `fortnum` as
 products. The one-dimensional `fortnum_toeplitz` dependency also has cached
 FFT products and independent scaling evidence, and FortML now wraps it in
 `toeplitz_gp_operator_t` with a dense-oracle CG check. The generic kernel
-operator now has a single-RHS resident `solve_cg_device` recurrence; generic
-multi-RHS workspaces, derivative products, multilevel embeddings, and matched
+operator now has resident single- and multi-RHS CG recurrences. The multi-RHS
+path fuses each kernel matrix product while keeping independent scalar PCG
+state and recomputing true residuals before accepting convergence; persistent
+workspace ownership, derivative products, multilevel embeddings, and matched
 CPU/GPU scaling evidence for the Toeplitz GP path remain open.
+The direct `nvfortran` launch trace confirms that the pairwise composite
+evaluation remains one fused matrix-matrix kernel per product; per-column
+vector updates and host-controlled convergence are the next operation-level
+fusion target.
 
 The compact-support sparse branch now consumes `fortsparse` triplets and
 retains a CSR view for row-owned host and OpenACC products. Its float64,

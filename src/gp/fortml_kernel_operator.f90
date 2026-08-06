@@ -87,6 +87,8 @@ module fortml_kernel_operator
         procedure, public :: matvec_device => kernel_operator_matvec_device
         procedure, public :: matmat_device => kernel_operator_matmat_device
         procedure, public :: solve_cg_device => kernel_operator_solve_cg_device
+        procedure, public :: solve_cg_multi_device => &
+            kernel_operator_solve_cg_multi_device
         procedure, public :: device_supported => kernel_operator_device_supported
         procedure, public :: diagonal => kernel_operator_diagonal
         procedure, public :: sample_count => kernel_operator_sample_count
@@ -1810,6 +1812,319 @@ contains
         end subroutine combine_kernel_direction
 
     end subroutine kernel_operator_solve_cg_device
+
+    subroutine kernel_operator_solve_cg_multi_device( &
+            self, right_hand_side, solution, tolerance, max_iterations, &
+            info, iterations, residual_norm, use_diagonal_preconditioner)
+        class(kernel_operator_t), intent(in) :: self
+        real(dp), intent(in) :: right_hand_side(:, :)
+        real(dp), intent(inout) :: solution(:, :)
+        real(dp), intent(in) :: tolerance
+        integer, intent(in) :: max_iterations
+        integer, intent(out) :: info(:), iterations(:)
+        real(dp), intent(out) :: residual_norm(:)
+        logical, intent(in), optional :: use_diagonal_preconditioner
+
+        logical :: use_preconditioner
+        real(dp), allocatable :: residual(:, :), direction(:, :)
+        real(dp), allocatable :: preconditioned(:, :)
+        real(dp), allocatable :: operator_direction(:, :), work(:, :)
+        real(dp), allocatable :: diagonal_values(:), target(:), rho(:)
+        real(dp), allocatable :: next_rho(:), denominator(:)
+        logical, allocatable :: active(:), candidate(:)
+        logical :: done
+        integer :: n_samples, n_rhs, column
+        real(dp) :: step, beta
+
+        info = KRYLOV_INVALID_ARGUMENT
+        iterations = 0
+        residual_norm = huge(1.0_dp)
+        n_samples = self%sample_count()
+        n_rhs = size(right_hand_side, 2)
+        if (n_samples < 1 .or. n_rhs < 1) return
+        if (size(right_hand_side, 1) /= n_samples) return
+        if (size(solution, 1) /= n_samples .or. &
+            size(solution, 2) /= n_rhs) return
+        if (size(info) /= n_rhs .or. size(iterations) /= n_rhs .or. &
+            size(residual_norm) /= n_rhs) return
+        if (tolerance <= 0.0_dp .or. max_iterations < 1) return
+        if (.not. self%device_supported()) return
+        if (.not. self%points_device_resident) return
+        if (.not. self%program_device_resident) return
+
+        use_preconditioner = .true.
+        if (present(use_diagonal_preconditioner)) then
+            use_preconditioner = use_diagonal_preconditioner
+        end if
+        allocate( &
+            residual(n_samples, n_rhs), direction(n_samples, n_rhs), &
+            preconditioned(n_samples, n_rhs), &
+            operator_direction(n_samples, n_rhs), work(n_samples, n_rhs), &
+            diagonal_values(n_samples), target(n_rhs), rho(n_rhs), &
+            next_rho(n_rhs), denominator(n_rhs), active(n_rhs), &
+            candidate(n_rhs))
+        diagonal_values = 1.0_dp
+        if (use_preconditioner) then
+            diagonal_values = self%diagonal()
+            if (size(diagonal_values) /= n_samples) return
+            if (any(diagonal_values <= 0.0_dp)) return
+        end if
+
+        do column = 1, n_rhs
+            target(column) = tolerance*max(sqrt(sum( &
+                right_hand_side(:, column)*right_hand_side(:, column))), 1.0_dp)
+        end do
+        info = KRYLOV_MAX_ITERATIONS
+        iterations = 0
+        residual_norm = huge(1.0_dp)
+        active = .false.
+        candidate = .false.
+        done = .false.
+
+        !$acc data copyin( &
+        !$acc& self%points, self%program_kind, self%program_variance, &
+        !$acc& self%program_lengthscale, right_hand_side, diagonal_values) &
+        !$acc& copy(solution) create( &
+        !$acc& residual, direction, preconditioned, operator_direction, work)
+        call self%matmat(solution, work)
+        call subtract_kernel_matrices( &
+            right_hand_side, work, residual)
+        call matrix_acc_norm2_columns(residual, residual_norm)
+        if (use_preconditioner) then
+            call apply_kernel_preconditioner_matrix( &
+                residual, preconditioned, diagonal_values)
+        else
+            call copy_kernel_matrix(preconditioned, residual)
+        end if
+        call matrix_acc_dots(residual, preconditioned, rho)
+        do column = 1, n_rhs
+            if (residual_norm(column) <= target(column)) then
+                info(column) = KRYLOV_OK
+            else
+                if (rho(column) <= 0.0_dp .or. &
+                    .not. ieee_is_finite(rho(column))) then
+                    info(column) = KRYLOV_BREAKDOWN
+                else
+                    active(column) = .true.
+                end if
+            end if
+        end do
+        call copy_kernel_matrix(direction, preconditioned)
+
+        do while (any(active) .and. .not. done)
+            call self%matmat(direction, operator_direction)
+            call matrix_acc_dots( &
+                direction, operator_direction, denominator)
+            candidate = .false.
+            do column = 1, n_rhs
+                if (active(column)) then
+                    if (denominator(column) <= 0.0_dp .or. &
+                        .not. ieee_is_finite(denominator(column))) then
+                        info(column) = KRYLOV_BREAKDOWN
+                        active(column) = .false.
+                    else
+                        step = rho(column)/denominator(column)
+                        call update_kernel_column( &
+                            solution, step, direction, column)
+                        call subtract_kernel_scaled_column( &
+                            residual, step, operator_direction, column)
+                        iterations(column) = iterations(column) + 1
+                    end if
+                end if
+            end do
+            call matrix_acc_norm2_columns(residual, residual_norm)
+            do column = 1, n_rhs
+                if (active(column) .and. &
+                    (residual_norm(column) <= target(column) .or. &
+                    iterations(column) >= max_iterations)) then
+                    candidate(column) = .true.
+                end if
+            end do
+
+            if (any(candidate)) then
+                call self%matmat(solution, work)
+                call subtract_kernel_matrices( &
+                    right_hand_side, work, residual)
+                call matrix_acc_norm2_columns(residual, residual_norm)
+                do column = 1, n_rhs
+                    if (candidate(column)) then
+                        if (residual_norm(column) <= target(column)) then
+                            info(column) = KRYLOV_OK
+                            active(column) = .false.
+                            call zero_kernel_column(direction, column)
+                        else if (iterations(column) >= max_iterations) then
+                            info(column) = KRYLOV_MAX_ITERATIONS
+                            active(column) = .false.
+                            call zero_kernel_column(direction, column)
+                        else
+                            candidate(column) = .false.
+                        end if
+                    end if
+                end do
+            end if
+
+            if (use_preconditioner) then
+                call apply_kernel_preconditioner_matrix( &
+                    residual, preconditioned, diagonal_values)
+            else
+                call copy_kernel_matrix(preconditioned, residual)
+            end if
+            call matrix_acc_dots(residual, preconditioned, next_rho)
+            do column = 1, n_rhs
+                if (active(column)) then
+                    if (next_rho(column) <= 0.0_dp .or. &
+                        .not. ieee_is_finite(next_rho(column))) then
+                        info(column) = KRYLOV_BREAKDOWN
+                        active(column) = .false.
+                    else
+                        beta = next_rho(column)/rho(column)
+                        call combine_kernel_column( &
+                            direction, preconditioned, beta, column)
+                        rho(column) = next_rho(column)
+                    end if
+                end if
+            end do
+            done = .not. any(active)
+        end do
+
+        call self%matmat(solution, work)
+        call subtract_kernel_matrices( &
+            right_hand_side, work, residual)
+        call matrix_acc_norm2_columns(residual, residual_norm)
+        do column = 1, n_rhs
+            if (residual_norm(column) <= target(column)) then
+                info(column) = KRYLOV_OK
+            end if
+        end do
+        !$acc end data
+
+    contains
+
+        subroutine matrix_acc_dots(left, right, values)
+            real(dp), intent(in) :: left(:, :), right(:, :)
+            real(dp), intent(out) :: values(:)
+            real(dp) :: value
+            integer :: i, column
+
+            !$acc parallel loop gang private(value)
+            !$omp parallel do private(value)
+            do column = 1, size(left, 2)
+                value = 0.0_dp
+                !$acc loop vector reduction(+:value)
+                !$omp simd reduction(+:value)
+                do i = 1, size(left, 1)
+                    value = value + left(i, column)*right(i, column)
+                end do
+                values(column) = value
+            end do
+        end subroutine matrix_acc_dots
+
+        subroutine matrix_acc_norm2_columns(vector, values)
+            real(dp), intent(in) :: vector(:, :)
+            real(dp), intent(out) :: values(:)
+
+            call matrix_acc_dots(vector, vector, values)
+            values = sqrt(values)
+        end subroutine matrix_acc_norm2_columns
+
+        subroutine subtract_kernel_matrices(left, right, result)
+            real(dp), intent(in) :: left(:, :), right(:, :)
+            real(dp), intent(out) :: result(:, :)
+            integer :: i, column
+
+            !$acc parallel loop collapse(2)
+            !$omp parallel do collapse(2)
+            do column = 1, size(result, 2)
+                do i = 1, size(result, 1)
+                    result(i, column) = left(i, column) - right(i, column)
+                end do
+            end do
+        end subroutine subtract_kernel_matrices
+
+        subroutine apply_kernel_preconditioner_matrix(input, output, diagonal)
+            real(dp), intent(in) :: input(:, :), diagonal(:)
+            real(dp), intent(out) :: output(:, :)
+            integer :: i, column
+
+            !$acc parallel loop collapse(2)
+            !$omp parallel do collapse(2)
+            do column = 1, size(output, 2)
+                do i = 1, size(output, 1)
+                    output(i, column) = input(i, column)/diagonal(i)
+                end do
+            end do
+        end subroutine apply_kernel_preconditioner_matrix
+
+        subroutine copy_kernel_matrix(target, source)
+            real(dp), intent(out) :: target(:, :)
+            real(dp), intent(in) :: source(:, :)
+            integer :: i, column
+
+            !$acc parallel loop collapse(2)
+            !$omp parallel do collapse(2)
+            do column = 1, size(target, 2)
+                do i = 1, size(target, 1)
+                    target(i, column) = source(i, column)
+                end do
+            end do
+        end subroutine copy_kernel_matrix
+
+        subroutine zero_kernel_column(target, column)
+            real(dp), intent(inout) :: target(:, :)
+            integer, intent(in) :: column
+            integer :: i
+
+            !$acc parallel loop
+            !$omp parallel do
+            do i = 1, size(target, 1)
+                target(i, column) = 0.0_dp
+            end do
+        end subroutine zero_kernel_column
+
+        subroutine update_kernel_column(target, scale, vector, column)
+            real(dp), intent(inout) :: target(:, :)
+            real(dp), intent(in) :: scale, vector(:, :)
+            integer, intent(in) :: column
+            integer :: i
+
+            !$acc parallel loop
+            !$omp parallel do
+            do i = 1, size(target, 1)
+                target(i, column) = target(i, column) + &
+                    scale*vector(i, column)
+            end do
+        end subroutine update_kernel_column
+
+        subroutine subtract_kernel_scaled_column(target, scale, vector, column)
+            real(dp), intent(inout) :: target(:, :)
+            real(dp), intent(in) :: scale, vector(:, :)
+            integer, intent(in) :: column
+            integer :: i
+
+            !$acc parallel loop
+            !$omp parallel do
+            do i = 1, size(target, 1)
+                target(i, column) = target(i, column) - &
+                    scale*vector(i, column)
+            end do
+        end subroutine subtract_kernel_scaled_column
+
+        subroutine combine_kernel_column(target, source, scale, column)
+            real(dp), intent(inout) :: target(:, :)
+            real(dp), intent(in) :: source(:, :)
+            real(dp), intent(in) :: scale
+            integer, intent(in) :: column
+            integer :: i
+
+            !$acc parallel loop
+            !$omp parallel do
+            do i = 1, size(target, 1)
+                target(i, column) = source(i, column) + &
+                    scale*target(i, column)
+            end do
+        end subroutine combine_kernel_column
+
+    end subroutine kernel_operator_solve_cg_multi_device
 
     subroutine kernel_operator_matvec(self, input, output)
         class(kernel_operator_t), intent(in) :: self
