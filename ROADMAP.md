@@ -199,7 +199,7 @@ missing report leaves the item open.
   dependency and its independent dense-oracle/scaling evidence.
 - [x] Add the FortML Toeplitz-backed GP wrapper with dense-oracle products and
   a CG solve check.
-- [ ] Add multilevel tensor-grid embeddings, derivative products, and banded
+- [x] Add multilevel tensor-grid embeddings, derivative products, and banded
   Markov-precision paths. The current Toeplitz FFT wrapper is host-resident.
 - [ ] Add multi-output GPs, inducing-point variational GPs, and the structured
   inference policies that sit above these operator contracts.
@@ -343,6 +343,29 @@ commits `5618a1e8`, `147aaceb`, `346813d3`). Two slow FortFront suites and one
 FortSym suite were renamed `*_slow`, and `fo` now gives a slow-marked test its
 own timeout budget instead of holding it to the fast one (`fo` commit
 `f36c429`).
+
+The structured lane now has its three missing pieces. `fortml_multilevel_grid`
+builds the tensor-grid hierarchy by halving each dimension, and moves values
+between levels by separable linear interpolation; `restrict` is the exact
+transpose of `prolong`, which is what keeps a two-level correction symmetric
+enough to precondition a Krylov solve. `structured_gp_operator_t` gained
+separable derivative products: swapping one factor for its derivative turns the
+same contraction into the derivative of the covariance along that dimension, so
+a derivative product costs one ordinary tensor pass. `fortml_banded_precision`
+adds the Gaussian Markov path - a banded precision with banded Cholesky,
+solves, and log determinants in both directions.
+
+`test_structured_multilevel` checks that prolongation reproduces a linear
+function exactly on the fine grid, that the adjoint identity
+`<P c, f> = <c, R f>` holds, and that both derivative products match the dense
+Kronecker product assembled independently in the test.
+`test_banded_precision` uses the exact Markov identity as its oracle: the
+tridiagonal Ornstein-Uhlenbeck precision is the exact inverse of the dense
+exponential covariance, so the band times that covariance must be the identity,
+a banded solve must reproduce the dense covariance product, and the log
+determinant must match a dense Cholesky. Both pass with gfortran and
+`nvfortran` 26.5. A device-resident Toeplitz path and matched scaling evidence
+remain open.
 
 `fortml_lanczos` adds the two matrix-free spectral estimators over any
 `linear_operator_t`. The log determinant is stochastic Lanczos quadrature:

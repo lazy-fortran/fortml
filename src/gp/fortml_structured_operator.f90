@@ -1,6 +1,7 @@
 module fortml_structured_operator
     use fortnum_kinds, only: dp
-    use fortnum_status, only: fortnum_status_t, FORTNUM_OK
+    use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
+        FORTNUM_DOMAIN_ERROR
     use fortnum_tensor_product, only: tensor_factor_t, &
         fortnum_tensor_operator_t => tensor_product_operator_t
     use fortml_linear_operator, only: linear_operator_t
@@ -9,6 +10,12 @@ module fortml_structured_operator
 
     type, extends(linear_operator_t), public :: structured_gp_operator_t
         type(fortnum_tensor_operator_t) :: product_operator
+        !! One derivative factor per grid dimension, supplied by the caller.
+        !! Swapping factor `m` for its derivative turns the separable product
+        !! into the derivative of the covariance along dimension `m`, so a
+        !! derivative product costs one ordinary tensor contraction.
+        type(tensor_factor_t), allocatable :: derivative_factors(:)
+        type(fortnum_tensor_operator_t), allocatable :: derivative_operators(:)
     contains
         procedure, public :: initialize => structured_gp_operator_initialize
         procedure, public :: matvec => structured_gp_operator_matvec
@@ -19,6 +26,12 @@ module fortml_structured_operator
         procedure, public :: matmat_device => structured_gp_operator_matmat_device
         procedure, public :: diagonal => structured_gp_operator_diagonal
         procedure, public :: sample_count => structured_gp_operator_sample_count
+        procedure, public :: set_derivative_factors => &
+            structured_gp_operator_set_derivative_factors
+        procedure, public :: derivative_matvec => &
+            structured_gp_operator_derivative_matvec
+        procedure, public :: derivative_matmat => &
+            structured_gp_operator_derivative_matmat
     end type structured_gp_operator_t
 
     public :: tensor_factor_t
@@ -32,6 +45,103 @@ contains
 
         call self%product_operator%initialize(factors, status)
     end subroutine structured_gp_operator_initialize
+
+    subroutine structured_gp_operator_set_derivative_factors( &
+            self, derivative_factors, status)
+        !! Attach one derivative factor per dimension and build the swapped
+        !! tensor operators once, so a derivative product needs no allocation.
+        class(structured_gp_operator_t), intent(inout) :: self
+        type(tensor_factor_t), intent(in) :: derivative_factors(:)
+        type(fortnum_status_t), intent(out) :: status
+        type(tensor_factor_t), allocatable :: swapped(:)
+        integer :: mode, n_modes
+
+        if (.not. allocated(self%product_operator%factors)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "structured operator: set factors before derivative factors")
+            return
+        end if
+        n_modes = size(self%product_operator%factors)
+        if (size(derivative_factors) /= n_modes) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "structured operator: one derivative factor per dimension")
+            return
+        end if
+        do mode = 1, n_modes
+            if (.not. allocated(derivative_factors(mode)%values)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "structured operator: a derivative factor is empty")
+                return
+            end if
+            if (any(shape(derivative_factors(mode)%values) /= &
+                shape(self%product_operator%factors(mode)%values))) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "structured operator: derivative factor shape differs")
+                return
+            end if
+        end do
+
+        if (allocated(self%derivative_factors)) deallocate(self%derivative_factors)
+        if (allocated(self%derivative_operators)) then
+            deallocate(self%derivative_operators)
+        end if
+        allocate(self%derivative_factors(n_modes))
+        allocate(self%derivative_operators(n_modes))
+        allocate(swapped(n_modes))
+        do mode = 1, n_modes
+            self%derivative_factors(mode) = derivative_factors(mode)
+        end do
+        do mode = 1, n_modes
+            swapped = self%product_operator%factors
+            swapped(mode) = derivative_factors(mode)
+            call self%derivative_operators(mode)%initialize(swapped, status)
+            if (status%code /= FORTNUM_OK) return
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine structured_gp_operator_set_derivative_factors
+
+    subroutine structured_gp_operator_derivative_matvec( &
+            self, dimension, input, output, status)
+        class(structured_gp_operator_t), intent(in) :: self
+        integer, intent(in) :: dimension
+        real(dp), intent(in) :: input(:)
+        real(dp), intent(out) :: output(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        output = 0.0_dp
+        if (.not. valid_derivative_dimension(self, dimension)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "structured operator: derivative dimension is invalid")
+            return
+        end if
+        call self%derivative_operators(dimension)%matvec(input, output, status)
+    end subroutine structured_gp_operator_derivative_matvec
+
+    subroutine structured_gp_operator_derivative_matmat( &
+            self, dimension, input, output, status)
+        class(structured_gp_operator_t), intent(in) :: self
+        integer, intent(in) :: dimension
+        real(dp), intent(in) :: input(:, :)
+        real(dp), intent(out) :: output(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        output = 0.0_dp
+        if (.not. valid_derivative_dimension(self, dimension)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "structured operator: derivative dimension is invalid")
+            return
+        end if
+        call self%derivative_operators(dimension)%matmat(input, output, status)
+    end subroutine structured_gp_operator_derivative_matmat
+
+    logical function valid_derivative_dimension(self, dimension) result(valid)
+        class(structured_gp_operator_t), intent(in) :: self
+        integer, intent(in) :: dimension
+
+        valid = allocated(self%derivative_operators)
+        if (.not. valid) return
+        valid = dimension >= 1 .and. dimension <= size(self%derivative_operators)
+    end function valid_derivative_dimension
 
     subroutine structured_gp_operator_matvec(self, input, output)
         class(structured_gp_operator_t), intent(in) :: self
