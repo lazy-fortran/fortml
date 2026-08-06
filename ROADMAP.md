@@ -203,7 +203,7 @@ missing report leaves the item open.
   Markov-precision paths. The current Toeplitz FFT wrapper is host-resident.
 - [x] Add multi-output GPs, inducing-point variational GPs, and the structured
   inference policies that sit above these operator contracts.
-- [ ] Add variational autoencoders and deep recurrent networks after the
+- [x] Add variational autoencoders and deep recurrent networks after the
   regression, GP, and variational-inference contracts are stable. Their
   likelihoods, reparameterized gradients, scan/backpropagation, and
   higher-order derivative behavior each require separate oracle cases.
@@ -343,6 +343,22 @@ commits `5618a1e8`, `147aaceb`, `346813d3`). Two slow FortFront suites and one
 FortSym suite were renamed `*_slow`, and `fo` now gives a slow-marked test its
 own timeout budget instead of holding it to the fast one (`fo` commit
 `f36c429`).
+
+`fortml_vae` composes two explicit MLPs into a variational autoencoder with a
+diagonal Gaussian posterior, a seeded reparameterized draw, and a
+fixed-variance Gaussian likelihood. Its gradient is one decoder VJP and one
+encoder VJP per batch: the decoder's input gradient is the cotangent the
+reparameterization carries back, where the analytic KL gradient is added.
+`fortml_rnn` adds the sequence-batched vanilla recurrent network with an exact
+backpropagation-through-time reverse scan over a leading time axis.
+
+`test_vae_rnn` checks the VAE KL against the analytic diagonal-Gaussian formula
+evaluated independently from the encoder output, the complete ELBO gradient
+against central finite differences, and seed determinism; it checks the RNN
+against a hand-rolled two-step forward reference and its BPTT gradient against
+central finite differences. Both pass with gfortran and `nvfortran` 26.5.
+Gated recurrent cells, checkpointed long sequences, Bernoulli likelihoods, and
+higher-order products for these two models are not part of this item.
 
 `fortml_sparse_gp` adds the inducing-point variational GP. With a Gaussian
 likelihood the expected log likelihood is closed form, so the ELBO needs no
