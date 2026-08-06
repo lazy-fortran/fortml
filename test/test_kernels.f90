@@ -148,6 +148,8 @@ contains
         real(dp) :: x1(3, 2), x2(2, 2), direction(2), matrix(3, 2)
         real(dp) :: matrix_dot(3, 2), matrix_plus(3, 2), matrix_minus(3, 2)
         real(dp) :: matrix_bar(3, 2), parameter_bar(2), lhs, rhs, h
+        real(dp) :: parameter_bar_dot(2), parameter_plus(2), parameter_minus(2)
+        real(dp) :: parameters(2)
 
         x1 = reshape([0.0_dp, 0.5_dp, -0.4_dp, 1.0_dp, 1.2_dp, -0.7_dp], shape(x1))
         x2 = reshape([0.2_dp, -0.1_dp, 0.8_dp, 0.4_dp], shape(x2))
@@ -170,6 +172,21 @@ contains
         rhs = sum(parameter_bar*direction)
         if (.not. status_ok(status) .or. abs(lhs - rhs) > 2.0e-12_dp) then
             write (error_unit, '(a)') "FAIL [vjp] kernel adjoint identity"
+            failures = failures + 1
+        end if
+
+        parameters = rbf%parameters()
+        call rbf%parameter_hvp(x1, x2, matrix_bar, direction, parameter_bar, &
+            parameter_bar_dot, status)
+        h = 1.0e-6_dp
+        call rbf%set_parameters(parameters + h*direction, status)
+        call rbf%parameter_vjp(x1, x2, matrix_bar, parameter_plus, status)
+        call rbf%set_parameters(parameters - h*direction, status)
+        call rbf%parameter_vjp(x1, x2, matrix_bar, parameter_minus, status)
+        call rbf%set_parameters(parameters, status)
+        if (.not. status_ok(status) .or. maxval(abs(parameter_bar_dot - &
+            (parameter_plus - parameter_minus)/(2.0_dp*h))) > 3.0e-8_dp) then
+            write (error_unit, '(a)') "FAIL [hvp] kernel finite difference"
             failures = failures + 1
         end if
     end subroutine test_parameter_products

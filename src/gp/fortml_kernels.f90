@@ -2,6 +2,8 @@ module fortml_kernels
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
         FORTNUM_DOMAIN_ERROR
+    use fortml_generated_rbf_products, only: fortml_rbf_hvp, fortml_rbf_jvp, &
+        fortml_rbf_vjp
     implicit none
     private
 
@@ -39,6 +41,7 @@ module fortml_kernels
         procedure, public :: matrix => kernel_matrix
         procedure, public :: matrix_jvp => kernel_matrix_jvp
         procedure, public :: parameter_vjp => kernel_parameter_vjp
+        procedure, public :: parameter_hvp => kernel_parameter_hvp
     end type kernel_t
 
     public :: make_rbf_kernel
@@ -318,6 +321,56 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine kernel_parameter_vjp
 
+    subroutine kernel_parameter_hvp( &
+            self, x1, x2, matrix_bar, direction, parameter_bar, &
+            parameter_bar_dot, status)
+        class(kernel_t), intent(in) :: self
+        real(dp), intent(in) :: x1(:, :), x2(:, :), matrix_bar(:, :), direction(:)
+        real(dp), intent(out) :: parameter_bar(:), parameter_bar_dot(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: variance_log, lengthscale_log, r2, distance
+        real(dp) :: value, value_dot, x1_bar, x1_bar_dot
+        real(dp) :: x2_bar, x2_bar_dot, variance_bar, variance_bar_dot
+        real(dp) :: lengthscale_bar, lengthscale_bar_dot
+        integer :: i, j
+
+        call check_matrix_shapes(self, x1, x2, matrix_bar, status)
+        if (status%code /= FORTNUM_OK) return
+        if (size(direction) /= self%parameter_count() .or. &
+            size(parameter_bar) /= self%parameter_count() .or. &
+            size(parameter_bar_dot) /= self%parameter_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "kernel parameter_hvp: parameter shape is invalid")
+            return
+        end if
+        if (self%kind /= KERNEL_RBF) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "kernel parameter_hvp: generated HVP is only available for RBF")
+            return
+        end if
+
+        variance_log = self%log_parameters(1)
+        lengthscale_log = self%log_parameters(2)
+        parameter_bar = 0.0_dp
+        parameter_bar_dot = 0.0_dp
+        do j = 1, size(x2, 1)
+            do i = 1, size(x1, 1)
+                r2 = sum((x1(i, :) - x2(j, :))**2)
+                distance = sqrt(r2)
+                call fortml_rbf_hvp( &
+                    distance, 0.0_dp, 0.0_dp, 0.0_dp, variance_log, direction(1), &
+                    lengthscale_log, direction(2), value, value_dot, matrix_bar(i, j), &
+                    x1_bar, x1_bar_dot, x2_bar, x2_bar_dot, variance_bar, &
+                    variance_bar_dot, lengthscale_bar, lengthscale_bar_dot)
+                parameter_bar(1) = parameter_bar(1) + variance_bar
+                parameter_bar(2) = parameter_bar(2) + lengthscale_bar
+                parameter_bar_dot(1) = parameter_bar_dot(1) + variance_bar_dot
+                parameter_bar_dot(2) = parameter_bar_dot(2) + lengthscale_bar_dot
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine kernel_parameter_hvp
+
     subroutine make_leaf(kernel, kind, input_dim, variance, lengthscale, status)
         type(kernel_t), intent(out) :: kernel
         integer, intent(in) :: kind, input_dim
@@ -568,28 +621,30 @@ contains
                 do i = 1, size(x1, 1)
                     r2 = sum((x1(i, :) - x2(j, :))**2)
                     if (self%kind == KERNEL_RBF) then
-                        call fortml_generated_rbf_leaf_fortran( &
-                            variance, r2, lengthscale, value)
-                        length_derivative = value*r2/(lengthscale*lengthscale)
+                        call fortml_rbf_jvp( &
+                            sqrt(r2), 0.0_dp, 0.0_dp, 0.0_dp, &
+                            self%log_parameters(1), log_variance_dot, &
+                            self%log_parameters(2), log_lengthscale_dot, &
+                            value, matrix_dot(i, j))
                     else
                         call leaf_value_and_length_derivative(self%kind, variance, &
                             lengthscale, r2, value, length_derivative)
+                        if (self%kind == KERNEL_LINEAR) then
+                            value = variance*dot_product(x1(i, :), x2(j, :))
+                            matrix_dot(i, j) = value*log_variance_dot
+                        else if (self%kind == KERNEL_CONSTANT) then
+                            value = variance
+                            matrix_dot(i, j) = value*log_variance_dot
+                        else if (self%kind == KERNEL_WHITE_NOISE) then
+                            value = variance*merge(1.0_dp, 0.0_dp, &
+                                same_row(x1, i, x2, j))
+                            matrix_dot(i, j) = value*log_variance_dot
+                        else
+                            matrix_dot(i, j) = value*log_variance_dot + &
+                                length_derivative*log_lengthscale_dot
+                        end if
                     end if
-                    if (self%kind == KERNEL_LINEAR) then
-                        matrix(i, j) = variance*dot_product(x1(i, :), x2(j, :))
-                        matrix_dot(i, j) = matrix(i, j)*log_variance_dot
-                    else if (self%kind == KERNEL_CONSTANT) then
-                        matrix(i, j) = variance
-                        matrix_dot(i, j) = matrix(i, j)*log_variance_dot
-                    else if (self%kind == KERNEL_WHITE_NOISE) then
-                        matrix(i, j) = variance*merge(1.0_dp, 0.0_dp, &
-                            same_row(x1, i, x2, j))
-                        matrix_dot(i, j) = matrix(i, j)*log_variance_dot
-                    else
-                        matrix(i, j) = value
-                        matrix_dot(i, j) = value*log_variance_dot + &
-                            length_derivative*log_lengthscale_dot
-                    end if
+                    matrix(i, j) = value
                 end do
             end do
         end select
@@ -630,15 +685,43 @@ contains
             else
                 lengthscale = 1.0_dp
             end if
-            parameter_bar(offset) = parameter_bar(offset) + &
-                sum(matrix_bar*leaf_matrix(self, x1, x2, variance, lengthscale, 1))
+            if (self%kind == KERNEL_RBF) then
+                call kernel_rbf_parameter_vjp(self, x1, x2, matrix_bar, &
+                    parameter_bar, offset)
+            else
+                parameter_bar(offset) = parameter_bar(offset) + &
+                    sum(matrix_bar*leaf_matrix(self, x1, x2, variance, lengthscale, 1))
+            end if
             if (self%kind == KERNEL_RBF .or. self%kind == KERNEL_MATERN12 .or. &
                 self%kind == KERNEL_MATERN32 .or. self%kind == KERNEL_MATERN52) then
-                parameter_bar(offset + 1) = parameter_bar(offset + 1) + &
-                    sum(matrix_bar*leaf_matrix(self, x1, x2, variance, lengthscale, 2))
+                if (self%kind /= KERNEL_RBF) then
+                    parameter_bar(offset + 1) = parameter_bar(offset + 1) + &
+                        sum(matrix_bar*leaf_matrix(self, x1, x2, variance, lengthscale, 2))
+                end if
             end if
         end select
     end subroutine kernel_parameter_vjp_impl
+
+    subroutine kernel_rbf_parameter_vjp(self, x1, x2, matrix_bar, parameter_bar, offset)
+        class(kernel_t), intent(in) :: self
+        real(dp), intent(in) :: x1(:, :), x2(:, :), matrix_bar(:, :)
+        real(dp), intent(inout) :: parameter_bar(:)
+        integer, intent(in) :: offset
+        real(dp) :: r2, value, x1_bar, x2_bar, variance_bar, lengthscale_bar
+        integer :: i, j
+
+        do j = 1, size(x2, 1)
+            do i = 1, size(x1, 1)
+                r2 = sum((x1(i, :) - x2(j, :))**2)
+                call fortml_rbf_vjp( &
+                    sqrt(r2), 0.0_dp, self%log_parameters(1), &
+                    self%log_parameters(2), value, matrix_bar(i, j), x1_bar, &
+                    x2_bar, variance_bar, lengthscale_bar)
+                parameter_bar(offset) = parameter_bar(offset) + variance_bar
+                parameter_bar(offset + 1) = parameter_bar(offset + 1) + lengthscale_bar
+            end do
+        end do
+    end subroutine kernel_rbf_parameter_vjp
 
     function leaf_matrix(self, x1, x2, variance, lengthscale, derivative_kind) &
             result(matrix)

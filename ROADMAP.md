@@ -108,8 +108,12 @@ missing report leaves the item open.
   gradients, prediction JVPs, and prediction VJPs.
 - [x] Add a correctness-gated Fortran-native tiled RBF matrix-vector product
   with OpenACC GPU execution and resident-data support.
-- [ ] Connect the kernel and GP product contracts to `fortad`-generated
-  JVP/VJP/HVP code and compare generated kernels with the explicit baseline.
+- [x] Connect the RBF kernel and fitted-GP value/JVP/VJP contracts to
+  `fortad`-generated JVP/VJP/HVP code and compare the generated RBF products
+  with explicit finite-difference and adjoint baselines. The GP Cholesky HVP
+  remains a separate open item.
+- [ ] Add a differentiated GP linear-solve/Cholesky path so the fitted-GP
+  optimizer contract can expose an HVP instead of refusing it.
 - [x] Add RBF function-value and derivative observations/predictions using
   kernel partial derivatives verified against `fortsym`, independent finite
   differences, and a hand-derived dense mixed-covariance solve.
@@ -246,19 +250,19 @@ FortML test can link; this does not invalidate the generated-code oracle.
 
 A scalar RBF formula fixture now generates JVP, VJP, and HVP code through
 FortAD and checks it against a hand-derived gradient, converged central
-differences, the directional adjoint identity, and Hessian symmetry. This is
-formula-level generation evidence; wiring the generated products directly
-into the composable `kernel_t`/GP implementation remains the next FortAD
-integration gate.
+differences, the directional adjoint identity, and Hessian symmetry. It is
+also the source for `gen_rbf_products`, which emits the checked product module
+consumed by `kernel_t`.
 
 The shared FortSym kernel IR now also has a checked Fortran consumer generator
 for the RBF primal leaf. `fortml_kernels` uses the generated leaf for scalar
 values, covariance matrices, matrix JVP values, input derivatives, and the
 log-variance VJP contribution. `test_kernels` compares those paths with an
 independent pairwise RBF formula and finite-difference/adjoint product checks.
-This closes the generated-primal wiring slice only; generated FortAD
-parameter JVP/VJP/HVP dispatch through the recursive `kernel_t` and GP solve
-is still open.
+Generated FortAD parameter JVP/VJP/HVP dispatch through `kernel_t` is now
+covered for RBF. The fitted GP value/JVP/VJP path reaches those generated
+kernel products; differentiating the GP Cholesky solve for an optimizer-visible
+HVP remains open.
 
 The first basis-map slice is now implemented in `fortml_basis`. It provides polynomial
 powers, Fourier sine/cosine features, differentiable ARD radial features, and
