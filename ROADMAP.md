@@ -123,8 +123,11 @@ missing report leaves the item open.
 - [x] Add RBF function-value and derivative observations/predictions using
   kernel partial derivatives verified against `fortsym`, independent finite
   differences, and a hand-derived dense mixed-covariance solve.
-- [ ] Extend derivative observation rules to Matérn and white-noise kernels
-  with an explicit coincident-point smoothness contract.
+- [x] Extend derivative observation rules to Matérn and white-noise kernels
+  with an explicit coincident-point smoothness contract. Generated radial
+  derivatives cover Matérn 3/2 and 5/2, Matérn 1/2 derivatives refuse
+  coincident points, and white noise accepts function-value observations while
+  refusing derivative observations.
 - [x] Add the first public lazy-operator contract with kernel MVM, MVM
   batching, diagonal, sample count, and a backend-independent CG entry point.
   The RBF implementation keeps the covariance matrix implicit and delegates
@@ -273,8 +276,9 @@ Cholesky solve and reverse cotangents for the full packed RBF hyperparameter
   `test_parameter_products`; the LML gradient HVP is also checked in
   `test_gaussian_process`. The generated scalar Matérn HVPs and analytic
   white-noise/elementary/composite rules are now covered by the kernel-product
-  oracle. Matérn and white-noise derivative-observation covariance rules remain
-  open under the separate coincident-point smoothness contract.
+  oracle. Matérn derivative-observation covariance is checked against a
+  hand-derived dense Matern-3/2 solve; Matérn-1/2 coincident derivatives and
+  all white-noise derivative observations refuse explicitly.
 
 The first basis-map slice is now implemented in `fortml_basis`. It provides polynomial
 powers, Fourier sine/cosine features, differentiable ARD radial features, and

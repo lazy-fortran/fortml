@@ -3,7 +3,7 @@ module fortml_derivative_gaussian_process
     use fortnum_cholesky, only: cholesky_factorization_t
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
         FORTNUM_DOMAIN_ERROR, FORTNUM_CONVERGENCE_ERROR
-    use fortml_kernels, only: kernel_t
+    use fortml_kernels, only: kernel_t, KERNEL_WHITE_NOISE
     implicit none
     private
 
@@ -169,6 +169,17 @@ contains
         real(dp), allocatable :: mixed_hessian(:, :)
         real(dp) :: value
 
+        if (component1 == 0 .and. component2 == 0) then
+            covariance = kernel%value(x1, x2)
+            call status_set(status, FORTNUM_OK, "")
+            return
+        end if
+        if (kernel%kind == KERNEL_WHITE_NOISE) then
+            covariance = 0.0_dp
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "white-noise derivative observations are undefined")
+            return
+        end if
         allocate(gradient_x1(size(x1)), gradient_x2(size(x2)))
         allocate(mixed_hessian(size(x1), size(x2)))
         call kernel%input_derivatives( &

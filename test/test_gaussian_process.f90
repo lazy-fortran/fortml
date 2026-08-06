@@ -1,7 +1,8 @@
 program test_gaussian_process
     use, intrinsic :: iso_fortran_env, only: dp => real64, error_unit
     use fortml_kernels, only: kernel_t, kernel_multiply, make_linear_kernel, &
-        make_rbf_kernel
+        make_matern12_kernel, make_matern32_kernel, make_matern52_kernel, &
+        make_rbf_kernel, make_white_noise_kernel
     use fortml_gaussian_process, only: gp_regression_t
     use fortml_derivative_gaussian_process, only: &
         gp_derivative_regression_t
@@ -15,7 +16,10 @@ program test_gaussian_process
     call test_prediction_products(failures)
     call test_multioutput(failures)
     call test_kernel_input_derivatives(failures)
+    call test_matern_derivative_contract(failures)
     call test_mixed_observations(failures)
+    call test_matern_observations(failures)
+    call test_white_noise_observations(failures)
     if (failures /= 0) then
         write (error_unit, '(i0,a)') failures, " GP test(s) failed"
         error stop 1
@@ -216,6 +220,94 @@ contains
         end if
     end subroutine test_kernel_input_derivatives
 
+    subroutine test_matern_derivative_contract(failures)
+        integer, intent(inout) :: failures
+        type(kernel_t) :: matern12, matern32, matern52
+        type(fortnum_status_t) :: status
+        real(dp) :: x1(2), x2(2), coincident(2)
+        real(dp) :: value, gradient_x1(2), gradient_x2(2), mixed_hessian(2, 2)
+        real(dp) :: expected_curvature
+
+        x1 = [0.4_dp, -0.2_dp]
+        x2 = [-0.3_dp, 0.7_dp]
+        coincident = [0.2_dp, -0.1_dp]
+        matern12 = make_matern12_kernel(2, 1.7_dp, 0.9_dp, status)
+        call check_matern_derivatives(matern12, x1, x2, "matern12", failures)
+        matern32 = make_matern32_kernel(2, 1.7_dp, 0.9_dp, status)
+        call check_matern_derivatives(matern32, x1, x2, "matern32", failures)
+        matern52 = make_matern52_kernel(2, 1.7_dp, 0.9_dp, status)
+        call check_matern_derivatives(matern52, x1, x2, "matern52", failures)
+
+        call matern12%input_derivatives( &
+            coincident, coincident, value, gradient_x1, gradient_x2, mixed_hessian, status)
+        if (status_ok(status)) then
+            write (error_unit, '(a)') &
+                "FAIL [matern12] coincident derivative should refuse"
+            failures = failures + 1
+        end if
+
+        call matern32%input_derivatives( &
+            coincident, coincident, value, gradient_x1, gradient_x2, mixed_hessian, status)
+        expected_curvature = 3.0_dp*1.7_dp/(0.9_dp*0.9_dp)
+        if (.not. status_ok(status) .or. maxval(abs(gradient_x1)) > 2.0e-14_dp .or. &
+            maxval(abs(gradient_x2)) > 2.0e-14_dp .or. &
+            maxval(abs(mixed_hessian - reshape([expected_curvature, 0.0_dp, &
+            0.0_dp, expected_curvature], [2, 2]))) > 2.0e-12_dp) then
+            write (error_unit, '(a)') "FAIL [matern32] coincident derivative limit"
+            failures = failures + 1
+        end if
+
+        call matern52%input_derivatives( &
+            coincident, coincident, value, gradient_x1, gradient_x2, mixed_hessian, status)
+        expected_curvature = 5.0_dp*1.7_dp/(3.0_dp*0.9_dp*0.9_dp)
+        if (.not. status_ok(status) .or. maxval(abs(gradient_x1)) > 2.0e-14_dp .or. &
+            maxval(abs(gradient_x2)) > 2.0e-14_dp .or. &
+            maxval(abs(mixed_hessian - reshape([expected_curvature, 0.0_dp, &
+            0.0_dp, expected_curvature], [2, 2]))) > 2.0e-12_dp) then
+            write (error_unit, '(a)') "FAIL [matern52] coincident derivative limit"
+            failures = failures + 1
+        end if
+    end subroutine test_matern_derivative_contract
+
+    subroutine check_matern_derivatives(kernel, x1, x2, label, failures)
+        type(kernel_t), intent(in) :: kernel
+        real(dp), intent(in) :: x1(:), x2(:)
+        character(len=*), intent(in) :: label
+        integer, intent(inout) :: failures
+        type(fortnum_status_t) :: status
+        real(dp) :: value, gradient_x1(size(x1)), gradient_x2(size(x2))
+        real(dp) :: mixed_hessian(size(x1), size(x2))
+        real(dp) :: fd_x1(size(x1)), fd_x2(size(x2)), fd_mixed(size(x1), size(x2))
+        real(dp) :: fd_x1_half(size(x1)), fd_x2_half(size(x2))
+        real(dp) :: fd_mixed_half(size(x1), size(x2))
+        real(dp) :: h, h_half
+        integer :: i, j
+
+        call kernel%input_derivatives( &
+            x1, x2, value, gradient_x1, gradient_x2, mixed_hessian, status)
+        h = 1.0e-4_dp
+        h_half = 0.5_dp*h
+        do i = 1, size(x1)
+            fd_x1(i) = central_gradient(kernel, x1, x2, i, h, .true.)
+            fd_x2(i) = central_gradient(kernel, x1, x2, i, h, .false.)
+            fd_x1_half(i) = central_gradient(kernel, x1, x2, i, h_half, .true.)
+            fd_x2_half(i) = central_gradient(kernel, x1, x2, i, h_half, .false.)
+            do j = 1, size(x2)
+                fd_mixed(i, j) = central_mixed(kernel, x1, x2, i, j, h)
+                fd_mixed_half(i, j) = central_mixed(kernel, x1, x2, i, j, h_half)
+            end do
+        end do
+        if (.not. status_ok(status) .or. maxval(abs(gradient_x1 - fd_x1)) > 3.0e-8_dp .or. &
+            maxval(abs(gradient_x2 - fd_x2)) > 3.0e-8_dp .or. &
+            maxval(abs(mixed_hessian - fd_mixed)) > 3.0e-7_dp .or. &
+            maxval(abs(fd_x1_half - fd_x1)) > 3.0e-8_dp .or. &
+            maxval(abs(fd_x2_half - fd_x2)) > 3.0e-8_dp .or. &
+            maxval(abs(fd_mixed_half - fd_mixed)) > 3.0e-7_dp) then
+            write (error_unit, '(2a)') "FAIL [matern derivatives] ", trim(label)
+            failures = failures + 1
+        end if
+    end subroutine check_matern_derivatives
+
     subroutine test_mixed_observations(failures)
         integer, intent(inout) :: failures
         type(gp_derivative_regression_t) :: model
@@ -274,6 +366,97 @@ contains
             failures = failures + 1
         end if
     end subroutine test_mixed_observations
+
+    subroutine test_matern_observations(failures)
+        integer, intent(inout) :: failures
+        type(gp_derivative_regression_t) :: model
+        type(kernel_t) :: kernel
+        type(fortnum_status_t) :: status
+        real(dp) :: x_train(3, 1), x_query(3, 1)
+        real(dp) :: y_train(3, 2), mean(3, 2), variance(3)
+        real(dp) :: expected_mean(3, 2), expected_variance(3)
+        real(dp) :: covariance(3, 3), cross(3, 3), work(3, 3)
+        real(dp) :: alpha(3, 2)
+        integer :: components(3), query_components(3), info
+        integer :: i, j
+
+        x_train(:, 1) = [0.0_dp, 0.5_dp, 1.0_dp]
+        components = [0, 1, 0]
+        y_train(:, 1) = [1.0_dp, -0.2_dp, 0.8_dp]
+        y_train(:, 2) = [0.4_dp, 1.3_dp, -0.7_dp]
+        x_query(:, 1) = [0.25_dp, 0.75_dp, 1.25_dp]
+        query_components = [0, 1, 0]
+        kernel = make_matern32_kernel(1, 1.3_dp, 0.7_dp, status)
+        call model%fit( &
+            x_train, components, y_train, kernel, 0.05_dp, status, jitter=1.0e-10_dp)
+        call model%predict(x_query, query_components, mean, variance, status)
+
+        do j = 1, 3
+            do i = 1, 3
+                covariance(i, j) = mixed_matern32_covariance( &
+                    x_train(i, 1), components(i), x_train(j, 1), components(j), &
+                    1.3_dp, 0.7_dp)
+                cross(i, j) = mixed_matern32_covariance( &
+                    x_train(i, 1), components(i), x_query(j, 1), &
+                    query_components(j), 1.3_dp, 0.7_dp)
+            end do
+        end do
+        do i = 1, 3
+            covariance(i, i) = covariance(i, i) + 0.05_dp + 1.0e-10_dp
+        end do
+        call dense_solve(covariance, y_train, alpha, info)
+        call dense_solve(covariance, cross, work, info)
+        do j = 1, 3
+            expected_mean(j, 1) = dot_product(cross(:, j), alpha(:, 1))
+            expected_mean(j, 2) = dot_product(cross(:, j), alpha(:, 2))
+            expected_variance(j) = mixed_matern32_covariance( &
+                x_query(j, 1), query_components(j), x_query(j, 1), &
+                query_components(j), 1.3_dp, 0.7_dp) - &
+                dot_product(cross(:, j), work(:, j))
+        end do
+        if (.not. status_ok(status) .or. info /= LINALG_OK .or. &
+            maxval(abs(mean - expected_mean)) > 3.0e-10_dp .or. &
+            maxval(abs(variance - expected_variance)) > 3.0e-10_dp) then
+            write (error_unit, '(a)') &
+                "FAIL [matern32_gp] independent derivative covariance oracle"
+            failures = failures + 1
+        end if
+    end subroutine test_matern_observations
+
+    subroutine test_white_noise_observations(failures)
+        integer, intent(inout) :: failures
+        type(gp_derivative_regression_t) :: model
+        type(kernel_t) :: kernel
+        type(fortnum_status_t) :: status
+        real(dp) :: x_train(3, 1), x_query(3, 1), y_train(3, 1)
+        real(dp) :: mean(3, 1), variance(3), expected_mean(3, 1), expected_variance(3)
+        real(dp) :: denominator
+
+        x_train(:, 1) = [0.0_dp, 0.5_dp, 1.0_dp]
+        y_train(:, 1) = [1.0_dp, 2.0_dp, 3.0_dp]
+        x_query(:, 1) = [0.0_dp, 0.25_dp, 1.0_dp]
+        kernel = make_white_noise_kernel(1, 0.2_dp, status)
+        call model%fit( &
+            x_train, [0, 0, 0], y_train, kernel, 0.05_dp, status, jitter=1.0e-10_dp)
+        call model%predict(x_query, [0, 0, 0], mean, variance, status)
+        denominator = 0.2_dp + 0.05_dp + 1.0e-10_dp
+        expected_mean(:, 1) = [0.2_dp/denominator, 0.0_dp, 0.6_dp/denominator]
+        expected_variance = [0.2_dp - 0.04_dp/denominator, 0.2_dp, &
+            0.2_dp - 0.04_dp/denominator]
+        if (.not. status_ok(status) .or. maxval(abs(mean - expected_mean)) > 3.0e-10_dp .or. &
+            maxval(abs(variance - expected_variance)) > 3.0e-10_dp) then
+            write (error_unit, '(a)') "FAIL [white_noise_gp] function observations"
+            failures = failures + 1
+        end if
+
+        call model%fit( &
+            x_train, [1, 0, 0], y_train, kernel, 0.05_dp, status, jitter=1.0e-10_dp)
+        if (status_ok(status)) then
+            write (error_unit, '(a)') &
+                "FAIL [white_noise_gp] derivative observations should refuse"
+            failures = failures + 1
+        end if
+    end subroutine test_white_noise_observations
 
     real(dp) function central_gradient(kernel, x1, x2, component, h, first) &
             result(value)
@@ -342,6 +525,27 @@ contains
                 delta*delta*inverse_length_squared*inverse_length_squared)
         end if
     end function mixed_rbf_covariance
+
+    real(dp) function mixed_matern32_covariance(x1, component1, x2, component2, &
+            variance, lengthscale) result(value)
+        real(dp), intent(in) :: x1, x2, variance, lengthscale
+        integer, intent(in) :: component1, component2
+        real(dp) :: delta, distance, a, exponential
+
+        delta = x1 - x2
+        distance = abs(delta)
+        a = sqrt(3.0_dp)/lengthscale
+        exponential = exp(-a*distance)
+        if (component1 == 0 .and. component2 == 0) then
+            value = variance*(1.0_dp + a*distance)*exponential
+        else if (component1 > 0 .and. component2 == 0) then
+            value = -variance*a*a*delta*exponential
+        else if (component1 == 0 .and. component2 > 0) then
+            value = variance*a*a*delta*exponential
+        else
+            value = variance*a*a*(1.0_dp - a*distance)*exponential
+        end if
+    end function mixed_matern32_covariance
 
     real(dp) function reference_lml(parameters, y) result(value)
         real(dp), intent(in) :: parameters(:), y(:, :)

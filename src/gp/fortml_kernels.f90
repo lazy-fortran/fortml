@@ -688,11 +688,92 @@ contains
             variance = exp(self%log_parameters(1))
             value = variance
             call status_set(status, FORTNUM_OK, "")
+        case (KERNEL_MATERN12, KERNEL_MATERN32, KERNEL_MATERN52)
+            call matern_input_derivatives( &
+                self, x1, x2, value, gradient_x1, gradient_x2, mixed_hessian, status)
         case default
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "kernel input_derivatives: this kernel has no smooth input rule")
         end select
     end subroutine kernel_input_derivatives_impl
+
+    subroutine matern_input_derivatives( &
+            self, x1, x2, value, gradient_x1, gradient_x2, mixed_hessian, status)
+        class(kernel_t), intent(in) :: self
+        real(dp), intent(in) :: x1(:), x2(:)
+        real(dp), intent(out) :: value, gradient_x1(:), gradient_x2(:)
+        real(dp), intent(out) :: mixed_hessian(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: variance, lengthscale, squared_distance, distance
+        real(dp) :: radial_first, radial_second, radial_scale
+        real(dp) :: value_dot, distance_bar_d
+        real(dp) :: variance_bar, variance_bar_d, lengthscale_bar, lengthscale_bar_d
+        integer :: i, j
+
+        value = 0.0_dp
+        gradient_x1 = 0.0_dp
+        gradient_x2 = 0.0_dp
+        mixed_hessian = 0.0_dp
+        variance = exp(self%log_parameters(1))
+        lengthscale = exp(self%log_parameters(2))
+        squared_distance = sum((x1 - x2)**2)
+        distance = sqrt(squared_distance)
+        if (self%kind == KERNEL_MATERN12 .and. distance == 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "Matern 1/2 input derivatives are undefined at coincident points")
+            return
+        end if
+
+        select case (self%kind)
+        case (KERNEL_MATERN12)
+            call fortml_matern12_hvp( &
+                distance, 1.0_dp, self%log_parameters(1), 0.0_dp, &
+                self%log_parameters(2), 0.0_dp, value, value_dot, 1.0_dp, &
+                radial_first, distance_bar_d, variance_bar, variance_bar_d, &
+                lengthscale_bar, lengthscale_bar_d)
+            radial_second = distance_bar_d
+        case (KERNEL_MATERN32)
+            call fortml_matern32_hvp( &
+                distance, 1.0_dp, self%log_parameters(1), 0.0_dp, &
+                self%log_parameters(2), 0.0_dp, value, value_dot, 1.0_dp, &
+                radial_first, distance_bar_d, variance_bar, variance_bar_d, &
+                lengthscale_bar, lengthscale_bar_d)
+            radial_second = distance_bar_d
+        case (KERNEL_MATERN52)
+            call fortml_matern52_hvp( &
+                distance, 1.0_dp, self%log_parameters(1), 0.0_dp, &
+                self%log_parameters(2), 0.0_dp, value, value_dot, 1.0_dp, &
+                radial_first, distance_bar_d, variance_bar, variance_bar_d, &
+                lengthscale_bar, lengthscale_bar_d)
+            radial_second = distance_bar_d
+        end select
+
+        if (distance == 0.0_dp) then
+            gradient_x1 = 0.0_dp
+            gradient_x2 = 0.0_dp
+            mixed_hessian = 0.0_dp
+            if (self%kind == KERNEL_MATERN32) then
+                radial_scale = 3.0_dp*variance/(lengthscale*lengthscale)
+            else
+                radial_scale = 5.0_dp*variance/(3.0_dp*lengthscale*lengthscale)
+            end if
+            do i = 1, size(x1)
+                mixed_hessian(i, i) = radial_scale
+            end do
+        else
+            radial_scale = radial_first/distance
+            do i = 1, size(x1)
+                gradient_x1(i) = radial_scale*(x1(i) - x2(i))
+                gradient_x2(i) = -gradient_x1(i)
+                do j = 1, size(x2)
+                    mixed_hessian(i, j) = -(radial_scale*merge(1.0_dp, 0.0_dp, i == j) + &
+                        (radial_second - radial_scale)*(x1(i) - x2(i))* &
+                        (x1(j) - x2(j))/squared_distance)
+                end do
+            end do
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine matern_input_derivatives
 
     recursive subroutine kernel_matrix_jvp_impl(self, x1, x2, direction, matrix, &
             matrix_dot)
