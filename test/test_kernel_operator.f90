@@ -16,6 +16,9 @@ program test_kernel_operator
     real(dp) :: dense_solution(5), residual_norm
     real(dp) :: multi_solution(5, 2), dense_multi_solution(5, 2)
     real(dp) :: multi_residual_norm(2)
+    real(dp) :: generic_covariance(5, 5)
+    real(dp) :: generic_multi_solution(5, 2), generic_dense_multi_solution(5, 2)
+    real(dp) :: generic_multi_residual_norm(2)
     real(dp) :: generic_output(5), generic_expected(5)
     real(dp) :: sample_points_8(5, 8), input_8(5), output_8(5), expected_8(5)
     real(dp) :: matrix_input_8(5, 2), matrix_output_8(5, 2)
@@ -164,6 +167,31 @@ program test_kernel_operator
     call require(maxval(abs(generic_matrix_output - &
         generic_matrix_expected)) < 2.0e-14_dp, &
         "generic fused batched operator matches the direct oracle")
+    do i = 1, 5
+        do j = 1, 5
+            generic_covariance(i, j) = diagonal_shift* &
+                merge(1.0_dp, 0.0_dp, i == j) + 0.2_dp + variance*exp( &
+                -0.5_dp*sum((sample_points(i, :) - sample_points(j, :))**2)/ &
+                (lengthscale*lengthscale))
+        end do
+    end do
+    call dense_solve( &
+        generic_covariance, matrix_input, generic_dense_multi_solution, info)
+    call require(info == LINALG_OK, &
+        "generic dense multi-RHS solve provides the oracle")
+    generic_multi_solution = 0.0_dp
+    call generic_operator%solve_cg_multi( &
+        matrix_input, generic_multi_solution, 1.0e-12_dp, 30, multi_info, &
+        multi_iterations, generic_multi_residual_norm)
+    do column = 1, 2
+        call require(multi_info(column) == KRYLOV_OK, &
+            "generic batched operator CG converges")
+    end do
+    call require(maxval(abs(generic_multi_solution - &
+        generic_dense_multi_solution)) < 2.0e-11_dp, &
+        "generic batched operator CG matches the dense oracle")
+    call require(maxval(generic_multi_residual_norm) < 2.0e-11_dp, &
+        "generic batched operator CG reports true residuals")
     diagonal = generic_operator%diagonal()
     call require(maxval(abs(diagonal - (variance + 0.2_dp + diagonal_shift))) < &
         2.0e-14_dp, "generic operator diagonal uses the kernel value API")
