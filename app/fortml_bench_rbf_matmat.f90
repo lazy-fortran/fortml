@@ -74,12 +74,16 @@ program fortml_bench_rbf_matmat
 
     call system_clock(clock_start, clock_rate)
     if (trim(mode) == "resident") then
-        !$acc data copyin(rbf_operator%points, input) create(output)
+        call rbf_operator%enter_data(status)
+        if (status%code /= FORTNUM_OK) error stop "RBF operator data entry failed"
+        !$acc data copyin(input) create(output)
         do repetition = 1, repetitions
             call rbf_operator%matmat(input, output)
         end do
         !$acc update self(output)
         !$acc end data
+        call rbf_operator%exit_data(status)
+        if (status%code /= FORTNUM_OK) error stop "RBF operator data exit failed"
     else
         do repetition = 1, repetitions
             call rbf_operator%matmat(input, output)

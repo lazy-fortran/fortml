@@ -95,6 +95,13 @@ program test_kernel_operator
     end do
     call require(maxval(abs(output_8 - expected_8)) < 2.0e-14_dp, &
         "8-feature RBF MVM matches the direct pairwise oracle")
+    call rbf_operator_8%enter_data(status)
+    call require(status%code == FORTNUM_OK, "RBF operator enters device data")
+    call rbf_operator_8%matvec(input_8, output_8)
+    call rbf_operator_8%exit_data(status)
+    call require(status%code == FORTNUM_OK, "RBF operator exits device data")
+    call require(maxval(abs(output_8 - expected_8)) < 2.0e-14_dp, &
+        "operator-owned device residency preserves the MVM oracle")
     matrix_input_8(:, 1) = input_8
     matrix_input_8(:, 2) = [0.6_dp, -0.2_dp, 0.8_dp, -1.4_dp, 0.3_dp]
     call rbf_operator_8%matmat(matrix_input_8, matrix_output_8)

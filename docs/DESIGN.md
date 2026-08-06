@@ -92,6 +92,12 @@ products, Matérn variants, and future derivative blocks. The specialized RBF
 operator remains the accelerator path because its fixed formula can be
 unrolled and lowered directly to OpenACC.
 
+`rbf_operator_t%enter_data` and `%exit_data` own the device lifetime of the
+reusable sample-point array. Calls through the same operator keep the
+OpenACC/native-CUDA backend choice internal to the operator. Right-hand-side
+and Krylov-workspace residency is the next extension because those arrays are
+currently scoped by each solve.
+
 The operator also delegates SPD solves to `fortnum`'s generic
 preconditioned CG routine. The default preconditioner is the operator
 diagonal. This keeps the KeOps-style split explicit: FortML owns the kernel

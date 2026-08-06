@@ -20,8 +20,11 @@ module fortml_kernel_operator
         real(dp) :: lengthscale = 1.0_dp
         real(dp) :: diagonal_shift = 0.0_dp
         integer :: tile_size = DEFAULT_TILE_SIZE
+        logical :: points_device_resident = .false.
     contains
         procedure, public :: initialize => rbf_operator_initialize
+        procedure, public :: enter_data => rbf_operator_enter_data
+        procedure, public :: exit_data => rbf_operator_exit_data
         procedure, public :: matvec => rbf_operator_matvec
         procedure, public :: matmat => rbf_operator_matmat
         procedure, public :: diagonal => rbf_operator_diagonal
@@ -101,6 +104,7 @@ contains
         self%lengthscale = lengthscale
         self%diagonal_shift = diagonal_shift
         self%tile_size = DEFAULT_TILE_SIZE
+        self%points_device_resident = .false.
         if (present(tile_size)) self%tile_size = tile_size
         if (self%tile_size < 1) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -111,6 +115,33 @@ contains
         self%points = sample_points
         call status_set(status, FORTNUM_OK, "")
     end subroutine rbf_operator_initialize
+
+    subroutine rbf_operator_enter_data(self, status)
+        class(rbf_operator_t), intent(inout) :: self
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. allocated(self%points)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "RBF operator: cannot enter data before initialize")
+            return
+        end if
+        if (.not. self%points_device_resident) then
+            !$acc enter data copyin(self%points)
+            self%points_device_resident = .true.
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine rbf_operator_enter_data
+
+    subroutine rbf_operator_exit_data(self, status)
+        class(rbf_operator_t), intent(inout) :: self
+        type(fortnum_status_t), intent(out) :: status
+
+        if (self%points_device_resident) then
+            !$acc exit data delete(self%points)
+            self%points_device_resident = .false.
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine rbf_operator_exit_data
 
     subroutine rbf_operator_matvec(self, input, output)
         class(rbf_operator_t), intent(in) :: self

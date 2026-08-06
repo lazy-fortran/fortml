@@ -73,9 +73,10 @@ missing report leaves the item open.
   batching, diagonal, sample count, and a backend-independent CG entry point.
   The RBF implementation keeps the covariance matrix implicit and delegates
   Krylov iteration to `fortnum`.
-- [ ] Add backend-owned persistent host/device data and hide data movement,
-  tiling, and backend choice from GP callers in the style of the
-  KeOps/GPyTorch split.
+- [x] Add operator-owned `enter_data`/`exit_data` hooks for reusable RBF
+  sample points, keeping the OpenACC/native CUDA choice inside the operator.
+- [ ] Extend operator-owned residency to right-hand sides, workspaces, and
+  generic kernel backends in the style of the KeOps/GPyTorch split.
 - [x] Connect the RBF operator to `fortnum` CG with a diagonal
   preconditioner and an independent dense-solve oracle.
 - [x] Add an OpenACC `nvfortran` RBF CG path that keeps the sample points and
