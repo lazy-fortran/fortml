@@ -77,10 +77,13 @@ missing report leaves the item open.
   backpropagation, with independent finite-difference and adjoint checks.
 - [x] Exercise the MLP parameter/VJP seam with the separate `fortopt_adam`
   implementation on a known squared-loss objective.
-- [ ] Define one optimizer-facing parameter registry and packing contract for
+- [x] Define one optimizer-facing parameter registry and packing contract for
   model weights, basis/kernel hyperparameters, likelihood parameters, inducing
-  variables, and variational parameters. Check full-vector JVP/VJP/HVP products
-  against independent finite-difference, adjoint, and Hessian-symmetry oracles.
+  variables, and variational parameters. The typed callback seam has live MLP
+  and kernel adapters and rejects duplicate block names.
+- [ ] Extend the registry-facing model contract with full-vector JVP/VJP/HVP
+  products and check them against independent finite-difference, adjoint, and
+  Hessian-symmetry oracles.
 - [ ] Connect the MLP product contract to `fortad`-generated JVP/VJP/HVP code
   and compare the generated kernels with the explicit baseline.
 - [ ] Add Bayesian neural networks with explicit priors over weights,
@@ -213,6 +216,12 @@ offload, peak-memory, or generated-code-size gates.
 The explicit MLP and its `fortopt_adam` training seam pass the focused test
 suite with gfortran and `nvfortran` 26.5. No MLP performance claim is made yet.
 The MLP reference and accelerator plot remain open.
+
+The optimizer-facing parameter registry now packs live MLP weights and GP
+kernel hyperparameters into one named vector and unpacks updates back into the
+original objects. Its test checks exact block ranges, a hand-known packed
+vector, round-trip mutation, and duplicate-name refusal. Full-vector
+JVP/VJP/HVP routing remains open and is not implied by this packing result.
 
 The first basis-map slice is now implemented in `fortml_basis`. It provides polynomial
 powers, Fourier sine/cosine features, differentiable ARD radial features, and
