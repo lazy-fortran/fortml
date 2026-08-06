@@ -6,7 +6,9 @@ derivative code. Models expose value, JVP, and VJP products where the
 mathematics has been verified.
 
 The implemented baselines are multi-output ridge/ordinary least-squares
-regression, an explicit-parameter MLP, and a multi-output exact Gaussian
+regression, an explicit-parameter MLP, a Bayesian neural network with a reparameterized
+Gaussian variational posterior and seeded Monte Carlo ELBO
+value/JVP/VJP/HVP products, and a multi-output exact Gaussian
 process with composable kernels. The MLP and GP expose value/JVP/VJP products.
 The RBF derivative-GP pilot now supports mixed function-value and first-input
 derivative observations and predictions, with symbolic and finite-difference

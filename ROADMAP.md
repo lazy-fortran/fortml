@@ -90,7 +90,7 @@ missing report leaves the item open.
 - [x] Connect the static scalar MLP product fixture to `fortad`-generated
   JVP/VJP/HVP code and compare the generated kernels with the explicit
   baseline. The dynamic registry-wide product routing remains open.
-- [ ] Add Bayesian neural networks with explicit priors over weights,
+- [x] Add Bayesian neural networks with explicit priors over weights,
   reparameterized variational posteriors, deterministic seeded Monte Carlo, and
   optimizer-visible ELBO value/JVP/VJP/HVP products. Check the Gaussian KL term
   against its analytic formula and the complete ELBO gradient against an
@@ -279,6 +279,34 @@ Cholesky solve and reverse cotangents for the full packed RBF hyperparameter
   oracle. Matérn derivative-observation covariance is checked against a
   hand-derived dense Matern-3/2 solve; Matérn-1/2 coincident derivatives and
   all white-noise derivative observations refuse explicitly.
+
+`fortml_bnn` provides the first Bayesian neural network. It puts a factorized
+zero-mean Gaussian prior on every network weight, a factorized Gaussian
+variational posterior packed as `[mu, log_sigma]`, and a fixed Monte Carlo
+table drawn once from the counter-based `fortnum_rng` stream, so the ELBO and
+all its products are deterministic functions of the variational vector. The
+Gaussian KL term is checked against the textbook formula, against a
+hand-evaluated constant case (`mu = 1/2`, `sigma = 2`, prior variance 4 gives
+`1/32` per parameter), and against central differences of the KL value. The
+ELBO gradient, directional derivative, and Hessian product over the complete
+packed vector are checked against central finite differences of the ELBO value
+and of the ELBO gradient, the JVP is checked against the adjoint identity, and
+the Hessian is checked for symmetry. Determinism and seed sensitivity are
+checked directly. `test_bnn` passes with gfortran and `nvfortran` 26.5. The
+likelihood variance is fixed data here; learned likelihood parameters and
+minibatch scaling belong to the variational-inference contract below.
+
+Two upstream defects surfaced while wiring this item and are fixed on `main`
+of their own repositories. `fo` dropped any source its front end could not
+parse, which silently removed `fortad_opt` and two of `fo`'s own modules from
+the build graph and produced missing-module errors in unrelated files; the scan
+now recovers such a unit with the line scanner (`fo` commit `f1a8e56`). `fortad`
+read only the first physical line of a procedure signature, so a wrapped
+dummy-argument list lowered to a procedure with no parameters at all, which
+made every forward-over-reverse pass over a wide adjoint emit an argument-less
+HVP; signatures are now joined across continuation lines and covered by
+`test_wide_signature_oracle` (`fortad` commit `8666fb0`). That fix restores
+`test_fortad_mlp_products`.
 
 The first basis-map slice is now implemented in `fortml_basis`. It provides polynomial
 powers, Fourier sine/cosine features, differentiable ARD radial features, and
