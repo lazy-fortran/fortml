@@ -86,7 +86,7 @@ missing report leaves the item open.
   vector. MLP value/JVP/VJP/HVP products are routed through the registry and
   checked by finite-difference, adjoint, and Hessian-symmetry oracles; fitted
   GP mean products route kernel and log-noise hyperparameters through the same
-  contract. Models that do not declare an HVP are refused explicitly.
+  contract. RBF fitted-GP mean HVPs now include the differentiated solve path.
 - [x] Connect the static scalar MLP product fixture to `fortad`-generated
   JVP/VJP/HVP code and compare the generated kernels with the explicit
   baseline. The dynamic registry-wide product routing remains open.
@@ -110,10 +110,13 @@ missing report leaves the item open.
   with OpenACC GPU execution and resident-data support.
 - [x] Connect the RBF kernel and fitted-GP value/JVP/VJP contracts to
   `fortad`-generated JVP/VJP/HVP code and compare the generated RBF products
-  with explicit finite-difference and adjoint baselines. The GP Cholesky HVP
-  remains a separate open item.
-- [ ] Add a differentiated GP linear-solve/Cholesky path so the fitted-GP
-  optimizer contract can expose an HVP instead of refusing it.
+  with explicit finite-difference and adjoint baselines. The fitted-GP mean
+  HVP now differentiates both solve adjoints and the changing kernel VJP
+  cotangents; the packed product contract exposes it to optimizers. The
+  current HVP kernel rule is RBF, while other kernel HVP rules remain open.
+- [x] Add a differentiated GP linear-solve/Cholesky path so the fitted-GP
+  mean optimizer contract exposes an HVP instead of refusing it. The complete
+  packed vector is checked against a central finite difference of the GP VJP.
 - [x] Add RBF function-value and derivative observations/predictions using
   kernel partial derivatives verified against `fortsym`, independent finite
   differences, and a hand-derived dense mixed-covariance solve.
@@ -261,8 +264,11 @@ log-variance VJP contribution. `test_kernels` compares those paths with an
 independent pairwise RBF formula and finite-difference/adjoint product checks.
 Generated FortAD parameter JVP/VJP/HVP dispatch through `kernel_t` is now
 covered for RBF. The fitted GP value/JVP/VJP path reaches those generated
-kernel products; differentiating the GP Cholesky solve for an optimizer-visible
-HVP remains open.
+kernel products, and the new `gp_predict_hvp` path differentiates the
+Cholesky solve and reverse cotangents for the full packed RBF hyperparameter
+vector. Its independent central-difference oracle passes in
+`test_parameter_products`; Matern and white-noise kernel HVP rules remain
+open.
 
 The first basis-map slice is now implemented in `fortml_basis`. It provides polynomial
 powers, Fourier sine/cosine features, differentiable ARD radial features, and

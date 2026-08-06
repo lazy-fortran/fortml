@@ -5,7 +5,7 @@ program test_parameter_products
     use fortml_gaussian_process, only: gp_regression_t
     use fortml_kernels, only: kernel_t, make_rbf_kernel
     use fortnum_kinds, only: dp
-    use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_DOMAIN_ERROR
+    use fortnum_status, only: fortnum_status_t, status_ok
     implicit none
 
     integer :: failures
@@ -111,6 +111,7 @@ contains
         real(dp) :: x_train(4, 1), y_train(4, 1), x_test(2, 1)
         real(dp) :: y(2, 1), y_dot(2, 1), y_plus(2, 1), y_minus(2, 1)
         real(dp) :: y_bar(2, 1), theta(3), direction(3), theta_bar(3)
+        real(dp) :: theta_plus(3), theta_minus(3), theta_hvp(3), theta_hvp_fd(3)
         real(dp) :: h, lhs, rhs
 
         x_train(:, 1) = [-1.0_dp, -0.2_dp, 0.4_dp, 1.1_dp]
@@ -148,9 +149,17 @@ contains
         call check(abs(lhs - rhs) < 3.0e-9_dp, &
             "GP product VJP adjoint identity", failures)
 
-        call products%hvp(x_test, y_bar, direction, theta_bar, status)
-        call check(status%code == FORTNUM_DOMAIN_ERROR .and. &
-            .not. products%has_hvp(), "GP undeclared HVP is refused", failures)
+        call products%hvp(x_test, y_bar, direction, theta_hvp, status)
+        call check(status_ok(status) .and. products%has_hvp(), &
+            "GP product HVP", failures)
+        call products%unpack(theta + h*direction, status)
+        call products%vjp(x_test, y_bar, theta_plus, status)
+        call products%unpack(theta - h*direction, status)
+        call products%vjp(x_test, y_bar, theta_minus, status)
+        call products%unpack(theta, status)
+        theta_hvp_fd = (theta_plus - theta_minus)/(2.0_dp*h)
+        call check(maxval(abs(theta_hvp - theta_hvp_fd)) < 2.0e-5_dp, &
+            "GP HVP finite difference", failures)
     end subroutine test_gp_parameter_products
 
 end program test_parameter_products

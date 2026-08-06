@@ -111,6 +111,7 @@ contains
         self%value_proc => gp_parameter_value
         self%jvp_proc => gp_parameter_jvp
         self%vjp_proc => gp_parameter_vjp
+        self%hvp_proc => gp_parameter_hvp
     end subroutine parameter_products_from_gp
 
     logical function parameter_products_initialized(self) result(yes)
@@ -365,5 +366,20 @@ contains
                 "GP parameter products: context has the wrong type")
         end select
     end subroutine gp_parameter_vjp
+
+    subroutine gp_parameter_hvp(context, x, y_bar, theta_dot, theta_hvp, status)
+        class(*), pointer, intent(in) :: context
+        real(dp), intent(in) :: x(:, :), y_bar(:, :), theta_dot(:)
+        real(dp), intent(out) :: theta_hvp(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        select type (model => context)
+            type is (gp_regression_t)
+            call model%predict_hvp(x, y_bar, theta_dot, theta_hvp, status)
+        class default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP parameter products: context has the wrong type")
+        end select
+    end subroutine gp_parameter_hvp
 
 end module fortml_parameter_products

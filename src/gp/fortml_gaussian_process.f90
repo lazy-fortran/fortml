@@ -28,6 +28,7 @@ module fortml_gaussian_process
         procedure, public :: predict => gp_predict
         procedure, public :: predict_jvp => gp_predict_jvp
         procedure, public :: predict_vjp => gp_predict_vjp
+        procedure, public :: predict_hvp => gp_predict_hvp
         procedure, public :: log_marginal_likelihood => gp_log_marginal_likelihood
         procedure, public :: hyperparameter_gradient => gp_hyperparameter_gradient
         procedure, public :: log_marginal_likelihood_jvp => gp_lml_jvp
@@ -37,6 +38,7 @@ module fortml_gaussian_process
     public :: gp_predict
     public :: gp_predict_jvp
     public :: gp_predict_vjp
+    public :: gp_predict_hvp
     public :: gp_log_marginal_likelihood
     public :: gp_hyperparameter_gradient
 
@@ -285,6 +287,121 @@ contains
             sum(diagonal(train_bar))
         call status_set(status, FORTNUM_OK, "")
     end subroutine gp_predict_vjp
+
+    subroutine gp_predict_hvp(self, x, mean_bar, direction, parameter_hvp, status)
+        class(gp_regression_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), mean_bar(:, :), direction(:)
+        real(dp), intent(out) :: parameter_hvp(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: cross(:, :), cross_dot(:, :)
+        real(dp), allocatable :: train_matrix(:, :), train_matrix_dot(:, :)
+        real(dp), allocatable :: alpha_dot(:, :), alpha_bar(:, :)
+        real(dp), allocatable :: alpha_bar_dot(:, :), lambda(:, :), lambda_dot(:, :)
+        real(dp), allocatable :: cross_bar(:, :), cross_bar_dot(:, :)
+        real(dp), allocatable :: train_bar(:, :), train_bar_dot(:, :)
+        real(dp), allocatable :: local_bar(:), local_bar_dot(:)
+        integer :: i, kernel_count
+        real(dp) :: noise_dot, trace_train_bar, trace_train_bar_dot
+
+        if (.not. gp_fitted(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP predict_hvp: model is not fitted")
+            return
+        end if
+        if (size(x, 2) /= self%n_features .or. &
+            any(shape(mean_bar) /= [size(x, 1), self%n_outputs])) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP predict_hvp: input or cotangent shape is invalid")
+            return
+        end if
+        if (size(direction) /= self%parameter_count() .or. &
+            size(parameter_hvp) /= self%parameter_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP predict_hvp: parameter shape is invalid")
+            return
+        end if
+
+        kernel_count = self%kernel%parameter_count()
+        allocate(cross(self%n_samples, size(x, 1)))
+        allocate(cross_dot, mold=cross)
+        allocate(train_matrix(self%n_samples, self%n_samples))
+        allocate(train_matrix_dot, mold=train_matrix)
+        allocate(alpha_dot, mold=self%alpha)
+        allocate(alpha_bar, mold=self%alpha)
+        allocate(alpha_bar_dot, mold=self%alpha)
+        allocate(lambda, mold=self%alpha)
+        allocate(lambda_dot, mold=self%alpha)
+        allocate(cross_bar, mold=cross)
+        allocate(cross_bar_dot, mold=cross)
+        allocate(train_bar, mold=train_matrix)
+        allocate(train_bar_dot, mold=train_matrix)
+        allocate(local_bar(kernel_count), local_bar_dot(kernel_count))
+
+        call self%kernel%matrix_jvp(self%x_train, x, direction(:kernel_count), &
+            cross, cross_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        call self%kernel%matrix_jvp(self%x_train, self%x_train, &
+            direction(:kernel_count), train_matrix, train_matrix_dot, status)
+        if (status%code /= FORTNUM_OK) return
+
+        noise_dot = exp(self%log_noise_variance)*direction(kernel_count + 1)
+        do i = 1, self%n_samples
+            train_matrix_dot(i, i) = train_matrix_dot(i, i) + noise_dot
+        end do
+
+        alpha_dot = -matmul(train_matrix_dot, self%alpha)
+        call self%factorization%solve(alpha_dot, status)
+        if (status%code /= FORTNUM_OK) return
+
+        cross_bar = matmul(self%alpha, transpose(mean_bar))
+        cross_bar_dot = matmul(alpha_dot, transpose(mean_bar))
+        alpha_bar = matmul(cross, mean_bar)
+        alpha_bar_dot = matmul(cross_dot, mean_bar)
+        lambda = alpha_bar
+        call self%factorization%solve(lambda, status)
+        if (status%code /= FORTNUM_OK) return
+        lambda_dot = alpha_bar_dot - matmul(train_matrix_dot, lambda)
+        call self%factorization%solve(lambda_dot, status)
+        if (status%code /= FORTNUM_OK) return
+
+        train_bar = -0.5_dp*(matmul(lambda, transpose(self%alpha)) + &
+            matmul(self%alpha, transpose(lambda)))
+        train_bar_dot = -0.5_dp*( &
+            matmul(lambda_dot, transpose(self%alpha)) + &
+            matmul(lambda, transpose(alpha_dot)) + &
+            matmul(alpha_dot, transpose(lambda)) + &
+            matmul(self%alpha, transpose(lambda_dot)))
+
+        parameter_hvp = 0.0_dp
+        call self%kernel%parameter_hvp( &
+            self%x_train, self%x_train, train_bar, direction(:kernel_count), &
+            local_bar, local_bar_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        call self%kernel%parameter_vjp( &
+            self%x_train, self%x_train, train_bar_dot, local_bar, status)
+        if (status%code /= FORTNUM_OK) return
+        parameter_hvp(:kernel_count) = local_bar + local_bar_dot
+
+        call self%kernel%parameter_hvp( &
+            self%x_train, x, cross_bar, direction(:kernel_count), &
+            local_bar, local_bar_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        call self%kernel%parameter_vjp( &
+            self%x_train, x, cross_bar_dot, local_bar, status)
+        if (status%code /= FORTNUM_OK) return
+        parameter_hvp(:kernel_count) = parameter_hvp(:kernel_count) + &
+            local_bar + local_bar_dot
+
+        trace_train_bar = 0.0_dp
+        trace_train_bar_dot = 0.0_dp
+        do i = 1, self%n_samples
+            trace_train_bar = trace_train_bar + train_bar(i, i)
+            trace_train_bar_dot = trace_train_bar_dot + train_bar_dot(i, i)
+        end do
+        parameter_hvp(kernel_count + 1) = exp(self%log_noise_variance)* &
+            (direction(kernel_count + 1)*trace_train_bar + trace_train_bar_dot)
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_predict_hvp
 
     subroutine gp_log_marginal_likelihood(self, value, status)
         class(gp_regression_t), intent(in) :: self
