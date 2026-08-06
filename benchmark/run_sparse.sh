@@ -40,7 +40,7 @@ host=$("$build_dir/fortml_bench_sparse_operator" host "$n" "$radius" "$rhs" "$re
 transfer=$("$build_dir/fortml_bench_sparse_operator" transfer "$n" "$radius" "$rhs" "$repetitions")
 resident=$("$build_dir/fortml_bench_sparse_operator" resident "$n" "$radius" "$rhs" "$repetitions")
 compiler_version=$($fc --version 2>&1 | awk 'NF {print; exit}')
-printf 'model,samples,radius,rhs,mode,repetitions,nonzeros,seconds_per_operation,relative_error,compiler,flags\n' >"$out"
+printf 'model,samples,radius,rhs,mode,repetitions,nonzeros,storage_bytes,seconds_per_operation,relative_error,compiler,flags\n' >"$out"
 for row in "$host" "$transfer" "$resident"; do
     printf '%s,%s,%s\n' "$row" "$fc" "$flags" >>"$out"
 done

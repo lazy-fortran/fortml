@@ -15,7 +15,7 @@ program fortml_bench_sparse_operator
     real(dp) :: elapsed, scale, sink, relative_error
     integer(int64) :: clock_start, clock_end, clock_rate
     character(16) :: mode
-    integer :: nonzeros, rhs, row, repetition
+    integer :: nonzeros, rhs, row, repetition, storage_bytes
     type(sparse_gp_operator_t) :: sparse_operator
     type(fortsparse_status_t) :: status
 
@@ -44,6 +44,7 @@ program fortml_bench_sparse_operator
     call sparse_operator%initialize( &
         n_samples, rows(:nonzeros), columns(:nonzeros), values(:nonzeros), status)
     if (status%code /= FORTSPARSE_OK) error stop "sparse setup failed"
+    storage_bytes = 8*(n_samples + 1) + 12*nonzeros
 
     do rhs = 1, n_rhs
         do row = 1, n_samples
@@ -99,9 +100,9 @@ program fortml_bench_sparse_operator
     elapsed = real(clock_end - clock_start, dp)/real(clock_rate, dp)
     sink = output(1, 1) + output(n_samples, n_rhs)
     if (sink /= sink) error stop "sparse benchmark produced NaN"
-    write (*, '(a,i0,a,i0,a,i0,a,a,a,i0,a,i0,a,es24.16,a,es24.16)') &
+    write (*, '(a,i0,a,i0,a,i0,a,a,a,i0,a,i0,a,i0,a,es24.16,a,es24.16)') &
         "sparse_operator,", n_samples, ",", radius, ",", n_rhs, ",", &
-        trim(mode), ",", repetitions, ",", nonzeros, ",", &
+        trim(mode), ",", repetitions, ",", nonzeros, ",", storage_bytes, ",", &
         elapsed/real(repetitions, dp), ",", relative_error
 
 contains
