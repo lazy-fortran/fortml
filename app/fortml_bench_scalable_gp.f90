@@ -35,6 +35,12 @@ program fortml_bench_scalable_gp
     real(dp), parameter :: LENGTHSCALE = 1.0_dp
     !! Lanczos steps for the LOVE predictive variance of the matrix-free lanes.
     integer, parameter :: LANCZOS_STEPS = 20
+    !! Largest dense covariance this benchmark will try to allocate.
+    real(dp), parameter :: DENSE_BUDGET_GB = 8.0_dp
+    !! Above this sample count the matrix-free lanes report a mean only: the
+    !! LOVE variance costs one Lanczos sweep per test point, which is a
+    !! separate measurement rather than part of the prediction cost.
+    integer, parameter :: LOVE_SAMPLE_LIMIT = 2048
 
     character(len=32) :: method, argument
     integer :: n_samples, n_inducing, n_experts, n_features, repetitions
@@ -58,6 +64,7 @@ program fortml_bench_scalable_gp
     repetitions = integer_argument(6, 3)
     n_test = 256
 
+    call refuse_infeasible()
     call build_problem()
     allocate(mean(n_test), variance(n_test))
 
@@ -76,6 +83,23 @@ program fortml_bench_scalable_gp
         ",", smse, ",", mnlpd
 
 contains
+
+    subroutine refuse_infeasible()
+        !! A dense method needs an n-by-n matrix. Refuse by name rather than
+        !! asking the allocator for a terabyte and taking the machine with it.
+        real(dp) :: gigabytes
+
+        gigabytes = 8.0_dp*real(n_samples, dp)*real(n_samples, dp)/1.0e9_dp
+        select case (trim(method))
+        case ("full")
+            if (gigabytes > DENSE_BUDGET_GB) then
+                write (output_unit, '(a,a,i0,a,f0.1,a)') trim(method), ",", &
+                    n_samples, ",infeasible: dense covariance needs ", &
+                    gigabytes, " GB"
+                stop 0
+            end if
+        end select
+    end subroutine refuse_infeasible
 
     integer function integer_argument(position, fallback) result(value)
         integer, intent(in) :: position, fallback
@@ -155,7 +179,11 @@ contains
         case ("moe")
             call run_local(AGGREGATE_MOE, train_time, predict_time)
         case ("keops")
-            call run_keops_style(train_time, predict_time)
+            call run_keops_style(train_time, predict_time, .false.)
+        case ("keops_gpu")
+            call run_keops_style(train_time, predict_time, .true.)
+        case ("keops_matvec")
+            call run_matvec_only(train_time, predict_time)
         case default
             error stop "benchmark: unknown method"
         end select
@@ -353,10 +381,40 @@ contains
         if (.not. status_ok(status)) error stop "benchmark: local predict failed"
     end subroutine run_local
 
-    subroutine run_keops_style(train_time, predict_time)
-        !! The matrix-free exact lane: no approximation at all, one CG solve
-        !! against the full kernel with the covariance never formed.
+    subroutine run_matvec_only(train_time, predict_time)
+        !! One matrix-free kernel product. This is the unit every matrix-free
+        !! method is built from, and the only cost that can be measured cleanly
+        !! at a sample count where a full solve would not finish.
         real(dp), intent(out) :: train_time, predict_time
+        type(kernel_operator_t) :: operator
+        type(kernel_t) :: kernel
+        real(dp), allocatable :: input(:), output(:)
+        integer :: i
+
+        kernel = make_rbf_kernel(n_features, SIGNAL_VARIANCE, LENGTHSCALE, status)
+        allocate(input(n_samples), output(n_samples))
+        do i = 1, n_samples
+            input(i) = 1.0_dp/real(i, dp)
+        end do
+        call operator%initialize(x, kernel, REVIEW_TOY_NOISE_VARIANCE, status)
+        if (.not. status_ok(status)) error stop "benchmark: matvec init failed"
+        call tic()
+        call operator%matvec(input, output)
+        call toc(train_time)
+        predict_time = 0.0_dp
+        mean = 0.0_dp
+        variance = -1.0_dp
+        ! Keep the compiler from removing the product.
+        if (output(1) /= output(1)) error stop "benchmark: matvec produced NaN"
+    end subroutine run_matvec_only
+
+    subroutine run_keops_style(train_time, predict_time, on_device)
+        !! The matrix-free exact lane: no approximation at all, one CG solve
+        !! against the full kernel with the covariance never formed. With
+        !! `on_device` the sample points stay resident and the Krylov products
+        !! run through OpenACC.
+        real(dp), intent(out) :: train_time, predict_time
+        logical, intent(in) :: on_device
         type(kernel_operator_t) :: operator
         type(kernel_t) :: kernel
         real(dp), allocatable :: weights(:)
@@ -369,8 +427,16 @@ contains
         call operator%initialize(x, kernel, REVIEW_TOY_NOISE_VARIANCE, status)
         if (.not. status_ok(status)) error stop "benchmark: KeOps-style init failed"
         weights = 0.0_dp
-        call operator%solve_cg(y, weights, 1.0e-8_dp, 2000, info, iterations, &
-            residual_norm)
+        if (on_device) then
+            call operator%enter_data(status)
+            if (.not. status_ok(status)) error stop "benchmark: residency failed"
+            call operator%solve_cg_device(y, weights, 1.0e-8_dp, 2000, info, &
+                iterations, residual_norm)
+            call operator%exit_data(status)
+        else
+            call operator%solve_cg(y, weights, 1.0e-8_dp, 2000, info, iterations, &
+                residual_norm)
+        end if
         call toc(train_time)
         if (info /= KRYLOV_OK) error stop "benchmark: KeOps-style solve failed"
         call tic()
@@ -396,6 +462,10 @@ contains
                 cross(j) = kernel%value(test_points(i, :), x(j, :))
             end do
             mean(i) = sum(cross*weights)
+            if (n_samples > LOVE_SAMPLE_LIMIT) then
+                variance(i) = -1.0_dp
+                cycle
+            end if
             select type (operator)
             type is (kernel_operator_t)
                 call lanczos_predictive_variance(operator, cross, &
