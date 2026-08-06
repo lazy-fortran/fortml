@@ -95,7 +95,7 @@ missing report leaves the item open.
   optimizer-visible ELBO value/JVP/VJP/HVP products. Check the Gaussian KL term
   against its analytic formula and the complete ELBO gradient against an
   independent finite-difference oracle.
-- [ ] Add a reusable variational-inference contract for GPs and neural models,
+- [x] Add a reusable variational-inference contract for GPs and neural models,
   including variational means, covariance or factor parameters, inducing-point
   parameters, likelihood parameters, minibatch scaling, and natural-gradient
   or `fortopt` updates. Check ELBO decomposition, KL positivity, seeded
@@ -296,7 +296,30 @@ checked directly. `test_bnn` passes with gfortran and `nvfortran` 26.5. The
 likelihood variance is fixed data here; learned likelihood parameters and
 minibatch scaling belong to the variational-inference contract below.
 
-Two upstream defects surfaced while wiring this item and are fixed on `main`
+`fortml_variational` holds the reusable variational-inference contract.
+`gaussian_family_t` is a full or diagonal Gaussian posterior over one latent
+block - network weights, inducing values, or any other block a model integrates
+out - packed as a mean plus a lower-triangular factor with a log diagonal, so
+the vector is unconstrained and goes straight to `fortopt`. Deterministic
+parameters such as inducing-point locations, likelihood parameters, and kernel
+hyperparameters travel beside it as `extra`, and the model supplies its log
+likelihood and gradients through one procedure interface. Minibatch scaling is
+an explicit factor on the likelihood term only.
+
+The Monte Carlo table is drawn once from a seed, then centred and whitened, so
+a log likelihood that is quadratic in the latent block is integrated exactly.
+That makes the conjugate oracle exact rather than approximate: `test_variational`
+optimizes the ELBO of a Bayesian linear model with `fortopt_adam` and recovers
+the analytic posterior mean and covariance, formed independently by inverting
+the 2x2 posterior precision, to better than 1e-5. The same test checks the ELBO
+decomposition against separately computed terms, that minibatch scaling never
+touches the KL, that KL is zero at the prior and never negative over a sweep of
+parameters, that the draw table has exactly zero empirical mean and identity
+empirical covariance, and the full gradient against central finite differences
+of the ELBO. It passes with gfortran and `nvfortran` 26.5. Natural-gradient
+updates and non-Gaussian likelihoods are not covered here.
+
+Four upstream defects surfaced while wiring these items and are fixed on `main`
 of their own repositories. `fo` dropped any source its front end could not
 parse, which silently removed `fortad_opt` and two of `fo`'s own modules from
 the build graph and produced missing-module errors in unrelated files; the scan
@@ -306,7 +329,20 @@ dummy-argument list lowered to a procedure with no parameters at all, which
 made every forward-over-reverse pass over a wide adjoint emit an argument-less
 HVP; signatures are now joined across continuation lines and covered by
 `test_wide_signature_oracle` (`fortad` commit `8666fb0`). That fix restores
-`test_fortad_mlp_products`.
+`test_fortad_mlp_products`. The real cause of the `fo` scan failures was a
+stale dependency: `fo` bootstraps a git dependency once and never refreshes it,
+so it had been running a months-old FortFront. `fo update` now drops the cached
+clone, the fpm cache record, and the compiled dependency objects, and a build
+re-fetches any dependency whose sources are missing (`fo` commits `7f62878`
+and `f36c429`). FortFront itself rejected several legal constructs because
+Fortran keywords are not reserved words: a call on an object named `operator`,
+a declaration whose first entity is named `error` or `data`, and an assignment
+to a variable or array element named `file`, `pure` or `precision`. All three
+are fixed and covered by `test_call_on_keyword_named_object` (`fortfront`
+commits `5618a1e8`, `147aaceb`, `346813d3`). Two slow FortFront suites and one
+FortSym suite were renamed `*_slow`, and `fo` now gives a slow-marked test its
+own timeout budget instead of holding it to the fast one (`fo` commit
+`f36c429`).
 
 The first basis-map slice is now implemented in `fortml_basis`. It provides polynomial
 powers, Fourier sine/cosine features, differentiable ARD radial features, and
