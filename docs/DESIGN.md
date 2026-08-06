@@ -119,6 +119,11 @@ convergence contract and exposes the matrix-matrix fusion used by the native
 CUDA path. Its preconditioned and unpreconditioned results are checked against
 independent dense multi-RHS solves.
 
+The same batched recurrence is now the default `linear_operator_t` multi-RHS
+contract. Generic composable-kernel operators therefore retain fusion all the
+way through CG, while `rbf_operator_t` keeps its specialized accelerator
+override.
+
 The specialized RBF type also has an OpenACC CG override. Its Krylov vectors,
 reductions, and repeated RBF products execute inside one accelerator data
 region, while an enclosing benchmark region keeps the sample points and

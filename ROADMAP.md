@@ -91,6 +91,8 @@ missing report leaves the item open.
   against independent dense multi-RHS solves.
 - [x] Fuse generic composable-kernel operator products across all right-hand
   sides so blocked kernel evaluation is not repeated per output column.
+- [x] Expose the same independent-recurrence, batched matrix-product CG
+  contract through the generic linear-operator base type.
 - [ ] Add block/Nystrom preconditioners, stochastic Lanczos log determinants,
   and LOVE-style predictive-variance products for large exact-GP solves.
 - [ ] Add compact-support sparse covariance/precision dispatch through
