@@ -201,7 +201,7 @@ missing report leaves the item open.
   a CG solve check.
 - [x] Add multilevel tensor-grid embeddings, derivative products, and banded
   Markov-precision paths. The current Toeplitz FFT wrapper is host-resident.
-- [ ] Add multi-output GPs, inducing-point variational GPs, and the structured
+- [x] Add multi-output GPs, inducing-point variational GPs, and the structured
   inference policies that sit above these operator contracts.
 - [ ] Add variational autoencoders and deep recurrent networks after the
   regression, GP, and variational-inference contracts are stable. Their
@@ -343,6 +343,32 @@ commits `5618a1e8`, `147aaceb`, `346813d3`). Two slow FortFront suites and one
 FortSym suite were renamed `*_slow`, and `fo` now gives a slow-marked test its
 own timeout budget instead of holding it to the fast one (`fo` commit
 `f36c429`).
+
+`fortml_sparse_gp` adds the inducing-point variational GP. With a Gaussian
+likelihood the expected log likelihood is closed form, so the ELBO needs no
+sampling. Its oracle is an identity rather than a tolerance: place the inducing
+inputs on the data, set `q(u)` to the exact posterior over `f`, and the ELBO
+equals the exact log marginal likelihood computed from an independent dense
+Cholesky in the test. Away from that setting the bound must stay below the
+exact evidence, its decomposition must be consistent, and the KL must be
+non-negative; the collapsed predictive marginals must match the exact posterior
+mean and variance. Learned inducing locations and non-Gaussian likelihoods are
+not part of this item.
+
+`fortml_multi_output_gp` adds the correlated multi-output path through the
+intrinsic coregionalization model, `B (x) K` with `B = W W^T + diag(kappa)`. Two
+independent identities check it: with `W = 0` the outputs decouple and each
+posterior mean must equal a separate single-output fit, and with a coupled `B`
+the whole joint system is solved densely in the test and compared entry by
+entry, which also catches a Kronecker index-order mistake.
+
+`fortml_inference_policy` is the policy layer above these operators. A caller
+declares the structure that holds - tensor grid, compact support, banded Markov
+precision - plus size and any inducing budget, and the policy returns the
+solver together with the reason. It refuses rather than guesses: two declared
+structures, grid extents that do not multiply out to the sample count, a band
+as wide as the matrix, or an inducing budget at or above the sample count are
+all errors.
 
 The structured lane now has its three missing pieces. `fortml_multilevel_grid`
 builds the tensor-grid hierarchy by halving each dimension, and moves values
