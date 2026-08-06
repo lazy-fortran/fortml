@@ -256,9 +256,10 @@ that do not exist.
   `-O0 -fcheck=all`, so every timing in it was a debug-build timing.
 - [ ] Run the matrix-free lane on the device at those sizes, so the exact
   method has a large-`n` solve rather than only a per-product cost.
-- [ ] Scale the SKI grid with the sample count. Holding it at 64 nodes makes
+- [x] Scale the SKI grid with the sample count. Holding it at 64 nodes makes
   SKI degrade with `n`, which measures the fixed budget rather than the
-  method.
+  method. With the grid at `n/8` SKI reaches SMSE 6.97e-5 at n = 131,072 in
+  1.375 s and 19 MiB, matching FITC's accuracy at a tenth of its memory.
 - [x] Correct the Zulip record: the first report carried the debug-build
   numbers.
 
