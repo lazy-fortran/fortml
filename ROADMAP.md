@@ -245,3 +245,16 @@ took 1.363 ms per resident call versus 3.666 ms for the OpenACC loop. Every
 native result passed the direct pairwise oracle. The native MVM path is within
 the current OpenACC timing envelope, while the fused matmat path shows the
 expected block reuse. OpenACC remains the comparison backend for CG.
+
+The fused multi-RHS CG sweep now covers 256, 512, 1024, and 2048 samples with
+four float64 right-hand sides. Every row passes the blocked NumPy matmat
+residual oracle, and the FortML rows pass the independent dense multi-RHS
+solve. At 2048 samples, the default OpenACC lane takes 0.769 s on CUDA versus
+0.848 s for GPyTorch-KeOps and 0.965 s for KeOps. The native CUDA lane takes
+0.328 s, below dense PyTorch at 0.358 s and below both matrix-free comparison
+lanes. The CPU lane is 0.699 s versus 0.735 s for GPyTorch-KeOps. Scaling
+plots are published at https://box.sloppy.at/8801e.png for native CUDA and
+https://box.sloppy.at/2344d.png for OpenACC. The raw records and exact
+workload are in `fortml-bench/results/rbf_cg_multi_scaling.csv` and
+`fortml-bench/results/rbf_cg_multi_scaling.md`. The native GPU slope remains
+the next optimization target under block or Nystrom preconditioning.
