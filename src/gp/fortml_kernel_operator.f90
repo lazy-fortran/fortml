@@ -10,7 +10,10 @@ module fortml_kernel_operator
     use fortml_linear_operator, only: linear_operator_t
     use fortml_kernels, only: KERNEL_CONSTANT, KERNEL_LINEAR, KERNEL_MATERN12, &
         KERNEL_MATERN32, KERNEL_MATERN52, KERNEL_PRODUCT, KERNEL_RBF, &
-        KERNEL_SUM, KERNEL_WHITE_NOISE, kernel_t
+        KERNEL_SUM, KERNEL_USER, KERNEL_WHITE_NOISE, kernel_t
+    use fortml_kernel_formula, only: OPCODE_ADD, OPCODE_DIVIDE_CONST, &
+        OPCODE_EXP, OPCODE_MULTIPLY, OPCODE_NEGATE, OPCODE_PUSH_CONST, &
+        OPCODE_PUSH_DOT, OPCODE_PUSH_R, OPCODE_PUSH_R2, OPCODE_SUBTRACT
     implicit none
     private
 
@@ -1427,6 +1430,12 @@ contains
         case (KERNEL_RBF, KERNEL_MATERN12, KERNEL_MATERN32, KERNEL_MATERN52, &
                 KERNEL_LINEAR, KERNEL_CONSTANT, KERNEL_WHITE_NOISE)
             count = 1
+        case (KERNEL_USER)
+            ! The lowered formula, then its log-variance factor and the
+            ! multiply that applies it.
+            if (.not. allocated(kernel%formula)) return
+            if (.not. kernel%formula%static_lowering_eligible()) return
+            count = kernel%formula%length + 2
         end select
     end function kernel_program_size
 
@@ -1438,6 +1447,7 @@ contains
         real(dp), intent(inout) :: program_variance(:), program_lengthscale(:)
         integer, intent(inout) :: cursor
         type(fortnum_status_t), intent(out) :: status
+        integer :: i
 
         call status_set(status, FORTNUM_OK, "")
 
@@ -1495,6 +1505,36 @@ contains
             program_kind(cursor) = kernel%kind
             program_variance(cursor) = exp(kernel%log_parameters(1))
             program_lengthscale(cursor) = 1.0_dp
+        case (KERNEL_USER)
+            ! Static lowering of a user formula: its opcodes are copied into
+            ! the same postfix program the built-in tree uses, so the device
+            ! loop never calls back into user code. An unvalidated formula is
+            ! refused here rather than lowered.
+            if (.not. allocated(kernel%formula)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "kernel operator: the user formula is missing")
+                return
+            end if
+            if (.not. kernel%formula%static_lowering_eligible()) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "kernel operator: the user formula is not statically &
+                    &lowerable")
+                return
+            end if
+            do i = 1, kernel%formula%length
+                cursor = cursor + 1
+                program_kind(cursor) = kernel%formula%opcode(i)
+                program_variance(cursor) = kernel%formula%operand(i)
+                program_lengthscale(cursor) = 0.0_dp
+            end do
+            cursor = cursor + 1
+            program_kind(cursor) = OPCODE_PUSH_CONST
+            program_variance(cursor) = exp(kernel%log_parameters(1))
+            program_lengthscale(cursor) = 0.0_dp
+            cursor = cursor + 1
+            program_kind(cursor) = OPCODE_MULTIPLY
+            program_variance(cursor) = 0.0_dp
+            program_lengthscale(cursor) = 0.0_dp
         case default
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "kernel operator: unsupported kernel program node")
@@ -2649,6 +2689,33 @@ contains
             case (KERNEL_PRODUCT)
                 stack(stack_top - 1) = stack(stack_top - 1)*stack(stack_top)
                 stack_top = stack_top - 1
+            case (OPCODE_PUSH_R2)
+                stack_top = stack_top + 1
+                stack(stack_top) = distance
+            case (OPCODE_PUSH_R)
+                stack_top = stack_top + 1
+                stack(stack_top) = sqrt(distance)
+            case (OPCODE_PUSH_DOT)
+                stack_top = stack_top + 1
+                stack(stack_top) = linear_value
+            case (OPCODE_PUSH_CONST)
+                stack_top = stack_top + 1
+                stack(stack_top) = program_variance(instruction)
+            case (OPCODE_ADD)
+                stack(stack_top - 1) = stack(stack_top - 1) + stack(stack_top)
+                stack_top = stack_top - 1
+            case (OPCODE_SUBTRACT)
+                stack(stack_top - 1) = stack(stack_top - 1) - stack(stack_top)
+                stack_top = stack_top - 1
+            case (OPCODE_MULTIPLY)
+                stack(stack_top - 1) = stack(stack_top - 1)*stack(stack_top)
+                stack_top = stack_top - 1
+            case (OPCODE_NEGATE)
+                stack(stack_top) = -stack(stack_top)
+            case (OPCODE_EXP)
+                stack(stack_top) = exp(stack(stack_top))
+            case (OPCODE_DIVIDE_CONST)
+                stack(stack_top) = stack(stack_top)/program_variance(instruction)
             end select
         end do
         value = stack(stack_top)

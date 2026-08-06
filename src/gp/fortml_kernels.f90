@@ -6,6 +6,7 @@ module fortml_kernels
         fortml_matern32_hvp, fortml_matern52_hvp
     use fortml_generated_rbf_products, only: fortml_rbf_hvp, fortml_rbf_jvp, &
         fortml_rbf_vjp
+    use fortml_kernel_formula, only: kernel_formula_t
     implicit none
     private
 
@@ -27,6 +28,7 @@ module fortml_kernels
     integer, parameter, public :: KERNEL_WHITE_NOISE = 7
     integer, parameter, public :: KERNEL_SUM = 8
     integer, parameter, public :: KERNEL_PRODUCT = 9
+    integer, parameter, public :: KERNEL_USER = 10
 
     type, public :: kernel_t
         integer :: kind = 0
@@ -34,6 +36,8 @@ module fortml_kernels
         real(dp), allocatable :: log_parameters(:)
         type(kernel_t), pointer :: left => null()
         type(kernel_t), pointer :: right => null()
+        !! A validated user formula, present only for KERNEL_USER leaves.
+        type(kernel_formula_t), allocatable :: formula
     contains
         procedure, public :: parameter_count => kernel_parameter_count
         procedure, public :: parameters => kernel_parameters
@@ -53,6 +57,7 @@ module fortml_kernels
     public :: make_linear_kernel
     public :: make_constant_kernel
     public :: make_white_noise_kernel
+    public :: make_user_kernel
     public :: kernel_add
     public :: kernel_multiply
     public :: kernel_input_derivatives
@@ -122,6 +127,34 @@ contains
         call make_leaf(kernel, KERNEL_WHITE_NOISE, input_dim, variance, 1.0_dp, status)
     end function make_white_noise_kernel
 
+    function make_user_kernel(input_dim, variance, formula, status) result(kernel)
+        !! Build a leaf from a user formula. The formula must already validate:
+        !! this is the refusal boundary, so nothing downstream has to decide
+        !! whether a user expression is safe to lower.
+        integer, intent(in) :: input_dim
+        real(dp), intent(in) :: variance
+        type(kernel_formula_t), intent(in) :: formula
+        type(fortnum_status_t), intent(out) :: status
+        type(kernel_t) :: kernel
+
+        if (.not. formula%static_lowering_eligible()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "kernel constructor: the user formula is not validated")
+            return
+        end if
+        if (input_dim < 1 .or. variance <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "kernel constructor: dimensions and scales must be positive")
+            return
+        end if
+        kernel%kind = KERNEL_USER
+        kernel%input_dim = input_dim
+        allocate(kernel%log_parameters(1))
+        kernel%log_parameters(1) = log(variance)
+        allocate(kernel%formula, source=formula)
+        call status_set(status, FORTNUM_OK, "")
+    end function make_user_kernel
+
     function kernel_add(left, right, status) result(kernel)
         type(kernel_t), intent(in) :: left, right
         type(fortnum_status_t), intent(out) :: status
@@ -145,7 +178,7 @@ contains
         select case (self%kind)
         case (KERNEL_RBF, KERNEL_MATERN12, KERNEL_MATERN32, KERNEL_MATERN52)
             count = 2
-        case (KERNEL_LINEAR, KERNEL_CONSTANT, KERNEL_WHITE_NOISE)
+        case (KERNEL_LINEAR, KERNEL_CONSTANT, KERNEL_WHITE_NOISE, KERNEL_USER)
             count = 1
         case (KERNEL_SUM, KERNEL_PRODUCT)
             if (associated(self%left)) count = count + self%left%parameter_count()
@@ -232,14 +265,17 @@ contains
                 lengthscale = 1.0_dp
             end if
             r2 = sum((x1 - x2)**2)
+            value = 0.0_dp
             if (self%kind == KERNEL_RBF) then
                 call fortml_generated_rbf_leaf_fortran( &
                     variance, r2, lengthscale, value)
-            else
+            else if (self%kind /= KERNEL_USER) then
                 call leaf_value_and_length_derivative(self%kind, variance, &
                     lengthscale, r2, value, length_derivative)
             end if
-            if (self%kind == KERNEL_LINEAR) then
+            if (self%kind == KERNEL_USER) then
+                value = variance*self%formula%evaluate(r2, dot_product(x1, x2))
+            else if (self%kind == KERNEL_LINEAR) then
                 value = variance*dot_product(x1, x2)
             else if (self%kind == KERNEL_CONSTANT) then
                 value = variance
@@ -584,14 +620,18 @@ contains
             do j = 1, size(x2, 1)
                 do i = 1, size(x1, 1)
                     r2 = sum((x1(i, :) - x2(j, :))**2)
+                    value = 0.0_dp
                     if (self%kind == KERNEL_RBF) then
                         call fortml_generated_rbf_leaf_fortran( &
                             variance, r2, lengthscale, value)
-                    else
+                    else if (self%kind /= KERNEL_USER) then
                         call leaf_value_and_length_derivative(self%kind, variance, &
                             lengthscale, r2, value, dummy)
                     end if
-                    if (self%kind == KERNEL_LINEAR) then
+                    if (self%kind == KERNEL_USER) then
+                        matrix(i, j) = variance*self%formula%evaluate( &
+                            r2, dot_product(x1(i, :), x2(j, :)))
+                    else if (self%kind == KERNEL_LINEAR) then
                         matrix(i, j) = variance*dot_product(x1(i, :), x2(j, :))
                     else if (self%kind == KERNEL_CONSTANT) then
                         matrix(i, j) = variance
@@ -1003,6 +1043,14 @@ contains
             valid = allocated(self%log_parameters)
             if (.not. valid) return
             valid = size(self%log_parameters) == 1
+        case (KERNEL_USER)
+            valid = allocated(self%log_parameters)
+            if (.not. valid) return
+            valid = size(self%log_parameters) == 1
+            if (.not. valid) return
+            valid = allocated(self%formula)
+            if (.not. valid) return
+            valid = self%formula%static_lowering_eligible()
         case (KERNEL_SUM, KERNEL_PRODUCT)
             valid = associated(self%left) .and. associated(self%right)
             if (.not. valid) return

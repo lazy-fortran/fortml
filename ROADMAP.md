@@ -140,7 +140,7 @@ missing report leaves the item open.
 - [x] Extend operator-owned residency and static postfix-program lowering to
   built-in composite kernel expression trees, including fused products for up
   to eight right-hand sides.
-- [ ] Add a safe static lowering contract for user-supplied kernel formulas.
+- [x] Add a safe static lowering contract for user-supplied kernel formulas.
 - [x] Connect the RBF operator to `fortnum` CG with a diagonal
   preconditioner and an independent dense-solve oracle.
 - [x] Add an OpenACC `nvfortran` RBF CG path that keeps the sample points and
@@ -343,6 +343,28 @@ commits `5618a1e8`, `147aaceb`, `346813d3`). Two slow FortFront suites and one
 FortSym suite were renamed `*_slow`, and `fo` now gives a slow-marked test its
 own timeout budget instead of holding it to the fast one (`fo` commit
 `f36c429`).
+
+`fortml_kernel_formula` closes the user-formula lowering boundary. A user
+kernel is supplied as data, not as code: a short postfix program over a fixed
+opcode set, which `kernel_operator_t` copies into the same static program it
+already uses for built-in kernel trees, so no device loop ever calls back into
+user code. Every opcode is a total function of its operands - the only value
+sources are the squared distance, the distance, the inner product and a
+constant; the only operations are add, subtract, multiply, negate, exponential
+and division by a validated non-zero constant - and `push_distance` is a
+primitive rather than a general square root, so no operand can reach `sqrt`
+negative. Validation additionally proves the stack never underflows, never
+exceeds its fixed depth, and ends holding exactly one value.
+
+`static_lowering_eligible()` is the refusal boundary: `make_user_kernel` and
+the operator both refuse a formula that has not validated, including one edited
+after validating. `test_kernel_formula` checks an RBF-spelling formula against
+the built-in RBF leaf, checks a non-built-in formula through lowered `matvec`
+and `matmat` against a direct pairwise loop, checks a user leaf composed with a
+built-in constant kernel, and checks each refusal case by name. It passes with
+gfortran and `nvfortran` 26.5. Parameter products for user formulas are not
+part of this item: only the log-variance factor is a parameter, and formula
+constants are fixed data.
 
 The first basis-map slice is now implemented in `fortml_basis`. It provides polynomial
 powers, Fourier sine/cosine features, differentiable ARD radial features, and
