@@ -7,12 +7,15 @@ module fortml_kernel_operator
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
         FORTNUM_DOMAIN_ERROR
     use fortml_linear_operator, only: linear_operator_t
-    use fortml_kernels, only: KERNEL_RBF, kernel_t
+    use fortml_kernels, only: KERNEL_CONSTANT, KERNEL_LINEAR, KERNEL_MATERN12, &
+        KERNEL_MATERN32, KERNEL_MATERN52, KERNEL_PRODUCT, KERNEL_RBF, &
+        KERNEL_SUM, KERNEL_WHITE_NOISE, kernel_t
     implicit none
     private
 
     integer, parameter :: DEFAULT_TILE_SIZE = 128
     integer, parameter :: MAX_FUSED_RHS = 8
+    integer, parameter :: MAX_KERNEL_PROGRAM = 64
 
     type :: rbf_krylov_workspace_t
         real(dp), allocatable :: residual(:, :), direction(:, :)
@@ -72,6 +75,9 @@ module fortml_kernel_operator
         real(dp) :: diagonal_shift = 0.0_dp
         integer :: tile_size = DEFAULT_TILE_SIZE
         logical :: points_device_resident = .false.
+        integer, allocatable :: program_kind(:)
+        real(dp), allocatable :: program_variance(:), program_lengthscale(:)
+        logical :: program_device_resident = .false.
     contains
         procedure, public :: initialize => kernel_operator_initialize
         procedure, public :: enter_data => kernel_operator_enter_data
@@ -1303,6 +1309,7 @@ contains
         self%diagonal_shift = diagonal_shift
         self%tile_size = DEFAULT_TILE_SIZE
         self%points_device_resident = .false.
+        self%program_device_resident = .false.
         if (present(tile_size)) self%tile_size = tile_size
         if (self%tile_size < 1) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -1311,8 +1318,125 @@ contains
         end if
         allocate(self%points(size(sample_points, 1), size(sample_points, 2)))
         self%points = sample_points
+        call initialize_kernel_program(self, status)
+        if (status%code /= FORTNUM_OK) return
         call status_set(status, FORTNUM_OK, "")
     end subroutine kernel_operator_initialize
+
+    subroutine initialize_kernel_program(self, status)
+        class(kernel_operator_t), intent(inout) :: self
+        type(fortnum_status_t), intent(out) :: status
+        integer :: program_size, cursor
+
+        program_size = kernel_program_size(self%kernel)
+        if (program_size < 1 .or. program_size > MAX_KERNEL_PROGRAM) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "kernel operator: kernel expression is too large or invalid")
+            return
+        end if
+        allocate( &
+            self%program_kind(program_size), &
+            self%program_variance(program_size), &
+            self%program_lengthscale(program_size))
+        cursor = 0
+        call append_kernel_program( &
+            self%kernel, self%program_kind, self%program_variance, &
+            self%program_lengthscale, cursor, status)
+        if (status%code /= FORTNUM_OK) return
+        if (cursor /= program_size) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "kernel operator: kernel program construction failed")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine initialize_kernel_program
+
+    recursive integer function kernel_program_size(kernel) result(count)
+        type(kernel_t), intent(in) :: kernel
+
+        count = 0
+        select case (kernel%kind)
+        case (KERNEL_SUM, KERNEL_PRODUCT)
+            if (.not. associated(kernel%left)) return
+            if (.not. associated(kernel%right)) return
+            count = kernel_program_size(kernel%left) + &
+                kernel_program_size(kernel%right) + 1
+        case (KERNEL_RBF, KERNEL_MATERN12, KERNEL_MATERN32, KERNEL_MATERN52, &
+                KERNEL_LINEAR, KERNEL_CONSTANT, KERNEL_WHITE_NOISE)
+            count = 1
+        end select
+    end function kernel_program_size
+
+    recursive subroutine append_kernel_program( &
+            kernel, program_kind, program_variance, program_lengthscale, &
+            cursor, status)
+        type(kernel_t), intent(in) :: kernel
+        integer, intent(inout) :: program_kind(:)
+        real(dp), intent(inout) :: program_variance(:), program_lengthscale(:)
+        integer, intent(inout) :: cursor
+        type(fortnum_status_t), intent(out) :: status
+
+        call status_set(status, FORTNUM_OK, "")
+
+        select case (kernel%kind)
+        case (KERNEL_SUM, KERNEL_PRODUCT)
+            if (.not. associated(kernel%left)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "kernel operator: sum/product left child is missing")
+                return
+            end if
+            if (.not. associated(kernel%right)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "kernel operator: sum/product right child is missing")
+                return
+            end if
+            call append_kernel_program( &
+                kernel%left, program_kind, program_variance, &
+                program_lengthscale, cursor, status)
+            if (status%code /= FORTNUM_OK) return
+            call append_kernel_program( &
+                kernel%right, program_kind, program_variance, &
+                program_lengthscale, cursor, status)
+            if (status%code /= FORTNUM_OK) return
+            cursor = cursor + 1
+            program_kind(cursor) = kernel%kind
+            program_variance(cursor) = 0.0_dp
+            program_lengthscale(cursor) = 0.0_dp
+        case (KERNEL_RBF, KERNEL_MATERN12, KERNEL_MATERN32, KERNEL_MATERN52)
+            if (.not. allocated(kernel%log_parameters)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "kernel operator: leaf parameters are missing")
+                return
+            end if
+            if (size(kernel%log_parameters) /= 2) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "kernel operator: leaf parameter shape is invalid")
+                return
+            end if
+            cursor = cursor + 1
+            program_kind(cursor) = kernel%kind
+            program_variance(cursor) = exp(kernel%log_parameters(1))
+            program_lengthscale(cursor) = exp(kernel%log_parameters(2))
+        case (KERNEL_LINEAR, KERNEL_CONSTANT, KERNEL_WHITE_NOISE)
+            if (.not. allocated(kernel%log_parameters)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "kernel operator: leaf parameters are missing")
+                return
+            end if
+            if (size(kernel%log_parameters) /= 1) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "kernel operator: leaf parameter shape is invalid")
+                return
+            end if
+            cursor = cursor + 1
+            program_kind(cursor) = kernel%kind
+            program_variance(cursor) = exp(kernel%log_parameters(1))
+            program_lengthscale(cursor) = 1.0_dp
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "kernel operator: unsupported kernel program node")
+        end select
+    end subroutine append_kernel_program
 
     subroutine kernel_operator_enter_data(self, status)
         class(kernel_operator_t), intent(inout) :: self
@@ -1325,12 +1449,18 @@ contains
         end if
         if (.not. self%device_supported()) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
-                "kernel operator: device backend supports leaf RBF kernels only")
+                "kernel operator: kernel cannot be lowered to device code")
             return
         end if
         if (.not. self%points_device_resident) then
             !$acc enter data copyin(self%points)
             self%points_device_resident = .true.
+        end if
+        if (.not. self%program_device_resident) then
+            !$acc enter data copyin( &
+            !$acc& self%program_kind, self%program_variance, &
+            !$acc& self%program_lengthscale)
+            self%program_device_resident = .true.
         end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine kernel_operator_enter_data
@@ -1343,6 +1473,12 @@ contains
             !$acc exit data delete(self%points)
             self%points_device_resident = .false.
         end if
+        if (self%program_device_resident) then
+            !$acc exit data delete( &
+            !$acc& self%program_kind, self%program_variance, &
+            !$acc& self%program_lengthscale)
+            self%program_device_resident = .false.
+        end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine kernel_operator_exit_data
 
@@ -1350,13 +1486,25 @@ contains
         class(kernel_operator_t), intent(in) :: self
 
         kernel_operator_device_supported = .false.
-        if (self%kernel%kind /= KERNEL_RBF) return
-        if (.not. allocated(self%kernel%log_parameters)) return
-        if (size(self%kernel%log_parameters) /= 2) return
-        if (associated(self%kernel%left)) return
-        if (associated(self%kernel%right)) return
+        if (.not. allocated(self%program_kind)) return
+        if (.not. allocated(self%program_variance)) return
+        if (.not. allocated(self%program_lengthscale)) return
+        if (size(self%program_kind) < 1) return
+        if (size(self%program_kind) > MAX_KERNEL_PROGRAM) return
+        if (size(self%program_variance) /= size(self%program_kind)) return
+        if (size(self%program_lengthscale) /= size(self%program_kind)) return
         kernel_operator_device_supported = .true.
     end function kernel_operator_device_supported
+
+    logical function kernel_operator_simple_rbf(self)
+        class(kernel_operator_t), intent(in) :: self
+
+        kernel_operator_simple_rbf = .false.
+        if (.not. allocated(self%program_kind)) return
+        if (size(self%program_kind) /= 1) return
+        if (self%program_kind(1) /= KERNEL_RBF) return
+        kernel_operator_simple_rbf = .true.
+    end function kernel_operator_simple_rbf
 
     subroutine kernel_operator_matvec_device(self, input, output, status)
         class(kernel_operator_t), intent(in) :: self
@@ -1367,7 +1515,7 @@ contains
 
         if (.not. self%device_supported()) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
-                "kernel operator: device backend supports leaf RBF kernels only")
+                "kernel operator: kernel cannot be lowered to device code")
             return
         end if
         if (.not. self%points_device_resident) then
@@ -1381,11 +1529,18 @@ contains
                 "kernel operator: device vector shape is invalid")
             return
         end if
-        variance = exp(self%kernel%log_parameters(1))
-        lengthscale = exp(self%kernel%log_parameters(2))
-        call rbf_matvec_tiled( &
-            self%points, input, output, variance, lengthscale, &
-            self%diagonal_shift, self%tile_size)
+        if (kernel_operator_simple_rbf(self)) then
+            variance = self%program_variance(1)
+            lengthscale = self%program_lengthscale(1)
+            call rbf_matvec_tiled( &
+                self%points, input, output, variance, lengthscale, &
+                self%diagonal_shift, self%tile_size)
+        else
+            call kernel_program_matvec_tiled( &
+                self%points, input, output, self%program_kind, &
+                self%program_variance, self%program_lengthscale, &
+                self%diagonal_shift, self%tile_size)
+        end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine kernel_operator_matvec_device
 
@@ -1398,7 +1553,7 @@ contains
 
         if (.not. self%device_supported()) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
-                "kernel operator: device backend supports leaf RBF kernels only")
+                "kernel operator: kernel cannot be lowered to device code")
             return
         end if
         if (.not. self%points_device_resident) then
@@ -1413,11 +1568,18 @@ contains
                 "kernel operator: device matrix shape is invalid")
             return
         end if
-        variance = exp(self%kernel%log_parameters(1))
-        lengthscale = exp(self%kernel%log_parameters(2))
-        call rbf_matmat_tiled( &
-            self%points, input, output, variance, lengthscale, &
-            self%diagonal_shift, self%tile_size)
+        if (kernel_operator_simple_rbf(self)) then
+            variance = self%program_variance(1)
+            lengthscale = self%program_lengthscale(1)
+            call rbf_matmat_tiled( &
+                self%points, input, output, variance, lengthscale, &
+                self%diagonal_shift, self%tile_size)
+        else
+            call kernel_program_matmat_tiled( &
+                self%points, input, output, self%program_kind, &
+                self%program_variance, self%program_lengthscale, &
+                self%diagonal_shift, self%tile_size)
+        end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine kernel_operator_matmat_device
 
@@ -1435,12 +1597,18 @@ contains
         if (n_samples < 1) return
         if (size(input) /= n_samples .or. size(output) /= n_samples) return
         if (self%tile_size < 1) return
-        if (self%device_supported()) then
+        if (kernel_operator_simple_rbf(self)) then
             call rbf_matvec_tiled( &
                 self%points, input, output, &
-                exp(self%kernel%log_parameters(1)), &
-                exp(self%kernel%log_parameters(2)), self%diagonal_shift, &
-                self%tile_size)
+                self%program_variance(1), self%program_lengthscale(1), &
+                self%diagonal_shift, self%tile_size)
+            return
+        end if
+        if (self%device_supported()) then
+            call kernel_program_matvec_tiled( &
+                self%points, input, output, self%program_kind, &
+                self%program_variance, self%program_lengthscale, &
+                self%diagonal_shift, self%tile_size)
             return
         end if
         block_size = min(self%tile_size, n_samples)
@@ -1472,12 +1640,18 @@ contains
         if (size(output, 2) /= size(input, 2)) return
         if (size(input, 1) /= n_samples) return
         if (self%tile_size < 1) return
-        if (self%device_supported()) then
+        if (kernel_operator_simple_rbf(self)) then
             call rbf_matmat_tiled( &
                 self%points, input, output, &
-                exp(self%kernel%log_parameters(1)), &
-                exp(self%kernel%log_parameters(2)), self%diagonal_shift, &
-                self%tile_size)
+                self%program_variance(1), self%program_lengthscale(1), &
+                self%diagonal_shift, self%tile_size)
+            return
+        end if
+        if (self%device_supported()) then
+            call kernel_program_matmat_tiled( &
+                self%points, input, output, self%program_kind, &
+                self%program_variance, self%program_lengthscale, &
+                self%diagonal_shift, self%tile_size)
             return
         end if
 
@@ -1519,6 +1693,225 @@ contains
             count = 0
         end if
     end function kernel_operator_sample_count
+
+    pure subroutine evaluate_kernel_program( &
+            points, left_index, right_index, program_kind, program_variance, &
+            program_lengthscale, value)
+        !$acc routine seq
+        real(dp), intent(in) :: points(:, :)
+        integer, intent(in) :: left_index, right_index
+        integer, intent(in) :: program_kind(:)
+        real(dp), intent(in) :: program_variance(:), program_lengthscale(:)
+        real(dp), intent(out) :: value
+        real(dp) :: stack(MAX_KERNEL_PROGRAM)
+        real(dp) :: distance, difference, exponential, linear_value, r, a
+        integer :: feature, instruction, stack_top
+
+        distance = 0.0_dp
+        linear_value = 0.0_dp
+        do feature = 1, size(points, 2)
+            difference = points(left_index, feature) - &
+                points(right_index, feature)
+            distance = distance + difference*difference
+            linear_value = linear_value + &
+                points(left_index, feature)*points(right_index, feature)
+        end do
+        stack_top = 0
+        do instruction = 1, size(program_kind)
+            select case (program_kind(instruction))
+            case (KERNEL_RBF)
+                stack_top = stack_top + 1
+                stack(stack_top) = program_variance(instruction)*exp( &
+                    -0.5_dp*distance/( &
+                    program_lengthscale(instruction)*program_lengthscale(instruction)))
+            case (KERNEL_MATERN12)
+                stack_top = stack_top + 1
+                r = sqrt(distance)/program_lengthscale(instruction)
+                stack(stack_top) = program_variance(instruction)*exp(-r)
+            case (KERNEL_MATERN32)
+                stack_top = stack_top + 1
+                a = sqrt(3.0_dp)
+                r = sqrt(distance)/program_lengthscale(instruction)
+                exponential = exp(-a*r)
+                stack(stack_top) = program_variance(instruction)* &
+                    (1.0_dp + a*r)*exponential
+            case (KERNEL_MATERN52)
+                stack_top = stack_top + 1
+                a = sqrt(5.0_dp)
+                r = sqrt(distance)/program_lengthscale(instruction)
+                exponential = exp(-a*r)
+                stack(stack_top) = program_variance(instruction)* &
+                    (1.0_dp + a*r + 5.0_dp*r*r/3.0_dp)*exponential
+            case (KERNEL_LINEAR)
+                stack_top = stack_top + 1
+                stack(stack_top) = program_variance(instruction)*linear_value
+            case (KERNEL_CONSTANT)
+                stack_top = stack_top + 1
+                stack(stack_top) = program_variance(instruction)
+            case (KERNEL_WHITE_NOISE)
+                stack_top = stack_top + 1
+                stack(stack_top) = program_variance(instruction)*merge( &
+                    1.0_dp, 0.0_dp, distance == 0.0_dp)
+            case (KERNEL_SUM)
+                stack(stack_top - 1) = stack(stack_top - 1) + stack(stack_top)
+                stack_top = stack_top - 1
+            case (KERNEL_PRODUCT)
+                stack(stack_top - 1) = stack(stack_top - 1)*stack(stack_top)
+                stack_top = stack_top - 1
+            end select
+        end do
+        value = stack(stack_top)
+    end subroutine evaluate_kernel_program
+
+    subroutine kernel_program_matvec_tiled( &
+            points, input, output, program_kind, program_variance, &
+            program_lengthscale, diagonal_shift, tile_size)
+        real(dp), intent(in) :: points(:, :), input(:)
+        real(dp), intent(out) :: output(:)
+        integer, intent(in) :: program_kind(:), tile_size
+        real(dp), intent(in) :: program_variance(:), program_lengthscale(:)
+        real(dp), intent(in) :: diagonal_shift
+        real(dp) :: accumulated, kernel_value
+        integer :: block_size, first_neighbor, last_neighbor, i, j
+
+        output = 0.0_dp
+        if (size(points, 1) < 1) return
+        if (size(points, 2) < 1) return
+        if (size(input) /= size(points, 1)) return
+        if (size(output) /= size(input)) return
+        if (size(program_kind) < 1) return
+        if (size(program_kind) > MAX_KERNEL_PROGRAM) return
+        if (size(program_variance) /= size(program_kind)) return
+        if (size(program_lengthscale) /= size(program_kind)) return
+        if (tile_size < 1) return
+
+        block_size = tile_size
+        !$acc parallel loop private(accumulated, kernel_value, &
+        !$acc& first_neighbor, last_neighbor, j)
+        !$omp parallel do schedule(static) private( &
+        !$omp& accumulated, kernel_value, first_neighbor, last_neighbor, j)
+        do i = 1, size(points, 1)
+            accumulated = diagonal_shift*input(i)
+            do first_neighbor = 1, size(points, 1), block_size
+                last_neighbor = min( &
+                    size(points, 1), first_neighbor + block_size - 1)
+                !$acc loop vector reduction(+:accumulated) private(kernel_value)
+                !$omp simd reduction(+:accumulated) private(kernel_value)
+                do j = first_neighbor, last_neighbor
+                    call evaluate_kernel_program( &
+                        points, i, j, program_kind, &
+                        program_variance, program_lengthscale, kernel_value)
+                    accumulated = accumulated + kernel_value*input(j)
+                end do
+            end do
+            output(i) = accumulated
+        end do
+    end subroutine kernel_program_matvec_tiled
+
+    subroutine kernel_program_matmat_tiled( &
+            points, input, output, program_kind, program_variance, &
+            program_lengthscale, diagonal_shift, tile_size)
+        real(dp), intent(in) :: points(:, :), input(:, :)
+        real(dp), intent(out) :: output(:, :)
+        integer, intent(in) :: program_kind(:), tile_size
+        real(dp), intent(in) :: program_variance(:), program_lengthscale(:)
+        real(dp), intent(in) :: diagonal_shift
+        real(dp) :: accumulated_1, accumulated_2, accumulated_3
+        real(dp) :: accumulated_4, accumulated_5, accumulated_6
+        real(dp) :: accumulated_7, accumulated_8, kernel_value
+        integer :: block_size, first_neighbor, last_neighbor, i, j, column
+        integer :: n_rhs
+
+        output = 0.0_dp
+        if (size(points, 1) < 1) return
+        if (size(points, 2) < 1) return
+        if (size(input, 1) /= size(points, 1)) return
+        if (size(output, 1) /= size(points, 1)) return
+        if (size(output, 2) /= size(input, 2)) return
+        if (size(program_kind) < 1) return
+        if (size(program_kind) > MAX_KERNEL_PROGRAM) return
+        if (size(program_variance) /= size(program_kind)) return
+        if (size(program_lengthscale) /= size(program_kind)) return
+        if (tile_size < 1) return
+        n_rhs = size(input, 2)
+        if (n_rhs < 1) return
+        if (n_rhs > MAX_FUSED_RHS) then
+            do column = 1, n_rhs
+                call kernel_program_matvec_tiled( &
+                    points, input(:, column), output(:, column), program_kind, &
+                    program_variance, program_lengthscale, diagonal_shift, &
+                    tile_size)
+            end do
+            return
+        end if
+
+        block_size = tile_size
+        !$acc parallel loop private( &
+        !$acc& accumulated_1, accumulated_2, accumulated_3, accumulated_4, &
+        !$acc& accumulated_5, accumulated_6, accumulated_7, accumulated_8, &
+        !$acc& kernel_value, first_neighbor, last_neighbor, j, column)
+        !$omp parallel do schedule(static) private( &
+        !$omp& accumulated_1, accumulated_2, accumulated_3, accumulated_4, &
+        !$omp& accumulated_5, accumulated_6, accumulated_7, accumulated_8, &
+        !$omp& kernel_value, first_neighbor, last_neighbor, j, column)
+        do i = 1, size(points, 1)
+            accumulated_1 = diagonal_shift*input(i, 1)
+            accumulated_2 = 0.0_dp
+            accumulated_3 = 0.0_dp
+            accumulated_4 = 0.0_dp
+            accumulated_5 = 0.0_dp
+            accumulated_6 = 0.0_dp
+            accumulated_7 = 0.0_dp
+            accumulated_8 = 0.0_dp
+            if (n_rhs >= 2) accumulated_2 = diagonal_shift*input(i, 2)
+            if (n_rhs >= 3) accumulated_3 = diagonal_shift*input(i, 3)
+            if (n_rhs >= 4) accumulated_4 = diagonal_shift*input(i, 4)
+            if (n_rhs >= 5) accumulated_5 = diagonal_shift*input(i, 5)
+            if (n_rhs >= 6) accumulated_6 = diagonal_shift*input(i, 6)
+            if (n_rhs >= 7) accumulated_7 = diagonal_shift*input(i, 7)
+            if (n_rhs >= 8) accumulated_8 = diagonal_shift*input(i, 8)
+            do first_neighbor = 1, size(points, 1), block_size
+                last_neighbor = min( &
+                    size(points, 1), first_neighbor + block_size - 1)
+                !$acc loop vector reduction(+:accumulated_1, accumulated_2, &
+                !$acc& accumulated_3, accumulated_4, accumulated_5, &
+                !$acc& accumulated_6, accumulated_7, accumulated_8) &
+                !$acc& private(kernel_value)
+                !$omp simd reduction(+:accumulated_1, accumulated_2, &
+                !$omp& accumulated_3, accumulated_4, accumulated_5, &
+                !$omp& accumulated_6, accumulated_7, accumulated_8) &
+                !$omp& private(kernel_value)
+                do j = first_neighbor, last_neighbor
+                    call evaluate_kernel_program( &
+                        points, i, j, program_kind, &
+                        program_variance, program_lengthscale, kernel_value)
+                    accumulated_1 = accumulated_1 + kernel_value*input(j, 1)
+                    if (n_rhs >= 2) accumulated_2 = accumulated_2 + &
+                        kernel_value*input(j, 2)
+                    if (n_rhs >= 3) accumulated_3 = accumulated_3 + &
+                        kernel_value*input(j, 3)
+                    if (n_rhs >= 4) accumulated_4 = accumulated_4 + &
+                        kernel_value*input(j, 4)
+                    if (n_rhs >= 5) accumulated_5 = accumulated_5 + &
+                        kernel_value*input(j, 5)
+                    if (n_rhs >= 6) accumulated_6 = accumulated_6 + &
+                        kernel_value*input(j, 6)
+                    if (n_rhs >= 7) accumulated_7 = accumulated_7 + &
+                        kernel_value*input(j, 7)
+                    if (n_rhs >= 8) accumulated_8 = accumulated_8 + &
+                        kernel_value*input(j, 8)
+                end do
+            end do
+            output(i, 1) = accumulated_1
+            if (n_rhs >= 2) output(i, 2) = accumulated_2
+            if (n_rhs >= 3) output(i, 3) = accumulated_3
+            if (n_rhs >= 4) output(i, 4) = accumulated_4
+            if (n_rhs >= 5) output(i, 5) = accumulated_5
+            if (n_rhs >= 6) output(i, 6) = accumulated_6
+            if (n_rhs >= 7) output(i, 7) = accumulated_7
+            if (n_rhs >= 8) output(i, 8) = accumulated_8
+        end do
+    end subroutine kernel_program_matmat_tiled
 
     subroutine rbf_matvec_tiled( &
             points, input, output, variance, lengthscale, diagonal_shift, &

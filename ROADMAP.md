@@ -78,8 +78,10 @@ missing report leaves the item open.
 - [x] Add a resident generic leaf-RBF backend with fused matrix-free vector
   and multi-right-hand-side products, matching the specialized KeOps-style
   formula under `nvfortran`/OpenACC.
-- [ ] Extend operator-owned residency and static device lowering to composite
-  kernel expression trees and user-supplied kernel formulas.
+- [x] Extend operator-owned residency and static postfix-program lowering to
+  built-in composite kernel expression trees, including fused products for up
+  to eight right-hand sides.
+- [ ] Add a safe static lowering contract for user-supplied kernel formulas.
 - [x] Connect the RBF operator to `fortnum` CG with a diagonal
   preconditioner and an independent dense-solve oracle.
 - [x] Add an OpenACC `nvfortran` RBF CG path that keeps the sample points and
@@ -310,5 +312,7 @@ matrix-free reduction as `rbf_operator_t`. Its sample points have explicit
 `enter_data`/`exit_data` lifetime hooks, and vector/multi-RHS products are
 available through `matvec_device`/`matmat_device`. A direct pairwise vector and
 matrix oracle checks the path with gfortran and direct `nvfortran`/OpenACC.
-Composite kernel trees intentionally remain on the blocked host reference
-until their recursive expression is flattened into a static device formula.
+Built-in composite kernel trees are flattened into a static postfix program
+before execution, so sum/product nodes never invoke recursive callbacks in an
+accelerator region. User-supplied formulas still need an explicit lowering
+contract before they can enter this path.

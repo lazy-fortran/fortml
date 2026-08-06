@@ -1,10 +1,10 @@
 program test_kernel_operator_device
     use, intrinsic :: iso_fortran_env, only: dp => real64, error_unit
     use fortml_kernel_operator, only: kernel_operator_t
-    use fortml_kernels, only: kernel_add, make_constant_kernel, &
-        make_rbf_kernel
-    use fortnum_status, only: FORTNUM_DOMAIN_ERROR, FORTNUM_OK, &
-        fortnum_status_t
+    use fortml_kernels, only: kernel_add, kernel_multiply, kernel_t, &
+        make_constant_kernel, make_linear_kernel, make_matern32_kernel, &
+        make_rbf_kernel, make_white_noise_kernel
+    use fortnum_status, only: FORTNUM_OK, fortnum_status_t
     implicit none
 
     integer, parameter :: n_samples = 7, n_features = 3, n_rhs = 2
@@ -14,9 +14,15 @@ program test_kernel_operator_device
     real(dp) :: output(n_samples), expected(n_samples)
     real(dp) :: inputs(n_samples, n_rhs), outputs(n_samples, n_rhs)
     real(dp) :: expected_matrix(n_samples, n_rhs)
+    real(dp) :: composite_expected(n_samples)
+    real(dp) :: composite_expected_matrix(n_samples, n_rhs)
     type(kernel_operator_t) :: rbf_generic
     type(kernel_operator_t) :: composite_operator
+    type(kernel_operator_t) :: mixed_operator
+    type(kernel_t) :: matern_kernel, linear_kernel, constant_kernel
+    type(kernel_t) :: white_noise_kernel, sum_kernel, product_kernel
     type(fortnum_status_t) :: status
+    real(dp) :: distance, matern_value, mixed_expected(n_samples)
     integer :: column, feature, i, j, nfail
 
     nfail = 0
@@ -93,11 +99,74 @@ program test_kernel_operator_device
         diagonal_shift, status, 4)
     call require(status%code == FORTNUM_OK, &
         "composite host operator initializes", nfail)
-    call require(.not. composite_operator%device_supported(), &
-        "composite kernel stays on the validated host backend", nfail)
+    call require(composite_operator%device_supported(), &
+        "composite kernel advertises static device lowering", nfail)
+    do i = 1, n_samples
+        composite_expected(i) = expected(i) + 0.2_dp*sum(input)
+    end do
+    do column = 1, n_rhs
+        composite_expected_matrix(:, column) = expected_matrix(:, column) + &
+            0.2_dp*sum(inputs(:, column))
+    end do
     call composite_operator%enter_data(status)
-    call require(status%code == FORTNUM_DOMAIN_ERROR, &
-        "composite kernel rejects unsupported device lowering", nfail)
+    call require(status%code == FORTNUM_OK, &
+        "composite kernel enters persistent device data", nfail)
+    !$acc data copyin(input) copyout(output)
+    call composite_operator%matvec_device(input, output, status)
+    !$acc end data
+    call require(status%code == FORTNUM_OK, &
+        "composite kernel device vector product succeeds", nfail)
+    call require(maxval(abs(output - composite_expected)) < 3.0e-13_dp, &
+        "composite kernel vector product matches direct oracle", nfail)
+    !$acc data copyin(inputs) copyout(outputs)
+    call composite_operator%matmat_device(inputs, outputs, status)
+    !$acc end data
+    call require(status%code == FORTNUM_OK, &
+        "composite kernel device matrix product succeeds", nfail)
+    call require(maxval(abs(outputs - composite_expected_matrix)) < 3.0e-13_dp, &
+        "composite kernel matrix product matches direct oracle", nfail)
+    call composite_operator%exit_data(status)
+    call require(status%code == FORTNUM_OK, &
+        "composite kernel exits persistent device data", nfail)
+
+    matern_kernel = make_matern32_kernel( &
+        n_features, 0.9_dp, 0.6_dp, status)
+    linear_kernel = make_linear_kernel(n_features, 0.25_dp, status)
+    constant_kernel = make_constant_kernel(n_features, 0.3_dp, status)
+    white_noise_kernel = make_white_noise_kernel(n_features, 0.1_dp, status)
+    sum_kernel = kernel_add(matern_kernel, linear_kernel, status)
+    product_kernel = kernel_multiply(sum_kernel, constant_kernel, status)
+    sum_kernel = kernel_add(product_kernel, white_noise_kernel, status)
+    call mixed_operator%initialize(points, sum_kernel, diagonal_shift, status, 4)
+    call require(status%code == FORTNUM_OK, &
+        "nested Matérn/linear/white-noise operator initializes", nfail)
+    call require(mixed_operator%device_supported(), &
+        "nested common kernel expression advertises device lowering", nfail)
+    do i = 1, n_samples
+        mixed_expected(i) = diagonal_shift*input(i)
+        do j = 1, n_samples
+            distance = sqrt(sum((points(i, :) - points(j, :))**2))/0.6_dp
+            matern_value = 0.9_dp*(1.0_dp + sqrt(3.0_dp)*distance)*exp( &
+                -sqrt(3.0_dp)*distance)
+            mixed_expected(i) = mixed_expected(i) + ( &
+                0.3_dp*(matern_value + 0.25_dp*sum( &
+                points(i, :)*points(j, :))) + &
+                merge(0.1_dp, 0.0_dp, i == j))*input(j)
+        end do
+    end do
+    call mixed_operator%enter_data(status)
+    call require(status%code == FORTNUM_OK, &
+        "nested common kernel enters persistent device data", nfail)
+    !$acc data copyin(input) copyout(output)
+    call mixed_operator%matvec_device(input, output, status)
+    !$acc end data
+    call require(status%code == FORTNUM_OK, &
+        "nested common kernel device product succeeds", nfail)
+    call require(maxval(abs(output - mixed_expected)) < 4.0e-13_dp, &
+        "nested common kernel product matches direct oracle", nfail)
+    call mixed_operator%exit_data(status)
+    call require(status%code == FORTNUM_OK, &
+        "nested common kernel exits persistent device data", nfail)
 
     if (nfail > 0) then
         write (error_unit, '(a,i0)') "FAIL: generic kernel device checks: ", nfail

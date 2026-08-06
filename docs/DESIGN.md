@@ -90,9 +90,10 @@ covariance matrix.
 matrix-free host implementation. It is the reference path for kernel sums,
 products, Matérn variants, and future derivative blocks. Leaf RBF kernels now
 share the specialized operator's fused matrix-free reduction and explicit
-device-data lifetime, including a batched product path. Composite expression
-trees remain on the blocked host reference until they are flattened into a
-static device formula.
+device-data lifetime, including a batched product path. Built-in composite
+expression trees are flattened into a static postfix program before device
+execution; user-supplied formulas remain on the blocked host reference until
+they have an explicit lowering contract.
 
 Its batched product evaluates each kernel block once and multiplies that block
 by all right-hand sides together. This keeps the generic KeOps-style operation
@@ -166,9 +167,9 @@ region, while an enclosing benchmark region keeps the sample points and
 right-hand side resident across repeated solves. The benchmark uses the same
 unpreconditioned recurrence for the Python comparison lanes so its tolerance,
 iteration cap, and true-residual check are directly comparable. The generic
-`kernel_operator_t` remains a blocked host-reference path for composite
-kernels until persistent backend-owned data and general static accelerator
-kernels are added.
+`kernel_operator_t` remains a blocked host-reference path for user-supplied
+formulas until persistent backend-owned data and a static accelerator lowering
+contract are added.
 
 The eight-feature path also has an optional native CUDA bridge. The benchmark
 drivers enable it with `FORTML_NATIVE_CUDA=1`, compile
