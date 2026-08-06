@@ -43,18 +43,18 @@ module fortml_kernel_operator
         logical :: device_resident = .false.
     end type kernel_krylov_workspace_t
 
-    type :: rbf_block_preconditioner_t
+    type :: block_preconditioner_t
         real(dp), allocatable :: factors(:, :, :)
         integer :: block_size = 0
         integer :: n_blocks = 0
-    end type rbf_block_preconditioner_t
+    end type block_preconditioner_t
 
-    type :: rbf_nystrom_preconditioner_t
+    type :: nystrom_preconditioner_t
         real(dp), allocatable :: features(:, :)
         real(dp), allocatable :: factor(:, :)
         integer :: rank = 0
         real(dp) :: regularization = 0.0_dp
-    end type rbf_nystrom_preconditioner_t
+    end type nystrom_preconditioner_t
 
     type, extends(linear_operator_t), public :: rbf_operator_t
         ! Neighbor index is contiguous for the matrix-free inner reduction.
@@ -65,8 +65,8 @@ module fortml_kernel_operator
         integer :: tile_size = DEFAULT_TILE_SIZE
         logical :: points_device_resident = .false.
         type(rbf_krylov_workspace_t) :: krylov_workspace
-        type(rbf_block_preconditioner_t) :: block_preconditioner
-        type(rbf_nystrom_preconditioner_t) :: nystrom_preconditioner
+        type(block_preconditioner_t) :: block_preconditioner
+        type(nystrom_preconditioner_t) :: nystrom_preconditioner
     contains
         procedure, public :: initialize => rbf_operator_initialize
         procedure, public :: enter_data => rbf_operator_enter_data
@@ -95,6 +95,8 @@ module fortml_kernel_operator
         type(c_ptr) :: cuda_plan = c_null_ptr
         logical :: cuda_plan_device_resident = .false.
         type(kernel_krylov_workspace_t) :: krylov_workspace
+        type(block_preconditioner_t) :: block_preconditioner
+        type(nystrom_preconditioner_t) :: nystrom_preconditioner
     contains
         procedure, public :: initialize => kernel_operator_initialize
         procedure, public :: enter_data => kernel_operator_enter_data
@@ -109,6 +111,10 @@ module fortml_kernel_operator
         procedure, public :: device_supported => kernel_operator_device_supported
         procedure, public :: diagonal => kernel_operator_diagonal
         procedure, public :: sample_count => kernel_operator_sample_count
+        procedure, public :: solve_cg_multi_block => &
+            kernel_operator_solve_cg_multi_block
+        procedure, public :: solve_cg_multi_nystrom => &
+            kernel_operator_solve_cg_multi_nystrom
     end type kernel_operator_t
 
     public :: rbf_matvec_tiled
@@ -1540,6 +1546,495 @@ contains
                 "kernel operator: unsupported kernel program node")
         end select
     end subroutine append_kernel_program
+
+
+    subroutine ensure_kernel_block_preconditioner(self, block_size, status)
+        !! Cholesky factors of the diagonal blocks of the shifted kernel
+        !! matrix. The entries come from the lowered kernel program, so this
+        !! works for any built-in tree and for a validated user formula.
+        class(kernel_operator_t), intent(inout) :: self
+        integer, intent(in) :: block_size
+        type(fortnum_status_t), intent(out) :: status
+
+        integer :: block, column, first, last, local_size, row, k
+        integer :: n_blocks, n_samples
+        real(dp) :: value
+
+        n_samples = self%sample_count()
+        if (n_samples < 1 .or. block_size < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "kernel operator: block preconditioner shape is invalid")
+            return
+        end if
+        n_blocks = (n_samples + block_size - 1)/block_size
+        if (allocated(self%block_preconditioner%factors)) then
+            if (self%block_preconditioner%block_size == block_size .and. &
+                self%block_preconditioner%n_blocks == n_blocks) then
+                call status_set(status, FORTNUM_OK, "")
+                return
+            end if
+            deallocate(self%block_preconditioner%factors)
+        end if
+        allocate(self%block_preconditioner%factors( &
+            block_size, block_size, n_blocks))
+        self%block_preconditioner%factors = 0.0_dp
+        self%block_preconditioner%block_size = block_size
+        self%block_preconditioner%n_blocks = n_blocks
+
+        do block = 1, n_blocks
+            first = (block - 1)*block_size + 1
+            last = min(n_samples, first + block_size - 1)
+            local_size = last - first + 1
+            do row = 1, local_size
+                do column = 1, row
+                    call evaluate_kernel_program(self%points, &
+                        first + row - 1, first + column - 1, &
+                        self%program_kind, self%program_variance, &
+                        self%program_lengthscale, value)
+                    if (row == column) value = value + self%diagonal_shift
+                    do k = 1, column - 1
+                        value = value - self%block_preconditioner%factors( &
+                            row, k, block)*self%block_preconditioner%factors( &
+                            column, k, block)
+                    end do
+                    if (row == column) then
+                        if (value <= 0.0_dp .or. .not. ieee_is_finite(value)) then
+                            deallocate(self%block_preconditioner%factors)
+                            self%block_preconditioner%block_size = 0
+                            self%block_preconditioner%n_blocks = 0
+                            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                                "kernel operator: block preconditioner is not SPD")
+                            return
+                        end if
+                        self%block_preconditioner%factors(row, column, block) = &
+                            sqrt(value)
+                    else
+                        self%block_preconditioner%factors(row, column, block) = &
+                            value/self%block_preconditioner%factors( &
+                            column, column, block)
+                    end if
+                end do
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine ensure_kernel_block_preconditioner
+
+    subroutine ensure_kernel_nystrom_preconditioner(self, requested_rank, status)
+        !! Nystrom approximation on evenly spaced landmarks, stored as the
+        !! whitened feature matrix and the Cholesky factor of its small normal
+        !! matrix, so the apply is a Woodbury update.
+        class(kernel_operator_t), intent(inout) :: self
+        integer, intent(in) :: requested_rank
+        type(fortnum_status_t), intent(out) :: status
+
+        integer, allocatable :: landmarks(:)
+        real(dp), allocatable :: landmark_factor(:, :)
+        integer :: i, j, k, rank, n_samples
+        real(dp) :: jitter, regularization, value, scale
+
+        n_samples = self%sample_count()
+        if (n_samples < 1 .or. requested_rank < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "kernel operator: Nystrom rank is invalid")
+            return
+        end if
+        rank = min(requested_rank, n_samples)
+        if (allocated(self%nystrom_preconditioner%features)) then
+            if (self%nystrom_preconditioner%rank == rank) then
+                call status_set(status, FORTNUM_OK, "")
+                return
+            end if
+            deallocate(self%nystrom_preconditioner%features)
+            deallocate(self%nystrom_preconditioner%factor)
+        end if
+        allocate( &
+            self%nystrom_preconditioner%features(n_samples, rank), &
+            self%nystrom_preconditioner%factor(rank, rank), &
+            landmarks(rank), landmark_factor(rank, rank))
+        self%nystrom_preconditioner%rank = rank
+
+        do j = 1, rank
+            landmarks(j) = 1 + (j - 1)*n_samples/rank
+        end do
+        call evaluate_kernel_program(self%points, 1, 1, self%program_kind, &
+            self%program_variance, self%program_lengthscale, scale)
+        jitter = max(1.0e-10_dp*abs(scale), 1.0e-12_dp)
+        do i = 1, rank
+            do j = 1, i
+                call evaluate_kernel_program(self%points, landmarks(i), &
+                    landmarks(j), self%program_kind, self%program_variance, &
+                    self%program_lengthscale, value)
+                if (i == j) value = value + jitter
+                landmark_factor(i, j) = value
+                landmark_factor(j, i) = value
+            end do
+        end do
+        do i = 1, rank
+            do j = 1, i
+                value = landmark_factor(i, j)
+                do k = 1, j - 1
+                    value = value - landmark_factor(i, k)*landmark_factor(j, k)
+                end do
+                if (i == j) then
+                    if (value <= 0.0_dp .or. .not. ieee_is_finite(value)) then
+                        call clear_kernel_nystrom_preconditioner(self)
+                        call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                            "kernel operator: Nystrom landmark matrix is not SPD")
+                        return
+                    end if
+                    landmark_factor(i, j) = sqrt(value)
+                else
+                    landmark_factor(i, j) = value/landmark_factor(j, j)
+                end if
+            end do
+            do j = i + 1, rank
+                landmark_factor(i, j) = 0.0_dp
+            end do
+        end do
+
+        do i = 1, n_samples
+            do j = 1, rank
+                call evaluate_kernel_program(self%points, i, landmarks(j), &
+                    self%program_kind, self%program_variance, &
+                    self%program_lengthscale, value)
+                self%nystrom_preconditioner%features(i, j) = value
+            end do
+        end do
+        do i = 1, n_samples
+            do j = 1, rank
+                value = self%nystrom_preconditioner%features(i, j)
+                do k = 1, j - 1
+                    value = value - landmark_factor(j, k)* &
+                        self%nystrom_preconditioner%features(i, k)
+                end do
+                self%nystrom_preconditioner%features(i, j) = value/ &
+                    landmark_factor(j, j)
+            end do
+        end do
+
+        regularization = max(self%diagonal_shift, jitter)
+        self%nystrom_preconditioner%regularization = regularization
+        self%nystrom_preconditioner%factor = 0.0_dp
+        do i = 1, rank
+            do j = i, rank
+                value = dot_product( &
+                    self%nystrom_preconditioner%features(:, i), &
+                    self%nystrom_preconditioner%features(:, j))
+                self%nystrom_preconditioner%factor(i, j) = value
+                self%nystrom_preconditioner%factor(j, i) = value
+            end do
+            self%nystrom_preconditioner%factor(i, i) = &
+                self%nystrom_preconditioner%factor(i, i) + regularization
+        end do
+        do i = 1, rank
+            do j = 1, i
+                value = self%nystrom_preconditioner%factor(i, j)
+                do k = 1, j - 1
+                    value = value - self%nystrom_preconditioner%factor(i, k)* &
+                        self%nystrom_preconditioner%factor(j, k)
+                end do
+                if (i == j) then
+                    if (value <= 0.0_dp .or. .not. ieee_is_finite(value)) then
+                        call clear_kernel_nystrom_preconditioner(self)
+                        call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                            "kernel operator: Nystrom small matrix is not SPD")
+                        return
+                    end if
+                    self%nystrom_preconditioner%factor(i, j) = sqrt(value)
+                else
+                    self%nystrom_preconditioner%factor(i, j) = value/ &
+                        self%nystrom_preconditioner%factor(j, j)
+                end if
+            end do
+            do j = i + 1, rank
+                self%nystrom_preconditioner%factor(i, j) = 0.0_dp
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine ensure_kernel_nystrom_preconditioner
+
+    subroutine clear_kernel_nystrom_preconditioner(self)
+        class(kernel_operator_t), intent(inout) :: self
+
+        if (allocated(self%nystrom_preconditioner%features)) then
+            deallocate(self%nystrom_preconditioner%features)
+        end if
+        if (allocated(self%nystrom_preconditioner%factor)) then
+            deallocate(self%nystrom_preconditioner%factor)
+        end if
+        self%nystrom_preconditioner%rank = 0
+        self%nystrom_preconditioner%regularization = 0.0_dp
+    end subroutine clear_kernel_nystrom_preconditioner
+
+    subroutine kernel_operator_solve_cg_multi_block( &
+            self, right_hand_side, solution, tolerance, max_iterations, &
+            block_size, info, iterations, residual_norm)
+        class(kernel_operator_t), intent(inout) :: self
+        real(dp), intent(in) :: right_hand_side(:, :)
+        real(dp), intent(inout) :: solution(:, :)
+        real(dp), intent(in) :: tolerance
+        integer, intent(in) :: max_iterations, block_size
+        integer, intent(out) :: info(:), iterations(:)
+        real(dp), intent(out) :: residual_norm(:)
+
+        call kernel_operator_solve_cg_multi( &
+            self, right_hand_side, solution, tolerance, max_iterations, &
+            info, iterations, residual_norm, &
+            preconditioner_block_size=block_size)
+    end subroutine kernel_operator_solve_cg_multi_block
+
+    subroutine kernel_operator_solve_cg_multi_nystrom( &
+            self, right_hand_side, solution, tolerance, max_iterations, &
+            rank, info, iterations, residual_norm)
+        class(kernel_operator_t), intent(inout) :: self
+        real(dp), intent(in) :: right_hand_side(:, :)
+        real(dp), intent(inout) :: solution(:, :)
+        real(dp), intent(in) :: tolerance
+        integer, intent(in) :: max_iterations, rank
+        integer, intent(out) :: info(:), iterations(:)
+        real(dp), intent(out) :: residual_norm(:)
+
+        call kernel_operator_solve_cg_multi( &
+            self, right_hand_side, solution, tolerance, max_iterations, &
+            info, iterations, residual_norm, &
+            preconditioner_nystrom_rank=rank)
+    end subroutine kernel_operator_solve_cg_multi_nystrom
+
+    subroutine kernel_operator_solve_cg_multi( &
+            self, right_hand_side, solution, tolerance, max_iterations, &
+            info, iterations, residual_norm, preconditioner_block_size, &
+            preconditioner_nystrom_rank)
+        !! Multi-right-hand-side preconditioned CG over the persistent
+        !! workspace. Each column keeps its own scalar recurrence while one
+        !! batched kernel product serves the whole block, and convergence is
+        !! only accepted after a recomputed true residual.
+        class(kernel_operator_t), intent(inout) :: self
+        real(dp), intent(in) :: right_hand_side(:, :)
+        real(dp), intent(inout) :: solution(:, :)
+        real(dp), intent(in) :: tolerance
+        integer, intent(in) :: max_iterations
+        integer, intent(out) :: info(:), iterations(:)
+        real(dp), intent(out) :: residual_norm(:)
+        integer, intent(in), optional :: preconditioner_block_size
+        integer, intent(in), optional :: preconditioner_nystrom_rank
+
+        real(dp), allocatable :: diagonal_values(:), target(:)
+        real(dp), allocatable :: rho(:), next_rho(:), denominator(:)
+        real(dp), allocatable :: scratch(:, :)
+        logical, allocatable :: active(:)
+        integer :: n_samples, n_rhs, column, iteration, mode
+        integer :: block_size, rank
+        real(dp) :: step, beta
+        type(fortnum_status_t) :: status
+
+        integer, parameter :: PRECONDITION_DIAGONAL = 0
+        integer, parameter :: PRECONDITION_BLOCK = 1
+        integer, parameter :: PRECONDITION_NYSTROM = 2
+
+        info = KRYLOV_INVALID_ARGUMENT
+        iterations = 0
+        residual_norm = huge(1.0_dp)
+        n_samples = self%sample_count()
+        n_rhs = size(right_hand_side, 2)
+        if (n_samples < 1 .or. n_rhs < 1) return
+        if (size(right_hand_side, 1) /= n_samples) return
+        if (size(solution, 1) /= n_samples .or. size(solution, 2) /= n_rhs) return
+        if (size(info) /= n_rhs .or. size(iterations) /= n_rhs .or. &
+            size(residual_norm) /= n_rhs) return
+        if (tolerance <= 0.0_dp .or. max_iterations < 1) return
+        if (.not. allocated(self%program_kind)) return
+        if (present(preconditioner_block_size) .and. &
+            present(preconditioner_nystrom_rank)) return
+
+        mode = PRECONDITION_DIAGONAL
+        block_size = 0
+        rank = 0
+        if (present(preconditioner_block_size)) then
+            mode = PRECONDITION_BLOCK
+            block_size = preconditioner_block_size
+            call ensure_kernel_block_preconditioner(self, block_size, status)
+            if (status%code /= FORTNUM_OK) return
+        else if (present(preconditioner_nystrom_rank)) then
+            mode = PRECONDITION_NYSTROM
+            call ensure_kernel_nystrom_preconditioner(self, &
+                preconditioner_nystrom_rank, status)
+            if (status%code /= FORTNUM_OK) return
+            rank = self%nystrom_preconditioner%rank
+        end if
+
+        call ensure_kernel_krylov_workspace(self, n_rhs, status)
+        if (status%code /= FORTNUM_OK) return
+
+        allocate(diagonal_values(n_samples), target(n_rhs), rho(n_rhs), &
+            next_rho(n_rhs), denominator(n_rhs), active(n_rhs))
+        allocate(scratch(max(rank, 1), n_rhs))
+        diagonal_values = self%diagonal()
+        if (size(diagonal_values) /= n_samples) return
+        if (mode == PRECONDITION_DIAGONAL .and. any(diagonal_values <= 0.0_dp)) return
+
+        associate( &
+            residual => self%krylov_workspace%residual, &
+            direction => self%krylov_workspace%direction, &
+            preconditioned => self%krylov_workspace%preconditioned, &
+            operator_direction => self%krylov_workspace%operator_direction, &
+            work => self%krylov_workspace%work)
+
+            do column = 1, n_rhs
+                target(column) = tolerance*max(sqrt(sum( &
+                    right_hand_side(:, column)**2)), 1.0_dp)
+            end do
+            call self%matmat(solution, work)
+            residual = right_hand_side - work
+            call apply_selected_preconditioner()
+            direction = preconditioned
+            do column = 1, n_rhs
+                rho(column) = sum(residual(:, column)*preconditioned(:, column))
+                residual_norm(column) = sqrt(sum(residual(:, column)**2))
+                active(column) = residual_norm(column) > target(column)
+                if (.not. active(column)) info(column) = KRYLOV_OK
+            end do
+            info = merge(KRYLOV_MAX_ITERATIONS, info, active)
+
+            do iteration = 1, max_iterations
+                if (.not. any(active)) exit
+                call self%matmat(direction, operator_direction)
+                do column = 1, n_rhs
+                    if (.not. active(column)) cycle
+                    denominator(column) = sum(direction(:, column)* &
+                        operator_direction(:, column))
+                    if (denominator(column) <= 0.0_dp) then
+                        info(column) = KRYLOV_BREAKDOWN
+                        active(column) = .false.
+                        cycle
+                    end if
+                    step = rho(column)/denominator(column)
+                    solution(:, column) = solution(:, column) + &
+                        step*direction(:, column)
+                    residual(:, column) = residual(:, column) - &
+                        step*operator_direction(:, column)
+                    iterations(column) = iteration
+                end do
+                call apply_selected_preconditioner()
+                do column = 1, n_rhs
+                    if (.not. active(column)) cycle
+                    residual_norm(column) = sqrt(sum(residual(:, column)**2))
+                    if (residual_norm(column) <= target(column)) then
+                        ! Accept only against a recomputed true residual.
+                        call self%matmat(solution, work)
+                        residual(:, column) = right_hand_side(:, column) - &
+                            work(:, column)
+                        residual_norm(column) = sqrt(sum(residual(:, column)**2))
+                        if (residual_norm(column) <= target(column)) then
+                            info(column) = KRYLOV_OK
+                            active(column) = .false.
+                            cycle
+                        end if
+                        call apply_selected_preconditioner()
+                        next_rho(column) = sum(residual(:, column)* &
+                            preconditioned(:, column))
+                        direction(:, column) = preconditioned(:, column)
+                        rho(column) = next_rho(column)
+                        cycle
+                    end if
+                    next_rho(column) = sum(residual(:, column)* &
+                        preconditioned(:, column))
+                    beta = next_rho(column)/rho(column)
+                    direction(:, column) = preconditioned(:, column) + &
+                        beta*direction(:, column)
+                    rho(column) = next_rho(column)
+                end do
+            end do
+        end associate
+
+    contains
+
+        subroutine apply_selected_preconditioner()
+            integer :: block, first, last, local_size, row, k, i, j, c
+            real(dp) :: value
+
+            associate( &
+                residual => self%krylov_workspace%residual, &
+                preconditioned => self%krylov_workspace%preconditioned)
+                select case (mode)
+                case (PRECONDITION_BLOCK)
+                    do c = 1, n_rhs
+                        do block = 1, self%block_preconditioner%n_blocks
+                            first = (block - 1)*block_size + 1
+                            last = min(n_samples, first + block_size - 1)
+                            local_size = last - first + 1
+                            do row = 1, local_size
+                                value = residual(first + row - 1, c)
+                                do k = 1, row - 1
+                                    value = value - &
+                                        self%block_preconditioner%factors( &
+                                        row, k, block)* &
+                                        preconditioned(first + k - 1, c)
+                                end do
+                                preconditioned(first + row - 1, c) = value/ &
+                                    self%block_preconditioner%factors( &
+                                    row, row, block)
+                            end do
+                            do row = local_size, 1, -1
+                                value = preconditioned(first + row - 1, c)
+                                do k = row + 1, local_size
+                                    value = value - &
+                                        self%block_preconditioner%factors( &
+                                        k, row, block)* &
+                                        preconditioned(first + k - 1, c)
+                                end do
+                                preconditioned(first + row - 1, c) = value/ &
+                                    self%block_preconditioner%factors( &
+                                    row, row, block)
+                            end do
+                        end do
+                    end do
+                case (PRECONDITION_NYSTROM)
+                    do c = 1, n_rhs
+                        do j = 1, rank
+                            scratch(j, c) = sum( &
+                                self%nystrom_preconditioner%features(:, j)* &
+                                residual(:, c))
+                        end do
+                        do i = 1, rank
+                            value = scratch(i, c)
+                            do k = 1, i - 1
+                                value = value - &
+                                    self%nystrom_preconditioner%factor(i, k)* &
+                                    scratch(k, c)
+                            end do
+                            scratch(i, c) = value/ &
+                                self%nystrom_preconditioner%factor(i, i)
+                        end do
+                        do i = rank, 1, -1
+                            value = scratch(i, c)
+                            do k = i + 1, rank
+                                value = value - &
+                                    self%nystrom_preconditioner%factor(k, i)* &
+                                    scratch(k, c)
+                            end do
+                            scratch(i, c) = value/ &
+                                self%nystrom_preconditioner%factor(i, i)
+                        end do
+                        do i = 1, n_samples
+                            value = residual(i, c)
+                            do j = 1, rank
+                                value = value - &
+                                    self%nystrom_preconditioner%features(i, j)* &
+                                    scratch(j, c)
+                            end do
+                            preconditioned(i, c) = value/ &
+                                self%nystrom_preconditioner%regularization
+                        end do
+                    end do
+                case default
+                    do c = 1, n_rhs
+                        preconditioned(:, c) = residual(:, c)/diagonal_values
+                    end do
+                end select
+            end associate
+        end subroutine apply_selected_preconditioner
+
+    end subroutine kernel_operator_solve_cg_multi
 
     subroutine kernel_operator_enter_data(self, status, n_rhs)
         class(kernel_operator_t), intent(inout) :: self

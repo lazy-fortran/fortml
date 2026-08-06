@@ -179,7 +179,7 @@ missing report leaves the item open.
 - [x] Consume a FortSym-generated RBF CUDA leaf in the generic postfix plan,
   with the existing independent dense matvec/matmat oracle covering the
   generated leaf through the full resident-plan ABI.
-- [ ] Add persistent generic multi-RHS workspaces and block/Nystrom
+- [x] Add persistent generic multi-RHS workspaces and block/Nystrom
   preconditioners.
 - [ ] Add block/Nystrom preconditioners, stochastic Lanczos log determinants,
   and LOVE-style predictive-variance products for large exact-GP solves.
@@ -343,6 +343,20 @@ commits `5618a1e8`, `147aaceb`, `346813d3`). Two slow FortFront suites and one
 FortSym suite were renamed `*_slow`, and `fo` now gives a slow-marked test its
 own timeout budget instead of holding it to the fast one (`fo` commit
 `f36c429`).
+
+The generic `kernel_operator_t` now has the same preconditioner contract as
+the specialized RBF operator, built from the lowered kernel program rather than
+from RBF parameters, so it covers every built-in kernel tree and any validated
+user formula. `solve_cg_multi_block` and `solve_cg_multi_nystrom` run one
+independent PCG recurrence per right-hand side over the persistent workspace
+that `enter_data(status, n_rhs)` already owns, with one batched kernel product
+per iteration and a recomputed true residual before any column is accepted as
+converged. `test_kernel_operator` checks both solves against independent dense
+multi-RHS solves, and checks the preconditioners themselves rather than only
+their effect: the block factors must reproduce the shifted kernel block
+exactly, and the Nystrom factor must be the Cholesky of its own normal matrix.
+A CG answer alone cannot catch a wrong preconditioner, only a slower one.
+Device-resident preconditioned solves and matched scaling evidence remain open.
 
 `fortml_kernel_formula` closes the user-formula lowering boundary. A user
 kernel is supplied as data, not as code: a short postfix program over a fixed

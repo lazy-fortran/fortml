@@ -21,6 +21,11 @@ program test_kernel_operator
     real(dp) :: generic_covariance(5, 5)
     real(dp) :: generic_multi_solution(5, 2), generic_dense_multi_solution(5, 2)
     real(dp) :: generic_multi_residual_norm(2)
+    real(dp) :: generic_block_solution(5, 2), generic_nystrom_solution(5, 2)
+    real(dp) :: generic_block_residual_norm(2)
+    real(dp) :: generic_nystrom_residual_norm(2)
+    real(dp) :: block_reconstruction(2, 2)
+    real(dp) :: small_reconstruction(3, 3), small_reference(3, 3)
     real(dp) :: generic_output(5), generic_expected(5)
     real(dp) :: sample_points_8(5, 8), input_8(5), output_8(5), expected_8(5)
     real(dp) :: matrix_input_8(5, 2), matrix_output_8(5, 2)
@@ -194,6 +199,59 @@ program test_kernel_operator
         "generic batched operator CG matches the dense oracle")
     call require(maxval(generic_multi_residual_norm) < 2.0e-11_dp, &
         "generic batched operator CG reports true residuals")
+    generic_block_solution = 0.0_dp
+    call generic_operator%solve_cg_multi_block( &
+        matrix_input, generic_block_solution, 1.0e-12_dp, 30, 2, multi_info, &
+        multi_iterations, generic_block_residual_norm)
+    do column = 1, 2
+        call require(multi_info(column) == KRYLOV_OK, &
+            "block-preconditioned generic multi-RHS CG converges")
+    end do
+    call require(maxval(abs(generic_block_solution - &
+        generic_dense_multi_solution)) < 2.0e-11_dp, &
+        "block-preconditioned generic CG matches the dense oracle")
+    call require(maxval(generic_block_residual_norm) < 2.0e-11_dp, &
+        "block-preconditioned generic CG reports true residuals")
+    generic_nystrom_solution = 0.0_dp
+    call generic_operator%solve_cg_multi_nystrom( &
+        matrix_input, generic_nystrom_solution, 1.0e-12_dp, 30, 3, multi_info, &
+        multi_iterations, generic_nystrom_residual_norm)
+    do column = 1, 2
+        call require(multi_info(column) == KRYLOV_OK, &
+            "Nystrom-preconditioned generic multi-RHS CG converges")
+    end do
+    call require(maxval(abs(generic_nystrom_solution - &
+        generic_dense_multi_solution)) < 2.0e-11_dp, &
+        "Nystrom-preconditioned generic CG matches the dense oracle")
+    call require(maxval(generic_nystrom_residual_norm) < 2.0e-11_dp, &
+        "Nystrom-preconditioned generic CG reports true residuals")
+    ! The block factors must reproduce the shifted kernel block exactly, and
+    ! the Nystrom apply must invert its own low-rank operator exactly. A CG
+    ! answer alone cannot catch a wrong preconditioner, only a slower one.
+    do i = 1, 2
+        do j = 1, 2
+            block_reconstruction(i, j) = sum( &
+                generic_operator%block_preconditioner%factors(i, :, 1)* &
+                generic_operator%block_preconditioner%factors(j, :, 1))
+        end do
+    end do
+    call require(maxval(abs(block_reconstruction - &
+        generic_covariance(1:2, 1:2))) < 2.0e-13_dp, &
+        "generic block preconditioner factors the true kernel block")
+    do i = 1, generic_operator%nystrom_preconditioner%rank
+        do j = 1, generic_operator%nystrom_preconditioner%rank
+            small_reconstruction(i, j) = sum( &
+                generic_operator%nystrom_preconditioner%factor(i, :)* &
+                generic_operator%nystrom_preconditioner%factor(j, :))
+            small_reference(i, j) = sum( &
+                generic_operator%nystrom_preconditioner%features(:, i)* &
+                generic_operator%nystrom_preconditioner%features(:, j))
+            if (i == j) small_reference(i, j) = small_reference(i, j) + &
+                generic_operator%nystrom_preconditioner%regularization
+        end do
+    end do
+    call require(maxval(abs(small_reconstruction - small_reference)) < 2.0e-11_dp, &
+        "generic Nystrom factor is the Cholesky of its own normal matrix")
     diagonal = generic_operator%diagonal()
     call require(maxval(abs(diagonal - (variance + 0.2_dp + diagonal_shift))) < &
         2.0e-14_dp, "generic operator diagonal uses the kernel value API")
