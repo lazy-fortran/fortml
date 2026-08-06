@@ -254,8 +254,11 @@ that do not exist.
 - [x] Re-measure the whole comparison at 8k to 131k samples with release
   flags. The first sweep used the default `fo` profile, which is
   `-O0 -fcheck=all`, so every timing in it was a debug-build timing.
-- [ ] Run the matrix-free lane on the device at those sizes, so the exact
-  method has a large-`n` solve rather than only a per-product cost.
+- [x] Run the matrix-free lane on the device at those sizes, so the exact
+  method has a large-`n` solve rather than only a per-product cost. The
+  resident OpenACC solve is 48x the host at n = 8,192 and holds flat memory
+  (slope +0.01); at n = 131,072 it takes 374 s against FITC's 0.708 s for the
+  same accuracy, which is the study's conclusion.
 - [x] Scale the SKI grid with the sample count. Holding it at 64 nodes makes
   SKI degrade with `n`, which measures the fixed budget rather than the
   method. With the grid at `n/8` SKI reaches SMSE 6.97e-5 at n = 131,072 in
