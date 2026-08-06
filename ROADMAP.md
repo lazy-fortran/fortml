@@ -241,14 +241,14 @@ that do not exist.
 - [x] Implement the mixture-of-experts gating aggregation of Fig. 5.
 - [x] Add the paper's 1-D toy as a shared fixture and check every method's
   reported Fig. 4/Fig. 5 behaviour automatically.
-- [ ] Record wall time and peak resident memory for every method in
+- [x] Record wall time and peak resident memory for every method in
   `fortml-bench`, with scaling sweeps in the sample count, the inducing size,
   the expert count and the input dimension, and document the measured order
   against the complexity claimed in Fig. 2.
-- [ ] Add the KeOps-style matrix-free exact lane to the same comparison and
+- [x] Add the KeOps-style matrix-free exact lane to the same comparison and
   answer whether it is good enough on its own, or where the approximations
   still win.
-- [ ] Record provenance for the paper and for every third-party implementation
+- [x] Record provenance for the paper and for every third-party implementation
   compared against, with download scripts and checksums.
 - [ ] Publish the plots and report the comparison to Chris on Zulip.
 
