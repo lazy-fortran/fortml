@@ -3,6 +3,8 @@
 #include <cmath>
 #include <cstddef>
 
+#include "fortml_generated_rbf_leaf.cu"
+
 namespace {
 
 constexpr int kTileSize = 128;
@@ -46,8 +48,11 @@ __device__ inline double evaluate_program(
     const double lengthscale = program_lengthscale[instruction];
     switch (kind) {
       case kRbf:
-        stack[stack_top++] = variance * exp(
-            -0.5 * distance / (lengthscale * lengthscale));
+        {
+          double value = 0.0;
+          fortml_generated_rbf_leaf(variance, distance, lengthscale, &value);
+          stack[stack_top++] = value;
+        }
         break;
       case kMatern12: {
         const double r = sqrt(distance) / lengthscale;

@@ -156,6 +156,9 @@ missing report leaves the item open.
   FortSym's validated shared-IR emitter is the source-generation boundary for
   future static user formulas; this runtime ABI remains independent of
   FortSym and keeps launch policy, residency, and autodiff outside the leaf.
+- [x] Consume a FortSym-generated RBF CUDA leaf in the generic postfix plan,
+  with the existing independent dense matvec/matmat oracle covering the
+  generated leaf through the full resident-plan ABI.
 - [ ] Add persistent generic multi-RHS workspaces and block/Nystrom
   preconditioners.
 - [ ] Add block/Nystrom preconditioners, stochastic Lanczos log determinants,
@@ -238,6 +241,13 @@ JVP/VJP, prediction, likelihood, and multi-output checks with gfortran and
 solve. The host results are 0.722 ms with gfortran and 0.633 ms with
 `nvfortran`. GPU offload, matched GPyTorch comparisons, and the 30% runtime
 target remain open.
+
+The generic CUDA postfix plan now consumes a FortSym-generated RBF scalar leaf
+from the shared IR emitter. Its full resident matvec/matmat plan still passes
+the independent dense oracle; a 2026-08-06 nvfortran 26.5 smoke run at 1,024
+samples and 8 features measured 0.317 ms per resident operation on an RTX
+5060 Ti (three repetitions). This is integration evidence, not a new
+GPyTorch/KeOps comparison or scaling claim.
 
 The first Fortran-native tiled RBF MVM also passes its direct pairwise oracle
 with gfortran and an OpenACC `nvfortran` build. For 2,048 samples, 8 features,
