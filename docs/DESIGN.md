@@ -46,6 +46,14 @@ stores that vector and routes `evaluate`, `jvp`, `vjp`, `parameters`, and
 false for callback maps. This keeps arbitrary host procedure pointers outside
 accelerator regions until a generated static lowering exists.
 
+`basis_map_t` is a façade over an abstract `basis_impl_t`. Polynomial, Fourier,
+radial, spline, and callback maps implement the same deferred feature,
+parameter, value, JVP, and VJP operations. The façade owns intercept columns,
+shape checks, and the public parameter boundary. A new map implementation adds
+one type and its product methods. It does not add a case to every façade
+operation. The same separation is the target for the kernel expression tree,
+where explicit opcodes remain only at the static lowering boundary.
+
 ## MLP baseline
 
 The MLP baseline stores each dense weight as `(input_width, output_width)` and

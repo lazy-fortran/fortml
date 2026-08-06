@@ -62,6 +62,9 @@ missing report leaves the item open.
     smoothness/status rules.
   - [x] Add a user-supplied value/JVP/VJP callback contract and static-lowering
     refusal boundary.
+  - [x] Put built-in and callback maps behind one abstract implementation
+    contract. Keep intercept handling and shape validation in the public
+    wrapper so adding a map does not add dispatch cases to every product.
 - [x] Add the explicit MLP baseline: flat column-major parameters, batched
   forward products, `tanh`/linear/ReLU activations, JVPs, VJPs, and
   backpropagation, with independent finite-difference and adjoint checks.
