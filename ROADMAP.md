@@ -331,6 +331,12 @@ operation profile. Nsight Compute is installed but blocked by
 ERR_NVGPUCTRPERM. Occupancy and memory-counter work remains open until the
 cluster grants performance-counter access.
 
+The standalone operation profiler and GPU benchmark now compile the
+FortAD-generated RBF product module and FortSym-generated primal leaf before
+`fortml_kernels`. This keeps direct nvfortran CPU/GPU profiling valid after
+generated-code integration; the full fpm nvfortran graph remains separately
+blocked by the known FortAD 26.5 ICE.
+
 A high-N follow-up now extends the same float64 RBF workload through 16,384
 samples. The resident nvfortran/OpenACC GPU timings scale with local slopes
 1.992 and 1.997 from 4,096 to 8,192 and 16,384 samples, respectively. Three

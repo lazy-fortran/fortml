@@ -16,6 +16,8 @@ sources=(
     "$fortnum_dir/src/fortnum_kinds.f90"
     "$fortnum_dir/src/fortnum_status.f90"
     "$fortnum_dir/src/linalg/fortnum_krylov.f90"
+    "$repo_dir/src/gp/fortml_generated_rbf_products.f90"
+    "$repo_dir/src/gp/fortml_generated_rbf_leaf_fortran.f90"
     "$repo_dir/src/gp/fortml_kernels.f90"
     "$repo_dir/src/gp/fortml_linear_operator.f90"
     "$repo_dir/src/gp/fortml_kernel_operator.f90"
