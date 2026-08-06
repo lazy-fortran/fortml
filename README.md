@@ -11,7 +11,9 @@ process with composable kernels. The MLP and GP expose value/JVP/VJP products.
 The RBF derivative-GP pilot now supports mixed function-value and first-input
 derivative observations and predictions, with symbolic and finite-difference
 checks. The structured GP operator accepts separable tensor-grid covariance
-factors and reuses the matrix-free CG contract. The planned model families are
+factors and reuses the matrix-free CG contract; the Toeplitz GP operator wraps
+the cached FFT grid product for one-dimensional covariance structures. The
+planned model families are
 scalable<!-- slop-ok --> and multi-output GPs,
 variational autoencoders, and deep recurrent networks. Bayesian global
 optimization is outside this repository's current scope.

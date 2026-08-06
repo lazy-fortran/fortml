@@ -111,8 +111,10 @@ missing report leaves the item open.
   direct nvfortran CUDA oracle test.
 - [x] Record the reusable `fortnum_toeplitz` 1-D cached circulant-embedding
   dependency and its independent dense-oracle/scaling evidence.
-- [ ] Add the FortML Toeplitz-backed GP wrapper, multilevel tensor-grid
-  embeddings, derivative products, and banded Markov-precision paths.
+- [x] Add the FortML Toeplitz-backed GP wrapper with dense-oracle products and
+  a CG solve check.
+- [ ] Add multilevel tensor-grid embeddings, derivative products, and banded
+  Markov-precision paths; the current Toeplitz FFT wrapper is host-resident.
 - [ ] Add multi-output GPs, inducing-point variational GPs, and the structured
   inference policies that sit above these operator contracts.
 - [ ] Add variational autoencoders and deep recurrent networks after the
@@ -282,7 +284,7 @@ implemented and independently tested in `fortnum` as
 `fortnum_tensor_product`, and FortML now exposes it through
 `structured_gp_operator_t`, including persistent OpenACC vector and multi-RHS
 products. The one-dimensional `fortnum_toeplitz` dependency also has cached
-FFT products and independent scaling evidence. FortML still needs its
-Toeplitz-backed covariance wrapper, device-resident generic CG recurrence,
-derivative products, multilevel embeddings, and matched CPU/GPU scaling
-evidence.
+FFT products and independent scaling evidence, and FortML now wraps it in
+`toeplitz_gp_operator_t` with a dense-oracle CG check. FortML still needs a
+device-resident generic CG recurrence, derivative products, multilevel
+embeddings, and matched CPU/GPU scaling evidence for the Toeplitz GP path.
