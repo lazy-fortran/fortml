@@ -20,7 +20,7 @@ program fortml_bench_rbf_cg_multi
     real(dp) :: elapsed, target
     integer(int64) :: clock_start, clock_end, clock_rate
     integer :: feature, i, rhs, n_samples, n_features, n_rhs, repetitions
-    integer :: block_size
+    integer :: block_size, nystrom_rank
     integer, allocatable :: info(:), iterations(:)
     integer :: repetition
     type(rbf_operator_t) :: rbf_operator
@@ -31,11 +31,16 @@ program fortml_bench_rbf_cg_multi
     n_rhs = default_n_rhs
     repetitions = default_repetitions
     block_size = 0
+    nystrom_rank = 0
     call read_optional_integer(1, n_samples)
     call read_optional_integer(2, n_features)
     call read_optional_integer(3, n_rhs)
     call read_optional_integer(4, repetitions)
-    call read_optional_integer(5, block_size)
+    call read_optional_integer(5, block_size, allow_zero=.true.)
+    call read_optional_integer(6, nystrom_rank)
+    if (block_size > 0 .and. nystrom_rank > 0) then
+        error stop "block and Nystrom preconditioners are mutually exclusive"
+    end if
     if (n_rhs > default_n_rhs) error stop "benchmark supports at most four RHS"
     allocate( &
         sample_points(n_samples, n_features), &
@@ -68,6 +73,10 @@ program fortml_bench_rbf_cg_multi
         call rbf_operator%solve_cg_multi_block( &
             right_hand_side, solution, tolerance, max_iterations, block_size, &
             info, iterations, residual_norm)
+    else if (nystrom_rank > 0) then
+        call rbf_operator%solve_cg_multi_nystrom( &
+            right_hand_side, solution, tolerance, max_iterations, nystrom_rank, &
+            info, iterations, residual_norm)
     else
         call rbf_operator%solve_cg_multi( &
             right_hand_side, solution, tolerance, max_iterations, info, &
@@ -88,6 +97,10 @@ program fortml_bench_rbf_cg_multi
             call rbf_operator%solve_cg_multi_block( &
                 right_hand_side, solution, tolerance, max_iterations, &
                 block_size, info, iterations, residual_norm)
+        else if (nystrom_rank > 0) then
+            call rbf_operator%solve_cg_multi_nystrom( &
+                right_hand_side, solution, tolerance, max_iterations, &
+                nystrom_rank, info, iterations, residual_norm)
         else
             call rbf_operator%solve_cg_multi( &
                 right_hand_side, solution, tolerance, max_iterations, info, &
@@ -109,17 +122,25 @@ program fortml_bench_rbf_cg_multi
 
 contains
 
-    subroutine read_optional_integer(number, value)
+    subroutine read_optional_integer(number, value, allow_zero)
         integer, intent(in) :: number
         integer, intent(inout) :: value
+        logical, intent(in), optional :: allow_zero
         character(64) :: argument
         integer :: candidate, io_status
+        logical :: require_positive
+
+        require_positive = .true.
+        if (present(allow_zero)) require_positive = .not. allow_zero
 
         call get_command_argument(number, argument)
         if (len_trim(argument) == 0) return
         read(argument, *, iostat=io_status) candidate
         if (io_status /= 0) error stop "invalid integer benchmark argument"
-        if (candidate < 1) error stop "benchmark argument must be positive"
+        if ((require_positive .and. candidate < 1) .or. &
+            (.not. require_positive .and. candidate < 0)) then
+            error stop "benchmark argument must be nonnegative or positive"
+        end if
         value = candidate
     end subroutine read_optional_integer
 

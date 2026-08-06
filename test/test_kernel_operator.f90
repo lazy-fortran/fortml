@@ -17,6 +17,7 @@ program test_kernel_operator
     real(dp) :: multi_solution(5, 2), dense_multi_solution(5, 2)
     real(dp) :: multi_residual_norm(2)
     real(dp) :: block_solution(5, 2), block_residual_norm(2)
+    real(dp) :: nystrom_solution(5, 2), nystrom_residual_norm(2)
     real(dp) :: generic_covariance(5, 5)
     real(dp) :: generic_multi_solution(5, 2), generic_dense_multi_solution(5, 2)
     real(dp) :: generic_multi_residual_norm(2)
@@ -270,6 +271,18 @@ program test_kernel_operator
         "block-preconditioned multi-RHS CG matches independent dense solves")
     call require(maxval(block_residual_norm) < 2.0e-11_dp, &
         "block-preconditioned multi-RHS CG reports true residuals")
+    nystrom_solution = 0.0_dp
+    call rbf_operator%solve_cg_multi_nystrom( &
+        matrix_input, nystrom_solution, 1.0e-12_dp, 30, 2, multi_info, &
+        multi_iterations, nystrom_residual_norm)
+    do column = 1, 2
+        call require(multi_info(column) == KRYLOV_OK, &
+            "Nystrom-preconditioned multi-RHS lazy RBF CG converges")
+    end do
+    call require(maxval(abs(nystrom_solution - dense_multi_solution)) < 2.0e-11_dp, &
+        "Nystrom-preconditioned multi-RHS CG matches independent dense solves")
+    call require(maxval(nystrom_residual_norm) < 2.0e-11_dp, &
+        "Nystrom-preconditioned multi-RHS CG reports true residuals")
     call rbf_operator%exit_data(status)
     call require(status%code == FORTNUM_OK, &
         "RBF operator exits reusable multi-RHS workspace")

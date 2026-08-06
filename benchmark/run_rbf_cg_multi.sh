@@ -57,6 +57,11 @@ arguments=("${N_SAMPLES:-2048}" "${N_FEATURES:-8}" "${N_RHS:-4}" \
     "${REPETITIONS:-8}")
 if [[ -n "${BLOCK_SIZE:-}" ]]; then
     arguments+=("$BLOCK_SIZE")
+elif [[ -n "${NYSTROM_RANK:-}" ]]; then
+    arguments+=("0")
+fi
+if [[ -n "${NYSTROM_RANK:-}" ]]; then
+    arguments+=("$NYSTROM_RANK")
 fi
 row=$("$build_dir/fortml_bench_rbf_cg_multi" "${arguments[@]}")
 compiler_version=$($fc --version 2>&1 | awk 'NF {print; exit}')
@@ -69,6 +74,7 @@ printf '%s,%s,%s\n' "$row" "$fc" "$flags" >>"$out"
     printf 'flags=%s\n' "$flags"
     printf 'native_cuda_kernel=%s\n' "$native_cuda"
     printf 'block_size=%s\n' "${BLOCK_SIZE:-0}"
+    printf 'nystrom_rank=%s\n' "${NYSTROM_RANK:-0}"
     printf 'workspace_residency=operator_owned_multi_rhs_krylov\n'
     printf 'correctness_check=converged_true_residual\n'
     if command -v nvidia-smi >/dev/null 2>&1; then

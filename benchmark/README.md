@@ -35,3 +35,6 @@ The focused `run_rbf_cg_multi.sh` driver accepts an optional `BLOCK_SIZE` for
 the experimental RBF block-Jacobi path. Leave it unset for the matched
 unpreconditioned comparison lane. Block timings are exploratory until their
 iteration and runtime behavior are competitive.
+
+It also accepts `NYSTROM_RANK` for the experimental fused Woodbury path.
+`BLOCK_SIZE` and `NYSTROM_RANK` are mutually exclusive.

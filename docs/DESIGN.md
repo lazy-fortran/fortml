@@ -123,6 +123,12 @@ it is not the default benchmark lane: the first matched workload showed that
 this ordering and block size can increase iterations, so a production
 preconditioner still needs a measured Nystrom or spatially reordered design.
 
+The same specialized path exposes `solve_cg_multi_nystrom`. It constructs a
+landmark RBF factor and applies the resulting Woodbury inverse to all right-hand
+sides in one fused projection. Its low-rank factors remain device-resident for
+the solve, but the matched benchmark gate is still open until rank and landmark
+selection are shown to improve the complete workload.
+
 `rbf_operator_t%solve_cg_multi` applies the same PCG recurrence independently
 to each right-hand side while evaluating all active search directions with one
 batched operator product per iteration. This preserves the scalar CG
