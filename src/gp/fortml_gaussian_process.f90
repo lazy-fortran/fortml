@@ -384,6 +384,7 @@ contains
         end do
         call self%factorization%factorize(covariance, status)
         if (status%code /= FORTNUM_OK) return
+        if (allocated(self%alpha)) deallocate(self%alpha)
         allocate(self%alpha, source=self%y_train)
         call self%factorization%solve(self%alpha, status)
     end subroutine gp_refactor

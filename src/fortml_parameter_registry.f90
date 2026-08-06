@@ -12,6 +12,7 @@ module fortml_parameter_registry
         FORTNUM_DOMAIN_ERROR
     use fortml_mlp, only: mlp_t
     use fortml_kernels, only: kernel_t
+    use fortml_gaussian_process, only: gp_regression_t
     implicit none
     private
 
@@ -63,7 +64,8 @@ module fortml_parameter_registry
     end type parameter_registry_t
 
     public :: parameter_get_proc, parameter_set_proc
-    public :: parameter_block_from_mlp, parameter_block_from_kernel
+    public :: parameter_block_from_mlp, parameter_block_from_kernel, &
+        parameter_block_from_gp
 
 contains
 
@@ -288,6 +290,16 @@ contains
             kernel_parameter_get, kernel_parameter_set, status)
     end subroutine parameter_block_from_kernel
 
+    subroutine parameter_block_from_gp(self, name, model, status)
+        type(parameter_block_t), intent(out) :: self
+        character(*), intent(in) :: name
+        type(gp_regression_t), target, intent(inout) :: model
+        type(fortnum_status_t), intent(out) :: status
+
+        call self%initialize(name, model%parameter_count(), model, &
+            gp_parameter_get, gp_parameter_set, status)
+    end subroutine parameter_block_from_gp
+
     subroutine mlp_parameter_get(context, values, status)
         class(*), pointer, intent(in) :: context
         real(dp), intent(out) :: values(:)
@@ -355,5 +367,39 @@ contains
                 "kernel parameter block: context has the wrong type")
         end select
     end subroutine kernel_parameter_set
+
+    subroutine gp_parameter_get(context, values, status)
+        class(*), pointer, intent(in) :: context
+        real(dp), intent(out) :: values(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        select type (model => context)
+            type is (gp_regression_t)
+            if (size(values) /= model%parameter_count()) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "GP parameter block: output shape is invalid")
+                return
+            end if
+            values = model%parameters()
+            call status_set(status, FORTNUM_OK, "")
+        class default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP parameter block: context has the wrong type")
+        end select
+    end subroutine gp_parameter_get
+
+    subroutine gp_parameter_set(context, values, status)
+        class(*), pointer, intent(inout) :: context
+        real(dp), intent(in) :: values(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        select type (model => context)
+            type is (gp_regression_t)
+            call model%set_parameters(values, status)
+        class default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP parameter block: context has the wrong type")
+        end select
+    end subroutine gp_parameter_set
 
 end module fortml_parameter_registry

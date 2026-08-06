@@ -82,9 +82,11 @@ missing report leaves the item open.
   model weights, basis/kernel hyperparameters, likelihood parameters, inducing
   variables, and variational parameters. The typed callback seam has live MLP
   and kernel adapters and rejects duplicate block names.
-- [ ] Extend the registry-facing model contract with full-vector JVP/VJP/HVP
-  products and check them against independent finite-difference, adjoint, and
-  Hessian-symmetry oracles.
+- [x] Add the registry-facing parameter-product contract over one packed live
+  vector. MLP value/JVP/VJP/HVP products are routed through the registry and
+  checked by finite-difference, adjoint, and Hessian-symmetry oracles; fitted
+  GP mean products route kernel and log-noise hyperparameters through the same
+  contract. Models that do not declare an HVP are refused explicitly.
 - [x] Connect the static scalar MLP product fixture to `fortad`-generated
   JVP/VJP/HVP code and compare the generated kernels with the explicit
   baseline. The dynamic registry-wide product routing remains open.
@@ -223,7 +225,16 @@ The optimizer-facing parameter registry now packs live MLP weights and GP
 kernel hyperparameters into one named vector and unpacks updates back into the
 original objects. Its test checks exact block ranges, a hand-known packed
 vector, round-trip mutation, and duplicate-name refusal. Full-vector
-JVP/VJP/HVP routing remains open and is not implied by this packing result.
+JVP/VJP/HVP routing is now exposed by `fortml_parameter_products`; the live
+MLP path has all three products and the fitted-GP mean path has value/JVP/VJP.
+The product contract treats inputs as fixed data for optimizer updates, while
+model-specific input derivatives remain on the MLP/kernel/GP APIs.
+
+The registry now has a first-class fitted-GP adapter for kernel and
+log-noise-variance parameters. Repeated parameter updates refactor the
+Cholesky state safely before prediction products; the independent product
+test caught and fixed the previously latent re-fit allocation error in
+`gp_refactor`.
 
 The explicit MLP now exposes a scalar-output-cotangent HVP over joint parameter
 and input directions. Its finite-difference VJP oracle passes with gfortran and
