@@ -106,6 +106,9 @@ missing report leaves the item open.
 - [x] Consume `fortnum_tensor_product` through the structured GP operator for
   separable tensor-grid covariance products, with vector, multi-RHS, diagonal,
   and CG correctness checks against dense oracles.
+- [x] Expose the structured GP operator's persistent OpenACC factor and
+  contraction workspaces through device vector and multi-RHS products, with a
+  direct nvfortran CUDA oracle test.
 - [x] Record the reusable `fortnum_toeplitz` 1-D cached circulant-embedding
   dependency and its independent dense-oracle/scaling evidence.
 - [ ] Add the FortML Toeplitz-backed GP wrapper, multilevel tensor-grid
@@ -277,7 +280,9 @@ the next optimization target under block or Nystrom preconditioning.
 The reusable higher-dimensional tensor-product contraction primitive is now
 implemented and independently tested in `fortnum` as
 `fortnum_tensor_product`, and FortML now exposes it through
-`structured_gp_operator_t`. The one-dimensional `fortnum_toeplitz` dependency
-also has cached FFT products and independent scaling evidence. FortML still
-needs its Toeplitz-backed covariance wrapper, derivative products, multilevel
-embeddings, and matched CPU/GPU scaling evidence.
+`structured_gp_operator_t`, including persistent OpenACC vector and multi-RHS
+products. The one-dimensional `fortnum_toeplitz` dependency also has cached
+FFT products and independent scaling evidence. FortML still needs its
+Toeplitz-backed covariance wrapper, device-resident generic CG recurrence,
+derivative products, multilevel embeddings, and matched CPU/GPU scaling
+evidence.

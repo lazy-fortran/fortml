@@ -13,6 +13,10 @@ module fortml_structured_operator
         procedure, public :: initialize => structured_gp_operator_initialize
         procedure, public :: matvec => structured_gp_operator_matvec
         procedure, public :: matmat => structured_gp_operator_matmat
+        procedure, public :: enter_data => structured_gp_operator_enter_data
+        procedure, public :: exit_data => structured_gp_operator_exit_data
+        procedure, public :: matvec_device => structured_gp_operator_matvec_device
+        procedure, public :: matmat_device => structured_gp_operator_matmat_device
         procedure, public :: diagonal => structured_gp_operator_diagonal
         procedure, public :: sample_count => structured_gp_operator_sample_count
     end type structured_gp_operator_t
@@ -52,6 +56,43 @@ contains
             error stop "structured GP operator: invalid matrix-matrix shape"
         end if
     end subroutine structured_gp_operator_matmat
+
+    subroutine structured_gp_operator_enter_data(self, status, n_rhs)
+        class(structured_gp_operator_t), intent(inout) :: self
+        type(fortnum_status_t), intent(out) :: status
+        integer, intent(in), optional :: n_rhs
+
+        if (present(n_rhs)) then
+            call self%product_operator%enter_data(status, n_rhs)
+        else
+            call self%product_operator%enter_data(status)
+        end if
+    end subroutine structured_gp_operator_enter_data
+
+    subroutine structured_gp_operator_exit_data(self, status)
+        class(structured_gp_operator_t), intent(inout) :: self
+        type(fortnum_status_t), intent(out) :: status
+
+        call self%product_operator%exit_data(status)
+    end subroutine structured_gp_operator_exit_data
+
+    subroutine structured_gp_operator_matvec_device(self, input, output, status)
+        class(structured_gp_operator_t), intent(inout) :: self
+        real(dp), intent(in) :: input(:)
+        real(dp), intent(out) :: output(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        call self%product_operator%matvec_device(input, output, status)
+    end subroutine structured_gp_operator_matvec_device
+
+    subroutine structured_gp_operator_matmat_device(self, input, output, status)
+        class(structured_gp_operator_t), intent(inout) :: self
+        real(dp), intent(in) :: input(:, :)
+        real(dp), intent(out) :: output(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        call self%product_operator%matmat_device(input, output, status)
+    end subroutine structured_gp_operator_matmat_device
 
     function structured_gp_operator_diagonal(self) result(values)
         class(structured_gp_operator_t), intent(in) :: self

@@ -141,6 +141,14 @@ contract. Generic composable-kernel operators therefore retain fusion all the
 way through CG, while `rbf_operator_t` keeps its specialized accelerator
 override.
 
+`structured_gp_operator_t` wraps the reusable `fortnum_tensor_product`
+contraction and exposes the same persistent OpenACC lifetime shape through
+`enter_data(status, n_rhs)`, `exit_data(status)`, `matvec_device`, and
+`matmat_device`. Its factors and contraction workspaces remain resident while
+the caller owns the input/output data region. The nvfortran path is checked by
+an independent dense Kronecker oracle; the generic FortML CG recurrence has not
+yet been moved into that device data region.
+
 The specialized RBF type also has an OpenACC CG override. Its Krylov vectors,
 reductions, and repeated RBF products execute inside one accelerator data
 region, while an enclosing benchmark region keeps the sample points and

@@ -42,6 +42,27 @@ program test_structured_operator
     call require(maxval(abs(outputs - expected_matrix)) < 2.0e-14_dp, &
         "structured GP multi-RHS product matches dense oracle", nfail)
 
+    call structured_operator%enter_data(status, 2)
+    call require(status%code == FORTNUM_OK, &
+        "structured GP factor data enters the accelerator", nfail)
+    !$acc data copyin(input) copyout(output)
+    call structured_operator%matvec_device(input, output, status)
+    !$acc end data
+    call require(status%code == FORTNUM_OK, &
+        "structured GP device vector product returns success", nfail)
+    call require(maxval(abs(output - expected)) < 2.0e-14_dp, &
+        "structured GP device vector product matches dense oracle", nfail)
+    !$acc data copyin(inputs) copyout(outputs)
+    call structured_operator%matmat_device(inputs, outputs, status)
+    !$acc end data
+    call require(status%code == FORTNUM_OK, &
+        "structured GP device matrix product returns success", nfail)
+    call require(maxval(abs(outputs - expected_matrix)) < 2.0e-14_dp, &
+        "structured GP device matrix product matches dense oracle", nfail)
+    call structured_operator%exit_data(status)
+    call require(status%code == FORTNUM_OK, &
+        "structured GP factor data exits the accelerator", nfail)
+
     diagonal = structured_operator%diagonal()
     expected_diagonal = [(dense(row, row), row=1, 12)]
     call require(maxval(abs(diagonal - expected_diagonal)) < 2.0e-14_dp, &
