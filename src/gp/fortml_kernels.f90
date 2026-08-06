@@ -2,6 +2,8 @@ module fortml_kernels
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
         FORTNUM_DOMAIN_ERROR
+    use fortml_generated_matern_products, only: fortml_matern12_hvp, &
+        fortml_matern32_hvp, fortml_matern52_hvp
     use fortml_generated_rbf_products, only: fortml_rbf_hvp, fortml_rbf_jvp, &
         fortml_rbf_vjp
     implicit none
@@ -328,11 +330,6 @@ contains
         real(dp), intent(in) :: x1(:, :), x2(:, :), matrix_bar(:, :), direction(:)
         real(dp), intent(out) :: parameter_bar(:), parameter_bar_dot(:)
         type(fortnum_status_t), intent(out) :: status
-        real(dp) :: variance_log, lengthscale_log, r2, distance
-        real(dp) :: value, value_dot, x1_bar, x1_bar_dot
-        real(dp) :: x2_bar, x2_bar_dot, variance_bar, variance_bar_dot
-        real(dp) :: lengthscale_bar, lengthscale_bar_dot
-        integer :: i, j
 
         call check_matrix_shapes(self, x1, x2, matrix_bar, status)
         if (status%code /= FORTNUM_OK) return
@@ -343,33 +340,150 @@ contains
                 "kernel parameter_hvp: parameter shape is invalid")
             return
         end if
-        if (self%kind /= KERNEL_RBF) then
-            call status_set(status, FORTNUM_DOMAIN_ERROR, &
-                "kernel parameter_hvp: generated HVP is only available for RBF")
-            return
-        end if
-
-        variance_log = self%log_parameters(1)
-        lengthscale_log = self%log_parameters(2)
         parameter_bar = 0.0_dp
         parameter_bar_dot = 0.0_dp
+        call kernel_parameter_hvp_impl(self, x1, x2, matrix_bar, direction, &
+            parameter_bar, parameter_bar_dot, 1, status)
+    end subroutine kernel_parameter_hvp
+
+    recursive subroutine kernel_parameter_hvp_impl( &
+            self, x1, x2, matrix_bar, direction, parameter_bar, &
+            parameter_bar_dot, offset, status)
+        class(kernel_t), intent(in) :: self
+        real(dp), intent(in) :: x1(:, :), x2(:, :), matrix_bar(:, :), direction(:)
+        real(dp), intent(inout) :: parameter_bar(:), parameter_bar_dot(:)
+        integer, intent(in) :: offset
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: left_matrix(:, :), left_matrix_dot(:, :)
+        real(dp), allocatable :: right_matrix(:, :), right_matrix_dot(:, :)
+        real(dp) :: variance_log, lengthscale_log, r2, distance
+        real(dp) :: value, value_dot, x1_bar, x1_bar_dot
+        real(dp) :: x2_bar, x2_bar_dot, variance_bar, variance_bar_dot
+        real(dp) :: lengthscale_bar, lengthscale_bar_dot
+        real(dp) :: distance_bar, distance_bar_dot
+        integer :: i, j, left_count
+
+        select case (self%kind)
+        case (KERNEL_SUM)
+            left_count = self%left%parameter_count()
+            call kernel_parameter_hvp_impl( &
+                self%left, x1, x2, matrix_bar, direction(:left_count), &
+                parameter_bar, parameter_bar_dot, offset, status)
+            if (status%code /= FORTNUM_OK) return
+            call kernel_parameter_hvp_impl( &
+                self%right, x1, x2, matrix_bar, direction(left_count + 1:), &
+                parameter_bar, parameter_bar_dot, offset + left_count, status)
+            return
+        case (KERNEL_PRODUCT)
+            left_count = self%left%parameter_count()
+            allocate(left_matrix(size(x1, 1), size(x2, 1)))
+            allocate(left_matrix_dot, mold=left_matrix)
+            allocate(right_matrix, mold=left_matrix)
+            allocate(right_matrix_dot, mold=left_matrix)
+            call kernel_matrix_jvp_impl(self%left, x1, x2, direction(:left_count), &
+                left_matrix, left_matrix_dot)
+            call kernel_matrix_jvp_impl(self%right, x1, x2, direction(left_count + 1:), &
+                right_matrix, right_matrix_dot)
+            call kernel_parameter_hvp_impl( &
+                self%left, x1, x2, matrix_bar*right_matrix, direction(:left_count), &
+                parameter_bar, parameter_bar_dot, offset, status)
+            if (status%code /= FORTNUM_OK) return
+            call kernel_parameter_vjp_impl( &
+                self%left, x1, x2, matrix_bar*right_matrix_dot, parameter_bar_dot, offset)
+            call kernel_parameter_hvp_impl( &
+                self%right, x1, x2, matrix_bar*left_matrix, direction(left_count + 1:), &
+                parameter_bar, parameter_bar_dot, offset + left_count, status)
+            if (status%code /= FORTNUM_OK) return
+            call kernel_parameter_vjp_impl( &
+                self%right, x1, x2, matrix_bar*left_matrix_dot, parameter_bar_dot, &
+                offset + left_count)
+            call status_set(status, FORTNUM_OK, "")
+            return
+        case default
+            continue
+        end select
+
+        variance_log = self%log_parameters(1)
+        if (self%kind == KERNEL_RBF .or. self%kind == KERNEL_MATERN12 .or. &
+            self%kind == KERNEL_MATERN32 .or. self%kind == KERNEL_MATERN52) then
+            lengthscale_log = self%log_parameters(2)
+        else
+            lengthscale_log = 0.0_dp
+        end if
         do j = 1, size(x2, 1)
             do i = 1, size(x1, 1)
                 r2 = sum((x1(i, :) - x2(j, :))**2)
                 distance = sqrt(r2)
-                call fortml_rbf_hvp( &
-                    distance, 0.0_dp, 0.0_dp, 0.0_dp, variance_log, direction(1), &
-                    lengthscale_log, direction(2), value, value_dot, matrix_bar(i, j), &
-                    x1_bar, x1_bar_dot, x2_bar, x2_bar_dot, variance_bar, &
-                    variance_bar_dot, lengthscale_bar, lengthscale_bar_dot)
-                parameter_bar(1) = parameter_bar(1) + variance_bar
-                parameter_bar(2) = parameter_bar(2) + lengthscale_bar
-                parameter_bar_dot(1) = parameter_bar_dot(1) + variance_bar_dot
-                parameter_bar_dot(2) = parameter_bar_dot(2) + lengthscale_bar_dot
+                select case (self%kind)
+                case (KERNEL_RBF)
+                    call fortml_rbf_hvp( &
+                        distance, 0.0_dp, 0.0_dp, 0.0_dp, variance_log, direction(1), &
+                        lengthscale_log, direction(2), value, value_dot, matrix_bar(i, j), &
+                        x1_bar, x1_bar_dot, x2_bar, x2_bar_dot, variance_bar, &
+                        variance_bar_dot, lengthscale_bar, lengthscale_bar_dot)
+                    parameter_bar(offset) = parameter_bar(offset) + variance_bar
+                    parameter_bar(offset + 1) = parameter_bar(offset + 1) + lengthscale_bar
+                    parameter_bar_dot(offset) = parameter_bar_dot(offset) + variance_bar_dot
+                    parameter_bar_dot(offset + 1) = parameter_bar_dot(offset + 1) + &
+                        lengthscale_bar_dot
+                case (KERNEL_MATERN12)
+                    call fortml_matern12_hvp( &
+                        distance, 0.0_dp, variance_log, direction(1), lengthscale_log, &
+                        direction(2), value, value_dot, matrix_bar(i, j), distance_bar, &
+                        distance_bar_dot, variance_bar, variance_bar_dot, lengthscale_bar, &
+                        lengthscale_bar_dot)
+                    parameter_bar(offset) = parameter_bar(offset) + variance_bar
+                    parameter_bar(offset + 1) = parameter_bar(offset + 1) + lengthscale_bar
+                    parameter_bar_dot(offset) = parameter_bar_dot(offset) + variance_bar_dot
+                    parameter_bar_dot(offset + 1) = parameter_bar_dot(offset + 1) + &
+                        lengthscale_bar_dot
+                case (KERNEL_MATERN32)
+                    call fortml_matern32_hvp( &
+                        distance, 0.0_dp, variance_log, direction(1), lengthscale_log, &
+                        direction(2), value, value_dot, matrix_bar(i, j), distance_bar, &
+                        distance_bar_dot, variance_bar, variance_bar_dot, lengthscale_bar, &
+                        lengthscale_bar_dot)
+                    parameter_bar(offset) = parameter_bar(offset) + variance_bar
+                    parameter_bar(offset + 1) = parameter_bar(offset + 1) + lengthscale_bar
+                    parameter_bar_dot(offset) = parameter_bar_dot(offset) + variance_bar_dot
+                    parameter_bar_dot(offset + 1) = parameter_bar_dot(offset + 1) + &
+                        lengthscale_bar_dot
+                case (KERNEL_MATERN52)
+                    call fortml_matern52_hvp( &
+                        distance, 0.0_dp, variance_log, direction(1), lengthscale_log, &
+                        direction(2), value, value_dot, matrix_bar(i, j), distance_bar, &
+                        distance_bar_dot, variance_bar, variance_bar_dot, lengthscale_bar, &
+                        lengthscale_bar_dot)
+                    parameter_bar(offset) = parameter_bar(offset) + variance_bar
+                    parameter_bar(offset + 1) = parameter_bar(offset + 1) + lengthscale_bar
+                    parameter_bar_dot(offset) = parameter_bar_dot(offset) + variance_bar_dot
+                    parameter_bar_dot(offset + 1) = parameter_bar_dot(offset + 1) + &
+                        lengthscale_bar_dot
+                case (KERNEL_LINEAR)
+                    value = exp(variance_log)*dot_product(x1(i, :), x2(j, :))
+                    parameter_bar(offset) = parameter_bar(offset) + matrix_bar(i, j)*value
+                    parameter_bar_dot(offset) = parameter_bar_dot(offset) + &
+                        matrix_bar(i, j)*value*direction(1)
+                case (KERNEL_CONSTANT)
+                    value = exp(variance_log)
+                    parameter_bar(offset) = parameter_bar(offset) + matrix_bar(i, j)*value
+                    parameter_bar_dot(offset) = parameter_bar_dot(offset) + &
+                        matrix_bar(i, j)*value*direction(1)
+                case (KERNEL_WHITE_NOISE)
+                    value = exp(variance_log)*merge(1.0_dp, 0.0_dp, &
+                        same_row(x1, i, x2, j))
+                    parameter_bar(offset) = parameter_bar(offset) + matrix_bar(i, j)*value
+                    parameter_bar_dot(offset) = parameter_bar_dot(offset) + &
+                        matrix_bar(i, j)*value*direction(1)
+                case default
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "kernel parameter_hvp: unsupported kernel kind")
+                    return
+                end select
             end do
         end do
         call status_set(status, FORTNUM_OK, "")
-    end subroutine kernel_parameter_hvp
+    end subroutine kernel_parameter_hvp_impl
 
     subroutine make_leaf(kernel, kind, input_dim, variance, lengthscale, status)
         type(kernel_t), intent(out) :: kernel

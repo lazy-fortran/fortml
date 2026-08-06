@@ -1,8 +1,8 @@
 program test_kernels
     use, intrinsic :: iso_fortran_env, only: dp => real64, error_unit
-    use fortml_kernels, only: kernel_t, make_rbf_kernel, make_matern32_kernel, &
-        make_linear_kernel, make_constant_kernel, make_white_noise_kernel, &
-        kernel_add, kernel_multiply
+    use fortml_kernels, only: kernel_t, make_rbf_kernel, make_matern12_kernel, &
+        make_matern32_kernel, make_matern52_kernel, make_linear_kernel, &
+        make_constant_kernel, make_white_noise_kernel, kernel_add, kernel_multiply
     use fortnum_status, only: fortnum_status_t, status_ok
     implicit none
 
@@ -143,7 +143,8 @@ contains
 
     subroutine test_parameter_products(failures)
         integer, intent(inout) :: failures
-        type(kernel_t) :: rbf
+        type(kernel_t) :: rbf, matern12, matern32, matern52, linear, constant
+        type(kernel_t) :: white_noise, sum_kernel, product_kernel
         type(fortnum_status_t) :: status
         real(dp) :: x1(3, 2), x2(2, 2), direction(2), matrix(3, 2)
         real(dp) :: matrix_dot(3, 2), matrix_plus(3, 2), matrix_minus(3, 2)
@@ -189,7 +190,91 @@ contains
             write (error_unit, '(a)') "FAIL [hvp] kernel finite difference"
             failures = failures + 1
         end if
+
+        matern12 = make_matern12_kernel(2, 1.3_dp, 0.7_dp, status)
+        call check_parameter_hvp(matern12, x1, x2, matrix_bar, [0.11_dp, -0.19_dp], &
+            "matern12", failures)
+        matern32 = make_matern32_kernel(2, 1.3_dp, 0.7_dp, status)
+        call check_parameter_hvp(matern32, x1, x2, matrix_bar, [0.11_dp, -0.19_dp], &
+            "matern32", failures)
+        matern52 = make_matern52_kernel(2, 1.3_dp, 0.7_dp, status)
+        call check_parameter_hvp(matern52, x1, x2, matrix_bar, [0.11_dp, -0.19_dp], &
+            "matern52", failures)
+        linear = make_linear_kernel(2, 0.7_dp, status)
+        call check_parameter_hvp(linear, x1, x2, matrix_bar, [0.11_dp], &
+            "linear", failures)
+        constant = make_constant_kernel(2, 0.3_dp, status)
+        call check_parameter_hvp(constant, x1, x2, matrix_bar, [0.11_dp], &
+            "constant", failures)
+
+        white_noise = make_white_noise_kernel(2, 0.2_dp, status)
+        call check_parameter_hvp(white_noise, x1, x1, &
+            reshape([0.4_dp, -0.2_dp, 0.3_dp, 0.5_dp, -0.7_dp, 0.1_dp, &
+            0.2_dp, -0.4_dp, 0.6_dp], [3, 3]), [0.11_dp], &
+            "white_noise", failures)
+
+        sum_kernel = kernel_add(matern32, constant, status)
+        call check_parameter_hvp(sum_kernel, x1, x2, matrix_bar, &
+            [0.11_dp, -0.19_dp, 0.07_dp], "sum", failures)
+        product_kernel = kernel_multiply(matern32, constant, status)
+        call check_parameter_hvp(product_kernel, x1, x2, matrix_bar, &
+            [0.11_dp, -0.19_dp, 0.07_dp], "product", failures)
     end subroutine test_parameter_products
+
+    subroutine check_parameter_hvp(kernel, x1, x2, matrix_bar, direction, label, failures)
+        type(kernel_t), intent(inout) :: kernel
+        real(dp), intent(in) :: x1(:, :), x2(:, :), matrix_bar(:, :), direction(:)
+        character(len=*), intent(in) :: label
+        integer, intent(inout) :: failures
+        type(fortnum_status_t) :: status
+        real(dp), allocatable :: parameters(:), parameter_bar(:), parameter_bar_reference(:)
+        real(dp), allocatable :: parameter_bar_dot(:), parameter_plus(:), parameter_minus(:)
+        real(dp), allocatable :: matrix(:,:), matrix_dot(:,:), matrix_plus(:,:), matrix_minus(:,:)
+        real(dp) :: h
+
+        allocate(parameters(kernel%parameter_count()))
+        allocate(parameter_bar(size(parameters)), parameter_bar_reference(size(parameters)))
+        allocate(parameter_bar_dot(size(parameters)), parameter_plus(size(parameters)))
+        allocate(parameter_minus(size(parameters)))
+        allocate(matrix(size(x1, 1), size(x2, 1)))
+        allocate(matrix_dot, mold=matrix)
+        allocate(matrix_plus, mold=matrix)
+        allocate(matrix_minus, mold=matrix)
+        parameters = kernel%parameters()
+
+        call kernel%matrix_jvp(x1, x2, direction, matrix, matrix_dot, status)
+        h = 1.0e-6_dp
+        call kernel%set_parameters(parameters + h*direction, status)
+        call kernel%matrix(x1, x2, matrix_plus, status)
+        call kernel%set_parameters(parameters - h*direction, status)
+        call kernel%matrix(x1, x2, matrix_minus, status)
+        call kernel%set_parameters(parameters, status)
+        if (.not. status_ok(status) .or. maxval(abs(matrix_dot - &
+            (matrix_plus - matrix_minus)/(2.0_dp*h))) > 3.0e-9_dp) then
+            write (error_unit, '(2a)') "FAIL [jvp] ", trim(label)
+            failures = failures + 1
+        end if
+
+        call kernel%parameter_vjp(x1, x2, matrix_bar, parameter_bar_reference, status)
+        call kernel%parameter_hvp(x1, x2, matrix_bar, direction, parameter_bar, &
+            parameter_bar_dot, status)
+        if (.not. status_ok(status) .or. maxval(abs(parameter_bar - &
+            parameter_bar_reference)) > 3.0e-12_dp) then
+            write (error_unit, '(2a)') "FAIL [hvp value] ", trim(label)
+            failures = failures + 1
+        end if
+
+        call kernel%set_parameters(parameters + h*direction, status)
+        call kernel%parameter_vjp(x1, x2, matrix_bar, parameter_plus, status)
+        call kernel%set_parameters(parameters - h*direction, status)
+        call kernel%parameter_vjp(x1, x2, matrix_bar, parameter_minus, status)
+        call kernel%set_parameters(parameters, status)
+        if (.not. status_ok(status) .or. maxval(abs(parameter_bar_dot - &
+            (parameter_plus - parameter_minus)/(2.0_dp*h))) > 5.0e-8_dp) then
+            write (error_unit, '(2a)') "FAIL [hvp] ", trim(label)
+            failures = failures + 1
+        end if
+    end subroutine check_parameter_hvp
 
     subroutine reference_rbf(parameters, x1, x2, matrix)
         real(dp), intent(in) :: parameters(:), x1(:, :), x2(:, :)

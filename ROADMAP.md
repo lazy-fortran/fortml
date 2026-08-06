@@ -110,10 +110,13 @@ missing report leaves the item open.
   with OpenACC GPU execution and resident-data support.
 - [x] Connect the RBF kernel and fitted-GP value/JVP/VJP contracts to
   `fortad`-generated JVP/VJP/HVP code and compare the generated RBF products
-  with explicit finite-difference and adjoint baselines. The fitted-GP mean
-  HVP now differentiates both solve adjoints and the changing kernel VJP
-  cotangents; the packed product contract exposes it to optimizers. The
-  current HVP kernel rule is RBF, while other kernel HVP rules remain open.
+  with explicit finite-difference and adjoint baselines. Generated FortAD
+  products now also cover Matérn 1/2, 3/2, and 5/2 scalar HVPs; analytic
+  elementary and recursive sum/product rules cover the remaining built-in
+  kernel parameter products. The fitted-GP mean HVP differentiates both solve
+  adjoints and changing kernel VJP cotangents; the packed product contract
+  exposes it to optimizers. The complete built-in kernel HVP rule is checked
+  against central finite differences of the independent kernel VJP.
 - [x] Add a differentiated GP linear-solve/Cholesky path so the fitted-GP
   mean optimizer contract exposes an HVP instead of refusing it. The complete
   packed vector is checked against a central finite difference of the GP VJP.
@@ -268,7 +271,10 @@ kernel products, and the new `gp_predict_hvp` path differentiates the
 Cholesky solve and reverse cotangents for the full packed RBF hyperparameter
   vector. Its independent central-difference oracle passes in
   `test_parameter_products`; the LML gradient HVP is also checked in
-  `test_gaussian_process`. Matern and white-noise kernel HVP rules remain open.
+  `test_gaussian_process`. The generated scalar Matérn HVPs and analytic
+  white-noise/elementary/composite rules are now covered by the kernel-product
+  oracle. Matérn and white-noise derivative-observation covariance rules remain
+  open under the separate coincident-point smoothness contract.
 
 The first basis-map slice is now implemented in `fortml_basis`. It provides polynomial
 powers, Fourier sine/cosine features, differentiable ARD radial features, and
