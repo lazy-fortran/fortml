@@ -50,8 +50,8 @@ missing report leaves the item open.
   maps.
   - [x] Add polynomial and log-frequency Fourier maps with flat parameters,
     value/JVP/VJP products, finite-difference checks, and adjoint identities.
-  - [ ] Add radial maps with differentiable centers and positive log-scales.
-  - [ ] Add B-spline maps backed by `fortnum_bspline` with fixed-span
+  - [x] Add radial maps with differentiable centers and positive log-scales.
+  - [x] Add B-spline maps backed by `fortnum_bspline` with fixed-span
     smoothness/status rules.
   - [ ] Add a user-supplied value/JVP/VJP callback contract and static-lowering
     refusal boundary.
@@ -173,10 +173,10 @@ suite with gfortran and `nvfortran` 26.5. No MLP performance claim is made yet.
 The MLP reference and accelerator plot remain open.
 
 The first basis-map slice is now implemented in `fortml_basis`: polynomial
-powers and Fourier sine/cosine features use a stable flat layout and expose
-value, JVP, and VJP products. Independent central finite differences and the
-VJP adjoint identity pass in `test_basis`; radial, spline, and user-callback
-maps remain open.
+powers, Fourier sine/cosine features, differentiable ARD radial features, and
+fixed-knot B-spline features use stable layouts and expose value, JVP, and VJP
+products. Independent central finite differences and VJP adjoint identities
+pass in `test_basis`; the user-callback/static-lowering contract remains open.
 
 The first matched RBF matrix-vector benchmark is now recorded in
 `lazy-fortran/fortml-bench`. It uses 2048 samples, 8 features, float64, and

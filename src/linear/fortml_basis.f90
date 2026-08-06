@@ -2,22 +2,32 @@ module fortml_basis
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
         FORTNUM_DOMAIN_ERROR
+    use fortnum_bspline, only: bspline_workspace_t, bspline_init, &
+        bspline_set_knots, bspline_eval_basis, bspline_eval_deriv
     implicit none
     private
 
     integer, parameter, public :: BASIS_POLYNOMIAL = 1
     integer, parameter, public :: BASIS_FOURIER = 2
+    integer, parameter, public :: BASIS_RADIAL = 3
+    integer, parameter, public :: BASIS_SPLINE = 4
 
     type, public :: basis_map_t
         integer :: kind = 0
         integer :: n_inputs = 0
         integer :: degree = 0
         integer :: n_harmonics = 0
+        integer :: n_centers = 0
         logical :: include_intercept = .false.
+        real(dp), allocatable :: centers(:, :)
+        real(dp), allocatable :: log_scales(:, :)
         real(dp), allocatable :: log_frequencies(:, :)
+        type(bspline_workspace_t), allocatable :: spline(:)
     contains
         procedure, public :: initialize_polynomial => basis_initialize_polynomial
         procedure, public :: initialize_fourier => basis_initialize_fourier
+        procedure, public :: initialize_radial => basis_initialize_radial
+        procedure, public :: initialize_spline => basis_initialize_spline
         procedure, public :: feature_count => basis_feature_count
         procedure, public :: parameter_count => basis_parameter_count
         procedure, public :: parameters => basis_parameters
@@ -29,6 +39,8 @@ module fortml_basis
 
     public :: make_polynomial_basis
     public :: make_fourier_basis
+    public :: make_radial_basis
+    public :: make_spline_basis
 
 contains
 
@@ -54,6 +66,30 @@ contains
             include_intercept)
     end function make_fourier_basis
 
+    function make_radial_basis(n_inputs, centers, scales, status, include_intercept) &
+            result(map)
+        integer, intent(in) :: n_inputs
+        real(dp), intent(in) :: centers(:, :), scales(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        logical, intent(in), optional :: include_intercept
+        type(basis_map_t) :: map
+
+        call map%initialize_radial(n_inputs, centers, scales, status, &
+            include_intercept)
+    end function make_radial_basis
+
+    function make_spline_basis(n_inputs, order, breakpoints, status, &
+            include_intercept) result(map)
+        integer, intent(in) :: n_inputs, order
+        real(dp), intent(in) :: breakpoints(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        logical, intent(in), optional :: include_intercept
+        type(basis_map_t) :: map
+
+        call map%initialize_spline(n_inputs, order, breakpoints, status, &
+            include_intercept)
+    end function make_spline_basis
+
     subroutine basis_initialize_polynomial(self, n_inputs, degree, status, &
             include_intercept)
         class(basis_map_t), intent(out) :: self
@@ -65,8 +101,12 @@ contains
         self%n_inputs = 0
         self%degree = 0
         self%n_harmonics = 0
+        self%n_centers = 0
         self%include_intercept = .false.
         if (allocated(self%log_frequencies)) deallocate (self%log_frequencies)
+        if (allocated(self%centers)) deallocate (self%centers)
+        if (allocated(self%log_scales)) deallocate (self%log_scales)
+        if (allocated(self%spline)) deallocate (self%spline)
         if (present(include_intercept)) self%include_intercept = include_intercept
         if (n_inputs < 1 .or. degree < 1) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -91,8 +131,12 @@ contains
         self%n_inputs = 0
         self%degree = 0
         self%n_harmonics = 0
+        self%n_centers = 0
         self%include_intercept = .false.
         if (allocated(self%log_frequencies)) deallocate (self%log_frequencies)
+        if (allocated(self%centers)) deallocate (self%centers)
+        if (allocated(self%log_scales)) deallocate (self%log_scales)
+        if (allocated(self%spline)) deallocate (self%spline)
         if (present(include_intercept)) self%include_intercept = include_intercept
         if (n_inputs < 1 .or. size(frequencies, 2) /= n_inputs .or. &
             size(frequencies, 1) < 1) then
@@ -113,6 +157,84 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine basis_initialize_fourier
 
+    subroutine basis_initialize_radial(self, n_inputs, centers, scales, status, &
+            include_intercept)
+        class(basis_map_t), intent(out) :: self
+        integer, intent(in) :: n_inputs
+        real(dp), intent(in) :: centers(:, :), scales(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        logical, intent(in), optional :: include_intercept
+
+        self%kind = 0
+        self%n_inputs = 0
+        self%degree = 0
+        self%n_harmonics = 0
+        self%n_centers = 0
+        self%include_intercept = .false.
+        if (allocated(self%log_frequencies)) deallocate (self%log_frequencies)
+        if (allocated(self%centers)) deallocate (self%centers)
+        if (allocated(self%log_scales)) deallocate (self%log_scales)
+        if (allocated(self%spline)) deallocate (self%spline)
+        if (present(include_intercept)) self%include_intercept = include_intercept
+        if (n_inputs < 1 .or. size(centers, 1) /= n_inputs .or. &
+            size(centers, 2) < 1 .or. any(shape(scales) /= shape(centers))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "basis radial: center and scale shapes are invalid")
+            return
+        end if
+        if (any(scales <= 0.0_dp)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "basis radial: scales must be positive")
+            return
+        end if
+        self%kind = BASIS_RADIAL
+        self%n_inputs = n_inputs
+        self%n_centers = size(centers, 2)
+        allocate(self%centers(n_inputs, self%n_centers))
+        allocate(self%log_scales(n_inputs, self%n_centers))
+        self%centers = centers
+        self%log_scales = log(scales)
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine basis_initialize_radial
+
+    subroutine basis_initialize_spline(self, n_inputs, order, breakpoints, status, &
+            include_intercept)
+        class(basis_map_t), intent(out) :: self
+        integer, intent(in) :: n_inputs, order
+        real(dp), intent(in) :: breakpoints(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        logical, intent(in), optional :: include_intercept
+        integer :: j
+
+        self%kind = 0
+        self%n_inputs = 0
+        self%degree = 0
+        self%n_harmonics = 0
+        self%n_centers = 0
+        self%include_intercept = .false.
+        if (allocated(self%log_frequencies)) deallocate (self%log_frequencies)
+        if (allocated(self%centers)) deallocate (self%centers)
+        if (allocated(self%log_scales)) deallocate (self%log_scales)
+        if (allocated(self%spline)) deallocate (self%spline)
+        if (present(include_intercept)) self%include_intercept = include_intercept
+        if (n_inputs < 1 .or. size(breakpoints, 2) /= n_inputs .or. &
+            size(breakpoints, 1) < 2) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "basis spline: breakpoint shape is invalid")
+            return
+        end if
+        allocate(self%spline(n_inputs))
+        do j = 1, n_inputs
+            call bspline_init(self%spline(j), order, size(breakpoints, 1), status)
+            if (status%code /= FORTNUM_OK) return
+            call bspline_set_knots(self%spline(j), breakpoints(:, j), status)
+            if (status%code /= FORTNUM_OK) return
+        end do
+        self%kind = BASIS_SPLINE
+        self%n_inputs = n_inputs
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine basis_initialize_spline
+
     integer function basis_feature_count(self) result(count)
         class(basis_map_t), intent(in) :: self
 
@@ -121,6 +243,10 @@ contains
             count = self%n_inputs*self%degree
         else if (self%kind == BASIS_FOURIER) then
             count = 2*self%n_inputs*self%n_harmonics
+        else if (self%kind == BASIS_RADIAL) then
+            count = self%n_centers
+        else if (self%kind == BASIS_SPLINE) then
+            if (allocated(self%spline)) count = self%n_inputs*self%spline(1)%ncoef
         end if
         if (self%include_intercept) count = count + 1
     end function basis_feature_count
@@ -131,6 +257,8 @@ contains
         count = 0
         if (self%kind == BASIS_FOURIER) then
             count = self%n_inputs*self%n_harmonics
+        else if (self%kind == BASIS_RADIAL) then
+            count = 2*self%n_inputs*self%n_centers
         end if
     end function basis_parameter_count
 
@@ -140,7 +268,14 @@ contains
 
         allocate(theta(self%parameter_count()))
         if (self%parameter_count() > 0) then
-            theta = reshape(self%log_frequencies, [self%parameter_count()])
+            if (self%kind == BASIS_FOURIER) then
+                theta = reshape(self%log_frequencies, [self%parameter_count()])
+            else if (self%kind == BASIS_RADIAL) then
+                theta(1:self%n_inputs*self%n_centers) = &
+                    reshape(self%centers, [self%n_inputs*self%n_centers])
+                theta(self%n_inputs*self%n_centers + 1:) = &
+                    reshape(self%log_scales, [self%n_inputs*self%n_centers])
+            end if
         end if
     end function basis_parameters
 
@@ -160,7 +295,14 @@ contains
             return
         end if
         if (self%parameter_count() > 0) then
-            self%log_frequencies = reshape(theta, shape(self%log_frequencies))
+            if (self%kind == BASIS_FOURIER) then
+                self%log_frequencies = reshape(theta, shape(self%log_frequencies))
+            else if (self%kind == BASIS_RADIAL) then
+                self%centers = reshape(theta(1:self%n_inputs*self%n_centers), &
+                    shape(self%centers))
+                self%log_scales = reshape(theta(self%n_inputs*self%n_centers + 1:), &
+                    shape(self%log_scales))
+            end if
         end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine basis_set_parameters
@@ -170,8 +312,9 @@ contains
         real(dp), intent(in) :: x(:, :)
         real(dp), intent(out) :: phi(:, :)
         type(fortnum_status_t), intent(out) :: status
-        integer :: j, p, h, column
-        real(dp) :: frequency
+        integer :: i, j, p, h, column, ncoef
+        real(dp) :: frequency, inverse_scale
+        real(dp), allocatable :: values(:)
 
         if (.not. valid_shapes(self, x, phi)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -200,6 +343,27 @@ contains
                     column = column + 2
                 end do
             end do
+        else if (self%kind == BASIS_RADIAL) then
+            do p = 1, self%n_centers
+                do j = 1, self%n_inputs
+                    inverse_scale = exp(-self%log_scales(j, p))
+                    phi(:, column) = phi(:, column) + &
+                        ((x(:, j) - self%centers(j, p))*inverse_scale)**2
+                end do
+                phi(:, column) = exp(-0.5_dp*phi(:, column))
+                column = column + 1
+            end do
+        else if (self%kind == BASIS_SPLINE) then
+            ncoef = self%spline(1)%ncoef
+            allocate(values(ncoef))
+            do j = 1, self%n_inputs
+                do i = 1, size(x, 1)
+                    call bspline_eval_basis(self%spline(j), x(i, j), values, status)
+                    if (status%code /= FORTNUM_OK) return
+                    phi(i, column:column + ncoef - 1) = values
+                end do
+                column = column + ncoef
+            end do
         end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine basis_evaluate
@@ -209,9 +373,10 @@ contains
         real(dp), intent(in) :: x(:, :), theta_dot(:), x_dot(:, :)
         real(dp), intent(out) :: phi(:, :), phi_dot(:, :)
         type(fortnum_status_t), intent(out) :: status
-        integer :: i, j, p, h, column, parameter_index
-        real(dp) :: frequency
+        integer :: i, j, p, h, column, center_index, parameter_index, ncoef
+        real(dp) :: frequency, q, q_dot, log_value_dot
         real(dp) :: argument(size(x, 1)), argument_dot(size(x, 1))
+        real(dp), allocatable :: dvalues(:, :)
 
         if (.not. valid_shapes(self, x, phi)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -251,6 +416,36 @@ contains
                     parameter_index = parameter_index + 1
                 end do
             end do
+        else if (self%kind == BASIS_RADIAL) then
+            do p = 1, self%n_centers
+                do i = 1, size(x, 1)
+                    log_value_dot = 0.0_dp
+                    do j = 1, self%n_inputs
+                        q = (x(i, j) - self%centers(j, p))* &
+                            exp(-self%log_scales(j, p))
+                        center_index = (p - 1)*self%n_inputs + j
+                        q_dot = exp(-self%log_scales(j, p))* &
+                            (x_dot(i, j) - theta_dot(center_index)) - &
+                            q*theta_dot(self%n_inputs*self%n_centers + center_index)
+                        log_value_dot = log_value_dot - q*q_dot
+                    end do
+                    phi_dot(i, column) = phi(i, column)*log_value_dot
+                end do
+                column = column + 1
+            end do
+        else if (self%kind == BASIS_SPLINE) then
+            ncoef = self%spline(1)%ncoef
+            allocate(dvalues(0:1, ncoef))
+            do j = 1, self%n_inputs
+                do i = 1, size(x, 1)
+                    call bspline_eval_deriv(self%spline(j), x(i, j), 1, &
+                        dvalues, status)
+                    if (status%code /= FORTNUM_OK) return
+                    phi_dot(i, column:column + ncoef - 1) = &
+                        dvalues(1, :)*x_dot(i, j)
+                end do
+                column = column + ncoef
+            end do
         end if
     end subroutine basis_jvp
 
@@ -259,9 +454,10 @@ contains
         real(dp), intent(in) :: x(:, :), u(:, :)
         real(dp), intent(out) :: theta_bar(:), x_bar(:, :)
         type(fortnum_status_t), intent(out) :: status
-        integer :: j, p, h, column, parameter_index
-        real(dp) :: frequency
+        integer :: i, j, p, h, column, center_index, parameter_index, ncoef
+        real(dp) :: frequency, q, radial_value, inverse_scale
         real(dp) :: argument(size(x, 1)), z_bar(size(x, 1))
+        real(dp), allocatable :: dvalues(:, :)
 
         if (.not. valid_shapes(self, x, u)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -300,6 +496,45 @@ contains
                     parameter_index = parameter_index + 1
                 end do
             end do
+        else if (self%kind == BASIS_RADIAL) then
+            do p = 1, self%n_centers
+                do i = 1, size(x, 1)
+                    radial_value = 0.0_dp
+                    do j = 1, self%n_inputs
+                        q = (x(i, j) - self%centers(j, p))* &
+                            exp(-self%log_scales(j, p))
+                        radial_value = radial_value + q*q
+                    end do
+                    radial_value = exp(-0.5_dp*radial_value)
+                    do j = 1, self%n_inputs
+                        q = (x(i, j) - self%centers(j, p))* &
+                            exp(-self%log_scales(j, p))
+                        inverse_scale = exp(-self%log_scales(j, p))
+                        x_bar(i, j) = x_bar(i, j) - &
+                            u(i, column)*radial_value*q*inverse_scale
+                        center_index = (p - 1)*self%n_inputs + j
+                        theta_bar(center_index) = theta_bar(center_index) + &
+                            u(i, column)*radial_value*q*inverse_scale
+                        theta_bar(self%n_inputs*self%n_centers + center_index) = &
+                            theta_bar(self%n_inputs*self%n_centers + center_index) + &
+                            u(i, column)*radial_value*q*q
+                    end do
+                end do
+                column = column + 1
+            end do
+        else if (self%kind == BASIS_SPLINE) then
+            ncoef = self%spline(1)%ncoef
+            allocate(dvalues(0:1, ncoef))
+            do j = 1, self%n_inputs
+                do i = 1, size(x, 1)
+                    call bspline_eval_deriv(self%spline(j), x(i, j), 1, &
+                        dvalues, status)
+                    if (status%code /= FORTNUM_OK) return
+                    x_bar(i, j) = sum(u(i, column:column + ncoef - 1)* &
+                        dvalues(1, :))
+                end do
+                column = column + ncoef
+            end do
         end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine basis_vjp
@@ -307,14 +542,25 @@ contains
     logical function valid_model(self) result(valid)
         class(basis_map_t), intent(in) :: self
 
-        valid = self%kind == BASIS_POLYNOMIAL .or. self%kind == BASIS_FOURIER
+        valid = self%kind == BASIS_POLYNOMIAL .or. self%kind == BASIS_FOURIER .or. &
+            self%kind == BASIS_RADIAL .or. self%kind == BASIS_SPLINE
         if (.not. valid) return
         valid = self%n_inputs > 0
         if (.not. valid) return
         if (self%kind == BASIS_POLYNOMIAL) then
             valid = self%degree > 0
+        else if (self%kind == BASIS_FOURIER) then
+            valid = self%n_harmonics > 0
+            if (.not. valid) return
+            valid = allocated(self%log_frequencies)
+        else if (self%kind == BASIS_RADIAL) then
+            valid = self%n_centers > 0
+            if (.not. valid) return
+            valid = allocated(self%centers) .and. allocated(self%log_scales)
         else
-            valid = self%n_harmonics > 0 .and. allocated(self%log_frequencies)
+            valid = allocated(self%spline)
+            if (.not. valid) return
+            valid = size(self%spline) > 0
         end if
     end function valid_model
 
