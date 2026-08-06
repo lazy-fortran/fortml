@@ -12,6 +12,7 @@ module fortml_kernel_operator
     private
 
     integer, parameter :: DEFAULT_TILE_SIZE = 128
+    integer, parameter :: MAX_FUSED_RHS = 8
 
     type, extends(linear_operator_t), public :: rbf_operator_t
         ! Neighbor index is contiguous for the matrix-free inner reduction.
@@ -987,12 +988,112 @@ contains
                 points, input, output, variance, &
                 0.5_dp/(lengthscale*lengthscale), diagonal_shift)) return
         end if
+        if (size(input, 2) <= MAX_FUSED_RHS) then
+            call rbf_matmat_tiled_fused( &
+                points, input, output, variance, lengthscale, diagonal_shift, &
+                tile_size)
+            return
+        end if
         do right_hand_side = 1, size(input, 2)
             call rbf_matvec_tiled( &
                 points, input(:, right_hand_side), output(:, right_hand_side), &
                 variance, lengthscale, diagonal_shift, tile_size)
         end do
     end subroutine rbf_matmat_tiled
+
+    subroutine rbf_matmat_tiled_fused( &
+            points, input, output, variance, lengthscale, diagonal_shift, &
+            tile_size)
+        real(dp), intent(in) :: points(:, :), input(:, :)
+        real(dp), intent(out) :: output(:, :)
+        real(dp), intent(in) :: variance, lengthscale, diagonal_shift
+        integer, intent(in) :: tile_size
+        real(dp) :: accumulated_1, accumulated_2, accumulated_3
+        real(dp) :: accumulated_4, accumulated_5, accumulated_6
+        real(dp) :: accumulated_7, accumulated_8
+        real(dp) :: inverse_two_lengthscale_squared
+        real(dp) :: distance, difference, kernel_value
+        integer :: block_size, first_neighbor, last_neighbor
+        integer :: feature, i, j, n_features, n_rhs, n_samples
+
+        output = 0.0_dp
+        n_samples = size(points, 1)
+        n_features = size(points, 2)
+        n_rhs = size(input, 2)
+        if (n_samples < 1 .or. n_features < 1 .or. n_rhs < 1 .or. &
+            n_rhs > MAX_FUSED_RHS .or. size(input, 1) /= n_samples .or. &
+            size(output, 1) /= n_samples .or. size(output, 2) /= n_rhs .or. &
+            variance <= 0.0_dp .or. lengthscale <= 0.0_dp .or. &
+            tile_size < 1) return
+
+        block_size = tile_size
+        inverse_two_lengthscale_squared = &
+            0.5_dp/(lengthscale*lengthscale)
+        !$acc parallel loop
+        !$omp parallel do private( &
+        !$omp& accumulated_1, accumulated_2, accumulated_3, accumulated_4, &
+        !$omp& accumulated_5, accumulated_6, accumulated_7, accumulated_8, &
+        !$omp& distance, difference, kernel_value, first_neighbor, &
+        !$omp& last_neighbor, feature, j)
+        do i = 1, n_samples
+            accumulated_1 = diagonal_shift*input(i, 1)
+            accumulated_2 = 0.0_dp
+            accumulated_3 = 0.0_dp
+            accumulated_4 = 0.0_dp
+            accumulated_5 = 0.0_dp
+            accumulated_6 = 0.0_dp
+            accumulated_7 = 0.0_dp
+            accumulated_8 = 0.0_dp
+            if (n_rhs >= 2) accumulated_2 = diagonal_shift*input(i, 2)
+            if (n_rhs >= 3) accumulated_3 = diagonal_shift*input(i, 3)
+            if (n_rhs >= 4) accumulated_4 = diagonal_shift*input(i, 4)
+            if (n_rhs >= 5) accumulated_5 = diagonal_shift*input(i, 5)
+            if (n_rhs >= 6) accumulated_6 = diagonal_shift*input(i, 6)
+            if (n_rhs >= 7) accumulated_7 = diagonal_shift*input(i, 7)
+            if (n_rhs >= 8) accumulated_8 = diagonal_shift*input(i, 8)
+            do first_neighbor = 1, n_samples, block_size
+                last_neighbor = min(n_samples, first_neighbor + block_size - 1)
+                !$acc loop vector reduction(+:accumulated_1, accumulated_2, &
+                !$acc& accumulated_3, accumulated_4, accumulated_5, &
+                !$acc& accumulated_6, accumulated_7, accumulated_8)
+                !$omp simd reduction(+:accumulated_1, accumulated_2, &
+                !$omp& accumulated_3, accumulated_4, accumulated_5, &
+                !$omp& accumulated_6, accumulated_7, accumulated_8)
+                do j = first_neighbor, last_neighbor
+                    distance = 0.0_dp
+                    do feature = 1, n_features
+                        difference = points(i, feature) - points(j, feature)
+                        distance = distance + difference*difference
+                    end do
+                    kernel_value = variance*exp( &
+                        -inverse_two_lengthscale_squared*distance)
+                    accumulated_1 = accumulated_1 + kernel_value*input(j, 1)
+                    if (n_rhs >= 2) accumulated_2 = accumulated_2 + &
+                        kernel_value*input(j, 2)
+                    if (n_rhs >= 3) accumulated_3 = accumulated_3 + &
+                        kernel_value*input(j, 3)
+                    if (n_rhs >= 4) accumulated_4 = accumulated_4 + &
+                        kernel_value*input(j, 4)
+                    if (n_rhs >= 5) accumulated_5 = accumulated_5 + &
+                        kernel_value*input(j, 5)
+                    if (n_rhs >= 6) accumulated_6 = accumulated_6 + &
+                        kernel_value*input(j, 6)
+                    if (n_rhs >= 7) accumulated_7 = accumulated_7 + &
+                        kernel_value*input(j, 7)
+                    if (n_rhs >= 8) accumulated_8 = accumulated_8 + &
+                        kernel_value*input(j, 8)
+                end do
+            end do
+            output(i, 1) = accumulated_1
+            if (n_rhs >= 2) output(i, 2) = accumulated_2
+            if (n_rhs >= 3) output(i, 3) = accumulated_3
+            if (n_rhs >= 4) output(i, 4) = accumulated_4
+            if (n_rhs >= 5) output(i, 5) = accumulated_5
+            if (n_rhs >= 6) output(i, 6) = accumulated_6
+            if (n_rhs >= 7) output(i, 7) = accumulated_7
+            if (n_rhs >= 8) output(i, 8) = accumulated_8
+        end do
+    end subroutine rbf_matmat_tiled_fused
 
     logical function rbf_matmat_cuda( &
             points, input, output, variance, inverse_scale, diagonal_shift)

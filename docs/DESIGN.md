@@ -146,6 +146,12 @@ nvfortran/OpenACC builds remain self-contained. The direct MVM and matmat
 benchmarks check the native paths against host pairwise oracles before timing
 them.
 
+When the native bridge is disabled, the RBF matrix-matrix fallback still fuses
+up to eight right-hand sides in one OpenACC/CPU tiled reduction. Pairwise
+distances and the exponential are evaluated once per sample pair, then applied
+to scalar RHS accumulators. Larger RHS batches retain the conservative
+per-column fallback until a larger device workspace contract is added.
+
 The eight-feature OpenACC RBF MVM maps two output rows to worker lanes inside
 each gang. This keeps the sample-major neighbor loop contiguous while reducing
 gang count. The tail condition is covered by a five-row, eight-feature direct

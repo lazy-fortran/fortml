@@ -86,6 +86,9 @@ missing report leaves the item open.
   matrix-vector and up-to-eight-right-hand-side matrix-matrix paths, linked
   into the `nvfortran` benchmark through a Fortran C binding and retained
   behind the OpenACC fallback.
+- [x] Fuse the OpenACC RBF matrix-matrix fallback for up to eight right-hand
+  sides so the default GPU lane reuses each pairwise distance even without the
+  native CUDA bridge.
 - [x] Add fused multi-right-hand-side RBF CG with an independent PCG recurrence
   per output column and one batched operator product per iteration, checked
   against independent dense multi-RHS solves.
