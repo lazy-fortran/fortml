@@ -15,6 +15,8 @@ module fortml_local_experts
     !!   RBCM   robust BCM, BCM with the GPoE weights            (28)
     !!   GRBCM  generalized RBCM with a global communication     (29)
     !!          expert trained on a shared random subset
+    !!   MoE    mixture of experts, a softmax-gated Gaussian     (21)-(22)
+    !!          mixture rather than a product
     !!
     !! Cost is `O(M m0^3)` for training with `m0 = n/M` points per expert, so
     !! `O(n m0^2)` overall, against `O(n^3)` for the exact GP.
@@ -32,6 +34,7 @@ module fortml_local_experts
     integer, parameter, public :: AGGREGATE_BCM = 4
     integer, parameter, public :: AGGREGATE_RBCM = 5
     integer, parameter, public :: AGGREGATE_GRBCM = 6
+    integer, parameter, public :: AGGREGATE_MOE = 7
 
     type :: expert_t
         real(dp), allocatable :: inputs(:, :)
@@ -77,6 +80,8 @@ contains
             name = "RBCM"
         case (AGGREGATE_GRBCM)
             name = "GRBCM"
+        case (AGGREGATE_MOE)
+            name = "MoE"
         case default
             name = "unknown"
         end select
@@ -94,7 +99,7 @@ contains
                 "local experts: the noise variance must be positive")
             return
         end if
-        if (method < AGGREGATE_NLE .or. method > AGGREGATE_GRBCM) then
+        if (method < AGGREGATE_NLE .or. method > AGGREGATE_MOE) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "local experts: unknown aggregation")
             return
@@ -244,6 +249,24 @@ contains
                     expert_mean(j), expert_variance(j), status)
                 if (status%code /= FORTNUM_OK) return
             end do
+
+            if (self%method == AGGREGATE_MOE) then
+                ! A gated Gaussian mixture, not a product. Following the
+                ! review's Fig. 5 setting, the gate is a softmax over the same
+                ! differential-entropy scores, and the mixture moments are
+                ! taken exactly. A mixture is never sharper than its sharpest
+                ! component, which is what separates it from PoE.
+                do j = 1, self%n_experts
+                    weight(j) = 0.5_dp*(log(prior) - log(expert_variance(j)))
+                end do
+                weight = weight - maxval(weight)
+                weight = exp(weight)
+                weight = weight/sum(weight)
+                mean(i) = sum(weight*expert_mean)
+                variance(i) = sum(weight*(expert_variance + expert_mean**2)) &
+                    - mean(i)*mean(i)
+                cycle
+            end if
 
             select case (self%method)
             case (AGGREGATE_NLE)

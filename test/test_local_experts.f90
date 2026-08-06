@@ -12,7 +12,7 @@ program test_local_experts
     use fortml_kernels, only: kernel_t, make_rbf_kernel
     use fortml_local_experts, only: local_expert_gp_t, aggregation_name, &
         AGGREGATE_NLE, AGGREGATE_POE, AGGREGATE_GPOE, AGGREGATE_BCM, &
-        AGGREGATE_RBCM, AGGREGATE_GRBCM
+        AGGREGATE_RBCM, AGGREGATE_GRBCM, AGGREGATE_MOE
     use fortnum_status, only: fortnum_status_t, status_ok
     implicit none
 
@@ -29,6 +29,7 @@ program test_local_experts
     call test_poe_is_overconfident(failures)
     call test_gpoe_returns_to_the_prior(failures)
     call test_nle_uses_one_expert(failures)
+    call test_moe_is_a_gated_mixture(failures)
     call test_names_and_refusals(failures)
     if (failures /= 0) then
         write (error_unit, '(i0,a)') failures, " local expert test(s) failed"
@@ -280,6 +281,83 @@ contains
         end if
     end subroutine test_nle_uses_one_expert
 
+    subroutine test_moe_is_a_gated_mixture(failures)
+        !! Paper Sec. IV-B and Fig. 5: the MoE is a weighted sum, so it can
+        !! never be sharper than its sharpest expert, where the PoE product
+        !! can. With one expert the gate is degenerate and the mixture is that
+        !! expert exactly.
+        integer, intent(inout) :: failures
+        type(local_expert_gp_t) :: moe, single, poe
+        type(kernel_t) :: kernel
+        type(fortnum_status_t) :: status
+        real(dp) :: query(3, d), mean(3), variance_out(3)
+        real(dp) :: reference_mean(3), reference_variance(3)
+        real(dp) :: poe_mean(3), poe_variance(3)
+        real(dp) :: sharpest
+        integer :: i, j
+
+        do i = 1, 3
+            query(i, 1) = -0.9_dp + 0.9_dp*real(i, dp)
+        end do
+        kernel = make_rbf_kernel(d, variance, lengthscale, status)
+
+        call moe%initialize(kernel, noise, AGGREGATE_MOE, status)
+        call moe%fit(x, y, 1, status)
+        call moe%predict(query, mean, variance_out, status)
+        call exact_reference(query, reference_mean, reference_variance)
+        if (.not. status_ok(status) .or. &
+            maxval(abs(mean - reference_mean)) > 1.0e-10_dp .or. &
+            maxval(abs(variance_out - reference_variance)) > 1.0e-10_dp) then
+            write (error_unit, '(a)') "FAIL [moe] one expert is not the exact GP"
+            failures = failures + 1
+        end if
+
+        call moe%initialize(kernel, noise, AGGREGATE_MOE, status)
+        call moe%fit(x, y, 4, status)
+        call moe%predict(query, mean, variance_out, status)
+        call poe%initialize(kernel, noise, AGGREGATE_POE, status)
+        call poe%fit(x, y, 4, status)
+        call poe%predict(query, poe_mean, poe_variance, status)
+        do i = 1, 3
+            sharpest = sharpest_expert_variance(query(i:i, :))
+            if (variance_out(i) < sharpest - 1.0e-12_dp) then
+                write (error_unit, '(a,2es12.4)') &
+                    "FAIL [moe] the mixture is sharper than its sharpest expert ", &
+                    variance_out(i), sharpest
+                failures = failures + 1
+            end if
+            if (poe_variance(i) > variance_out(i)) then
+                write (error_unit, '(a)') &
+                    "FAIL [moe] PoE is not the sharper of the two"
+                failures = failures + 1
+            end if
+        end do
+        j = 0
+    end subroutine test_moe_is_a_gated_mixture
+
+    real(dp) function sharpest_expert_variance(query) result(sharpest)
+        !! The smallest single-expert posterior variance at this point, from
+        !! four independently fitted experts on the same blocks.
+        real(dp), intent(in) :: query(:, :)
+        type(local_expert_gp_t) :: expert
+        type(kernel_t) :: kernel
+        type(fortnum_status_t) :: status
+        real(dp) :: mean(1), variance_out(1)
+        integer :: i, first, last, block_size
+
+        kernel = make_rbf_kernel(d, variance, lengthscale, status)
+        block_size = (n + 3)/4
+        sharpest = huge(1.0_dp)
+        do i = 1, 4
+            first = (i - 1)*block_size + 1
+            last = min(n, i*block_size)
+            call expert%initialize(kernel, noise, AGGREGATE_POE, status)
+            call expert%fit(x(first:last, :), y(first:last), 1, status)
+            call expert%predict(query, mean, variance_out, status)
+            sharpest = min(sharpest, variance_out(1))
+        end do
+    end function sharpest_expert_variance
+
     subroutine test_names_and_refusals(failures)
         integer, intent(inout) :: failures
         type(local_expert_gp_t) :: model
@@ -289,6 +367,7 @@ contains
 
         kernel = make_rbf_kernel(d, variance, lengthscale, status)
         if (aggregation_name(AGGREGATE_GRBCM) /= "GRBCM" .or. &
+            aggregation_name(AGGREGATE_MOE) /= "MoE" .or. &
             aggregation_name(0) /= "unknown") then
             write (error_unit, '(a)') "FAIL [name] aggregation names"
             failures = failures + 1

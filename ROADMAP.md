@@ -238,8 +238,8 @@ that do not exist.
 - [x] Implement SKI grid interpolation and subset-of-data selection. The SKI
   product is checked against a dense `W K_uu W^T` assembly and its convergence
   under grid refinement.
-- [ ] Implement the mixture-of-experts gating aggregation of Fig. 5.
-- [ ] Add the paper's 1-D toy as a shared fixture and check every method's
+- [x] Implement the mixture-of-experts gating aggregation of Fig. 5.
+- [x] Add the paper's 1-D toy as a shared fixture and check every method's
   reported Fig. 4/Fig. 5 behaviour automatically.
 - [ ] Record wall time and peak resident memory for every method in
   `fortml-bench`, with scaling sweeps in the sample count, the inducing size,
