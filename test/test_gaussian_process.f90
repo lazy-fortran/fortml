@@ -1,7 +1,11 @@
 program test_gaussian_process
     use, intrinsic :: iso_fortran_env, only: dp => real64, error_unit
-    use fortml_kernels, only: kernel_t, make_rbf_kernel
+    use fortml_kernels, only: kernel_t, kernel_multiply, make_linear_kernel, &
+        make_rbf_kernel
     use fortml_gaussian_process, only: gp_regression_t
+    use fortml_derivative_gaussian_process, only: &
+        gp_derivative_regression_t
+    use fortnum_linalg, only: dense_solve, LINALG_OK
     use fortnum_status, only: fortnum_status_t, status_ok
     implicit none
 
@@ -10,6 +14,8 @@ program test_gaussian_process
     call test_fit_likelihood_and_prediction(failures)
     call test_prediction_products(failures)
     call test_multioutput(failures)
+    call test_kernel_input_derivatives(failures)
+    call test_mixed_observations(failures)
     if (failures /= 0) then
         write (error_unit, '(i0,a)') failures, " GP test(s) failed"
         error stop 1
@@ -125,6 +131,202 @@ contains
             failures = failures + 1
         end if
     end subroutine test_prediction_products
+
+    subroutine test_kernel_input_derivatives(failures)
+        integer, intent(inout) :: failures
+        type(kernel_t) :: kernel, left, right, product
+        type(fortnum_status_t) :: status
+        real(dp) :: x1(2), x2(2), gradient_x1(2), gradient_x2(2)
+        real(dp) :: kernel_value, mixed_hessian(2, 2), h, h_half
+        real(dp) :: fd_x1(2), fd_x2(2), fd_mixed(2, 2)
+        real(dp) :: fd_x1_half(2), fd_x2_half(2), fd_mixed_half(2, 2)
+        integer :: i, j
+
+        x1 = [0.4_dp, -0.2_dp]
+        x2 = [-0.3_dp, 0.7_dp]
+        kernel = make_rbf_kernel(2, 1.7_dp, 0.9_dp, status)
+        call kernel%input_derivatives( &
+            x1, x2, kernel_value, gradient_x1, gradient_x2, mixed_hessian, status)
+        h = 1.0e-4_dp
+        h_half = 0.5_dp*h
+        do i = 1, 2
+            fd_x1(i) = central_gradient(kernel, x1, x2, i, h, .true.)
+            fd_x2(i) = central_gradient(kernel, x1, x2, i, h, .false.)
+            fd_x1_half(i) = central_gradient(kernel, x1, x2, i, h_half, .true.)
+            fd_x2_half(i) = central_gradient(kernel, x1, x2, i, h_half, .false.)
+            do j = 1, 2
+                fd_mixed(i, j) = central_mixed(kernel, x1, x2, i, j, h)
+                fd_mixed_half(i, j) = &
+                    central_mixed(kernel, x1, x2, i, j, h_half)
+            end do
+        end do
+        if (.not. status_ok(status) .or. &
+            maxval(abs(gradient_x1 - fd_x1)) > 2.0e-8_dp .or. &
+            maxval(abs(gradient_x2 - fd_x2)) > 2.0e-8_dp .or. &
+            maxval(abs(mixed_hessian - fd_mixed)) > 2.0e-7_dp .or. &
+            maxval(abs(fd_x1_half - fd_x1)) > 2.0e-8_dp .or. &
+            maxval(abs(fd_x2_half - fd_x2)) > 2.0e-8_dp .or. &
+            maxval(abs(fd_mixed_half - fd_mixed)) > 2.0e-7_dp) then
+            write (error_unit, '(a)') &
+                "FAIL [kernel_input_derivatives] finite-difference oracle"
+            failures = failures + 1
+        end if
+
+        left = make_rbf_kernel(2, 1.7_dp, 0.9_dp, status)
+        right = make_linear_kernel(2, 0.8_dp, status)
+        product = kernel_multiply(left, right, status)
+        call product%input_derivatives( &
+            x1, x2, kernel_value, gradient_x1, gradient_x2, mixed_hessian, status)
+        do i = 1, 2
+            fd_x1(i) = central_gradient(product, x1, x2, i, h, .true.)
+            fd_x2(i) = central_gradient(product, x1, x2, i, h, .false.)
+            fd_x1_half(i) = central_gradient(product, x1, x2, i, h_half, .true.)
+            fd_x2_half(i) = central_gradient(product, x1, x2, i, h_half, .false.)
+            do j = 1, 2
+                fd_mixed(i, j) = central_mixed(product, x1, x2, i, j, h)
+                fd_mixed_half(i, j) = &
+                    central_mixed(product, x1, x2, i, j, h_half)
+            end do
+        end do
+        if (.not. status_ok(status) .or. &
+            maxval(abs(gradient_x1 - fd_x1)) > 2.0e-7_dp .or. &
+            maxval(abs(gradient_x2 - fd_x2)) > 2.0e-7_dp .or. &
+            maxval(abs(mixed_hessian - fd_mixed)) > 2.0e-6_dp .or. &
+            maxval(abs(fd_x1_half - fd_x1)) > 2.0e-7_dp .or. &
+            maxval(abs(fd_x2_half - fd_x2)) > 2.0e-7_dp .or. &
+            maxval(abs(fd_mixed_half - fd_mixed)) > 2.0e-6_dp) then
+            write (error_unit, '(a)') &
+                "FAIL [kernel_product_input_derivatives] finite-difference oracle"
+            failures = failures + 1
+        end if
+    end subroutine test_kernel_input_derivatives
+
+    subroutine test_mixed_observations(failures)
+        integer, intent(inout) :: failures
+        type(gp_derivative_regression_t) :: model
+        type(kernel_t) :: kernel
+        type(fortnum_status_t) :: status
+        real(dp) :: x_train(3, 1), x_query(3, 1)
+        real(dp) :: y_train(3, 2), mean(3, 2), variance(3)
+        real(dp) :: expected_mean(3, 2), expected_variance(3)
+        real(dp) :: covariance(3, 3), cross(3, 3), work(3, 3)
+        real(dp) :: alpha(3, 2)
+        integer :: components(3), query_components(3), info
+        integer :: i, j
+
+        x_train(:, 1) = [0.0_dp, 0.5_dp, 1.0_dp]
+        components = [0, 1, 0]
+        y_train(:, 1) = [1.0_dp, -0.2_dp, 0.8_dp]
+        y_train(:, 2) = [0.4_dp, 1.3_dp, -0.7_dp]
+        x_query(:, 1) = [0.25_dp, 0.75_dp, 1.25_dp]
+        query_components = [0, 1, 0]
+        kernel = make_rbf_kernel(1, 1.3_dp, 0.7_dp, status)
+        call model%fit( &
+            x_train, components, y_train, kernel, 0.05_dp, status, &
+            jitter=1.0e-10_dp)
+        call model%predict( &
+            x_query, query_components, mean, variance, status)
+
+        do j = 1, 3
+            do i = 1, 3
+                covariance(i, j) = mixed_rbf_covariance( &
+                    x_train(i, 1), components(i), x_train(j, 1), components(j), &
+                    1.3_dp, 0.7_dp)
+                cross(i, j) = mixed_rbf_covariance( &
+                    x_train(i, 1), components(i), x_query(j, 1), &
+                    query_components(j), 1.3_dp, 0.7_dp)
+            end do
+        end do
+        do i = 1, 3
+            covariance(i, i) = covariance(i, i) + 0.05_dp + 1.0e-10_dp
+        end do
+        call dense_solve(covariance, y_train, alpha, info)
+        call dense_solve(covariance, cross, work, info)
+        do j = 1, 3
+            expected_mean(j, 1) = dot_product(cross(:, j), alpha(:, 1))
+            expected_mean(j, 2) = dot_product(cross(:, j), alpha(:, 2))
+            expected_variance(j) = mixed_rbf_covariance( &
+                x_query(j, 1), query_components(j), x_query(j, 1), &
+                query_components(j), 1.3_dp, 0.7_dp) - &
+                dot_product(cross(:, j), work(:, j))
+        end do
+        if (.not. status_ok(status) .or. info /= LINALG_OK .or. &
+            model%observation_count() /= 3 .or. &
+            maxval(abs(mean - expected_mean)) > 3.0e-10_dp .or. &
+            maxval(abs(variance - expected_variance)) > 3.0e-10_dp) then
+            write (error_unit, '(a)') &
+                "FAIL [mixed_gp] independent derivative covariance oracle"
+            failures = failures + 1
+        end if
+    end subroutine test_mixed_observations
+
+    real(dp) function central_gradient(kernel, x1, x2, component, h, first) &
+            result(value)
+        type(kernel_t), intent(in) :: kernel
+        real(dp), intent(in) :: x1(:), x2(:), h
+        integer, intent(in) :: component
+        logical, intent(in) :: first
+        real(dp) :: plus, minus
+        real(dp) :: shifted_x1(size(x1)), shifted_x2(size(x2))
+
+        shifted_x1 = x1
+        shifted_x2 = x2
+        if (first) then
+            shifted_x1(component) = shifted_x1(component) + h
+            plus = kernel%value(shifted_x1, shifted_x2)
+            shifted_x1(component) = shifted_x1(component) - 2.0_dp*h
+            minus = kernel%value(shifted_x1, shifted_x2)
+        else
+            shifted_x2(component) = shifted_x2(component) + h
+            plus = kernel%value(shifted_x1, shifted_x2)
+            shifted_x2(component) = shifted_x2(component) - 2.0_dp*h
+            minus = kernel%value(shifted_x1, shifted_x2)
+        end if
+        value = (plus - minus)/(2.0_dp*h)
+    end function central_gradient
+
+    real(dp) function central_mixed(kernel, x1, x2, component1, component2, h) &
+            result(value)
+        type(kernel_t), intent(in) :: kernel
+        real(dp), intent(in) :: x1(:), x2(:), h
+        integer, intent(in) :: component1, component2
+        real(dp) :: x1_plus(size(x1)), x1_minus(size(x1))
+        real(dp) :: x2_plus(size(x2)), x2_minus(size(x2))
+
+        x1_plus = x1
+        x1_minus = x1
+        x2_plus = x2
+        x2_minus = x2
+        x1_plus(component1) = x1_plus(component1) + h
+        x1_minus(component1) = x1_minus(component1) - h
+        x2_plus(component2) = x2_plus(component2) + h
+        x2_minus(component2) = x2_minus(component2) - h
+        value = (kernel%value(x1_plus, x2_plus) - &
+            kernel%value(x1_plus, x2_minus) - &
+            kernel%value(x1_minus, x2_plus) + &
+            kernel%value(x1_minus, x2_minus))/(4.0_dp*h*h)
+    end function central_mixed
+
+    real(dp) function mixed_rbf_covariance(x1, component1, x2, component2, &
+            variance, lengthscale) result(value)
+        real(dp), intent(in) :: x1, x2, variance, lengthscale
+        integer, intent(in) :: component1, component2
+        real(dp) :: delta, kernel_value, inverse_length_squared
+
+        delta = x1 - x2
+        inverse_length_squared = 1.0_dp/(lengthscale*lengthscale)
+        kernel_value = variance*exp(-0.5_dp*delta*delta*inverse_length_squared)
+        if (component1 == 0 .and. component2 == 0) then
+            value = kernel_value
+        else if (component1 > 0 .and. component2 == 0) then
+            value = -kernel_value*delta*inverse_length_squared
+        else if (component1 == 0 .and. component2 > 0) then
+            value = kernel_value*delta*inverse_length_squared
+        else
+            value = kernel_value*(inverse_length_squared - &
+                delta*delta*inverse_length_squared*inverse_length_squared)
+        end if
+    end function mixed_rbf_covariance
 
     real(dp) function reference_lml(parameters, y) result(value)
         real(dp), intent(in) :: parameters(:), y(:, :)

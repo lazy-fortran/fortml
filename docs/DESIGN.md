@@ -66,6 +66,16 @@ multiple outputs, and exposes predictive mean/variance, log marginal
 likelihood, and hyperparameter products. Its tests use direct covariance
 formulas and an independent finite-difference/LU oracle.
 
+The derivative-GP pilot extends the same kernel tree with input gradients and
+mixed input Hessians. RBF function-value and first-derivative observations are
+stored in one interleaved covariance system, so the same path supports
+derivative predictions and multiple output columns. The implementation is
+verified against an independent finite-difference kernel oracle and a
+hand-derived dense mixed-covariance solve. The RBF formulas are also recorded
+in `.provenance/derivations/rbf_input_derivatives.txt` from `fortsym`. Parameter
+JVP/VJP/HVP products for this extended covariance remain part of the open
+`fortad` integration gate.
+
 ## Lazy operators and iterative solves
 
 `fortml_linear_operator` defines the matrix-free boundary used by scalable<!-- slop-ok -->

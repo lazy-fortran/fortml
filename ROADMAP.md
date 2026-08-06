@@ -64,9 +64,11 @@ missing report leaves the item open.
   with OpenACC GPU execution and resident-data support.
 - [ ] Connect the kernel and GP product contracts to `fortad`-generated
   JVP/VJP/HVP code and compare generated kernels with the explicit baseline.
-- [ ] Add function-value and derivative observations/predictions using kernel
-  partial derivatives verified against symbolic expressions and independent
-  finite differences.
+- [x] Add RBF function-value and derivative observations/predictions using
+  kernel partial derivatives verified against `fortsym`, independent finite
+  differences, and a hand-derived dense mixed-covariance solve.
+- [ ] Extend derivative observation rules to Matérn and white-noise kernels
+  with an explicit coincident-point smoothness contract.
 - [x] Add the first public lazy-operator contract with kernel MVM, MVM
   batching, diagonal, sample count, and a backend-independent CG entry point.
   The RBF implementation keeps the covariance matrix implicit and delegates
@@ -220,6 +222,14 @@ with 3.666 ms and 7.327 ms for the OpenACC loop. The CPU and GPU plots are
 published at https://box.sloppy.at/98dcc.png and
 https://box.sloppy.at/aabb5.png. Every row passes the direct pairwise oracle
 for every RHS.
+
+The derivative-GP pilot now provides `gp_derivative_regression_t` for RBF
+function-value and first-input-derivative observations and predictions. Its
+multi-output mixed covariance system is checked against a hand-derived dense
+solve, while the kernel input derivatives are checked by independent central
+finite differences and the symbolic `fortsym` derivation recorded under
+`.provenance/derivations/`. Parameter products for this extended covariance
+remain open under the `fortad` integration gate.
 
 The optional native CUDA bridge is now correctness-gated by the direct MVM and
 matmat benchmarks and the benchmark profiler. Its four-warp block loads each

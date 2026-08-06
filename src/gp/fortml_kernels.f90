@@ -26,6 +26,7 @@ module fortml_kernels
         procedure, public :: parameters => kernel_parameters
         procedure, public :: set_parameters => kernel_set_parameters
         procedure, public :: value => kernel_value
+        procedure, public :: input_derivatives => kernel_input_derivatives
         procedure, public :: matrix => kernel_matrix
         procedure, public :: matrix_jvp => kernel_matrix_jvp
         procedure, public :: parameter_vjp => kernel_parameter_vjp
@@ -40,6 +41,7 @@ module fortml_kernels
     public :: make_white_noise_kernel
     public :: kernel_add
     public :: kernel_multiply
+    public :: kernel_input_derivatives
 
 contains
 
@@ -228,6 +230,40 @@ contains
         end select
     end function kernel_value
 
+    recursive subroutine kernel_input_derivatives( &
+            self, x1, x2, value, gradient_x1, gradient_x2, mixed_hessian, status)
+        class(kernel_t), intent(in) :: self
+        real(dp), intent(in) :: x1(:), x2(:)
+        real(dp), intent(out) :: value
+        real(dp), intent(out) :: gradient_x1(:), gradient_x2(:)
+        real(dp), intent(out) :: mixed_hessian(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        value = 0.0_dp
+        gradient_x1 = 0.0_dp
+        gradient_x2 = 0.0_dp
+        mixed_hessian = 0.0_dp
+        if (.not. kernel_valid(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "kernel input_derivatives: kernel is not initialized")
+            return
+        end if
+        if (size(x1) /= self%input_dim .or. size(x2) /= self%input_dim) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "kernel input_derivatives: input dimension is invalid")
+            return
+        end if
+        if (size(gradient_x1) /= self%input_dim .or. &
+            size(gradient_x2) /= self%input_dim .or. &
+            any(shape(mixed_hessian) /= [self%input_dim, self%input_dim])) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "kernel input_derivatives: output shape is invalid")
+            return
+        end if
+        call kernel_input_derivatives_impl( &
+            self, x1, x2, value, gradient_x1, gradient_x2, mixed_hessian, status)
+    end subroutine kernel_input_derivatives
+
     subroutine kernel_matrix_jvp(self, x1, x2, direction, matrix, matrix_dot, status)
         class(kernel_t), intent(in) :: self
         real(dp), intent(in) :: x1(:, :), x2(:, :), direction(:)
@@ -383,6 +419,93 @@ contains
             end do
         end select
     end subroutine kernel_matrix_impl
+
+    recursive subroutine kernel_input_derivatives_impl( &
+            self, x1, x2, value, gradient_x1, gradient_x2, mixed_hessian, status)
+        class(kernel_t), intent(in) :: self
+        real(dp), intent(in) :: x1(:), x2(:)
+        real(dp), intent(out) :: value
+        real(dp), intent(out) :: gradient_x1(:), gradient_x2(:)
+        real(dp), intent(out) :: mixed_hessian(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: left_gradient_x1(:), right_gradient_x1(:)
+        real(dp), allocatable :: left_gradient_x2(:), right_gradient_x2(:)
+        real(dp), allocatable :: left_hessian(:, :), right_hessian(:, :)
+        real(dp) :: left_value, right_value
+        real(dp) :: variance, lengthscale, inverse_length_squared
+        real(dp) :: squared_distance, difference
+        integer :: i, j
+
+        select case (self%kind)
+        case (KERNEL_SUM, KERNEL_PRODUCT)
+            allocate(left_gradient_x1(size(x1)), right_gradient_x1(size(x1)))
+            allocate(left_gradient_x2(size(x2)), right_gradient_x2(size(x2)))
+            allocate(left_hessian(size(x1), size(x2)))
+            allocate(right_hessian(size(x1), size(x2)))
+            call kernel_input_derivatives_impl( &
+                self%left, x1, x2, left_value, left_gradient_x1, &
+                left_gradient_x2, left_hessian, status)
+            if (status%code /= FORTNUM_OK) return
+            call kernel_input_derivatives_impl( &
+                self%right, x1, x2, right_value, right_gradient_x1, &
+                right_gradient_x2, right_hessian, status)
+            if (status%code /= FORTNUM_OK) return
+            if (self%kind == KERNEL_SUM) then
+                value = left_value + right_value
+                gradient_x1 = left_gradient_x1 + right_gradient_x1
+                gradient_x2 = left_gradient_x2 + right_gradient_x2
+                mixed_hessian = left_hessian + right_hessian
+            else
+                value = left_value*right_value
+                gradient_x1 = left_gradient_x1*right_value + &
+                    right_gradient_x1*left_value
+                gradient_x2 = left_gradient_x2*right_value + &
+                    right_gradient_x2*left_value
+                mixed_hessian = left_hessian*right_value + &
+                    right_hessian*left_value + &
+                    spread(left_gradient_x1, dim=2, ncopies=size(x2))* &
+                    spread(right_gradient_x2, dim=1, ncopies=size(x1)) + &
+                    spread(right_gradient_x1, dim=2, ncopies=size(x2))* &
+                    spread(left_gradient_x2, dim=1, ncopies=size(x1))
+            end if
+            call status_set(status, FORTNUM_OK, "")
+        case (KERNEL_RBF)
+            variance = exp(self%log_parameters(1))
+            lengthscale = exp(self%log_parameters(2))
+            inverse_length_squared = 1.0_dp/(lengthscale*lengthscale)
+            squared_distance = sum((x1 - x2)**2)
+            value = variance*exp(-0.5_dp*squared_distance*inverse_length_squared)
+            do i = 1, self%input_dim
+                difference = x1(i) - x2(i)
+                gradient_x1(i) = -value*difference*inverse_length_squared
+                gradient_x2(i) = -gradient_x1(i)
+                do j = 1, self%input_dim
+                    mixed_hessian(i, j) = value*( &
+                        merge(inverse_length_squared, 0.0_dp, i == j) - &
+                        (x1(i) - x2(i))*(x1(j) - x2(j))* &
+                        inverse_length_squared*inverse_length_squared)
+                end do
+            end do
+            call status_set(status, FORTNUM_OK, "")
+        case (KERNEL_LINEAR)
+            variance = exp(self%log_parameters(1))
+            value = variance*dot_product(x1, x2)
+            gradient_x1 = variance*x2
+            gradient_x2 = variance*x1
+            mixed_hessian = 0.0_dp
+            do i = 1, self%input_dim
+                mixed_hessian(i, i) = variance
+            end do
+            call status_set(status, FORTNUM_OK, "")
+        case (KERNEL_CONSTANT)
+            variance = exp(self%log_parameters(1))
+            value = variance
+            call status_set(status, FORTNUM_OK, "")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "kernel input_derivatives: this kernel has no smooth input rule")
+        end select
+    end subroutine kernel_input_derivatives_impl
 
     recursive subroutine kernel_matrix_jvp_impl(self, x1, x2, direction, matrix, &
             matrix_dot)
