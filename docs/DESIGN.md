@@ -39,6 +39,13 @@ finite difference or a high-precision reference. VJPs satisfy
 computed gradient or by Hessian symmetry. `fortad` generated code and `fortsym`
 derivations are production candidates, never the sole correctness oracle.
 
+`basis_map_t%initialize_callback` accepts one explicit value procedure, one
+JVP procedure, and one VJP procedure over a flat parameter vector. The map
+stores that vector and routes `evaluate`, `jvp`, `vjp`, `parameters`, and
+`set_parameters` through the same contract. `static_lowering_eligible()` is
+false for callback maps. This keeps arbitrary host procedure pointers outside
+accelerator regions until a generated static lowering exists.
+
 ## MLP baseline
 
 The MLP baseline stores each dense weight as `(input_width, output_width)` and

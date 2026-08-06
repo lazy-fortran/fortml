@@ -11,6 +11,31 @@ module fortml_basis
     integer, parameter, public :: BASIS_FOURIER = 2
     integer, parameter, public :: BASIS_RADIAL = 3
     integer, parameter, public :: BASIS_SPLINE = 4
+    integer, parameter, public :: BASIS_CALLBACK = 5
+
+    abstract interface
+        subroutine basis_value_callback(x, theta, phi, status)
+            import :: dp, fortnum_status_t
+            real(dp), intent(in) :: x(:, :), theta(:)
+            real(dp), intent(out) :: phi(:, :)
+            type(fortnum_status_t), intent(out) :: status
+        end subroutine basis_value_callback
+
+        subroutine basis_jvp_callback(x, theta, x_dot, theta_dot, phi, phi_dot, &
+                status)
+            import :: dp, fortnum_status_t
+            real(dp), intent(in) :: x(:, :), theta(:), x_dot(:, :), theta_dot(:)
+            real(dp), intent(out) :: phi(:, :), phi_dot(:, :)
+            type(fortnum_status_t), intent(out) :: status
+        end subroutine basis_jvp_callback
+
+        subroutine basis_vjp_callback(x, theta, u, theta_bar, x_bar, status)
+            import :: dp, fortnum_status_t
+            real(dp), intent(in) :: x(:, :), theta(:), u(:, :)
+            real(dp), intent(out) :: theta_bar(:), x_bar(:, :)
+            type(fortnum_status_t), intent(out) :: status
+        end subroutine basis_vjp_callback
+    end interface
 
     type, public :: basis_map_t
         integer :: kind = 0
@@ -18,16 +43,22 @@ module fortml_basis
         integer :: degree = 0
         integer :: n_harmonics = 0
         integer :: n_centers = 0
+        integer :: callback_n_features = 0
         logical :: include_intercept = .false.
         real(dp), allocatable :: centers(:, :)
         real(dp), allocatable :: log_scales(:, :)
         real(dp), allocatable :: log_frequencies(:, :)
         type(bspline_workspace_t), allocatable :: spline(:)
+        real(dp), allocatable :: callback_parameters(:)
+        procedure(basis_value_callback), pointer, nopass :: callback_value => null()
+        procedure(basis_jvp_callback), pointer, nopass :: callback_jvp => null()
+        procedure(basis_vjp_callback), pointer, nopass :: callback_vjp => null()
     contains
         procedure, public :: initialize_polynomial => basis_initialize_polynomial
         procedure, public :: initialize_fourier => basis_initialize_fourier
         procedure, public :: initialize_radial => basis_initialize_radial
         procedure, public :: initialize_spline => basis_initialize_spline
+        procedure, public :: initialize_callback => basis_initialize_callback
         procedure, public :: feature_count => basis_feature_count
         procedure, public :: parameter_count => basis_parameter_count
         procedure, public :: parameters => basis_parameters
@@ -35,12 +66,15 @@ module fortml_basis
         procedure, public :: evaluate => basis_evaluate
         procedure, public :: jvp => basis_jvp
         procedure, public :: vjp => basis_vjp
+        procedure, public :: static_lowering_eligible => &
+            basis_static_lowering_eligible
     end type basis_map_t
 
     public :: make_polynomial_basis
     public :: make_fourier_basis
     public :: make_radial_basis
     public :: make_spline_basis
+    public :: basis_value_callback, basis_jvp_callback, basis_vjp_callback
 
 contains
 
@@ -90,6 +124,26 @@ contains
             include_intercept)
     end function make_spline_basis
 
+    subroutine reset_basis(self)
+        class(basis_map_t), intent(inout) :: self
+
+        self%kind = 0
+        self%n_inputs = 0
+        self%degree = 0
+        self%n_harmonics = 0
+        self%n_centers = 0
+        self%callback_n_features = 0
+        self%include_intercept = .false.
+        if (allocated(self%log_frequencies)) deallocate(self%log_frequencies)
+        if (allocated(self%centers)) deallocate(self%centers)
+        if (allocated(self%log_scales)) deallocate(self%log_scales)
+        if (allocated(self%spline)) deallocate(self%spline)
+        if (allocated(self%callback_parameters)) deallocate(self%callback_parameters)
+        self%callback_value => null()
+        self%callback_jvp => null()
+        self%callback_vjp => null()
+    end subroutine reset_basis
+
     subroutine basis_initialize_polynomial(self, n_inputs, degree, status, &
             include_intercept)
         class(basis_map_t), intent(out) :: self
@@ -97,16 +151,7 @@ contains
         type(fortnum_status_t), intent(out) :: status
         logical, intent(in), optional :: include_intercept
 
-        self%kind = 0
-        self%n_inputs = 0
-        self%degree = 0
-        self%n_harmonics = 0
-        self%n_centers = 0
-        self%include_intercept = .false.
-        if (allocated(self%log_frequencies)) deallocate (self%log_frequencies)
-        if (allocated(self%centers)) deallocate (self%centers)
-        if (allocated(self%log_scales)) deallocate (self%log_scales)
-        if (allocated(self%spline)) deallocate (self%spline)
+        call reset_basis(self)
         if (present(include_intercept)) self%include_intercept = include_intercept
         if (n_inputs < 1 .or. degree < 1) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -127,16 +172,7 @@ contains
         type(fortnum_status_t), intent(out) :: status
         logical, intent(in), optional :: include_intercept
 
-        self%kind = 0
-        self%n_inputs = 0
-        self%degree = 0
-        self%n_harmonics = 0
-        self%n_centers = 0
-        self%include_intercept = .false.
-        if (allocated(self%log_frequencies)) deallocate (self%log_frequencies)
-        if (allocated(self%centers)) deallocate (self%centers)
-        if (allocated(self%log_scales)) deallocate (self%log_scales)
-        if (allocated(self%spline)) deallocate (self%spline)
+        call reset_basis(self)
         if (present(include_intercept)) self%include_intercept = include_intercept
         if (n_inputs < 1 .or. size(frequencies, 2) /= n_inputs .or. &
             size(frequencies, 1) < 1) then
@@ -165,16 +201,7 @@ contains
         type(fortnum_status_t), intent(out) :: status
         logical, intent(in), optional :: include_intercept
 
-        self%kind = 0
-        self%n_inputs = 0
-        self%degree = 0
-        self%n_harmonics = 0
-        self%n_centers = 0
-        self%include_intercept = .false.
-        if (allocated(self%log_frequencies)) deallocate (self%log_frequencies)
-        if (allocated(self%centers)) deallocate (self%centers)
-        if (allocated(self%log_scales)) deallocate (self%log_scales)
-        if (allocated(self%spline)) deallocate (self%spline)
+        call reset_basis(self)
         if (present(include_intercept)) self%include_intercept = include_intercept
         if (n_inputs < 1 .or. size(centers, 1) /= n_inputs .or. &
             size(centers, 2) < 1 .or. any(shape(scales) /= shape(centers))) then
@@ -206,16 +233,7 @@ contains
         logical, intent(in), optional :: include_intercept
         integer :: j
 
-        self%kind = 0
-        self%n_inputs = 0
-        self%degree = 0
-        self%n_harmonics = 0
-        self%n_centers = 0
-        self%include_intercept = .false.
-        if (allocated(self%log_frequencies)) deallocate (self%log_frequencies)
-        if (allocated(self%centers)) deallocate (self%centers)
-        if (allocated(self%log_scales)) deallocate (self%log_scales)
-        if (allocated(self%spline)) deallocate (self%spline)
+        call reset_basis(self)
         if (present(include_intercept)) self%include_intercept = include_intercept
         if (n_inputs < 1 .or. size(breakpoints, 2) /= n_inputs .or. &
             size(breakpoints, 1) < 2) then
@@ -235,6 +253,33 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine basis_initialize_spline
 
+    subroutine basis_initialize_callback(self, n_inputs, n_features, parameters, &
+            value, jvp, vjp, status)
+        class(basis_map_t), intent(out) :: self
+        integer, intent(in) :: n_inputs, n_features
+        real(dp), intent(in) :: parameters(:)
+        procedure(basis_value_callback) :: value
+        procedure(basis_jvp_callback) :: jvp
+        procedure(basis_vjp_callback) :: vjp
+        type(fortnum_status_t), intent(out) :: status
+
+        call reset_basis(self)
+        if (n_inputs < 1 .or. n_features < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "basis callback: dimensions must be positive")
+            return
+        end if
+        self%kind = BASIS_CALLBACK
+        self%n_inputs = n_inputs
+        self%callback_n_features = n_features
+        allocate(self%callback_parameters(size(parameters)))
+        self%callback_parameters = parameters
+        self%callback_value => value
+        self%callback_jvp => jvp
+        self%callback_vjp => vjp
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine basis_initialize_callback
+
     integer function basis_feature_count(self) result(count)
         class(basis_map_t), intent(in) :: self
 
@@ -247,6 +292,8 @@ contains
             count = self%n_centers
         else if (self%kind == BASIS_SPLINE) then
             if (allocated(self%spline)) count = self%n_inputs*self%spline(1)%ncoef
+        else if (self%kind == BASIS_CALLBACK) then
+            count = self%callback_n_features
         end if
         if (self%include_intercept) count = count + 1
     end function basis_feature_count
@@ -259,6 +306,8 @@ contains
             count = self%n_inputs*self%n_harmonics
         else if (self%kind == BASIS_RADIAL) then
             count = 2*self%n_inputs*self%n_centers
+        else if (self%kind == BASIS_CALLBACK) then
+            if (allocated(self%callback_parameters)) count = size(self%callback_parameters)
         end if
     end function basis_parameter_count
 
@@ -275,6 +324,8 @@ contains
                     reshape(self%centers, [self%n_inputs*self%n_centers])
                 theta(self%n_inputs*self%n_centers + 1:) = &
                     reshape(self%log_scales, [self%n_inputs*self%n_centers])
+            else if (self%kind == BASIS_CALLBACK) then
+                theta = self%callback_parameters
             end if
         end if
     end function basis_parameters
@@ -302,6 +353,8 @@ contains
                     shape(self%centers))
                 self%log_scales = reshape(theta(self%n_inputs*self%n_centers + 1:), &
                     shape(self%log_scales))
+            else if (self%kind == BASIS_CALLBACK) then
+                self%callback_parameters = theta
             end if
         end if
         call status_set(status, FORTNUM_OK, "")
@@ -364,6 +417,9 @@ contains
                 end do
                 column = column + ncoef
             end do
+        else if (self%kind == BASIS_CALLBACK) then
+            call self%callback_value(x, self%callback_parameters, phi, status)
+            return
         end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine basis_evaluate
@@ -446,6 +502,10 @@ contains
                 end do
                 column = column + ncoef
             end do
+        else if (self%kind == BASIS_CALLBACK) then
+            call self%callback_jvp(x, self%callback_parameters, x_dot, theta_dot, &
+                phi, phi_dot, status)
+            return
         end if
     end subroutine basis_jvp
 
@@ -535,6 +595,10 @@ contains
                 end do
                 column = column + ncoef
             end do
+        else if (self%kind == BASIS_CALLBACK) then
+            call self%callback_vjp(x, self%callback_parameters, u, theta_bar, &
+                x_bar, status)
+            return
         end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine basis_vjp
@@ -543,7 +607,8 @@ contains
         class(basis_map_t), intent(in) :: self
 
         valid = self%kind == BASIS_POLYNOMIAL .or. self%kind == BASIS_FOURIER .or. &
-            self%kind == BASIS_RADIAL .or. self%kind == BASIS_SPLINE
+            self%kind == BASIS_RADIAL .or. self%kind == BASIS_SPLINE .or. &
+            self%kind == BASIS_CALLBACK
         if (.not. valid) return
         valid = self%n_inputs > 0
         if (.not. valid) return
@@ -557,6 +622,10 @@ contains
             valid = self%n_centers > 0
             if (.not. valid) return
             valid = allocated(self%centers) .and. allocated(self%log_scales)
+        else if (self%kind == BASIS_CALLBACK) then
+            valid = allocated(self%callback_parameters) .and. &
+                associated(self%callback_value) .and. associated(self%callback_jvp) &
+                .and. associated(self%callback_vjp)
         else
             valid = allocated(self%spline)
             if (.not. valid) return
@@ -575,5 +644,11 @@ contains
         valid = size(output, 1) == size(x, 1) .and. &
             size(output, 2) == self%feature_count()
     end function valid_shapes
+
+    logical function basis_static_lowering_eligible(self) result(eligible)
+        class(basis_map_t), intent(in) :: self
+
+        eligible = valid_model(self) .and. self%kind /= BASIS_CALLBACK
+    end function basis_static_lowering_eligible
 
 end module fortml_basis

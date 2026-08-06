@@ -45,7 +45,7 @@ missing report leaves the item open.
 - [x] Replace the normal-equation fitting path with SVD for stable dense
   least-squares fits.
 - [x] Benchmark conditioning against a high-precision reference.
-- [ ] Add basis-function maps with value, JVP, and VJP products. The initial
+- [x] Add basis-function maps with value, JVP, and VJP products. The initial
   set is polynomial, Fourier, radial, spline, and user-supplied differentiable
   maps.
   - [x] Add polynomial and log-frequency Fourier maps with flat parameters,
@@ -53,7 +53,7 @@ missing report leaves the item open.
   - [x] Add radial maps with differentiable centers and positive log-scales.
   - [x] Add B-spline maps backed by `fortnum_bspline` with fixed-span
     smoothness/status rules.
-  - [ ] Add a user-supplied value/JVP/VJP callback contract and static-lowering
+  - [x] Add a user-supplied value/JVP/VJP callback contract and static-lowering
     refusal boundary.
 - [x] Add the explicit MLP baseline: flat column-major parameters, batched
   forward products, `tanh`/linear/ReLU activations, JVPs, VJPs, and
@@ -180,7 +180,11 @@ The first basis-map slice is now implemented in `fortml_basis`. It provides poly
 powers, Fourier sine/cosine features, differentiable ARD radial features, and
 fixed-knot B-spline features use stable layouts and expose value, JVP, and VJP
 products. Independent central finite differences and VJP adjoint identities
-pass in `test_basis`. The user-callback/static-lowering contract remains open.
+pass in `test_basis`. The user callback contract stores a flat parameter vector
+and dispatches value, JVP, and VJP products through explicit procedure
+interfaces. `static_lowering_eligible()` returns false for callback maps, so
+dynamic user code cannot enter an accelerator region by accident. The callback
+case is checked by finite differences and the VJP adjoint identity.
 
 The first matched RBF matrix-vector benchmark is now recorded in
 `lazy-fortran/fortml-bench`. It uses 2048 samples, 8 features, float64, and

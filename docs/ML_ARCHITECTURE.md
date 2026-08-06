@@ -67,13 +67,19 @@ an explicit parameter layout. The initial basis families are:
 - Fourier sine/cosine features with explicit angular frequencies;
 - radial basis features with centers and positive log-scales;
 - spline features backed by `fortnum` B-splines; and
-- a bounded user-supplied callback path that is host-only until a static
-  `fortad`/accelerator lowering is supplied.
+- a bounded user-supplied callback path with explicit value, JVP, and VJP
+  procedure interfaces.
 
 The map returns a design matrix or its products without forcing a downstream
 linear model to know which family produced it. A map's differentiable
 parameters are explicit; knots and frequencies are configuration unless the
 caller opts into their derivative contract.
+
+Callback maps own a flat parameter vector and receive it in every product
+procedure. The callback map exposes `static_lowering_eligible()`, which is
+false for user procedures. This is the refusal boundary for OpenACC and native
+CUDA execution. A callback remains a host reference until a future
+`fortad`/`fortsym` lowering supplies an equivalent static kernel and oracle.
 
 ## MLP, VAE, and recurrent models
 
