@@ -45,3 +45,28 @@ in `fortml-bench/results/sparse_compact_support.csv` and its companion report.
 
 It also accepts `NYSTROM_RANK` for the experimental fused Woodbury path.
 `BLOCK_SIZE` and `NYSTROM_RANK` are mutually exclusive.
+
+## Linear-regression conditioning
+
+`benchmark/linear_conditioning.py` runs a deterministic 16-sample,
+three-feature family whose second feature approaches the first. The design
+also includes an intercept and a quadratic feature. Each case is fit with the
+production SVD path and checked independently with `mpmath.qr_solve` at 80
+decimal digits. The driver rejects a run when the high-precision prediction or
+the well-conditioned coefficient checks fail.
+
+Run both compiler lanes with fresh build directories:
+
+```text
+python benchmark/linear_conditioning.py --compiler gfortran \
+  --flags '-O3 -march=native' --output /tmp/linear-conditioning-gfortran.csv
+python benchmark/linear_conditioning.py --compiler nvfortran \
+  --flags '-O3 -mp=multicore' --output /tmp/linear-conditioning-nvfortran.csv
+```
+
+The committed record is
+`benchmark/reference/linear_conditioning.csv`. It includes the 2-norm
+condition estimate, coefficient and prediction errors, fit time, complete
+build-and-run wall time, peak RSS, compiler version, flags, and generated
+executable size. The benchmark is a host LAPACK conditioning gate. It makes no
+GPU performance claim.

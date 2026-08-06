@@ -44,7 +44,7 @@ missing report leaves the item open.
   finite differences and the adjoint identity.
 - [x] Replace the normal-equation fitting path with SVD for stable dense
   least-squares fits.
-- [ ] Benchmark conditioning against a high-precision reference.
+- [x] Benchmark conditioning against a high-precision reference.
 - [ ] Add basis-function maps with value, JVP, and VJP products. The initial
   set is polynomial, Fourier, radial, spline, and user-supplied differentiable
   maps.
@@ -118,7 +118,7 @@ missing report leaves the item open.
   one independent PCG recurrence per column and an independent true-residual
   check.
 - [x] Define a backend-neutral opaque C ABI for flat matrix-free plans and
-  residency; keep the Fortran CPU reference, implement generic postfix
+  residency. Keep the Fortran CPU reference, implement generic postfix
   matvec/matmat reductions in native CUDA C++ first, and leave HIP and SYCL
   adapters open behind the same oracle and operation-level benchmark contract.
 - [ ] Add persistent generic multi-RHS workspaces and block/Nystrom
@@ -128,7 +128,7 @@ missing report leaves the item open.
 - [x] Add compact-support sparse covariance/precision dispatch through
   `fortsparse` CSC construction and iterative sparse MVM, with independent
   dense-oracle tests and nonzero-count diagnostics.
-- [x] Add a resident OpenACC CSR view for compact-support sparse products;
+- [x] Add a resident OpenACC CSR view for compact-support sparse products.
   matched sparse CPU/GPU scaling against dense PyTorch and KeOps is recorded
   in `fortml-bench`.
 - [x] Consume `fortnum_tensor_product` through the structured GP operator for
@@ -142,7 +142,7 @@ missing report leaves the item open.
 - [x] Add the FortML Toeplitz-backed GP wrapper with dense-oracle products and
   a CG solve check.
 - [ ] Add multilevel tensor-grid embeddings, derivative products, and banded
-  Markov-precision paths; the current Toeplitz FFT wrapper is host-resident.
+  Markov-precision paths. The current Toeplitz FFT wrapper is host-resident.
 - [ ] Add multi-output GPs, inducing-point variational GPs, and the structured
   inference policies that sit above these operator contracts.
 - [ ] Add variational autoencoders and deep recurrent networks after the
@@ -176,11 +176,11 @@ The explicit MLP and its `fortopt_adam` training seam pass the focused test
 suite with gfortran and `nvfortran` 26.5. No MLP performance claim is made yet.
 The MLP reference and accelerator plot remain open.
 
-The first basis-map slice is now implemented in `fortml_basis`: polynomial
+The first basis-map slice is now implemented in `fortml_basis`. It provides polynomial
 powers, Fourier sine/cosine features, differentiable ARD radial features, and
 fixed-knot B-spline features use stable layouts and expose value, JVP, and VJP
 products. Independent central finite differences and VJP adjoint identities
-pass in `test_basis`; the user-callback/static-lowering contract remains open.
+pass in `test_basis`. The user-callback/static-lowering contract remains open.
 
 The first matched RBF matrix-vector benchmark is now recorded in
 `lazy-fortran/fortml-bench`. It uses 2048 samples, 8 features, float64, and
@@ -322,11 +322,11 @@ FFT products and independent scaling evidence, and FortML now wraps it in
 `toeplitz_gp_operator_t` with a dense-oracle CG check. The generic kernel
 operator now has resident single- and multi-RHS CG recurrences. The multi-RHS
 path fuses each kernel matrix product while keeping independent scalar PCG
-state and recomputing true residuals before accepting convergence; persistent
+state and recomputing true residuals before accepting convergence. Persistent
 workspace ownership, derivative products, multilevel embeddings, and matched
 CPU/GPU scaling evidence for the Toeplitz GP path remain open.
 The direct `nvfortran` launch trace confirms that the pairwise composite
-evaluation remains one fused matrix-matrix kernel per product; per-column
+evaluation remains one fused matrix-matrix kernel per product. Per-column
 step/beta updates are now fused across the RHS block, leaving host-controlled
 convergence and candidate-column cleanup as the next operation-level target.
 
@@ -334,7 +334,7 @@ The compact-support sparse branch now consumes `fortsparse` triplets and
 retains a CSR view for row-owned host and OpenACC products. Its float64,
 radius-8, four-RHS workload passes the independent row-wise oracle at every
 tested size. On the RTX 5060 Ti, resident CUDA takes 0.0687 ms at N=512,
-0.1196 ms at N=4096, and 0.4557 ms at N=16384; the same workload is recorded
+0.1196 ms at N=4096, and 0.4557 ms at N=16384. The same workload is recorded
 against dense PyTorch and KeOps in `fortml-bench`. This sparse comparison is
 not a claim about the Gaussian pairwise benchmark: KeOps still evaluates all
 pairs here, while FortML exploits the explicit compact-support sparsity.
@@ -348,3 +348,16 @@ Built-in composite kernel trees are flattened into a static postfix program
 before execution, so sum/product nodes never invoke recursive callbacks in an
 accelerator region. User-supplied formulas still need an explicit lowering
 contract before they can enter this path.
+
+The linear-regression conditioning gate is now recorded in
+`benchmark/reference/linear_conditioning.csv`. A 16-sample, three-feature
+near-collinear design was solved by FortML's SVD fit and independently solved
+with `mpmath.qr_solve` at 80 decimal digits. The 2-norm condition numbers range
+from 42.8 to 4.05e15. All ten gfortran and nvfortran rows pass the independent
+prediction oracle with relative errors below 6e-16. Coefficient error grows as
+the design becomes unidentifiable, reaching 11.6 percent for gfortran and 3.03
+percent for nvfortran at condition 4.05e15, while the fitted predictions remain
+at machine precision. Fresh FPM builds record complete-workload times of 8.20 s
+for gfortran and 6.49 s for nvfortran, peak RSS of 218844 and 54676 kB, and
+generated executable sizes of 72416 and 47984 bytes. The reproducible driver is
+`benchmark/linear_conditioning.py`.
