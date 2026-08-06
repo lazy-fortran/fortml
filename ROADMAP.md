@@ -101,8 +101,12 @@ missing report leaves the item open.
   contract through the generic linear-operator base type.
 - [ ] Add block/Nystrom preconditioners, stochastic Lanczos log determinants,
   and LOVE-style predictive-variance products for large exact-GP solves.
-- [ ] Add compact-support sparse covariance/precision dispatch through
-  `fortsparse` or iterative sparse MVM, with fill-in and memory diagnostics.
+- [x] Add compact-support sparse covariance/precision dispatch through
+  `fortsparse` CSC construction and iterative sparse MVM, with independent
+  dense-oracle tests and nonzero-count diagnostics.
+- [x] Add a resident OpenACC CSR view for compact-support sparse products;
+  matched sparse CPU/GPU scaling against dense PyTorch and KeOps is recorded
+  in `fortml-bench`.
 - [x] Consume `fortnum_tensor_product` through the structured GP operator for
   separable tensor-grid covariance products, with vector, multi-RHS, diagonal,
   and CG correctness checks against dense oracles.
@@ -288,3 +292,12 @@ FFT products and independent scaling evidence, and FortML now wraps it in
 `toeplitz_gp_operator_t` with a dense-oracle CG check. FortML still needs a
 device-resident generic CG recurrence, derivative products, multilevel
 embeddings, and matched CPU/GPU scaling evidence for the Toeplitz GP path.
+
+The compact-support sparse branch now consumes `fortsparse` triplets and
+retains a CSR view for row-owned host and OpenACC products. Its float64,
+radius-8, four-RHS workload passes the independent row-wise oracle at every
+tested size. On the RTX 5060 Ti, resident CUDA takes 0.0687 ms at N=512,
+0.1196 ms at N=4096, and 0.4557 ms at N=16384; the same workload is recorded
+against dense PyTorch and KeOps in `fortml-bench`. This sparse comparison is
+not a claim about the Gaussian pairwise benchmark: KeOps still evaluates all
+pairs here, while FortML exploits the explicit compact-support sparsity.

@@ -97,6 +97,15 @@ by all right-hand sides together. This keeps the generic KeOps-style operation
 boundary intact for composite kernels: changing from one to several right-hand
 sides increases the block contraction, not the pairwise kernel evaluation.
 
+`sparse_gp_operator_t` is the compact-support branch of the same contract. It
+accepts coordinate triplets through `fortsparse`, retains a CSR view for
+row-owned sums, and therefore has no output-write atomics in its OpenACC
+product. Its resident device lifetime is explicit through `enter_data` and
+`exit_data`; the caller owns the input/output data region. This is an
+iterative product/CG backend, not a direct-solver wrapper. Matched dense
+PyTorch and KeOps measurements are kept as a separate compact-support
+workload in `fortml-bench`.
+
 `rbf_operator_t%enter_data` and `%exit_data` own the device lifetime of the
 reusable sample-point array. Calls through the same operator keep the
 OpenACC/native-CUDA backend choice internal to the operator. Right-hand-side

@@ -13,6 +13,8 @@ derivative observations and predictions, with symbolic and finite-difference
 checks. The structured GP operator accepts separable tensor-grid covariance
 factors and reuses the matrix-free CG contract; the Toeplitz GP operator wraps
 the cached FFT grid product for one-dimensional covariance structures. The
+compact-support sparse GP operator consumes `fortsparse` triplets, retains a
+CSR view for row-owned products, and has a resident OpenACC path. The
 planned model families are
 scalable<!-- slop-ok --> and multi-output GPs,
 variational autoencoders, and deep recurrent networks. Bayesian global

@@ -36,5 +36,12 @@ the experimental RBF block-Jacobi path. Leave it unset for the matched
 unpreconditioned comparison lane. Block timings are exploratory until their
 iteration and runtime behavior are competitive.
 
+The compact-support sparse product can be exercised with
+`FC=nvfortran ./benchmark/run_sparse.sh`. It builds the CSC input through
+`fortsparse`, checks the result against an independent row-wise Wendland C2
+sum, and reports host, transfer-inclusive, and resident OpenACC modes for
+float64 four-RHS products. The cross-engine comparison and scaling plot live
+in `fortml-bench/results/sparse_compact_support.csv` and its companion report.
+
 It also accepts `NYSTROM_RANK` for the experimental fused Woodbury path.
 `BLOCK_SIZE` and `NYSTROM_RANK` are mutually exclusive.

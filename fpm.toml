@@ -9,6 +9,7 @@ copyright = "Copyright 2026 lazy-fortran"
 [dependencies]
 fortnum = { path = "../fortnum" }
 fortopt = { path = "../fortopt" }
+fortsparse = { path = "../fortsparse" }
 
 [dev-dependencies]
 test-drive = { git = "https://github.com/fortran-lang/test-drive.git" }
