@@ -1,6 +1,7 @@
 module fortml_kernel_operator
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
-    use, intrinsic :: iso_c_binding, only: c_double, c_int, c_loc, c_ptr
+    use, intrinsic :: iso_c_binding, only: c_associated, c_double, c_int, &
+        c_loc, c_null_ptr, c_ptr
     use fortnum_kinds, only: dp
     use fortnum_krylov, only: KRYLOV_BREAKDOWN, KRYLOV_INVALID_ARGUMENT, &
         KRYLOV_MAX_ITERATIONS, KRYLOV_OK
@@ -88,6 +89,8 @@ module fortml_kernel_operator
         integer, allocatable :: program_kind(:)
         real(dp), allocatable :: program_variance(:), program_lengthscale(:)
         logical :: program_device_resident = .false.
+        type(c_ptr) :: cuda_plan = c_null_ptr
+        logical :: cuda_plan_device_resident = .false.
         type(kernel_krylov_workspace_t) :: krylov_workspace
     contains
         procedure, public :: initialize => kernel_operator_initialize
@@ -136,6 +139,50 @@ module fortml_kernel_operator
             real(c_double), value :: variance, inverse_scale, diagonal_shift
             integer(c_int) :: status
         end function fortml_cuda_rbf_matmat
+
+        function fortml_cuda_kernel_available() bind(C, &
+                name="fortml_cuda_kernel_available") result(available)
+            import :: c_int
+            integer(c_int) :: available
+        end function fortml_cuda_kernel_available
+
+        function fortml_cuda_kernel_plan_create( &
+                points, program_kind, program_variance, program_lengthscale, &
+                n_samples, n_features, program_size, status) bind(C, &
+                name="fortml_cuda_kernel_plan_create") result(plan)
+            import :: c_double, c_int, c_ptr
+            type(c_ptr), value :: points, program_kind, program_variance
+            type(c_ptr), value :: program_lengthscale
+            integer(c_int), value :: n_samples, n_features, program_size
+            integer(c_int) :: status
+            type(c_ptr) :: plan
+        end function fortml_cuda_kernel_plan_create
+
+        function fortml_cuda_kernel_plan_destroy(plan) bind(C, &
+                name="fortml_cuda_kernel_plan_destroy") result(status)
+            import :: c_int, c_ptr
+            type(c_ptr), value :: plan
+            integer(c_int) :: status
+        end function fortml_cuda_kernel_plan_destroy
+
+        function fortml_cuda_kernel_plan_matvec( &
+                plan, input, output, diagonal_shift) bind(C, &
+                name="fortml_cuda_kernel_plan_matvec") result(status)
+            import :: c_double, c_int, c_ptr
+            type(c_ptr), value :: plan, input, output
+            real(c_double), value :: diagonal_shift
+            integer(c_int) :: status
+        end function fortml_cuda_kernel_plan_matvec
+
+        function fortml_cuda_kernel_plan_matmat( &
+                plan, input, output, n_rhs, diagonal_shift) bind(C, &
+                name="fortml_cuda_kernel_plan_matmat") result(status)
+            import :: c_double, c_int, c_ptr
+            type(c_ptr), value :: plan, input, output
+            integer(c_int), value :: n_rhs
+            real(c_double), value :: diagonal_shift
+            integer(c_int) :: status
+        end function fortml_cuda_kernel_plan_matmat
     end interface
 
 contains
@@ -1324,6 +1371,8 @@ contains
         self%tile_size = DEFAULT_TILE_SIZE
         self%points_device_resident = .false.
         self%program_device_resident = .false.
+        self%cuda_plan = c_null_ptr
+        self%cuda_plan_device_resident = .false.
         if (present(tile_size)) self%tile_size = tile_size
         if (self%tile_size < 1) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -1456,6 +1505,7 @@ contains
         class(kernel_operator_t), intent(inout) :: self
         type(fortnum_status_t), intent(out) :: status
         integer, intent(in), optional :: n_rhs
+        type(fortnum_status_t) :: cuda_status
 
         if (.not. allocated(self%points)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -1476,6 +1526,11 @@ contains
             !$acc& self%program_kind, self%program_variance, &
             !$acc& self%program_lengthscale)
             self%program_device_resident = .true.
+        end if
+        if (.not. kernel_operator_simple_rbf(self) .and. &
+            .not. self%cuda_plan_device_resident .and. &
+            fortml_cuda_kernel_available() /= 0_c_int) then
+            call kernel_operator_create_cuda_plan(self, cuda_status)
         end if
         if (present(n_rhs)) then
             call ensure_kernel_krylov_workspace(self, n_rhs, status)
@@ -1499,6 +1554,7 @@ contains
     subroutine kernel_operator_exit_data(self, status)
         class(kernel_operator_t), intent(inout) :: self
         type(fortnum_status_t), intent(out) :: status
+        integer(c_int) :: cuda_status
 
         if (self%points_device_resident) then
             !$acc exit data delete(self%points)
@@ -1509,6 +1565,11 @@ contains
             !$acc& self%program_kind, self%program_variance, &
             !$acc& self%program_lengthscale)
             self%program_device_resident = .false.
+        end if
+        if (self%cuda_plan_device_resident) then
+            cuda_status = fortml_cuda_kernel_plan_destroy(self%cuda_plan)
+            self%cuda_plan = c_null_ptr
+            self%cuda_plan_device_resident = .false.
         end if
         if (self%krylov_workspace%device_resident) then
             !$acc exit data delete( &
@@ -1523,6 +1584,42 @@ contains
         end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine kernel_operator_exit_data
+
+    subroutine kernel_operator_create_cuda_plan(self, status)
+        class(kernel_operator_t), intent(inout) :: self
+        type(fortnum_status_t), intent(out) :: status
+        type(c_ptr) :: plan
+        integer(c_int) :: cstatus
+
+        call create_cuda_plan_from_arrays( &
+            self%points, self%program_kind, self%program_variance, &
+            self%program_lengthscale, plan, cstatus)
+        if (cstatus == 0_c_int .and. c_associated(plan)) then
+            self%cuda_plan = plan
+            self%cuda_plan_device_resident = .true.
+            call status_set(status, FORTNUM_OK, "")
+        else
+            self%cuda_plan = c_null_ptr
+            self%cuda_plan_device_resident = .false.
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "kernel operator: native CUDA plan creation failed")
+        end if
+    end subroutine kernel_operator_create_cuda_plan
+
+    subroutine create_cuda_plan_from_arrays( &
+            points, program_kind, program_variance, program_lengthscale, &
+            plan, cstatus)
+        real(dp), intent(in), target :: points(:, :)
+        integer, intent(in), target :: program_kind(:)
+        real(dp), intent(in), target :: program_variance(:), program_lengthscale(:)
+        type(c_ptr), intent(out) :: plan
+        integer(c_int), intent(out) :: cstatus
+
+        plan = fortml_cuda_kernel_plan_create( &
+            c_loc(points), c_loc(program_kind), c_loc(program_variance), &
+            c_loc(program_lengthscale), int(size(points, 1), c_int), &
+            int(size(points, 2), c_int), int(size(program_kind), c_int), cstatus)
+    end subroutine create_cuda_plan_from_arrays
 
     subroutine ensure_kernel_krylov_workspace(self, n_rhs, status)
         class(kernel_operator_t), intent(inout) :: self
@@ -1613,8 +1710,8 @@ contains
 
     subroutine kernel_operator_matvec_device(self, input, output, status)
         class(kernel_operator_t), intent(in) :: self
-        real(dp), intent(in) :: input(:)
-        real(dp), intent(out) :: output(:)
+        real(dp), intent(in), target :: input(:)
+        real(dp), intent(out), target :: output(:)
         type(fortnum_status_t), intent(out) :: status
         real(dp) :: variance, lengthscale
 
@@ -1633,6 +1730,13 @@ contains
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "kernel operator: device vector shape is invalid")
             return
+        end if
+        if (self%cuda_plan_device_resident .and. &
+            .not. kernel_operator_simple_rbf(self)) then
+            if (kernel_operator_cuda_matvec(self, input, output)) then
+                call status_set(status, FORTNUM_OK, "")
+                return
+            end if
         end if
         if (kernel_operator_simple_rbf(self)) then
             variance = self%program_variance(1)
@@ -1653,8 +1757,8 @@ contains
 
     subroutine kernel_operator_matmat_device(self, input, output, status)
         class(kernel_operator_t), intent(in) :: self
-        real(dp), intent(in) :: input(:, :)
-        real(dp), intent(out) :: output(:, :)
+        real(dp), intent(in), target :: input(:, :)
+        real(dp), intent(out), target :: output(:, :)
         type(fortnum_status_t), intent(out) :: status
         real(dp) :: variance, lengthscale
 
@@ -1675,6 +1779,13 @@ contains
                 "kernel operator: device matrix shape is invalid")
             return
         end if
+        if (self%cuda_plan_device_resident .and. &
+            .not. kernel_operator_simple_rbf(self)) then
+            if (kernel_operator_cuda_matmat(self, input, output)) then
+                call status_set(status, FORTNUM_OK, "")
+                return
+            end if
+        end if
         if (kernel_operator_simple_rbf(self)) then
             variance = self%program_variance(1)
             lengthscale = self%program_lengthscale(1)
@@ -1691,6 +1802,40 @@ contains
         end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine kernel_operator_matmat_device
+
+    logical function kernel_operator_cuda_matvec(self, input, output)
+        class(kernel_operator_t), intent(in) :: self
+        real(dp), intent(in), target :: input(:)
+        real(dp), intent(out), target :: output(:)
+        integer(c_int) :: cstatus
+
+        kernel_operator_cuda_matvec = .false.
+        !$acc data copyin(input) copyout(output)
+        !$acc host_data use_device(input, output)
+        cstatus = fortml_cuda_kernel_plan_matvec( &
+            self%cuda_plan, c_loc(input), c_loc(output), &
+            real(self%diagonal_shift, c_double))
+        !$acc end host_data
+        !$acc end data
+        if (cstatus == 0_c_int) kernel_operator_cuda_matvec = .true.
+    end function kernel_operator_cuda_matvec
+
+    logical function kernel_operator_cuda_matmat(self, input, output)
+        class(kernel_operator_t), intent(in) :: self
+        real(dp), intent(in), target :: input(:, :)
+        real(dp), intent(out), target :: output(:, :)
+        integer(c_int) :: cstatus
+
+        kernel_operator_cuda_matmat = .false.
+        !$acc data copyin(input) copyout(output)
+        !$acc host_data use_device(input, output)
+        cstatus = fortml_cuda_kernel_plan_matmat( &
+            self%cuda_plan, c_loc(input), c_loc(output), &
+            int(size(input, 2), c_int), real(self%diagonal_shift, c_double))
+        !$acc end host_data
+        !$acc end data
+        if (cstatus == 0_c_int) kernel_operator_cuda_matmat = .true.
+    end function kernel_operator_cuda_matmat
 
     subroutine kernel_operator_solve_cg_device( &
             self, right_hand_side, solution, tolerance, max_iterations, &

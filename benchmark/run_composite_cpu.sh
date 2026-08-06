@@ -25,6 +25,7 @@ sources=(
     "$repo_dir/src/gp/fortml_kernel_operator.f90"
     "$repo_dir/app/fortml_bench_composite_operator.f90"
     "$repo_dir/src/gp/fortml_cuda_rbf_stub.f90"
+    "$repo_dir/src/gp/fortml_cuda_kernel_stub.f90"
 )
 mkdir -p "$(dirname "$out")"
 "$fc" $flags "${module_flag[@]}" \

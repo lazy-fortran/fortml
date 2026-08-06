@@ -199,6 +199,17 @@ nvfortran/OpenACC builds remain self-contained. The direct MVM and matmat
 benchmarks check the native paths against host pairwise oracles before timing
 them.
 
+Generic static kernel programs have a separate opaque CUDA plan ABI in
+`src/gp/fortml_cuda_kernel.cu`. `enter_data` creates a plan that owns device
+copies of the sample points and postfix program; `exit_data` destroys it.
+`matvec_device` and `matmat_device` pass only caller-owned device pointers for
+the right-hand sides and outputs, so launch and residency policy remain outside
+the kernel semantics. The CUDA evaluator has the same nine operation codes as
+the Fortran postfix reference and is checked by
+`test/run_cuda_kernel_plan.sh` against an independently written pairwise
+matvec/matmat oracle. This is the first native CUDA backend behind the ABI;
+HIP and SYCL can implement the same plan contract later.
+
 When the native bridge is disabled, the RBF matrix-matrix fallback still fuses
 up to eight right-hand sides in one OpenACC/CPU tiled reduction. Pairwise
 distances and the exponential are evaluated once per sample pair, then applied

@@ -41,14 +41,20 @@ if [[ "$native_cuda" == "1" ]]; then
     nvcc_flags=${NVCCFLAGS:--O3 -arch=native}
     nvcc $nvcc_flags -c "$repo_dir/src/gp/fortml_cuda_rbf.cu" \
         -o "$build_dir/fortml_cuda_rbf.o"
+    nvcc $nvcc_flags -c "$repo_dir/src/gp/fortml_cuda_kernel.cu" \
+        -o "$build_dir/fortml_cuda_kernel.o"
     link_inputs=(
         "$build_dir/fortml_cuda_rbf.o"
+        "$build_dir/fortml_cuda_kernel.o"
         "-L$cuda_root/lib64"
         -lcudart
         -c++libs
     )
 else
-    sources+=("$repo_dir/src/gp/fortml_cuda_rbf_stub.f90")
+    sources+=(
+        "$repo_dir/src/gp/fortml_cuda_rbf_stub.f90"
+        "$repo_dir/src/gp/fortml_cuda_kernel_stub.f90"
+    )
 fi
 mkdir -p "$(dirname "$out")"
 "$fc" $flags "${module_flag[@]}" -o "$build_dir/fortml_bench_rbf_matmat" \

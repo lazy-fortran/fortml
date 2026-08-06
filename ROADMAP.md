@@ -117,10 +117,10 @@ missing report leaves the item open.
 - [x] Extend the generic resident CG override to fused multi-RHS products with
   one independent PCG recurrence per column and an independent true-residual
   check.
-- [ ] Define a backend-neutral opaque C ABI for flat matrix-free plans and
-  residency; keep the Fortran CPU reference, implement fixed hot reductions in
-  native CUDA C++ first, and leave HIP and SYCL adapters open behind the same
-  oracle and operation-level benchmark contract.
+- [x] Define a backend-neutral opaque C ABI for flat matrix-free plans and
+  residency; keep the Fortran CPU reference, implement generic postfix
+  matvec/matmat reductions in native CUDA C++ first, and leave HIP and SYCL
+  adapters open behind the same oracle and operation-level benchmark contract.
 - [ ] Add persistent generic multi-RHS workspaces and block/Nystrom
   preconditioners.
 - [ ] Add block/Nystrom preconditioners, stochastic Lanczos log determinants,
