@@ -105,7 +105,7 @@ missing report leaves the item open.
   with log-parameter layouts and independent value/product checks.
 - [x] Add multi-output exact Gaussian-process regression with Cholesky
   inference, predictive variance, log marginal likelihood, hyperparameter
-  gradients, prediction JVPs, and prediction VJPs.
+  gradients and HVPs, prediction JVPs, prediction VJPs, and prediction HVPs.
 - [x] Add a correctness-gated Fortran-native tiled RBF matrix-vector product
   with OpenACC GPU execution and resident-data support.
 - [x] Connect the RBF kernel and fitted-GP value/JVP/VJP contracts to
@@ -266,9 +266,9 @@ Generated FortAD parameter JVP/VJP/HVP dispatch through `kernel_t` is now
 covered for RBF. The fitted GP value/JVP/VJP path reaches those generated
 kernel products, and the new `gp_predict_hvp` path differentiates the
 Cholesky solve and reverse cotangents for the full packed RBF hyperparameter
-vector. Its independent central-difference oracle passes in
-`test_parameter_products`; Matern and white-noise kernel HVP rules remain
-open.
+  vector. Its independent central-difference oracle passes in
+  `test_parameter_products`; the LML gradient HVP is also checked in
+  `test_gaussian_process`. Matern and white-noise kernel HVP rules remain open.
 
 The first basis-map slice is now implemented in `fortml_basis`. It provides polynomial
 powers, Fourier sine/cosine features, differentiable ARD radial features, and

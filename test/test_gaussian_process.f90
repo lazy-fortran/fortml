@@ -54,6 +54,8 @@ contains
         real(dp) :: x_train(2, 1), y_train(2, 1), x_test(2, 1)
         real(dp) :: mean(2, 1), variance(2), expected_mean(2, 1), expected_variance(2)
         real(dp) :: lml, expected_lml, theta(3), gradient(3), direction(3)
+        real(dp) :: gradient_plus(3), gradient_minus(3), parameter_hvp(3)
+        real(dp) :: parameter_hvp_fd(3)
         real(dp) :: lml_plus, lml_minus, finite_difference, value_dot, h
 
         x_train(:, 1) = [0.0_dp, 1.0_dp]
@@ -83,6 +85,19 @@ contains
         if (.not. status_ok(status) .or. abs(finite_difference - dot_product(gradient, &
             direction)) > 4.0e-8_dp .or. abs(value_dot - finite_difference) > 4.0e-10_dp) then
             write (error_unit, '(a)') "FAIL [gp_gradient] finite difference"
+            failures = failures + 1
+        end if
+
+        call model%hyperparameter_hvp(direction, parameter_hvp, status)
+        call model%set_parameters(theta + h*direction, status)
+        call model%hyperparameter_gradient(gradient_plus, status)
+        call model%set_parameters(theta - h*direction, status)
+        call model%hyperparameter_gradient(gradient_minus, status)
+        call model%set_parameters(theta, status)
+        parameter_hvp_fd = (gradient_plus - gradient_minus)/(2.0_dp*h)
+        if (.not. status_ok(status) .or. maxval(abs(parameter_hvp - &
+            parameter_hvp_fd)) > 3.0e-5_dp) then
+            write (error_unit, '(a)') "FAIL [gp_hvp] gradient finite difference"
             failures = failures + 1
         end if
     end subroutine test_fit_likelihood_and_prediction
