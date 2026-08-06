@@ -1509,6 +1509,23 @@ contains
         kernel_operator_simple_rbf = .true.
     end function kernel_operator_simple_rbf
 
+    logical function kernel_operator_rbf_constant(self)
+        class(kernel_operator_t), intent(in) :: self
+
+        kernel_operator_rbf_constant = .false.
+        if (.not. allocated(self%program_kind)) return
+        if (size(self%program_kind) /= 3) return
+        if (.not. allocated(self%program_variance)) return
+        if (.not. allocated(self%program_lengthscale)) return
+        if (self%program_kind(3) /= KERNEL_SUM) return
+        if ((self%program_kind(1) == KERNEL_RBF .and. &
+            self%program_kind(2) == KERNEL_CONSTANT) .or. &
+            (self%program_kind(1) == KERNEL_CONSTANT .and. &
+            self%program_kind(2) == KERNEL_RBF)) then
+            kernel_operator_rbf_constant = .true.
+        end if
+    end function kernel_operator_rbf_constant
+
     subroutine kernel_operator_matvec_device(self, input, output, status)
         class(kernel_operator_t), intent(in) :: self
         real(dp), intent(in) :: input(:)
@@ -1538,6 +1555,8 @@ contains
             call rbf_matvec_tiled( &
                 self%points, input, output, variance, lengthscale, &
                 self%diagonal_shift, self%tile_size)
+        else if (kernel_operator_rbf_constant(self)) then
+            call kernel_operator_rbf_constant_matvec(self, input, output)
         else
             call kernel_program_matvec_tiled( &
                 self%points, input, output, self%program_kind, &
@@ -1577,6 +1596,8 @@ contains
             call rbf_matmat_tiled( &
                 self%points, input, output, variance, lengthscale, &
                 self%diagonal_shift, self%tile_size)
+        else if (kernel_operator_rbf_constant(self)) then
+            call kernel_operator_rbf_constant_matmat(self, input, output)
         else
             call kernel_program_matmat_tiled( &
                 self%points, input, output, self%program_kind, &
@@ -2132,6 +2153,82 @@ contains
 
     end subroutine kernel_operator_solve_cg_multi_device
 
+    subroutine kernel_operator_rbf_constant_matvec(self, input, output)
+        class(kernel_operator_t), intent(in) :: self
+        real(dp), intent(in) :: input(:)
+        real(dp), intent(out) :: output(:)
+        real(dp) :: variance, lengthscale, constant_variance
+        real(dp) :: constant_sum
+        integer :: rbf_index, constant_index, i
+
+        rbf_index = 1
+        constant_index = 2
+        if (self%program_kind(1) == KERNEL_CONSTANT) then
+            rbf_index = 2
+            constant_index = 1
+        end if
+        variance = self%program_variance(rbf_index)
+        lengthscale = self%program_lengthscale(rbf_index)
+        constant_variance = self%program_variance(constant_index)
+        call rbf_matvec_tiled( &
+            self%points, input, output, variance, lengthscale, &
+            self%diagonal_shift, self%tile_size)
+        constant_sum = 0.0_dp
+        !$acc parallel loop reduction(+:constant_sum)
+        !$omp parallel do reduction(+:constant_sum)
+        do i = 1, size(input)
+            constant_sum = constant_sum + input(i)
+        end do
+        !$acc parallel loop
+        !$omp parallel do
+        do i = 1, size(output)
+            output(i) = output(i) + constant_variance*constant_sum
+        end do
+    end subroutine kernel_operator_rbf_constant_matvec
+
+    subroutine kernel_operator_rbf_constant_matmat(self, input, output)
+        class(kernel_operator_t), intent(in) :: self
+        real(dp), intent(in) :: input(:, :)
+        real(dp), intent(out) :: output(:, :)
+        real(dp), allocatable :: constant_sums(:)
+        real(dp) :: variance, lengthscale, constant_variance, value
+        integer :: rbf_index, constant_index, i, column
+
+        rbf_index = 1
+        constant_index = 2
+        if (self%program_kind(1) == KERNEL_CONSTANT) then
+            rbf_index = 2
+            constant_index = 1
+        end if
+        variance = self%program_variance(rbf_index)
+        lengthscale = self%program_lengthscale(rbf_index)
+        constant_variance = self%program_variance(constant_index)
+        call rbf_matmat_tiled( &
+            self%points, input, output, variance, lengthscale, &
+            self%diagonal_shift, self%tile_size)
+        allocate(constant_sums(size(input, 2)))
+        !$acc parallel loop gang private(value)
+        !$omp parallel do private(value)
+        do column = 1, size(input, 2)
+            value = 0.0_dp
+            !$acc loop vector reduction(+:value)
+            !$omp simd reduction(+:value)
+            do i = 1, size(input, 1)
+                value = value + input(i, column)
+            end do
+            constant_sums(column) = value
+        end do
+        !$acc parallel loop collapse(2)
+        !$omp parallel do collapse(2)
+        do column = 1, size(output, 2)
+            do i = 1, size(output, 1)
+                output(i, column) = output(i, column) + &
+                    constant_variance*constant_sums(column)
+            end do
+        end do
+        deallocate(constant_sums)
+    end subroutine kernel_operator_rbf_constant_matmat
+
     subroutine kernel_operator_matvec(self, input, output)
         class(kernel_operator_t), intent(in) :: self
         real(dp), intent(in) :: input(:)
@@ -2151,6 +2248,10 @@ contains
                 self%points, input, output, &
                 self%program_variance(1), self%program_lengthscale(1), &
                 self%diagonal_shift, self%tile_size)
+            return
+        end if
+        if (kernel_operator_rbf_constant(self)) then
+            call kernel_operator_rbf_constant_matvec(self, input, output)
             return
         end if
         if (self%device_supported()) then
@@ -2194,6 +2295,10 @@ contains
                 self%points, input, output, &
                 self%program_variance(1), self%program_lengthscale(1), &
                 self%diagonal_shift, self%tile_size)
+            return
+        end if
+        if (kernel_operator_rbf_constant(self)) then
+            call kernel_operator_rbf_constant_matmat(self, input, output)
             return
         end if
         if (self%device_supported()) then
@@ -2559,11 +2664,10 @@ contains
         real(dp) :: point_1, point_2, point_3, point_4
         real(dp) :: point_5, point_6, point_7, point_8
         integer, parameter :: output_tile_size = 2
-        integer :: block_size, first_neighbor, first_output, last_neighbor
+        integer :: first_output
         integer :: i, j, local_output, n_samples
 
         n_samples = size(points, 1)
-        block_size = tile_size
         inverse_two_lengthscale_squared = &
             0.5_dp/(lengthscale*lengthscale)
         output = 0.0_dp
@@ -2572,7 +2676,7 @@ contains
         !$omp parallel do schedule(static) collapse(2) private( &
         !$omp& accumulated, distance, kernel_value, point_1, point_2, &
         !$omp& point_3, point_4, point_5, point_6, point_7, point_8, &
-        !$omp& first_neighbor, first_output, i, j, last_neighbor, &
+        !$omp& first_output, i, j, &
         !$omp& local_output)
         do first_output = 1, n_samples, output_tile_size
             !$acc loop worker
@@ -2588,25 +2692,21 @@ contains
                     point_7 = points(i, 7)
                     point_8 = points(i, 8)
                     accumulated = diagonal_shift*input(i)
-                    do first_neighbor = 1, n_samples, block_size
-                        last_neighbor = min( &
-                            n_samples, first_neighbor + block_size - 1)
-                        !$acc loop vector reduction(+:accumulated)
-                        !$omp simd reduction(+:accumulated)
-                        do j = first_neighbor, last_neighbor
-                            distance = &
-                                (point_1 - points(j, 1))*(point_1 - points(j, 1)) + &
-                                (point_2 - points(j, 2))*(point_2 - points(j, 2)) + &
-                                (point_3 - points(j, 3))*(point_3 - points(j, 3)) + &
-                                (point_4 - points(j, 4))*(point_4 - points(j, 4)) + &
-                                (point_5 - points(j, 5))*(point_5 - points(j, 5)) + &
-                                (point_6 - points(j, 6))*(point_6 - points(j, 6)) + &
-                                (point_7 - points(j, 7))*(point_7 - points(j, 7)) + &
-                                (point_8 - points(j, 8))*(point_8 - points(j, 8))
-                            kernel_value = variance*exp( &
-                                -inverse_two_lengthscale_squared*distance)
-                            accumulated = accumulated + kernel_value*input(j)
-                        end do
+                    !$acc loop vector reduction(+:accumulated)
+                    !$omp simd reduction(+:accumulated)
+                    do j = 1, n_samples
+                        distance = &
+                            (point_1 - points(j, 1))*(point_1 - points(j, 1)) + &
+                            (point_2 - points(j, 2))*(point_2 - points(j, 2)) + &
+                            (point_3 - points(j, 3))*(point_3 - points(j, 3)) + &
+                            (point_4 - points(j, 4))*(point_4 - points(j, 4)) + &
+                            (point_5 - points(j, 5))*(point_5 - points(j, 5)) + &
+                            (point_6 - points(j, 6))*(point_6 - points(j, 6)) + &
+                            (point_7 - points(j, 7))*(point_7 - points(j, 7)) + &
+                            (point_8 - points(j, 8))*(point_8 - points(j, 8))
+                        kernel_value = variance*exp( &
+                            -inverse_two_lengthscale_squared*distance)
+                        accumulated = accumulated + kernel_value*input(j)
                     end do
                     output(i) = accumulated
                 end if

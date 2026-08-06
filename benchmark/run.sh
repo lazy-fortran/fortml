@@ -15,7 +15,8 @@ log=$(mktemp)
 trap 'rm -f "$log"' EXIT
 start=$SECONDS
 run_args=()
-if [[ "$target" == "fortml_bench_rbf_operator" ]]; then
+if [[ "$target" == "fortml_bench_rbf_operator" || \
+    "$target" == "fortml_bench_composite_operator" ]]; then
     run_args=(-- "$mode" "${N_SAMPLES:-2048}" "${N_FEATURES:-8}" "${REPETITIONS:-12}")
 fi
 if ! FPM_FC="$fc" fpm run --target "$target" --profile release --flag "$flags" \
@@ -29,6 +30,7 @@ case "$target" in
     fortml_bench_mlp) row=$(grep '^mlp,' "$log") ;;
     fortml_bench_gp) row=$(grep '^gp,' "$log") ;;
     fortml_bench_rbf_operator) row=$(grep '^rbf_operator,' "$log") ;;
+    fortml_bench_composite_operator) row=$(grep '^composite_operator,' "$log") ;;
     *) printf 'unknown benchmark target: %s\n' "$target" >&2; exit 1 ;;
 esac
 printf 'model,samples,features,outputs,repetitions,seconds_per_operation,compiler,flags\n' >"$out"
