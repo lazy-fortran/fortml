@@ -6,6 +6,13 @@ linear operators, and optimizer-facing derivative products. Numerical kernels
 come from `fortnum`, optimization from `fortopt`, source-generated derivatives
 from `fortad`, and sparse storage from `fortsparse`.
 
+The current public surface concentrates on regression, neural and variational
+model primitives, Gaussian processes, and structured linear algebra.
+Classification, fitted preprocessing pipelines, tree boosting, general trainer
+and checkpoint APIs, model serialization, and distributed execution are parity
+work packages. [ROADMAP.md](ROADMAP.md) records their acceptance criteria and
+delivery order.
+
 The library uses separate Fortran modules instead of an umbrella `fortml`
 module. For example, exact GP regression uses `fortml_kernels` and
 `fortml_gaussian_process`.
@@ -98,7 +105,7 @@ end program exact_gp_example
 | Area | Public modules | Main limits |
 | --- | --- | --- |
 | Regression and features | `fortml_linear_regression`, `fortml_basis` | Dense SVD fit. Basis HVPs are not exposed. |
-| Neural models | `fortml_mlp`, `fortml_bnn`, `fortml_vae`, `fortml_rnn` | The recurrent model is one vanilla `tanh` RNN with a zero initial state |
+| Neural models | `fortml_mlp`, `fortml_bnn`, `fortml_vae`, `fortml_rnn` | MLPs use deterministic Xavier/He initialization; the recurrent model is one vanilla `tanh` RNN with a zero initial state |
 | Variational inference | `fortml_variational`, `fortml_sparse_gp` | `sparse_gp_t` has scalar targets and caller-supplied variational parameters |
 | Exact GPs | `fortml_kernels`, `fortml_gaussian_process`, `fortml_derivative_gaussian_process`, `fortml_multi_output_gp` | Derivative observations cover function values and first input derivatives |
 | Approximate GPs | `fortml_sparse_prior_gp`, `fortml_local_experts`, `fortml_ski_gp` | Multidimensional SKI requires one isotropic RBF leaf. Local experts support contiguous or deterministic clustered partitions. |
@@ -112,6 +119,6 @@ OpenACC path or native CUDA plan. Arbitrary basis callbacks remain host-only.
 See [docs/EXAMPLES.md](docs/EXAMPLES.md) for executable examples and
 [docs/API.md](docs/API.md) for the public module reference. The implementation
 boundaries are recorded in [docs/DESIGN.md](docs/DESIGN.md) and
-[docs/ML_ARCHITECTURE.md](docs/ML_ARCHITECTURE.md). Benchmark results and open
-research threads belong in [ROADMAP.md](ROADMAP.md). The package is distributed
-under the [MIT license](LICENSE).
+[docs/ML_ARCHITECTURE.md](docs/ML_ARCHITECTURE.md). Benchmark evidence and parity
+work packages are maintained in [ROADMAP.md](ROADMAP.md). The package is
+distributed under the [MIT license](LICENSE).

@@ -42,21 +42,25 @@ module fortml_mlp
 contains
 
     subroutine mlp_initialize(self, layer_sizes, status, hidden_activation, &
-            output_activation)
+            output_activation, initialization_seed)
         class(mlp_t), intent(out) :: self
         integer, intent(in) :: layer_sizes(:)
         type(fortnum_status_t), intent(out) :: status
         integer, intent(in), optional :: hidden_activation, output_activation
-        integer :: i, hidden_kind, output_kind
+        integer, intent(in), optional :: initialization_seed
+        integer :: i, hidden_kind, output_kind, seed
+        real(dp) :: scale
 
         hidden_kind = MLP_TANH
         if (present(hidden_activation)) hidden_kind = hidden_activation
         output_kind = MLP_LINEAR
         if (present(output_activation)) output_kind = output_activation
+        seed = 17
+        if (present(initialization_seed)) seed = initialization_seed
 
         if (size(layer_sizes) < 2 .or. any(layer_sizes < 1) .or. &
             .not. valid_activation(hidden_kind) .or. &
-            .not. valid_activation(output_kind)) then
+            .not. valid_activation(output_kind) .or. seed < 0) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "MLP initialize: invalid layer sizes or activation")
             return
@@ -68,13 +72,42 @@ contains
         do i = 1, size(self%layer)
             allocate(self%layer(i)%weight(layer_sizes(i), layer_sizes(i + 1)))
             allocate(self%layer(i)%bias(layer_sizes(i + 1)))
-            self%layer(i)%weight = 0.0_dp
-            self%layer(i)%bias = 0.0_dp
+            if (hidden_kind == MLP_RELU .and. i < size(self%layer)) then
+                scale = sqrt(2.0_dp/real(layer_sizes(i), dp))
+            else
+                scale = sqrt(6.0_dp/real(layer_sizes(i) + layer_sizes(i + 1), dp))
+            end if
+            call initialize_layer(self%layer(i)%weight, self%layer(i)%bias, &
+                scale, seed, i)
         end do
         self%hidden_activation = hidden_kind
         self%output_activation = output_kind
         call status_set(status, FORTNUM_OK, "")
     end subroutine mlp_initialize
+
+    subroutine initialize_layer(weight, bias, scale, seed, layer_index)
+        real(dp), intent(out) :: weight(:, :), bias(:)
+        real(dp), intent(in) :: scale
+        integer, intent(in) :: seed, layer_index
+        integer :: i, j, index
+        real(dp) :: phase
+
+        ! A deterministic, platform-independent initializer is preferable to
+        ! random_number here: callers can reproduce a training run without
+        ! mutating the process-global RNG state.  The incommensurate phases
+        ! break hidden-unit symmetry while retaining Xavier/He magnitudes.
+        do j = 1, size(weight, 2)
+            do i = 1, size(weight, 1)
+                index = i + size(weight, 1)*(j - 1)
+                phase = real(seed + 1009*layer_index + 9176*index, dp)
+                weight(i, j) = scale*sin(phase)
+            end do
+        end do
+        do j = 1, size(bias)
+            phase = real(seed + 1009*layer_index + 7919*j, dp)
+            bias(j) = 0.01_dp*scale*sin(phase)
+        end do
+    end subroutine initialize_layer
 
     integer function mlp_parameter_count(self) result(count)
         class(mlp_t), intent(in) :: self

@@ -113,10 +113,12 @@ packing, value/JVP/VJP operations, validation, and optional static eligibility.
 
 ### `fortml_mlp`
 
-`mlp_t%initialize(layer_sizes,status[,hidden_activation,output_activation])`
-constructs dense layers. `MLP_LINEAR`, `MLP_TANH`, and `MLP_RELU` are accepted
-activation constants. The default hidden activation is `tanh`. The default
-output activation is linear.
+`mlp_t%initialize(layer_sizes,status[,hidden_activation,output_activation,
+initialization_seed])` constructs dense layers. `MLP_LINEAR`, `MLP_TANH`, and
+`MLP_RELU` are accepted activation constants. The default hidden activation is
+`tanh`; the default output activation is linear. Weights use deterministic
+Xavier scaling (or He scaling for ReLU hidden layers), with a reproducible
+phase sequence controlled by `initialization_seed` (default `17`).
 
 The parameter vector stores each layer's weight array
 `(input_width,output_width)` in column-major order followed by its bias, from
