@@ -251,7 +251,7 @@ that do not exist.
 - [x] Record provenance for the paper and for every third-party implementation
   compared against, with download scripts and checksums.
 - [x] Publish the plots and report the comparison to Chris on Zulip.
-- [ ] Re-measure the whole comparison at 8k to 131k samples with release
+- [x] Re-measure the whole comparison at 8k to 131k samples with release
   flags. The first sweep used the default `fo` profile, which is
   `-O0 -fcheck=all`, so every timing in it was a debug-build timing.
 - [ ] Run the matrix-free lane on the device at those sizes, so the exact
@@ -259,7 +259,7 @@ that do not exist.
 - [ ] Scale the SKI grid with the sample count. Holding it at 64 nodes makes
   SKI degrade with `n`, which measures the fixed budget rather than the
   method.
-- [ ] Correct the Zulip record: the first report carried the debug-build
+- [x] Correct the Zulip record: the first report carried the debug-build
   numbers.
 
 ## Research record
