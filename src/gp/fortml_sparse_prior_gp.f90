@@ -141,7 +141,8 @@ contains
 
         real(dp), allocatable :: k_uu(:, :), k_uf(:, :), v(:, :)
         real(dp), allocatable :: posterior(:, :), scaled_y(:), rhs(:)
-        real(dp) :: jitter, quadratic, log_det_residual, log_det_ratio
+        real(dp) :: jitter, posterior_jitter, quadratic, log_det_residual
+        real(dp) :: log_det_ratio
         integer :: i, j, m, n
 
         self%fitted = .false.
@@ -191,8 +192,14 @@ contains
             end do
             posterior = posterior + matmul(k_uf, scaled_block)
         end block
+        ! The jitter has to be relative to the matrix actually being
+        ! factorized. `K_mm + K_mn L^-1 K_nm` grows with the sample count, so a
+        ! jitter scaled to `K_mm` alone becomes negligible against it and a
+        ! numerically rank-deficient inducing set then fails to factorize at
+        ! large `n` while succeeding at small `n`.
+        posterior_jitter = 1.0e-12_dp*max(maxval(abs(posterior)), 1.0_dp)
         do i = 1, m
-            posterior(i, i) = posterior(i, i) + jitter
+            posterior(i, i) = posterior(i, i) + posterior_jitter
         end do
         call self%posterior_factor%factorize(posterior, status)
         if (status%code /= FORTNUM_OK) return
@@ -241,9 +248,16 @@ contains
         case (SPARSE_SOR, SPARSE_DTC)
             ! Nothing kept: L = sigma^2 I.
         case (SPARSE_FITC)
+            ! `k_ii - q_ii` is non-negative in exact arithmetic, but with many
+            ! more data points than inducing points the two terms agree to
+            ! within roundoff and the difference can come out slightly
+            ! negative. A negative entry makes `L` indefinite and the whole
+            ! posterior factorization fails, so the residual is clamped at
+            ! zero; the observation noise keeps `L` strictly positive.
             do i = 1, n
-                self%residual(i) = self%residual(i) + &
-                    self%kernel%value(x(i, :), x(i, :)) - sum(v(:, i)*k_uf(:, i))
+                self%residual(i) = self%residual(i) + max( &
+                    self%kernel%value(x(i, :), x(i, :)) - sum(v(:, i)*k_uf(:, i)), &
+                    0.0_dp)
             end do
         case (SPARSE_PITC)
             n_blocks = (n + self%block_size - 1)/self%block_size
@@ -263,7 +277,8 @@ contains
                         block(i, j) = block(i, j) - &
                             sum(v(:, first + i - 1)*k_uf(:, first + j - 1))
                     end do
-                    block(j, j) = block(j, j) + self%noise_variance
+                    ! Same roundoff floor as FITC, on the block diagonal.
+                    block(j, j) = max(block(j, j), 0.0_dp) + self%noise_variance
                 end do
                 self%residual_blocks(1:local_size, 1:local_size, block_index) = &
                     block(1:local_size, 1:local_size)

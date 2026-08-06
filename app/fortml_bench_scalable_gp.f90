@@ -93,9 +93,13 @@ contains
         select case (trim(method))
         case ("full")
             if (gigabytes > DENSE_BUDGET_GB) then
-                write (output_unit, '(a,a,i0,a,f0.1,a)') trim(method), ",", &
-                    n_samples, ",infeasible: dense covariance needs ", &
-                    gigabytes, " GB"
+                ! Report a full row so a sweep records the refusal in place
+                ! rather than failing to parse it. NaN marks "did not run".
+                write (output_unit, &
+                    '(a,a,i0,a,i0,a,i0,a,i0,a,a,a,a,a,a,a,a,a,a)') &
+                    trim(method), ",", n_samples, ",", n_inducing, ",", &
+                    n_experts, ",", n_features, ",", "NaN", ",", "NaN", ",", &
+                    "NaN", ",", "NaN", ",", "NaN"
                 stop 0
             end if
         end select
