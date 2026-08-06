@@ -1,6 +1,6 @@
 program test_mlp
     use, intrinsic :: iso_fortran_env, only: dp => real64, error_unit
-    use fortml_mlp, only: mlp_t, MLP_LINEAR, MLP_TANH, MLP_RELU
+    use fortml_mlp, only: mlp_t, MLP_TANH, MLP_RELU
     use fortnum_status, only: fortnum_status_t, status_ok
     implicit none
 
@@ -8,6 +8,7 @@ program test_mlp
     failures = 0
     call test_value_and_packing(failures)
     call test_products_against_reference(failures)
+    call test_hvp_against_vjp_finite_difference(failures)
     call test_relu(failures)
     if (failures /= 0) then
         write (error_unit, '(i0,a)') failures, " MLP test(s) failed"
@@ -90,6 +91,55 @@ contains
         end if
         call test_directional_gradient(theta, x, u, parameter_bar, x_bar, failures)
     end subroutine test_products_against_reference
+
+    subroutine test_hvp_against_vjp_finite_difference(failures)
+        integer, intent(inout) :: failures
+        type(mlp_t) :: model
+        type(fortnum_status_t) :: status
+        real(dp) :: theta(13), dtheta(13), x(3, 2), dx(3, 2), u(3, 1)
+        real(dp) :: parameter_hvp(13), x_hvp(3, 2)
+        real(dp) :: parameter_plus(13), parameter_minus(13)
+        real(dp) :: x_plus(3, 2), x_minus(3, 2)
+        real(dp) :: gradient_plus(13), gradient_minus(13)
+        real(dp) :: x_bar_plus(3, 2), x_bar_minus(3, 2)
+        real(dp) :: finite_parameter_hvp(13), finite_x_hvp(3, 2), h
+
+        theta = [ &
+            0.20_dp, -0.10_dp, 0.40_dp, 0.30_dp, -0.50_dp, 0.60_dp, &
+            0.05_dp, -0.15_dp, 0.25_dp, 0.70_dp, -0.30_dp, 0.80_dp, 0.10_dp]
+        dtheta = [ &
+            -0.30_dp, 0.20_dp, 0.10_dp, -0.40_dp, 0.50_dp, -0.20_dp, &
+            0.30_dp, -0.25_dp, 0.15_dp, -0.10_dp, 0.35_dp, -0.45_dp, 0.25_dp]
+        x = reshape([ &
+            0.2_dp, -0.4_dp, 0.7_dp, 0.1_dp, -0.5_dp, 0.8_dp], shape(x))
+        dx = reshape([ &
+            -0.3_dp, 0.2_dp, 0.1_dp, -0.4_dp, 0.5_dp, 0.6_dp], shape(dx))
+        u = reshape([0.4_dp, -0.2_dp, 0.3_dp], shape(u))
+        call model%initialize([2, 3, 1], status, hidden_activation=MLP_TANH)
+        call model%set_parameters(theta, status)
+        call model%hvp(x, u, dtheta, dx, parameter_hvp, x_hvp, status)
+        h = 1.0e-6_dp
+        parameter_plus = theta + h*dtheta
+        parameter_minus = theta - h*dtheta
+        x_plus = x + h*dx
+        x_minus = x - h*dx
+        call model%set_parameters(parameter_plus, status)
+        call model%vjp(x_plus, u, gradient_plus, x_bar_plus, status)
+        call model%set_parameters(parameter_minus, status)
+        call model%vjp(x_minus, u, gradient_minus, x_bar_minus, status)
+        call model%set_parameters(theta, status)
+        finite_parameter_hvp = (gradient_plus - gradient_minus)/(2.0_dp*h)
+        finite_x_hvp = (x_bar_plus - x_bar_minus)/(2.0_dp*h)
+        if (.not. status_ok(status) .or. &
+            maxval(abs(parameter_hvp - finite_parameter_hvp)) > 2.0e-8_dp .or. &
+            maxval(abs(x_hvp - finite_x_hvp)) > 2.0e-8_dp) then
+            write (error_unit, '(a,2es12.4)') &
+                "FAIL [hvp] finite difference parameter/input=", &
+                maxval(abs(parameter_hvp - finite_parameter_hvp)), &
+                maxval(abs(x_hvp - finite_x_hvp))
+            failures = failures + 1
+        end if
+    end subroutine test_hvp_against_vjp_finite_difference
 
     subroutine test_directional_gradient(theta, x, target, parameter_bar, x_bar, failures)
         real(dp), intent(in) :: theta(:), x(:, :), target(:, :)

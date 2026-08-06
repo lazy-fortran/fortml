@@ -74,7 +74,8 @@ missing report leaves the item open.
     wrapper so adding a map does not add dispatch cases to every product.
 - [x] Add the explicit MLP baseline: flat column-major parameters, batched
   forward products, `tanh`/linear/ReLU activations, JVPs, VJPs, and
-  backpropagation, with independent finite-difference and adjoint checks.
+  forward-over-reverse HVPs, with independent finite-difference and adjoint
+  checks.
 - [x] Exercise the MLP parameter/VJP seam with the separate `fortopt_adam`
   implementation on a known squared-loss objective.
 - [x] Define one optimizer-facing parameter registry and packing contract for
@@ -222,6 +223,10 @@ kernel hyperparameters into one named vector and unpacks updates back into the
 original objects. Its test checks exact block ranges, a hand-known packed
 vector, round-trip mutation, and duplicate-name refusal. Full-vector
 JVP/VJP/HVP routing remains open and is not implied by this packing result.
+
+The explicit MLP now exposes a scalar-output-cotangent HVP over joint parameter
+and input directions. Its finite-difference VJP oracle passes with gfortran and
+nvfortran 26.5; the FortAD-generated MLP product path remains open.
 
 The first basis-map slice is now implemented in `fortml_basis`. It provides polynomial
 powers, Fourier sine/cosine features, differentiable ARD radial features, and

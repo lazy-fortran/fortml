@@ -31,16 +31,18 @@ module fortml_mlp
         procedure, public :: predict => mlp_predict
         procedure, public :: jvp => mlp_jvp
         procedure, public :: vjp => mlp_vjp
+        procedure, public :: hvp => mlp_hvp
         procedure, public :: backprop => mlp_vjp
     end type mlp_t
 
     public :: mlp_jvp
     public :: mlp_vjp
+    public :: mlp_hvp
 
 contains
 
     subroutine mlp_initialize(self, layer_sizes, status, hidden_activation, &
-        output_activation)
+            output_activation)
         class(mlp_t), intent(out) :: self
         integer, intent(in) :: layer_sizes(:)
         type(fortnum_status_t), intent(out) :: status
@@ -246,6 +248,122 @@ contains
         x_bar = adjoint
     end subroutine mlp_vjp
 
+    subroutine mlp_hvp(self, x, u, dtheta, dx, parameter_hvp, x_hvp, status)
+        !! Differentiate the VJP of the fixed output cotangent `u` in the
+        !! joint direction `(dtheta, dx)`. This is a forward-over-reverse
+        !! Hessian-vector product for the scalar contraction `sum(u*y)`.
+        class(mlp_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), u(:, :), dtheta(:), dx(:, :)
+        real(dp), intent(out) :: parameter_hvp(:), x_hvp(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        type(matrix_holder_t), allocatable :: activations(:), preactivations(:)
+        type(matrix_holder_t), allocatable :: tangent_activations(:), &
+            tangent_preactivations(:)
+        type(dense_layer_t), allocatable :: tangent_layer(:)
+        real(dp), allocatable :: adjoint(:, :), adjoint_tangent(:, :)
+        real(dp), allocatable :: dz(:, :), dz_tangent(:, :)
+        real(dp), allocatable :: derivative(:, :), second_derivative(:, :)
+        real(dp), allocatable :: weight_hvp(:, :), bias_hvp(:)
+        real(dp), allocatable :: previous_adjoint(:, :), &
+            previous_adjoint_tangent(:, :)
+        integer :: i, position, nweight, nbias
+
+        if (.not. valid_batch_shape(self, x, u)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP hvp: model or batch shape is invalid")
+            return
+        end if
+        if (any(shape(dx) /= shape(x)) .or. &
+            any(shape(x_hvp) /= shape(x)) .or. &
+            size(dtheta) /= self%parameter_count() .or. &
+            size(parameter_hvp) /= self%parameter_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP hvp: direction or output shape is invalid")
+            return
+        end if
+
+        call forward_cache(self, x, activations, preactivations, status)
+        if (status%code /= FORTNUM_OK) return
+        allocate(tangent_activations(size(activations)))
+        allocate(tangent_preactivations(size(preactivations)))
+        allocate(tangent_layer(size(self%layer)))
+        allocate(tangent_activations(1)%value, source=dx)
+        position = 1
+        do i = 1, size(self%layer)
+            nweight = size(self%layer(i)%weight)
+            nbias = size(self%layer(i)%bias)
+            allocate(tangent_layer(i)%weight, source=self%layer(i)%weight)
+            allocate(tangent_layer(i)%bias, source=self%layer(i)%bias)
+            tangent_layer(i)%weight = reshape( &
+                dtheta(position:position + nweight - 1), &
+                shape(tangent_layer(i)%weight))
+            position = position + nweight
+            tangent_layer(i)%bias = dtheta(position:position + nbias - 1)
+            position = position + nbias
+
+            allocate(tangent_preactivations(i)%value(size(x, 1), &
+                size(self%layer(i)%bias)))
+            tangent_preactivations(i)%value = &
+                matmul(tangent_activations(i)%value, self%layer(i)%weight) + &
+                matmul(activations(i)%value, tangent_layer(i)%weight) + &
+                spread(tangent_layer(i)%bias, dim=1, ncopies=size(x, 1))
+            allocate(tangent_activations(i + 1)%value, &
+                mold=tangent_preactivations(i)%value)
+            call activation_derivative(preactivations(i)%value, &
+                tangent_activations(i + 1)%value, layer_activation(self, i))
+            tangent_activations(i + 1)%value = &
+                tangent_preactivations(i)%value * &
+                tangent_activations(i + 1)%value
+        end do
+
+        allocate(adjoint, mold=u)
+        allocate(adjoint_tangent, mold=u)
+        adjoint = u
+        adjoint_tangent = 0.0_dp
+        parameter_hvp = 0.0_dp
+        position = self%parameter_count()
+        do i = size(self%layer), 1, -1
+            allocate(derivative, mold=adjoint)
+            allocate(second_derivative, mold=adjoint)
+            call activation_derivative(preactivations(i)%value, derivative, &
+                layer_activation(self, i))
+            call activation_second_derivative(preactivations(i)%value, &
+                second_derivative, layer_activation(self, i))
+            allocate(dz, mold=adjoint)
+            allocate(dz_tangent, mold=adjoint)
+            dz = adjoint * derivative
+            dz_tangent = adjoint_tangent * derivative + adjoint * &
+                second_derivative * tangent_preactivations(i)%value
+
+            allocate(weight_hvp, mold=self%layer(i)%weight)
+            allocate(bias_hvp, mold=self%layer(i)%bias)
+            weight_hvp = matmul(transpose(tangent_activations(i)%value), dz) + &
+                matmul(transpose(activations(i)%value), dz_tangent)
+            bias_hvp = sum(dz_tangent, dim=1)
+            nweight = size(weight_hvp)
+            nbias = size(bias_hvp)
+            parameter_hvp(position - nbias + 1:position) = bias_hvp
+            position = position - nbias
+            parameter_hvp(position - nweight + 1:position) = &
+                reshape(weight_hvp, [nweight])
+            position = position - nweight
+
+            allocate(previous_adjoint(size(x, 1), &
+                size(self%layer(i)%weight, 1)))
+            allocate(previous_adjoint_tangent(size(x, 1), &
+                size(self%layer(i)%weight, 1)))
+            previous_adjoint = matmul(dz, transpose(self%layer(i)%weight))
+            previous_adjoint_tangent = matmul(dz_tangent, &
+                transpose(self%layer(i)%weight)) + matmul(dz, &
+                transpose(tangent_layer(i)%weight))
+            deallocate(derivative, second_derivative, dz, dz_tangent, &
+                weight_hvp, bias_hvp, adjoint, adjoint_tangent)
+            call move_alloc(previous_adjoint, adjoint)
+            call move_alloc(previous_adjoint_tangent, adjoint_tangent)
+        end do
+        x_hvp = adjoint_tangent
+    end subroutine mlp_hvp
+
     subroutine forward_cache(self, x, activations, preactivations, status)
         class(mlp_t), intent(in) :: self
         real(dp), intent(in) :: x(:, :)
@@ -354,5 +472,25 @@ contains
             end do
         end do
     end subroutine activation_derivative
+
+    subroutine activation_second_derivative(input, output, kind)
+        real(dp), intent(in) :: input(:, :)
+        real(dp), intent(out) :: output(:, :)
+        integer, intent(in) :: kind
+        integer :: i, j
+        real(dp) :: value
+
+        do j = 1, size(input, 2)
+            do i = 1, size(input, 1)
+                select case (kind)
+                case (MLP_LINEAR, MLP_RELU)
+                    output(i, j) = 0.0_dp
+                case (MLP_TANH)
+                    value = tanh(input(i, j))
+                    output(i, j) = -2.0_dp*value*(1.0_dp - value*value)
+                end select
+            end do
+        end do
+    end subroutine activation_second_derivative
 
 end module fortml_mlp
