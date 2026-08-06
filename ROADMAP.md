@@ -244,6 +244,13 @@ checks with gfortran. The downstream `nvfortran` gate is open because
 `nvfortran` 26.5 currently ICEs in FortAD's source transformer before the
 FortML test can link; this does not invalidate the generated-code oracle.
 
+A scalar RBF formula fixture now generates JVP, VJP, and HVP code through
+FortAD and checks it against a hand-derived gradient, converged central
+differences, the directional adjoint identity, and Hessian symmetry. This is
+formula-level generation evidence; wiring the generated products directly
+into the composable `kernel_t`/GP implementation remains the next FortAD
+integration gate.
+
 The first basis-map slice is now implemented in `fortml_basis`. It provides polynomial
 powers, Fourier sine/cosine features, differentiable ARD radial features, and
 fixed-knot B-spline features use stable layouts and expose value, JVP, and VJP
