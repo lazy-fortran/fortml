@@ -104,6 +104,11 @@ missing report leaves the item open.
   sides so blocked kernel evaluation is not repeated per output column.
 - [x] Expose the same independent-recurrence, batched matrix-product CG
   contract through the generic linear-operator base type.
+- [x] Add an explicit generic `solve_cg_device` path that keeps the lowered
+  kernel program and sample points resident while Krylov products and vector
+  updates execute through OpenACC.
+- [ ] Extend the generic resident CG override to multi-RHS workspaces and
+  block/Nystrom preconditioners.
 - [ ] Add block/Nystrom preconditioners, stochastic Lanczos log determinants,
   and LOVE-style predictive-variance products for large exact-GP solves.
 - [x] Add compact-support sparse covariance/precision dispatch through
@@ -294,9 +299,10 @@ implemented and independently tested in `fortnum` as
 `structured_gp_operator_t`, including persistent OpenACC vector and multi-RHS
 products. The one-dimensional `fortnum_toeplitz` dependency also has cached
 FFT products and independent scaling evidence, and FortML now wraps it in
-`toeplitz_gp_operator_t` with a dense-oracle CG check. FortML still needs a
-device-resident generic CG recurrence, derivative products, multilevel
-embeddings, and matched CPU/GPU scaling evidence for the Toeplitz GP path.
+`toeplitz_gp_operator_t` with a dense-oracle CG check. The generic kernel
+operator now has a single-RHS resident `solve_cg_device` recurrence; generic
+multi-RHS workspaces, derivative products, multilevel embeddings, and matched
+CPU/GPU scaling evidence for the Toeplitz GP path remain open.
 
 The compact-support sparse branch now consumes `fortsparse` triplets and
 retains a CSR view for row-owned host and OpenACC products. Its float64,

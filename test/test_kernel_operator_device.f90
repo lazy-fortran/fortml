@@ -4,6 +4,7 @@ program test_kernel_operator_device
     use fortml_kernels, only: kernel_add, kernel_multiply, kernel_t, &
         make_constant_kernel, make_linear_kernel, make_matern32_kernel, &
         make_rbf_kernel, make_white_noise_kernel
+    use fortnum_krylov, only: KRYLOV_OK
     use fortnum_status, only: FORTNUM_OK, fortnum_status_t
     implicit none
 
@@ -16,6 +17,8 @@ program test_kernel_operator_device
     real(dp) :: expected_matrix(n_samples, n_rhs)
     real(dp) :: composite_expected(n_samples)
     real(dp) :: composite_expected_matrix(n_samples, n_rhs)
+    real(dp) :: right_hand_side(n_samples), target_solution(n_samples)
+    real(dp) :: solution(n_samples), residual_norm
     type(kernel_operator_t) :: rbf_generic
     type(kernel_operator_t) :: composite_operator
     type(kernel_operator_t) :: mixed_operator
@@ -23,7 +26,7 @@ program test_kernel_operator_device
     type(kernel_t) :: white_noise_kernel, sum_kernel, product_kernel
     type(fortnum_status_t) :: status
     real(dp) :: distance, matern_value, mixed_expected(n_samples)
-    integer :: column, feature, i, j, nfail
+    integer :: cg_info, cg_iterations, column, feature, i, j, nfail
 
     nfail = 0
     do feature = 1, n_features
@@ -125,6 +128,20 @@ program test_kernel_operator_device
         "composite kernel device matrix product succeeds", nfail)
     call require(maxval(abs(outputs - composite_expected_matrix)) < 3.0e-13_dp, &
         "composite kernel matrix product matches direct oracle", nfail)
+    target_solution = input
+    right_hand_side = composite_expected
+    solution = 0.0_dp
+    call composite_operator%solve_cg_device( &
+        right_hand_side, solution, 1.0e-12_dp, 50, cg_info, cg_iterations, &
+        residual_norm)
+    call require(cg_info == KRYLOV_OK, &
+        "generic device CG converges", nfail)
+    call require(cg_iterations > 0 .and. cg_iterations <= 50, &
+        "generic device CG reports bounded iterations", nfail)
+    call require(maxval(abs(solution - target_solution)) < 3.0e-11_dp, &
+        "generic device CG matches the independent constructed solution", nfail)
+    call require(residual_norm < 3.0e-11_dp, &
+        "generic device CG reports a true residual", nfail)
     call composite_operator%exit_data(status)
     call require(status%code == FORTNUM_OK, &
         "composite kernel exits persistent device data", nfail)

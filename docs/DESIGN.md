@@ -153,6 +153,14 @@ contract. Generic composable-kernel operators therefore retain fusion all the
 way through CG, while `rbf_operator_t` keeps its specialized accelerator
 override.
 
+`kernel_operator_t%solve_cg_device` is the first generic accelerator solve
+entry point. It requires `enter_data` for the sample points and static kernel
+program, maps only the right-hand side and per-solve Krylov vectors at the
+call boundary, and recomputes the true residual before accepting convergence.
+The independent device test constructs the right-hand side from a known
+solution using a separate pairwise formula. A persistent generic multi-RHS
+workspace and low-rank/block preconditioners remain separate milestones.
+
 `structured_gp_operator_t` wraps the reusable `fortnum_tensor_product`
 contraction and exposes the same persistent OpenACC lifetime shape through
 `enter_data(status, n_rhs)`, `exit_data(status)`, `matvec_device`, and
