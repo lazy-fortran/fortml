@@ -216,6 +216,42 @@ missing report leaves the item open.
 - [x] Publish the repository and verified benchmark artifacts under the MIT
   license.
 
+## Scalable-GP review benchmark
+
+The reference is Liu, Ong, Shen and Cai, "When Gaussian Process Meets Big
+Data: A Review of Scalable GPs", IEEE TNNLS 31(11):4405-4423, 2020
+(DOI 10.1109/TNNLS.2019.2957109). The review has no numeric result tables: its
+reproducible evidence is the one-dimensional toy of Figs. 4 and 5
+(`y = sinc(x) + eps`, `eps ~ N(0, 0.04)`, 120 training points), the qualitative
+behaviours it reports there, the complexity claims of Fig. 2, the library list
+of Table I, and the data set list of Table II. Matching the paper therefore
+means reproducing those behaviours and complexity orders, not fitting numbers
+that do not exist.
+
+- [x] Implement the prior sparse approximations SoR, DTC, FITC and PITC with a
+  shared inducing framework. Each collapses to the exact GP when the inducing
+  set is the training set, and the SoR overconfidence and DTC return-to-prior
+  of Fig. 4 are checked directly.
+- [x] Implement the local approximations NLE, PoE, GPoE, BCM, RBCM and GRBCM.
+  PoE, the normalized GPoE and BCM reproduce the exact GP with one expert; the
+  PoE overconfidence and the GPoE return-to-prior of Fig. 5 are checked.
+- [x] Implement SKI grid interpolation and subset-of-data selection. The SKI
+  product is checked against a dense `W K_uu W^T` assembly and its convergence
+  under grid refinement.
+- [ ] Implement the mixture-of-experts gating aggregation of Fig. 5.
+- [ ] Add the paper's 1-D toy as a shared fixture and check every method's
+  reported Fig. 4/Fig. 5 behaviour automatically.
+- [ ] Record wall time and peak resident memory for every method in
+  `fortml-bench`, with scaling sweeps in the sample count, the inducing size,
+  the expert count and the input dimension, and document the measured order
+  against the complexity claimed in Fig. 2.
+- [ ] Add the KeOps-style matrix-free exact lane to the same comparison and
+  answer whether it is good enough on its own, or where the approximations
+  still win.
+- [ ] Record provenance for the paper and for every third-party implementation
+  compared against, with download scripts and checksums.
+- [ ] Publish the plots and report the comparison to Chris on Zulip.
+
 ## Research record
 
 The ignored `.provenance/` tree contains shallow upstream clones, downloaded
