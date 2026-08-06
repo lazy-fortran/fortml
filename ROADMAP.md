@@ -103,8 +103,13 @@ missing report leaves the item open.
   and LOVE-style predictive-variance products for large exact-GP solves.
 - [ ] Add compact-support sparse covariance/precision dispatch through
   `fortsparse` or iterative sparse MVM, with fill-in and memory diagnostics.
-- [ ] Add regular-grid operators: 1-D and multilevel Toeplitz FFT products,
-  Kronecker/tensor-product contractions, and banded Markov-precision paths.
+- [x] Consume `fortnum_tensor_product` through the structured GP operator for
+  separable tensor-grid covariance products, with vector, multi-RHS, diagonal,
+  and CG correctness checks against dense oracles.
+- [x] Record the reusable `fortnum_toeplitz` 1-D cached circulant-embedding
+  dependency and its independent dense-oracle/scaling evidence.
+- [ ] Add the FortML Toeplitz-backed GP wrapper, multilevel tensor-grid
+  embeddings, derivative products, and banded Markov-precision paths.
 - [ ] Add multi-output GPs, inducing-point variational GPs, and the structured
   inference policies that sit above these operator contracts.
 - [ ] Add variational autoencoders and deep recurrent networks after the
@@ -271,7 +276,8 @@ the next optimization target under block or Nystrom preconditioning.
 
 The reusable higher-dimensional tensor-product contraction primitive is now
 implemented and independently tested in `fortnum` as
-`fortnum_tensor_product`. FortML has not yet wrapped it in a structured GP
-covariance operator, so the regular-grid item remains open here. The next
-integration must add structured GP inference, derivative products, and matched
-scaling evidence.
+`fortnum_tensor_product`, and FortML now exposes it through
+`structured_gp_operator_t`. The one-dimensional `fortnum_toeplitz` dependency
+also has cached FFT products and independent scaling evidence. FortML still
+needs its Toeplitz-backed covariance wrapper, derivative products, multilevel
+embeddings, and matched CPU/GPU scaling evidence.
