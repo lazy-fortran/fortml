@@ -5,6 +5,15 @@ module fortml_kernels
     implicit none
     private
 
+    interface
+        subroutine fortml_generated_rbf_leaf_fortran( &
+                variance, distance, lengthscale, output)
+            use, intrinsic :: iso_fortran_env, only: real64
+            real(real64), intent(in) :: variance, distance, lengthscale
+            real(real64), intent(out) :: output
+        end subroutine fortml_generated_rbf_leaf_fortran
+    end interface
+
     integer, parameter, public :: KERNEL_RBF = 1
     integer, parameter, public :: KERNEL_MATERN12 = 2
     integer, parameter, public :: KERNEL_MATERN32 = 3
@@ -218,8 +227,13 @@ contains
                 lengthscale = 1.0_dp
             end if
             r2 = sum((x1 - x2)**2)
-            call leaf_value_and_length_derivative(self%kind, variance, &
-                lengthscale, r2, value, length_derivative)
+            if (self%kind == KERNEL_RBF) then
+                call fortml_generated_rbf_leaf_fortran( &
+                    variance, r2, lengthscale, value)
+            else
+                call leaf_value_and_length_derivative(self%kind, variance, &
+                    lengthscale, r2, value, length_derivative)
+            end if
             if (self%kind == KERNEL_LINEAR) then
                 value = variance*dot_product(x1, x2)
             else if (self%kind == KERNEL_CONSTANT) then
@@ -403,8 +417,13 @@ contains
             do j = 1, size(x2, 1)
                 do i = 1, size(x1, 1)
                     r2 = sum((x1(i, :) - x2(j, :))**2)
-                    call leaf_value_and_length_derivative(self%kind, variance, &
-                        lengthscale, r2, value, dummy)
+                    if (self%kind == KERNEL_RBF) then
+                        call fortml_generated_rbf_leaf_fortran( &
+                            variance, r2, lengthscale, value)
+                    else
+                        call leaf_value_and_length_derivative(self%kind, variance, &
+                            lengthscale, r2, value, dummy)
+                    end if
                     if (self%kind == KERNEL_LINEAR) then
                         matrix(i, j) = variance*dot_product(x1(i, :), x2(j, :))
                     else if (self%kind == KERNEL_CONSTANT) then
@@ -474,7 +493,8 @@ contains
             lengthscale = exp(self%log_parameters(2))
             inverse_length_squared = 1.0_dp/(lengthscale*lengthscale)
             squared_distance = sum((x1 - x2)**2)
-            value = variance*exp(-0.5_dp*squared_distance*inverse_length_squared)
+            call fortml_generated_rbf_leaf_fortran( &
+                variance, squared_distance, lengthscale, value)
             do i = 1, self%input_dim
                 difference = x1(i) - x2(i)
                 gradient_x1(i) = -value*difference*inverse_length_squared
@@ -547,8 +567,14 @@ contains
             do j = 1, size(x2, 1)
                 do i = 1, size(x1, 1)
                     r2 = sum((x1(i, :) - x2(j, :))**2)
-                    call leaf_value_and_length_derivative(self%kind, variance, &
-                        lengthscale, r2, value, length_derivative)
+                    if (self%kind == KERNEL_RBF) then
+                        call fortml_generated_rbf_leaf_fortran( &
+                            variance, r2, lengthscale, value)
+                        length_derivative = value*r2/(lengthscale*lengthscale)
+                    else
+                        call leaf_value_and_length_derivative(self%kind, variance, &
+                            lengthscale, r2, value, length_derivative)
+                    end if
                     if (self%kind == KERNEL_LINEAR) then
                         matrix(i, j) = variance*dot_product(x1(i, :), x2(j, :))
                         matrix_dot(i, j) = matrix(i, j)*log_variance_dot
@@ -627,8 +653,13 @@ contains
         do j = 1, size(x2, 1)
             do i = 1, size(x1, 1)
                 r2 = sum((x1(i, :) - x2(j, :))**2)
-                call leaf_value_and_length_derivative(self%kind, variance, &
-                    lengthscale, r2, value, length_derivative)
+                if (self%kind == KERNEL_RBF .and. derivative_kind == 1) then
+                    call fortml_generated_rbf_leaf_fortran( &
+                        variance, r2, lengthscale, value)
+                else
+                    call leaf_value_and_length_derivative(self%kind, variance, &
+                        lengthscale, r2, value, length_derivative)
+                end if
                 if (self%kind == KERNEL_LINEAR) then
                     value = variance*dot_product(x1(i, :), x2(j, :))
                     matrix(i, j) = value

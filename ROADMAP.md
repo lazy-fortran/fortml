@@ -251,6 +251,15 @@ formula-level generation evidence; wiring the generated products directly
 into the composable `kernel_t`/GP implementation remains the next FortAD
 integration gate.
 
+The shared FortSym kernel IR now also has a checked Fortran consumer generator
+for the RBF primal leaf. `fortml_kernels` uses the generated leaf for scalar
+values, covariance matrices, matrix JVP values, input derivatives, and the
+log-variance VJP contribution. `test_kernels` compares those paths with an
+independent pairwise RBF formula and finite-difference/adjoint product checks.
+This closes the generated-primal wiring slice only; generated FortAD
+parameter JVP/VJP/HVP dispatch through the recursive `kernel_t` and GP solve
+is still open.
+
 The first basis-map slice is now implemented in `fortml_basis`. It provides polynomial
 powers, Fourier sine/cosine features, differentiable ARD radial features, and
 fixed-knot B-spline features use stable layouts and expose value, JVP, and VJP
