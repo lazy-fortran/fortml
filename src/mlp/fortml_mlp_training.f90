@@ -945,7 +945,8 @@ contains
 
     subroutine mlp_train(model, x, target, status, options, state, &
             validation_x, validation_target, checkpoint)
-        !! Train `model` with deterministic Adam updates.
+        !! Train `model` with deterministic Adam, AdamW, Adagrad, or SGD
+        !! updates, as selected by `options%optimizer`.
         !!
         !! A zero batch size selects full-batch updates.  When shuffling is
         !! enabled, an explicit Park--Miller stream seeded by `shuffle_seed`
