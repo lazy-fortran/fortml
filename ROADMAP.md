@@ -118,7 +118,8 @@ only listed as gaps:
   subsampling with positive `int64` seeds. Full fractions preserve the exact
   historical tree path. Subsampling is covered by a seed and structure oracle,
   while warm starts, serialized trees, and distributed histogram reduction stay
-  open.
+  open. The release evidence is `results/XGBOOST_SAMPLING.md` in
+  `fortml-bench`.
 
 The FortBO and FortMC companion pins were rechecked against their `main`
 branches on this date: FortBO `0141e22` and FortMC `4dde0cc`. Their roadmaps
