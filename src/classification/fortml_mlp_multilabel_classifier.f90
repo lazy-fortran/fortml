@@ -189,6 +189,7 @@ contains
         real(dp), intent(in) :: x(:, :)
         real(dp), intent(out) :: scores(:, :)
         type(fortnum_status_t), intent(out) :: status
+        integer :: j
 
         scores = 0.0_dp
         if (.not. self%fitted()) then
@@ -215,7 +216,6 @@ contains
         real(dp), intent(in) :: x(:, :)
         real(dp), intent(out) :: scores(:, :)
         type(fortnum_status_t), intent(out) :: status
-        integer :: j
 
         if (.not. device%selected .or. .not. device%available) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
