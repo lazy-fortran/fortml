@@ -1216,6 +1216,13 @@ count as a production lazy implementation.
   CUDA kernel with a CPU oracle; autodiff-bearing trajectories remain on the
   CPU until generated FortAD/FortSym device products and transfer contracts
   are available.
+- [x] Add explicit device capability/refusal methods for elastic-net
+  prediction, OVO probabilities/labels, Laplace-GP latent/probability
+  prediction, the shared GP likelihood, and typed MLP schedules. Their CPU
+  dispatches retain the reference behavior; selected CUDA contexts return
+  `FORTNUM_NOT_IMPLEMENTED` until resident kernels and transfer accounting
+  exist. Independent synthetic-device tests cover the no-hidden-host-fallback
+  boundary, and the sibling benchmark records untimed CUDA refusal rows.
 - [x] Record the resident micro-kernel device contracts in the sibling benchmark
   harness with
   machine-readable pass/skipped/failed rows, hardware and revision provenance,
