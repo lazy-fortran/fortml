@@ -1,11 +1,11 @@
 Verification date: 2026-08-07
-FortML revision: e4df8c5a8db6a1bd6aa4759ad83cb23610c0c451
-FortAD dependency: origin/main b931cdc0d49a2ccada43754cafff6937d1cf9b7a
+FortML revision: 4318862366d18679bb08087d6da5938796bd931b
+FortAD dependency: clean origin/main 2b404b2957dbc5a8c205fdcf5429970bc75d0fd3
 Command: fo (clean FortML/FortAD verification worktrees under /mnt/storage)
-Static: OK (336 modules, 336 changed, 336 affected)
-First build: OK (771 units)
-Second build: OK (702 units)
-Tests: OK (155/155)
+Static: OK (344 modules, 344 changed, 344 affected)
+First build: OK (776 units)
+Second build: OK (705 units)
+Tests: OK (158/158)
 Lint: OK
 Result: All stages passed
 Warnings: existing non-fatal GNU -Warray-temporaries in XGBoost benchmark
