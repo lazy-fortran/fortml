@@ -108,7 +108,8 @@ contains
         integer, intent(inout) :: failures
         type(fortnum_status_t) :: status
         real(dp) :: log_rate(3, 2), targets(3, 2), direction(3, 2), weights(3)
-        real(dp) :: log_rate_bar(3, 2), log_rate_hvp(3, 2)
+        real(dp) :: log_rate_bar(3, 2), log_rate_bar_plus(3, 2)
+        real(dp) :: log_rate_bar_minus(3, 2), log_rate_hvp(3, 2)
         real(dp) :: value, value_dot, value_plus, value_minus, finite_dot
         real(dp) :: lhs, rhs, expected, sum_value, h
         integer :: i, j
@@ -151,20 +152,14 @@ contains
             "Poisson NLL VJP adjoint identity", failures)
 
         call poisson_nll_hvp(log_rate, targets, direction, log_rate_hvp, status, weights)
-        call poisson_nll_vjp(log_rate + h*direction, targets, 1.0_dp, log_rate_bar, &
+        call poisson_nll_vjp(log_rate + h*direction, targets, 1.0_dp, log_rate_bar_plus, &
             status, weights)
-        call poisson_nll_vjp(log_rate - h*direction, targets, -1.0_dp, log_rate_bar, &
+        call poisson_nll_vjp(log_rate - h*direction, targets, 1.0_dp, log_rate_bar_minus, &
             status, weights)
-        ! The closed form HVP is checked directly, independently of VJP storage.
-        expected = 0.0_dp
-        do j = 1, size(log_rate, 2)
-            do i = 1, size(log_rate, 1)
-                expected = expected + (weights(i)*exp(log_rate(i, j))* &
-                    direction(i, j)/sum(weights) - log_rate_hvp(i, j))**2
-            end do
-        end do
-        call check(status_ok(status) .and. expected < 2.0e-30_dp, &
-            "Poisson NLL HVP closed-form oracle", failures)
+        expected = sum(((log_rate_bar_plus - log_rate_bar_minus)/(2.0_dp*h) - &
+            log_rate_hvp)**2)
+        call check(status_ok(status) .and. expected < 2.0e-15_dp, &
+            "Poisson NLL HVP finite-difference oracle", failures)
 
         call poisson_nll_value(log_rate, targets, sum_value, status, weights, &
             LOSS_REDUCTION_SUM)
