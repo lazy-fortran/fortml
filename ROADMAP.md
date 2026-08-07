@@ -1247,6 +1247,9 @@ The maintained reports and their raw artifacts are in `../fortml-bench/results`:
 - [`CLASSIFICATION_MODELS.md`](../fortml-bench/results/CLASSIFICATION_MODELS.md),
   backed by `classification_models.csv` for multinomial softmax and multiclass
   neural classifiers.
+- [`BERNOULLI_NB.md`](../fortml-bench/results/BERNOULLI_NB.md), backed by
+  `bernoulli_naive_bayes.csv` for relaxed Bernoulli Naive Bayes, its input JVP,
+  and the native FortML release-app protocol.
 - Corrected GRBCM evidence in `scalable_gp_grbcm_corrected.csv` and
   `scalable_gp_grbcm_corrected_train_seconds.png`.
 - Current partition and dimension evidence in `scalable_gp_clustered.csv` and
