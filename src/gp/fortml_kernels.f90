@@ -5,8 +5,7 @@ module fortml_kernels
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     use fortml_generated_matern_products, only: fortml_matern12_hvp, &
         fortml_matern32_hvp, fortml_matern52_hvp
-    use fortml_generated_rbf_products, only: fortml_rbf_hvp, fortml_rbf_jvp, &
-        fortml_rbf_vjp
+    use fortml_generated_rbf_products, only: fortml_rbf_hvp
     use fortml_kernel_formula, only: kernel_formula_t, MAX_FORMULA_STACK, &
         OPCODE_PUSH_R2, OPCODE_PUSH_R, OPCODE_PUSH_DOT, OPCODE_PUSH_CONST, &
         OPCODE_ADD, OPCODE_SUBTRACT, OPCODE_MULTIPLY, OPCODE_NEGATE, &
@@ -21,6 +20,15 @@ module fortml_kernels
             real(real64), intent(in) :: variance, distance, lengthscale
             real(real64), intent(out) :: output
         end subroutine fortml_generated_rbf_leaf_fortran
+
+        subroutine fortml_generated_rbf_leaf_derivatives( &
+                variance, distance, lengthscale, value, dvariance, &
+                ddistance, dlengthscale)
+            use, intrinsic :: iso_fortran_env, only: real64
+            real(real64), intent(in) :: variance, distance, lengthscale
+            real(real64), intent(out) :: value, dvariance, ddistance, &
+                dlengthscale
+        end subroutine fortml_generated_rbf_leaf_derivatives
     end interface
 
     integer, parameter, public :: KERNEL_RBF = 1
@@ -1022,6 +1030,7 @@ contains
         real(dp), allocatable :: other(:, :), other_dot(:, :)
         real(dp) :: variance, lengthscale, r2, value, length_derivative
         real(dp) :: log_variance_dot, log_lengthscale_dot
+        real(dp) :: dvariance, ddistance, dlengthscale
         integer :: i, j, left_count
 
         select case (self%kind)
@@ -1055,11 +1064,12 @@ contains
                 do i = 1, size(x1, 1)
                     r2 = sum((x1(i, :) - x2(j, :))**2)
                     if (self%kind == KERNEL_RBF) then
-                        call fortml_rbf_jvp( &
-                            sqrt(r2), 0.0_dp, 0.0_dp, 0.0_dp, &
-                            self%log_parameters(1), log_variance_dot, &
-                            self%log_parameters(2), log_lengthscale_dot, &
-                            value, matrix_dot(i, j))
+                        call fortml_generated_rbf_leaf_derivatives( &
+                            variance, r2, lengthscale, value, dvariance, &
+                            ddistance, dlengthscale)
+                        matrix_dot(i, j) = dvariance*variance* &
+                            log_variance_dot + dlengthscale*lengthscale* &
+                            log_lengthscale_dot
                     else
                         call leaf_value_and_length_derivative(self%kind, variance, &
                             lengthscale, r2, value, length_derivative)
@@ -1141,18 +1151,22 @@ contains
         real(dp), intent(in) :: x1(:, :), x2(:, :), matrix_bar(:, :)
         real(dp), intent(inout) :: parameter_bar(:)
         integer, intent(in) :: offset
-        real(dp) :: r2, value, x1_bar, x2_bar, variance_bar, lengthscale_bar
+        real(dp) :: variance, lengthscale, r2, value
+        real(dp) :: dvariance, ddistance, dlengthscale
         integer :: i, j
 
+        variance = exp(self%log_parameters(1))
+        lengthscale = exp(self%log_parameters(2))
         do j = 1, size(x2, 1)
             do i = 1, size(x1, 1)
                 r2 = sum((x1(i, :) - x2(j, :))**2)
-                call fortml_rbf_vjp( &
-                    sqrt(r2), 0.0_dp, self%log_parameters(1), &
-                    self%log_parameters(2), value, matrix_bar(i, j), x1_bar, &
-                    x2_bar, variance_bar, lengthscale_bar)
-                parameter_bar(offset) = parameter_bar(offset) + variance_bar
-                parameter_bar(offset + 1) = parameter_bar(offset + 1) + lengthscale_bar
+                call fortml_generated_rbf_leaf_derivatives( &
+                    variance, r2, lengthscale, value, dvariance, ddistance, &
+                    dlengthscale)
+                parameter_bar(offset) = parameter_bar(offset) + matrix_bar(i, j)* &
+                    dvariance*variance
+                parameter_bar(offset + 1) = parameter_bar(offset + 1) + &
+                    matrix_bar(i, j)*dlengthscale*lengthscale
             end do
         end do
     end subroutine kernel_rbf_parameter_vjp
