@@ -1596,12 +1596,13 @@ points where its derivative is singular. The free `kernel_input_derivatives`
 procedure has the same arguments as the type-bound method with the kernel
 supplied first.
 
-`kernel_operator_t` currently refuses periodic and rational-quadratic leaves at
-initialization: the static host/operator program and resident CUDA ABI do not
-yet carry their third positive parameter. This is a typed refusal, not a host
-fallback. Dense `kernel_t%matrix` and all declared derivative products remain
-available, and a resident device implementation will be added only when the
-operator ABI can evaluate the complete expression without hidden transfers.
+`kernel_operator_t` currently refuses periodic, rational-quadratic, cosine, and
+polynomial leaves at initialization: the static host/operator program and
+resident CUDA ABI do not yet carry the complete leaf parameter payloads. This
+is a typed refusal, not a host fallback. Dense `kernel_t%matrix` and all
+declared derivative products remain available, and a resident device
+implementation will be added only when the operator ABI can evaluate the
+complete expression without hidden transfers.
 
 ### `fortml_kernel_formula`
 
