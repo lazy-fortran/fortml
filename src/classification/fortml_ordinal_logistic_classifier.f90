@@ -622,13 +622,9 @@ contains
                 "ordinal logistic set_parameters: model or parameter shape is invalid")
             return
         end if
-        self%coefficient = values(:self%feature_count())
         position = self%feature_count() + 1
-        if (self%fit_intercept) then
-            self%intercept = values(position)
-            position = position + 1
-        end if
-        if (size(values(position:)) < 1) then
+        if (self%fit_intercept) position = position + 1
+        if (size(values(position:)) /= size(self%threshold)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "ordinal logistic set_parameters: thresholds must be strictly increasing")
             return
@@ -639,6 +635,12 @@ contains
                     "ordinal logistic set_parameters: thresholds must be strictly increasing")
                 return
             end if
+        end if
+        self%coefficient = values(:self%feature_count())
+        position = self%feature_count() + 1
+        if (self%fit_intercept) then
+            self%intercept = values(position)
+            position = position + 1
         end if
         self%threshold = values(position:)
         call status_set(status, FORTNUM_OK, "")
@@ -658,12 +660,27 @@ contains
         class(ordinal_logistic_classifier_t), intent(inout) :: self
         real(dp), intent(in) :: values(:)
         type(fortnum_status_t), intent(out) :: status
-        if (.not. self%is_fitted .or. size(values) /= size(self%threshold) .or. &
-            any(.not. ieee_is_finite(values)) .or. (size(values) > 1 .and. &
-            any(values(2:) <= values(:size(values)-1)))) then
+        if (.not. self%is_fitted) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "ordinal logistic set_thresholds: thresholds must be strictly increasing")
             return
+        end if
+        if (size(values) /= size(self%threshold)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal logistic set_thresholds: thresholds must be strictly increasing")
+            return
+        end if
+        if (any(.not. ieee_is_finite(values))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal logistic set_thresholds: thresholds must be strictly increasing")
+            return
+        end if
+        if (size(values) > 1) then
+            if (any(values(2:) <= values(:size(values)-1))) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "ordinal logistic set_thresholds: thresholds must be strictly increasing")
+                return
+            end if
         end if
         self%threshold = values
         call status_set(status, FORTNUM_OK, "")
