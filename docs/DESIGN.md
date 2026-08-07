@@ -114,14 +114,14 @@ the positive probabilities, and preserves sorted integer labels. Variational
 likelihoods and joint multiclass objectives need their own objective and state
 contracts.
 
-The exact depth-one `fortml_xgboost` lane is deliberately separate from the
+The exact depth-limited recursive `fortml_xgboost` lane is deliberately separate from the
 smooth derivative graph. Each boosting iteration computes objective gradients
 and Hessians at the current margins, exhaustively evaluates every feature
 threshold, and stores the regularized Newton leaf weights. Predictions are
 piecewise constant. Their input JVP is zero in an open leaf and refuses on a
 learned split. This makes the second-order objective contract testable without
-pretending that discrete split selection is differentiable. Deeper trees,
-histograms, missing-value routing, and categorical or monotonic constraints
+pretending that discrete split selection is differentiable. Histograms,
+missing-value routing, and categorical or monotonic constraints
 will be added as distinct policies with independent oracles.
 
 `fortml_preprocessing` keeps fitted statistics in model state and exposes only
