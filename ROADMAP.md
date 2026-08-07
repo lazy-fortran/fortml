@@ -1,6 +1,6 @@
 # fortml roadmap
 
-Verified on 2026-08-06. Interfaces are documented in
+Verified on 2026-08-07. Interfaces are documented in
 [`docs/API.md`](docs/API.md), examples in [`docs/EXAMPLES.md`](docs/EXAMPLES.md),
 and implementation limits in [`docs/DESIGN.md`](docs/DESIGN.md) and
 [`docs/ML_ARCHITECTURE.md`](docs/ML_ARCHITECTURE.md).
@@ -15,7 +15,7 @@ and implementation limits in [`docs/DESIGN.md`](docs/DESIGN.md) and
 
 The checked-in compiler logs above are the 2026-08-06 30-test verification
 snapshot. A fresh GNU Fortran `fo` run on 2026-08-07 passed static analysis,
-the build, all 37 tests, and lint in 5.1 seconds. The fresh run includes
+the build, all 42 tests, and lint in 6.3 seconds. The fresh run includes
 implementation work whose compiler logs have not yet replaced that snapshot.
 
 Behavioral oracles include dense or analytic references, finite differences,
@@ -798,6 +798,11 @@ peak memory, and batch-size scaling with the same correctness gate as training.
   boosting lane with independent NumPy oracles, contextual scikit-learn rows,
   and explicit PyTorch/JAX/XGBoost availability or refusal rows. The release
   record is [`results/FEATURES.md`](../fortml-bench/results/FEATURES.md).
+- [x] Add the exact depth-one XGBoost-style squared/logistic lane and the
+  fitted-scaler plus binary Laplace GP logistic/probit lane with independent
+  NumPy oracles. The release records are
+  [`results/XGBOOST.md`](../fortml-bench/results/XGBOOST.md) and
+  [`results/CLASSIFICATION_EXTENSIONS.md`](../fortml-bench/results/CLASSIFICATION_EXTENSIONS.md).
 - [ ] Define one versioned result schema for correctness, train time, predict
   time, peak host and device memory, compiler, flags, dependency revisions,
   hardware, seed, warmup, repetitions, and refusal reason.
