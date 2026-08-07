@@ -52,7 +52,7 @@ program fortml_bench_gp_hyperparameter_training
     allocate(gradient(size(parameters)))
     call model%hyperparameter_gradient(gradient, status)
     if (.not. status_ok(status)) error stop "GP multistart benchmark gradient failed"
-    write (*, '(a,i0,a,i0,a,i0,a,i0,a,es24.16,a,es24.16,a,3(es24.16,a))') &
+    write (*, '(a,i0,a,i0,a,i0,a,i0,a,es24.16,a,es24.16,a,es24.16,a,3(es24.16,a))') &
         "gp_exact_multistart,", result%start_count, ",", &
         result%successful_starts, ",", result%best_start, ",", &
         result%objective_evaluations, ",", elapsed, ",", &
