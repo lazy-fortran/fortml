@@ -3,7 +3,9 @@ module fortml_derivative_gaussian_process
     use fortnum_kinds, only: dp
     use fortnum_cholesky, only: cholesky_factorization_t
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
-        FORTNUM_DOMAIN_ERROR, FORTNUM_CONVERGENCE_ERROR
+        FORTNUM_DOMAIN_ERROR, FORTNUM_CONVERGENCE_ERROR, FORTNUM_NOT_IMPLEMENTED
+    use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU, &
+        FORTML_DEVICE_CUDA
     use fortml_kernels, only: kernel_t, clone_kernel_into, KERNEL_RBF, KERNEL_MATERN12, &
         KERNEL_MATERN32, KERNEL_MATERN52, KERNEL_LINEAR, KERNEL_CONSTANT, &
         KERNEL_WHITE_NOISE, KERNEL_SUM, KERNEL_PRODUCT, KERNEL_USER
@@ -27,6 +29,8 @@ module fortml_derivative_gaussian_process
     contains
         procedure, public :: fit => gp_derivative_fit
         procedure, public :: predict => gp_derivative_predict
+        procedure, public :: predict_device => gp_derivative_predict_device
+        procedure, public :: device_supported => gp_derivative_device_supported
         procedure, public :: predict_jvp => gp_derivative_predict_jvp
         procedure, public :: predict_vjp => gp_derivative_predict_vjp
         procedure, public :: predict_input_jvp => gp_derivative_predict_input_jvp
@@ -46,6 +50,8 @@ module fortml_derivative_gaussian_process
 
     public :: gp_derivative_fit
     public :: gp_derivative_predict
+    public :: gp_derivative_predict_device
+    public :: gp_derivative_device_supported
     public :: gp_derivative_predict_jvp
     public :: gp_derivative_predict_vjp
     public :: gp_derivative_predict_input_jvp
@@ -158,6 +164,52 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine gp_derivative_predict
+
+    subroutine gp_derivative_predict_device(self, device, x, components, mean, &
+            variance, status)
+        !! Predict mixed value/first-derivative observations through the
+        !! explicit device boundary.  The CPU path is the reference
+        !! implementation; CUDA is refused until a resident covariance,
+        !! factorization, and derivative-query kernel is linked.
+        class(gp_derivative_regression_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :)
+        integer, intent(in) :: components(:)
+        real(dp), intent(out) :: mean(:, :), variance(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "derivative GP device prediction: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict(x, components, mean, variance, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "derivative GP device prediction: no resident CUDA covariance "// &
+                "or derivative-observation kernel is linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "derivative GP device prediction: device kind is invalid")
+        end select
+    end subroutine gp_derivative_predict_device
+
+    logical function gp_derivative_device_supported(self, device_kind) result(supported)
+        !! Report capability without implying an implicit host fallback.
+        class(gp_derivative_regression_t), intent(in) :: self
+        integer, intent(in) :: device_kind
+
+        select case (device_kind)
+        case (FORTML_DEVICE_CPU)
+            supported = derivative_gp_fitted(self)
+        case (FORTML_DEVICE_CUDA)
+            supported = .false.
+        case default
+            supported = .false.
+        end select
+    end function gp_derivative_device_supported
 
     subroutine gp_derivative_predict_jvp(self, x, components, direction, mean, &
             mean_dot, variance, variance_dot, status)

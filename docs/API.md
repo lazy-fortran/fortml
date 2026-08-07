@@ -1373,6 +1373,15 @@ products. The gradient uses analytic parameter tangents of the supported RBF,
 Matérn 1/2, 3/2, 5/2, linear, constant, validated user-formula, and
 sum/product kernels. Matérn 1/2 still refuses coincident derivative
 observations, as do user formulas containing `push_distance` at coincidence.
+
+`predict_device(device,x,components,mean,variance,status)` is the explicit
+backend boundary for mixed observations. A selected CPU context dispatches to
+`predict` exactly. CUDA currently returns `FORTNUM_NOT_IMPLEMENTED` because a
+resident covariance/factorization/derivative-query kernel is not linked;
+`device_supported(FORTML_DEVICE_CPU)` is true only for a fitted model and
+CUDA is reported false. Parameter and query-input JVP/VJP products remain
+host-only until the same resident derivative graph exists, so no derivative
+product silently copies arrays to the host.
 Value-only covariances and their variance-parameter products remain defined at
 coincidence. The refusal applies only when an input derivative is requested.
 The HVP is a deterministic directional finite difference of that analytic

@@ -7,6 +7,7 @@ program fortml_bench_gp_features
     !! variational.
     use, intrinsic :: iso_fortran_env, only: dp => real64, int64, output_unit
     use fortml_derivative_gaussian_process, only: gp_derivative_regression_t
+    use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU
     use fortml_kernel_operator, only: kernel_operator_t
     use fortml_kernels, only: kernel_t, make_rbf_kernel
     use fortml_lanczos, only: lanczos_log_determinant, &
@@ -150,6 +151,7 @@ contains
         integer :: components(n), query_components(n_test), i, repetition
         type(kernel_t) :: kernel
         type(gp_derivative_regression_t) :: model
+        type(fortml_device_t) :: cpu
         type(fortnum_status_t) :: status
 
         do i = 1, n
@@ -171,7 +173,8 @@ contains
 
         kernel = make_rbf_kernel(d, signal, scale, status)
         call model%fit(x, components, y, kernel, noise, status, jitter=jitter)
-        call model%predict(query, query_components, mean, variance, status)
+        call cpu%select(FORTML_DEVICE_CPU, status)
+        call model%predict_device(cpu, query, query_components, mean, variance, status)
         call derivative_reference(x, components, y, query, query_components, &
             signal, scale, noise + jitter, expected_mean, expected_variance)
         error = max(maxval(abs(mean - expected_mean)), &
@@ -185,7 +188,7 @@ contains
         call timer_start()
         do repetition = 1, reps
             call model%fit(x, components, y, kernel, noise, status, jitter=jitter)
-            call model%predict(query, query_components, mean, variance, status)
+            call model%predict_device(cpu, query, query_components, mean, variance, status)
         end do
         call timer_stop(reps, seconds)
         call write_row("derivative", n, d, p, n_test, 0, reps, seconds, error)

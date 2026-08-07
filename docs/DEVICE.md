@@ -132,3 +132,14 @@ in the process cannot turn a host allocation into a GPU benchmark, and no
 implicit host/device transfer is hidden behind a prediction call. The
 independent `test_device_contract_new_features` fixture checks these refusal
 boundaries without requiring a CUDA driver.
+
+The mixed value/first-derivative GP has the same explicit boundary. Its
+`gp_derivative_regression_t%predict_device` method dispatches selected CPU
+contexts to the reference covariance solve and returns
+`FORTNUM_NOT_IMPLEMENTED` for CUDA until covariance assembly, factorization,
+and derivative-query products are resident on the device. The companion
+`device_supported` query reports this distinction; derivative parameter and
+query-input JVP/VJP methods are not presented as GPU-capable by the CPU-only
+build. `test_derivative_gp_device` verifies that CUDA refusal leaves output
+buffers untouched and that CPU dispatch agrees with the ordinary prediction
+path.

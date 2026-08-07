@@ -1172,6 +1172,14 @@ state phases are reported separately.
   and adjoint finite-difference oracles. The products hold parameters and
   training inputs fixed. An analytic third-order kernel contract and joint
   posterior covariance remain open.
+- [x] Add an explicit device capability and prediction dispatch contract for
+  mixed value/first-derivative GPs. CPU dispatch is reference-equivalent;
+  CUDA refuses with `FORTNUM_NOT_IMPLEMENTED` until a resident covariance,
+  factorization, and derivative-query graph is linked. No hidden host fallback
+  is permitted, and the refusal is covered by an independent test.
+- [ ] Lower derivative-GP covariance assembly, solves, parameter products, and
+  query JVP/VJP products to resident CUDA kernels; only then promote the CUDA
+  capability flag and add timed GPU benchmark rows.
 - [ ] Add joint posterior covariance for value and derivative queries, plus
   cross-covariances between requested components.
 - [ ] Extend derivative observations to second derivatives only for kernels with
