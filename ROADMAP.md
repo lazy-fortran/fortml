@@ -9,7 +9,7 @@ and implementation limits in [`docs/DESIGN.md`](docs/DESIGN.md) and
 
 | Compiler | Command | Result |
 | --- | --- | --- |
-| GNU Fortran | `fo` | Static, build, test, and lint checks passed. The fresh 2026-08-07 run passed all 133 tests (296 modules; 753 build units). See [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
+| GNU Fortran | `fo` | Static, build, test, and lint checks passed. The fresh 2026-08-07 run passed all 133 tests (298 modules; 755 build units). See [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
 | NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded compiler lane. The checked-in NVIDIA log predates the latest 130-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
@@ -21,9 +21,9 @@ capability refusals, resident-MSE and dense-affine CUDA contracts, resident
 forest plan boundary, PCA-initialized linear autoencoder, seeded exact-GP
 multistart, multilabel/ordinal neural losses, squared-log XGBoost, named MLP
 parameter layout, softmax objective products, and validation-stopping XGBoost
-slices. The build emits five GNU array-temporary warnings in the classifier
-benchmark app. They are non-fatal and isolated to the benchmark call boundary;
-lint and all behavioral tests pass. NVIDIA compiler coverage remains an
+slices. The build emits three GNU array-temporary warnings at benchmark call
+boundaries. They are non-fatal and isolated to release-app argument
+construction; lint and all behavioral tests pass. NVIDIA compiler coverage remains an
 explicit older-build result.
 
 Behavioral oracles include dense or analytic references, finite differences,
@@ -85,6 +85,33 @@ prediction, model slicing, and reproducible benchmarks. Physics-informed,
 Hamiltonian, symplectic, and GP-initialized models remain separate work
 packages because their residual and structure certificates require additional
 oracles.
+
+### 2026-08-07 closure slice
+
+The current release adds three cross-package contracts that were previously
+only listed as gaps:
+
+- `softmax_training_objective_t` supplies weighted multinomial cross-entropy,
+  feature-only L2, packed-parameter gradients, mixed parameter/L2 HVPs, a
+  FortOpt callback, and bounded L-BFGS-B. The independent release lane is
+  `results/softmax_training.csv` in `fortml-bench`.
+- MLPs expose stable named parameter blocks with ranges, shapes, and
+  trainable/buffer roles. This is the selector seam required by Flux/Lux-style
+  functional training state; aliases, tied parameters, and full buffer routing
+  remain open.
+- XGBoost validation monitoring accepts typed validation arrays, computes
+  objective-native weighted validation loss, records best iteration and loss,
+  and supports restore-best or retain-all ensembles. Warm starts, serialized
+  tree state, categorical/ranking policies, and resident GPU histograms remain
+  open. The release lane is
+  `results/XGBOOST_EARLY_STOPPING.md` in `fortml-bench`.
+
+The FortBO and FortMC companion pins were rechecked against their `main`
+branches on this date: FortBO `0141e22` and FortMC `4dde0cc`. Their roadmaps
+remain authoritative for acquisition and sampling algorithms; FortML owns the
+posterior/log-density protocols and does not embed sampler or acquisition
+state. Any future adapter must add a focused oracle, typed GPU/refusal row,
+and a benchmark record in the companion harness.
 
 ## Bayesian ecosystem split
 
