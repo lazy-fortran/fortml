@@ -11,13 +11,21 @@ module fortml_losses
     public :: binary_cross_entropy_with_logits_value
     public :: binary_cross_entropy_with_logits_jvp
     public :: binary_cross_entropy_with_logits_vjp
+    public :: binary_cross_entropy_with_logits_hvp
     public :: softmax_value, softmax_jvp, softmax_vjp
     public :: log_softmax_value, log_softmax_jvp, log_softmax_vjp
     public :: softmax_cross_entropy_value
     public :: softmax_cross_entropy_jvp
     public :: softmax_cross_entropy_vjp
+    public :: softmax_cross_entropy_hvp
+    public :: weighted_mse_loss_value, weighted_mse_loss_jvp
+    public :: weighted_mse_loss_vjp, weighted_mse_loss_hvp
     public :: huber_loss_value, huber_loss_jvp, huber_loss_vjp
+    public :: huber_loss_hvp
     public :: quantile_loss_value, quantile_loss_jvp, quantile_loss_vjp
+
+    integer, parameter, public :: LOSS_REDUCTION_MEAN = 1
+    integer, parameter, public :: LOSS_REDUCTION_SUM = 2
 
 contains
 
@@ -162,6 +170,39 @@ contains
             real(size(logits), dp)
         call status_set(status, FORTNUM_OK, "")
     end subroutine binary_cross_entropy_with_logits_vjp
+
+    subroutine binary_cross_entropy_with_logits_hvp(logits, targets, logits_dot, &
+            logits_hvp, status)
+        !! Hessian-vector product of the mean BCE-with-logits objective.
+        !!
+        !! The target is constant and the product is with respect to logits:
+        !! `diag(sigmoid(logit)*(1-sigmoid(logit)))/N * logits_dot`.
+        real(dp), intent(in) :: logits(:, :), targets(:, :), logits_dot(:, :)
+        real(dp), intent(out) :: logits_hvp(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: probabilities(:, :)
+
+        logits_hvp = 0.0_dp
+        if (any(shape(logits_dot) /= shape(logits)) .or. &
+            any(shape(logits_hvp) /= shape(logits))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "binary cross entropy HVP: tangent or output shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(logits_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "binary cross entropy HVP: tangent must be finite")
+            return
+        end if
+        allocate(probabilities(size(logits, 1), size(logits, 2)))
+        call sigmoid_value(logits, probabilities, status)
+        if (status%code /= FORTNUM_OK) return
+        call validate_binary_inputs(logits, targets, status)
+        if (status%code /= FORTNUM_OK) return
+        logits_hvp = probabilities*(1.0_dp - probabilities)*logits_dot / &
+            real(size(logits), dp)
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine binary_cross_entropy_with_logits_hvp
 
     subroutine softmax_value(logits, probabilities, status)
         real(dp), intent(in) :: logits(:, :)
@@ -431,6 +472,178 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine softmax_cross_entropy_vjp
 
+    subroutine softmax_cross_entropy_hvp(logits, labels, logits_dot, logits_hvp, &
+            status)
+        !! Hessian-vector product of the mean softmax cross-entropy objective.
+        !!
+        !! For each sample the product is `J_softmax * logits_dot`; the
+        !! one-hot label contributes no second derivative.  This is analytic
+        !! and remains stable because the probabilities are formed after
+        !! subtracting the row maximum.
+        real(dp), intent(in) :: logits(:, :), logits_dot(:, :)
+        integer, intent(in) :: labels(:)
+        real(dp), intent(out) :: logits_hvp(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: probabilities(:, :)
+        real(dp) :: row_dot
+        integer :: i
+
+        logits_hvp = 0.0_dp
+        if (any(shape(logits_dot) /= shape(logits)) .or. &
+            any(shape(logits_hvp) /= shape(logits))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "softmax cross entropy HVP: tangent or output shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(logits_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "softmax cross entropy HVP: tangent must be finite")
+            return
+        end if
+        call validate_categorical_inputs(logits, labels, status)
+        if (status%code /= FORTNUM_OK) return
+        allocate(probabilities(size(logits, 1), size(logits, 2)))
+        call softmax_value(logits, probabilities, status)
+        if (status%code /= FORTNUM_OK) return
+        do i = 1, size(logits, 1)
+            row_dot = dot_product(probabilities(i, :), logits_dot(i, :))
+            logits_hvp(i, :) = probabilities(i, :)* &
+                (logits_dot(i, :) - row_dot)
+        end do
+        logits_hvp = logits_hvp/real(size(logits, 1), dp)
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine softmax_cross_entropy_hvp
+
+    subroutine weighted_mse_loss_value(prediction, targets, sample_weight, value, &
+            status, reduction)
+        !! Weighted mean/sum squared loss with a reusable reduction contract.
+        !!
+        !! The per-element loss is `0.5*(prediction-targets)**2`.  Mean
+        !! reduction divides by the positive sample-weight mass (not by the
+        !! number of elements); sum reduction leaves the weighted sum
+        !! unnormalised.  A zero-support weight vector is always refused.
+        real(dp), intent(in) :: prediction(:, :), targets(:, :)
+        real(dp), intent(in) :: sample_weight(:)
+        real(dp), intent(out) :: value
+        type(fortnum_status_t), intent(out) :: status
+        integer, intent(in), optional :: reduction
+        integer :: reduction_kind, i
+        real(dp) :: normalization
+
+        value = 0.0_dp
+        call validate_weighted_mse_inputs(prediction, targets, sample_weight, &
+            reduction, status, reduction_kind)
+        if (status%code /= FORTNUM_OK) return
+        normalization = weighted_mse_normalization(sample_weight, reduction_kind)
+        do i = 1, size(prediction, 1)
+            value = value + 0.5_dp*sample_weight(i)*sum( &
+                (prediction(i, :) - targets(i, :))**2)
+        end do
+        value = value/normalization
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine weighted_mse_loss_value
+
+    subroutine weighted_mse_loss_jvp(prediction, targets, sample_weight, &
+            prediction_dot, value, value_dot, status, reduction)
+        !! Scalar value and JVP of `weighted_mse_loss_value`.
+        real(dp), intent(in) :: prediction(:, :), targets(:, :), sample_weight(:)
+        real(dp), intent(in) :: prediction_dot(:, :)
+        real(dp), intent(out) :: value, value_dot
+        type(fortnum_status_t), intent(out) :: status
+        integer, intent(in), optional :: reduction
+        integer :: reduction_kind, i
+        real(dp) :: normalization
+
+        value = 0.0_dp
+        value_dot = 0.0_dp
+        if (any(shape(prediction_dot) /= shape(prediction))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "weighted MSE JVP: tangent shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(prediction_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "weighted MSE JVP: tangent must be finite")
+            return
+        end if
+        call validate_weighted_mse_inputs(prediction, targets, sample_weight, &
+            reduction, status, reduction_kind)
+        if (status%code /= FORTNUM_OK) return
+        normalization = weighted_mse_normalization(sample_weight, reduction_kind)
+        do i = 1, size(prediction, 1)
+            value = value + 0.5_dp*sample_weight(i)*sum( &
+                (prediction(i, :) - targets(i, :))**2)
+            value_dot = value_dot + sample_weight(i)*dot_product( &
+                prediction(i, :) - targets(i, :), prediction_dot(i, :))
+        end do
+        value = value/normalization
+        value_dot = value_dot/normalization
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine weighted_mse_loss_jvp
+
+    subroutine weighted_mse_loss_vjp(prediction, targets, sample_weight, &
+            value_bar, prediction_bar, status, reduction)
+        !! VJP of `weighted_mse_loss_value` with respect to predictions.
+        real(dp), intent(in) :: prediction(:, :), targets(:, :), sample_weight(:)
+        real(dp), intent(in) :: value_bar
+        real(dp), intent(out) :: prediction_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        integer, intent(in), optional :: reduction
+        integer :: reduction_kind, i
+        real(dp) :: normalization
+
+        prediction_bar = 0.0_dp
+        if (any(shape(prediction_bar) /= shape(prediction)) .or. &
+            .not. ieee_is_finite(value_bar)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "weighted MSE VJP: cotangent or output shape is invalid")
+            return
+        end if
+        call validate_weighted_mse_inputs(prediction, targets, sample_weight, &
+            reduction, status, reduction_kind)
+        if (status%code /= FORTNUM_OK) return
+        normalization = weighted_mse_normalization(sample_weight, reduction_kind)
+        do i = 1, size(prediction, 1)
+            prediction_bar(i, :) = value_bar*sample_weight(i)* &
+                (prediction(i, :) - targets(i, :))/normalization
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine weighted_mse_loss_vjp
+
+    subroutine weighted_mse_loss_hvp(prediction, targets, sample_weight, &
+            prediction_dot, prediction_hvp, status, reduction)
+        !! Hessian-vector product of the weighted squared loss.
+        real(dp), intent(in) :: prediction(:, :), targets(:, :), sample_weight(:)
+        real(dp), intent(in) :: prediction_dot(:, :)
+        real(dp), intent(out) :: prediction_hvp(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        integer, intent(in), optional :: reduction
+        integer :: reduction_kind, i
+        real(dp) :: normalization
+
+        prediction_hvp = 0.0_dp
+        if (any(shape(prediction_dot) /= shape(prediction)) .or. &
+            any(shape(prediction_hvp) /= shape(prediction))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "weighted MSE HVP: tangent or output shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(prediction_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "weighted MSE HVP: tangent must be finite")
+            return
+        end if
+        call validate_weighted_mse_inputs(prediction, targets, sample_weight, &
+            reduction, status, reduction_kind)
+        if (status%code /= FORTNUM_OK) return
+        normalization = weighted_mse_normalization(sample_weight, reduction_kind)
+        do i = 1, size(prediction, 1)
+            prediction_hvp(i, :) = sample_weight(i)*prediction_dot(i, :)/ &
+                normalization
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine weighted_mse_loss_hvp
+
     !> Mean Huber loss for real-valued predictions.  The derivative is with
     !> respect to `prediction`; targets are treated as constants.
     subroutine huber_loss_value(prediction, targets, delta, value, status)
@@ -522,6 +735,53 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine huber_loss_vjp
+
+    subroutine huber_loss_hvp(prediction, targets, delta, prediction_dot, &
+            prediction_hvp, status)
+        !! Hessian-vector product of the mean Huber loss.
+        !!
+        !! The Huber second derivative is one in the quadratic region and zero
+        !! in the linear region.  At either transition (`abs(residual)==delta`)
+        !! it is not defined, so this routine returns a typed domain refusal
+        !! rather than selecting an arbitrary subgradient.
+        real(dp), intent(in) :: prediction(:, :), targets(:, :), delta
+        real(dp), intent(in) :: prediction_dot(:, :)
+        real(dp), intent(out) :: prediction_hvp(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: residual
+        integer :: i, j
+
+        prediction_hvp = 0.0_dp
+        if (any(shape(prediction_dot) /= shape(prediction)) .or. &
+            any(shape(prediction_hvp) /= shape(prediction))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "Huber loss HVP: tangent or output shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(prediction_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "Huber loss HVP: tangent must be finite")
+            return
+        end if
+        call validate_regression_inputs(prediction, targets, delta, status, &
+            "Huber loss")
+        if (status%code /= FORTNUM_OK) return
+        do j = 1, size(prediction, 2)
+            do i = 1, size(prediction, 1)
+                residual = prediction(i, j) - targets(i, j)
+                if (abs(residual) == delta) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "Huber loss HVP: second derivative is undefined at kink")
+                    prediction_hvp = 0.0_dp
+                    return
+                else if (abs(residual) < delta) then
+                    prediction_hvp(i, j) = prediction_dot(i, j)
+                end if
+            end do
+        end do
+        prediction_hvp = prediction_hvp/real(size(prediction), dp)
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine huber_loss_hvp
 
     !> Mean pinball/quantile loss.  The derivative products refuse residual
     !> zero, where the loss has a genuine kink.
@@ -632,6 +892,54 @@ contains
             value = value - target*logit
         end if
     end function binary_loss
+
+    subroutine validate_weighted_mse_inputs(prediction, targets, sample_weight, &
+            reduction, status, reduction_kind)
+        real(dp), intent(in) :: prediction(:, :), targets(:, :), sample_weight(:)
+        integer, intent(in), optional :: reduction
+        type(fortnum_status_t), intent(out) :: status
+        integer, intent(out) :: reduction_kind
+        integer :: requested_reduction
+        real(dp) :: weight_mass
+
+        reduction_kind = LOSS_REDUCTION_MEAN
+        requested_reduction = LOSS_REDUCTION_MEAN
+        if (present(reduction)) requested_reduction = reduction
+        if (requested_reduction /= LOSS_REDUCTION_MEAN .and. &
+            requested_reduction /= LOSS_REDUCTION_SUM) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "weighted MSE: reduction must be mean or sum")
+            return
+        end if
+        if (size(prediction, 1) < 1 .or. size(prediction, 2) < 1 .or. &
+            any(shape(targets) /= shape(prediction)) .or. &
+            size(sample_weight) /= size(prediction, 1) .or. &
+            any(.not. ieee_is_finite(prediction)) .or. &
+            any(.not. ieee_is_finite(targets)) .or. &
+            any(.not. ieee_is_finite(sample_weight)) .or. &
+            any(sample_weight < 0.0_dp)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "weighted MSE: inputs or sample weights are invalid")
+            return
+        end if
+        weight_mass = sum(sample_weight)
+        if (.not. ieee_is_finite(weight_mass) .or. weight_mass <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "weighted MSE: sample weights have zero support")
+            return
+        end if
+        reduction_kind = requested_reduction
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine validate_weighted_mse_inputs
+
+    pure real(dp) function weighted_mse_normalization(sample_weight, &
+            reduction_kind) result(normalization)
+        real(dp), intent(in) :: sample_weight(:)
+        integer, intent(in) :: reduction_kind
+
+        normalization = 1.0_dp
+        if (reduction_kind == LOSS_REDUCTION_MEAN) normalization = sum(sample_weight)
+    end function weighted_mse_normalization
 
     subroutine validate_elementwise(logits, output, operation, status)
         real(dp), intent(in) :: logits(:, :), output(:, :)

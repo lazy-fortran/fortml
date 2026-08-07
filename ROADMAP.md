@@ -1049,6 +1049,14 @@ trials remain visible in the result schema.
   facade. Huber has a continuous first derivative at its transition; quantile
   JVP/VJP products refuse exact zero residuals. Independent formula,
   finite-difference, adjoint, and kink-refusal tests cover both products.
+- [x] Complete the smooth neural-loss derivative slice: stable BCE/logistic and
+  softmax cross-entropy Hessian-vector products, weighted MSE value/JVP/VJP/HVP
+  products with explicit mean/sum reductions, and a Huber HVP that refuses its
+  exact transition kink. Route the existing weighted MLP objective and its
+  HVP through the shared weighted-MSE kernels; independent behavioral tests
+  cover finite-difference curvature, adjoint identities, reductions, and the
+  MLP integration. Resident CUDA loss kernels remain open; unsupported device
+  requests must return a typed refusal rather than copying through the host.
 - [x] Define a sequential nested-MLP parameter-tree seam with stable named
   stage paths, contiguous offsets, exact chain-rule products, and an analytic
   FortOpt L-BFGS-B objective. Independent JVP finite-difference, VJP adjoint,

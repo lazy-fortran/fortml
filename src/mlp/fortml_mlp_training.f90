@@ -15,6 +15,8 @@ module fortml_mlp_training
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
         FORTNUM_DOMAIN_ERROR, FORTNUM_CONVERGENCE_ERROR
     use fortml_mlp, only: mlp_t
+    use fortml_losses, only: weighted_mse_loss_value, weighted_mse_loss_vjp, &
+        weighted_mse_loss_hvp
     use fortopt_objective, only: objective_t
     use fortopt_adam, only: adam_t
     use fortopt_adamw, only: adamw_t
@@ -592,11 +594,11 @@ contains
         real(dp), intent(in), optional :: sample_weight(:)
         integer, intent(in), optional :: reduction
         type(mlp_loss_diagnostics_t), intent(out), optional :: diagnostics
-        real(dp), allocatable :: prediction(:, :), residual(:, :), x_bar(:, :)
-        real(dp), allocatable :: weighted_residual(:, :)
+        real(dp), allocatable :: prediction(:, :), x_bar(:, :)
+        real(dp), allocatable :: weighted_residual(:, :), effective_weight(:)
         real(dp), allocatable :: theta(:)
-        integer :: n_samples, reduction_kind, i
-        real(dp) :: weight_mass, normalization, data_loss, regularization_loss
+        integer :: n_samples, reduction_kind
+        real(dp) :: weight_mass, data_loss, regularization_loss
 
         value = 0.0_dp
         l2_gradient = 0.0_dp
@@ -633,23 +635,24 @@ contains
                 "MLP loss: sample weights have zero support")
             return
         end if
-        normalization = 1.0_dp
-        if (reduction_kind == MLP_REDUCTION_MEAN) normalization = weight_mass
         allocate(prediction(size(target, 1), size(target, 2)))
-        allocate(residual, mold=prediction)
         allocate(weighted_residual, mold=prediction)
+        allocate(effective_weight(n_samples))
+        if (present(sample_weight)) then
+            effective_weight = sample_weight
+        else
+            effective_weight = 1.0_dp
+        end if
         allocate(x_bar, mold=x)
         call model%predict(x, prediction, status)
         if (status%code /= FORTNUM_OK) return
-        residual = prediction - target
-        weighted_residual = residual
-        if (present(sample_weight)) then
-            do i = 1, n_samples
-                weighted_residual(i, :) = sample_weight(i)*residual(i, :)
-            end do
-        end if
-        data_loss = 0.5_dp*sum(residual*weighted_residual)/normalization
-        call model%vjp(x, weighted_residual/normalization, gradient, x_bar, status)
+        call weighted_mse_loss_value(prediction, target, effective_weight, &
+            data_loss, status, reduction_kind)
+        if (status%code /= FORTNUM_OK) return
+        call weighted_mse_loss_vjp(prediction, target, effective_weight, 1.0_dp, &
+            weighted_residual, status, reduction_kind)
+        if (status%code /= FORTNUM_OK) return
+        call model%vjp(x, weighted_residual, gradient, x_bar, status)
         if (status%code /= FORTNUM_OK) return
         theta = model%parameters()
         regularization_loss = 0.5_dp*l2*sum(theta*theta)
@@ -666,7 +669,7 @@ contains
     end subroutine mlp_loss_value_gradient
 
     subroutine mlp_loss_hvp(model, x, target, l2, dtheta, l2_direction, &
-            parameter_hvp, l2_hvp, status)
+            parameter_hvp, l2_hvp, status, sample_weight, reduction)
         !! Hessian-vector product for the MSE+L2 objective.
         !!
         !! The joint direction is `(dtheta,l2_direction)`.  The returned
@@ -684,11 +687,14 @@ contains
         real(dp), intent(in) :: l2_direction
         real(dp), intent(out) :: parameter_hvp(:), l2_hvp
         type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
+        integer, intent(in), optional :: reduction
         real(dp), allocatable :: prediction(:, :), residual(:, :)
         real(dp), allocatable :: output_tangent(:, :), zero_input(:, :)
         real(dp), allocatable :: x_bar(:, :), jtj_product(:), curvature(:)
-        real(dp), allocatable :: theta(:)
-        integer :: n_samples, n_parameters
+        real(dp), allocatable :: theta(:), effective_weight(:), output_hvp(:, :)
+        integer :: n_samples, n_parameters, reduction_kind, i
+        real(dp) :: weight_mass, normalization
 
         parameter_hvp = 0.0_dp
         l2_hvp = 0.0_dp
@@ -702,9 +708,39 @@ contains
         end if
 
         n_samples = size(x, 1)
+        reduction_kind = MLP_REDUCTION_MEAN
+        if (present(reduction)) reduction_kind = reduction
+        if (reduction_kind /= MLP_REDUCTION_MEAN .and. &
+            reduction_kind /= MLP_REDUCTION_SUM) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP loss HVP: reduction must be mean or sum")
+            return
+        end if
+        allocate(effective_weight(n_samples))
+        if (present(sample_weight)) then
+            if (size(sample_weight) /= n_samples .or. &
+                any(.not. ieee_is_finite(sample_weight)) .or. &
+                any(sample_weight < 0.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP loss HVP: sample weights are invalid")
+                return
+            end if
+            effective_weight = sample_weight
+        else
+            effective_weight = 1.0_dp
+        end if
+        weight_mass = sum(effective_weight)
+        if (.not. ieee_is_finite(weight_mass) .or. weight_mass <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP loss HVP: sample weights have zero support")
+            return
+        end if
+        normalization = 1.0_dp
+        if (reduction_kind == MLP_REDUCTION_MEAN) normalization = weight_mass
         allocate(prediction(size(target, 1), size(target, 2)))
         allocate(residual, mold=prediction)
         allocate(output_tangent, mold=prediction)
+        allocate(output_hvp, mold=prediction)
         allocate(zero_input, mold=x)
         allocate(x_bar, mold=x)
         allocate(jtj_product(n_parameters), curvature(n_parameters))
@@ -714,10 +750,17 @@ contains
         zero_input = 0.0_dp
         call model%jvp(x, dtheta, zero_input, prediction, output_tangent, status)
         if (status%code /= FORTNUM_OK) return
-        call model%vjp(x, output_tangent/real(n_samples, dp), jtj_product, &
+        call weighted_mse_loss_hvp(prediction, target, effective_weight, &
+            output_tangent, output_hvp, status, reduction_kind)
+        if (status%code /= FORTNUM_OK) return
+        call model%vjp(x, output_hvp, jtj_product, &
             x_bar, status)
         if (status%code /= FORTNUM_OK) return
-        call model%hvp(x, residual/real(n_samples, dp), dtheta, zero_input, &
+        residual = prediction - target
+        do i = 1, n_samples
+            residual(i, :) = effective_weight(i)*residual(i, :)/normalization
+        end do
+        call model%hvp(x, residual, dtheta, zero_input, &
             curvature, x_bar, status)
         if (status%code /= FORTNUM_OK) return
         theta = model%parameters()
