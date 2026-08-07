@@ -1,6 +1,6 @@
 # fortml roadmap
 
-Verified on 2026-08-07. Interfaces are documented in
+Verified on 2026-08-08. Interfaces are documented in
 [`docs/API.md`](docs/API.md), examples in [`docs/EXAMPLES.md`](docs/EXAMPLES.md),
 and implementation limits in [`docs/DESIGN.md`](docs/DESIGN.md) and
 [`docs/ML_ARCHITECTURE.md`](docs/ML_ARCHITECTURE.md).
@@ -14,13 +14,13 @@ gate is still open, so this work does not move or recreate that tag.
 
 | Compiler | Command | Result |
 | --- | --- | --- |
-| GNU Fortran | `fo` | Static, build, test, and lint checks passed in a clean FortML/FortAD-main replay. The fresh 2026-08-07 run passed all 165 tests (362 modules; 787 first-build units, 710 second-build units). See [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
-| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded compiler lane. The checked-in NVIDIA log predates the latest 165-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
+| GNU Fortran | `fo` | Static, build, test, and lint checks passed in a clean FortML/FortAD-main replay. The fresh 2026-08-08 run passed all 168 tests (368 modules; 790 first-build units, 712 second-build units). See [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
+| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded compiler lane. The checked-in NVIDIA log predates the latest 168-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
-The checked-in GNU compiler log is the fresh 2026-08-07 run against FortAD
-`origin/main` at `fdc23780a59c56bcbcba5d77118213eeec6efcc6`, replayed from clean
-worktrees under `/mnt/storage/code/lazy-fortran/fortml-clean-4c` and
+The checked-in GNU compiler log is the fresh 2026-08-08 run against FortAD
+`origin/main` at `3a3e94263a40f6a349f179f6ff5b982da7f1d930`, replayed from clean
+worktrees under `/mnt/storage/code/lazy-fortran/fortml-clean-3c` and
 `/mnt/storage/code/lazy-fortran/fortad-main-clean`. The run includes the
   kernel-catalog, weighted LDA/QDA, robust/absolute XGBoost, neural NLL, random-forest,
 Extra-Trees, grouped MLP HVP and L-BFGS-B, basis/pipeline HVP, cosine
@@ -32,7 +32,8 @@ parameter layout, softmax objective products, and validation-stopping XGBoost
 slices, binary MLP loss products, trainable exact-GP mean products, ARD GP
  products, XGBoost sampling, XGBoost serialization, the bounded Bernoulli
 variational-GP objective, multiclass variational-GP prediction/JVPs/VJPs, positive
-temperature calibration, the portable trainer checkpoint, pairwise XGBoost
+ positive multiclass temperature calibration, PINN objective fitting, unfactored
+ Adafactor recurrence/checkpoint, the portable trainer checkpoint, pairwise XGBoost
  ranking, physics residual value/JVP/VJP products, and the
  transform-aware hyperparameter registry and differentiable basis-pipeline
  training objective. The build emits non-fatal GNU
@@ -45,9 +46,10 @@ parameter snapshots and transfer counters. NVIDIA
 compiler coverage remains an
 explicit older-build result.
 
-The companion benchmark harness is clean at FortML-bench revision `475823b`;
-the trainer-checkpoint, binary-objective, variational-multiclass-GP,
-physics-objective, physics HVP, grouped K-fold, spectral-mixture, XGBoost-ranking,
+The companion benchmark harness is clean at FortML-bench revision `699c339`;
+the trainer-checkpoint, unfactored-Adafactor, binary-objective,
+multiclass-calibration, variational-multiclass-GP, PINN/physics-objective,
+physics HVP, grouped K-fold, spectral-mixture, XGBoost-ranking,
 resident dense-MSE CUDA, binary XGBoost classifier, calibrated neural classifier,
 SGD-momentum, sparse preprocessing, derivative-GP covariance, and mini-batch hypergradient CSV
 rows record their FortML source revisions and independent NumPy or analytic
