@@ -142,6 +142,7 @@ contains
     subroutine test_domain_and_device_contract(failures)
         integer, intent(inout) :: failures
         real(real64) :: x(3, 1), y(3), prediction(3)
+        real(real64) :: x_extreme(1, 1), prediction_extreme(1)
         type(glm_regression_t) :: model
         type(fortnum_status_t) :: status
         type(fortml_device_t) :: cuda
@@ -155,6 +156,13 @@ contains
         call model%fit(x, y, status, sample_weight=[1.0_real64, -1.0_real64, 1.0_real64])
         call check(status%code == FORTNUM_DOMAIN_ERROR, &
             "negative sample-weight refusal", failures)
+        call model%fit(x, y, status, family=GLM_FAMILY_POISSON)
+        call check(status_ok(status), "Poisson fit for link-domain guard", failures)
+        call model%set_parameters([0.0_real64, -0.1_real64], status)
+        x_extreme(1, 1) = 10000.0_real64
+        call model%predict(x_extreme, prediction_extreme, status)
+        call check(status%code == FORTNUM_DOMAIN_ERROR, &
+            "extreme-negative log-link refusal", failures)
         cuda%kind = FORTML_DEVICE_CUDA
         cuda%selected = .true.
         cuda%available = .true.
