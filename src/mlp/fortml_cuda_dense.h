@@ -28,6 +28,15 @@ int fortml_cuda_dense_plan_create(
 int fortml_cuda_dense_plan_predict(void *opaque_plan, const double *query_x,
                                    int n_query, double *outputs);
 
+/* Forward-mode product through the resident affine layer and activation.
+ * Tangent weights use the same output-major layout as `weights` at creation;
+ * query and query tangent arrays use feature-major layout. */
+int fortml_cuda_dense_plan_jvp(void *opaque_plan, const double *query_x,
+                               const double *query_x_dot,
+                               const double *weights_dot,
+                               const double *bias_dot, int n_query,
+                               double *outputs, double *outputs_dot);
+
 int fortml_cuda_dense_plan_destroy(void *opaque_plan);
 
 #ifdef __cplusplus

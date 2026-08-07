@@ -83,7 +83,10 @@ device_index,status)` validates finite `weights(n_inputs,n_outputs)` and
 `bias(n_outputs)`, uploads one immutable layer, and records the selected device.
 `predict(query_x,outputs,status)` accepts `query_x(n_query,n_inputs)` and
 `outputs(n_query,n_outputs)`; only the query batch and result cross the host /
-device boundary. The supported activations are `MLP_LINEAR`, `MLP_TANH`,
+device boundary. `jvp(query_x,query_x_dot,weights_dot,bias_dot,outputs,
+outputs_dot,status)` evaluates the forward output and tangent for the resident
+weights, a feature tangent, and output-major parameter tangents. The supported
+activations are `MLP_LINEAR`, `MLP_TANH`,
 `MLP_RELU`, `MLP_GELU`, `MLP_SILU`, `MLP_ELU`, `MLP_SOFTPLUS`, and
 `MLP_LEAKY_RELU`. `fitted`, `input_count`, `output_count`, `activation_kind`,
 and `device` expose the plan metadata, while `destroy(status)` releases the
@@ -92,11 +95,13 @@ probe.
 
 The ordinary GNU build links an unavailable stub and returns
 `FORTNUM_NOT_IMPLEMENTED`; it never executes a CPU fallback. The plan exposes
-no JVP, VJP, HVP, or optimizer state. Those products remain on the FortAD /
-FortSym reference path until a complete resident derivative graph is linked.
-See [`docs/CUDA_DENSE_PLAN.md`](CUDA_DENSE_PLAN.md) and the independent
-`test/run_cuda_dense_plan.sh` gate for the ABI layout, finite-input refusal,
-eight-activation oracle, and repeated resident-batch evidence.
+no VJP, HVP, or optimizer state. The JVP graph is resident and has an
+independent CPU recurrence oracle for all eight activations; VJP/HVP and full
+MLP training remain on the FortAD/FortSym reference path until their complete
+resident graphs are linked. See [`docs/CUDA_DENSE_PLAN.md`](CUDA_DENSE_PLAN.md)
+and the independent `test/run_cuda_dense_plan.sh` gate for the ABI layout,
+finite-input refusal, eight-activation value/JVP oracle, and repeated
+resident-batch evidence.
 
 | Type | Value or prediction | JVP | VJP or gradient | HVP |
 | --- | --- | --- | --- | --- |

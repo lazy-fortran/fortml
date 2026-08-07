@@ -10,6 +10,8 @@ program test_cuda_dense_api
     type(cuda_dense_plan_t) :: plan
     type(fortnum_status_t) :: status
     real(real64) :: weights(3, 2), bias(2), query_x(4, 3), outputs(4, 2)
+    real(real64) :: query_x_dot(4, 3), weights_dot(3, 2), bias_dot(2)
+    real(real64) :: outputs_dot(4, 2)
     integer :: failures
 
     failures = 0
@@ -21,6 +23,10 @@ program test_cuda_dense_api
         1.0_real64, -0.5_real64, 1.5_real64, -2.0_real64, &
         0.25_real64, -1.0_real64, 2.0_real64, 0.5_real64], shape(query_x))
     outputs = -31.0_real64
+    query_x_dot = 0.25_real64
+    weights_dot = -0.5_real64
+    bias_dot = 0.125_real64
+    outputs_dot = -17.0_real64
 
     call plan%create(weights, bias, MLP_TANH, -1, status)
     call check(status%code == FORTNUM_DOMAIN_ERROR, &
@@ -36,6 +42,13 @@ program test_cuda_dense_api
         "prediction refusal is typed", failures)
     call check(all(outputs == -31.0_real64), &
         "prediction refusal preserves output", failures)
+    call plan%jvp(query_x, query_x_dot, weights_dot, bias_dot, outputs, &
+        outputs_dot, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
+        "JVP refusal is typed", failures)
+    call check(all(outputs == -31.0_real64) .and. &
+        all(outputs_dot == -17.0_real64), &
+        "JVP refusal preserves outputs", failures)
     call plan%destroy(status)
     call check(status%code == FORTNUM_OK .and. .not. plan%fitted(), &
         "destroy clears plan state", failures)
