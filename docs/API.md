@@ -153,6 +153,7 @@ repeated resident-batch evidence.
 | `mlp_hypergradient_objective_t` | Validation MSE after fixed full-batch GD trajectory | Outer `[log(learning_rate),log(l2)]` JVP | Exact trajectory value gradient and scalar VJP | Reverse trajectory products; inner MLP HVP |
 | `mlp_adamw_full_hypergradient_objective_t` | Validation MSE after fixed full-batch AdamW trajectory | Packed `[log(learning_rate),log(l2),log(weight_decay),logit(beta1),logit(beta2)]` JVP | Exact trajectory value gradient and scalar VJP | Forward state sensitivities through moments, bias correction, and decoupled decay |
 | `mlp_rmsprop_hypergradient_objective_t` | Validation MSE after fixed full-batch RMSprop trajectory | Packed `[log(learning_rate),log(l2),decay,log(epsilon),momentum]` JVP | Exact trajectory value gradient and scalar VJP | Forward state sensitivities; inner MLP HVP |
+| `mlp_adagrad_hypergradient_objective_t` | Validation MSE after fixed full-batch Adagrad trajectory | Packed `[log(learning_rate),log(l2),log(epsilon)]` JVP | Exact trajectory value gradient and scalar VJP | Forward accumulated-square sensitivities; inner MLP HVP |
 | `mlp_schedule_hypergradient_objective_t` | Validation MSE after a typed scheduled full-batch trajectory | Packed `[log(base_rate),log(l2),logit(min_fraction),logit(decay_factor)]` JVP | Exact schedule/trajectory value gradient and scalar VJP | Inner MLP HVP; outer hyper-HVP is not approximated |
 | `trainer_t` | Any `fortopt_objective::objective_t` with explicit full-batch training state | Optimizer updates are stateful; the objective supplies exact products | The same objective value/gradient callback is used for every update | L-BFGS-B consumes the objective gradient; no hidden HVP or finite-difference fallback |
 | `bnn_t` | `elbo` | ELBO | ELBO | ELBO |
@@ -1475,9 +1476,12 @@ for fixed options; optimizer-trajectory hypergradients through learning rate,
 decay, moments, and stopping remain a separate capability.
 `MLP_OPTIMIZER_ADAGRAD` uses FortOpt's canonical accumulated-square
 recurrence, `G <- G + gradient**2`, followed by the epsilon-stabilized diagonal
-step. Its accumulator and step counter are checkpointed and restored exactly;
-optimizer-trajectory Adagrad derivatives are explicitly refused until a
-matching differentiable state product is added.
+step. Its accumulator and step counter are checkpointed and restored exactly.
+The separate `mlp_adagrad_hypergradient_objective_t` provides that fixed full-batch product
+over learning rate, L2, and epsilon; it is CPU-only and routes exact
+value/JVP/VJP products to FortOpt L-BFGS-B with explicit log bounds. Mini-batch,
+schedule, clipping, and CUDA Adagrad trajectories remain refused until their
+state derivatives and residency contracts are complete.
 
 `mlp_training_state_t` records epoch and update counts, the best epoch and
 loss, the final loss and gradient norm, convergence flags, a compact loss
@@ -1720,6 +1724,18 @@ The `centered` flag is a fixed discrete branch rather than a differentiable
 variable, and changing it requires a new objective adapter. Mini-batch,
 schedules, clipping, and CUDA-resident RMSprop state remain typed follow-up
 contracts until their state and reproducibility derivatives are implemented.
+
+`mlp_adagrad_hypergradient_objective_t` provides the corresponding exact
+fixed full-batch Adagrad trajectory contract. Its packed vector is
+`[log(learning_rate),log(l2),log(epsilon)]`; the accumulated-square state and
+epsilon-stabilized diagonal step are differentiated with the analytic MLP HVP.
+`value_gradient`, `jvp`, and scalar `vjp` are available, and
+`mlp_optimize_adagrad_hyperparameters` routes the same products to FortOpt
+L-BFGS-B under explicit log bounds. The independent
+`test_mlp_adagrad_hypergradient` fixture checks central differences, a
+directional JVP, the scalar adjoint, optimizer convergence, and typed
+non-Adagrad/CUDA refusals. Mini-batch, schedules, clipping, and CUDA-resident
+Adagrad state remain explicit follow-up contracts.
 
 ### `fortml_mlp_schedule_hypergradient`
 

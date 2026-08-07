@@ -103,3 +103,22 @@ centered branches, the L-BFGS-B adapter, and typed refusal for unsupported
 optimizer/device choices. Mini-batch, schedules, clipping, and CUDA-resident
 RMSprop state remain separate contracts until their state and reproducibility
 derivatives are implemented.
+
+## Adagrad trajectory contract
+
+`mlp_adagrad_hypergradient_objective_t` differentiates a fixed full-batch
+Adagrad trajectory. Its packed outer vector is
+
+```text
+[ log_learning_rate, log_l2, log_epsilon ]
+```
+
+The accumulated-square recurrence and epsilon-stabilized diagonal step are
+propagated with the MLP analytic HVP. `value_gradient`, `jvp`, and scalar `vjp`
+are exact products, and `mlp_optimize_adagrad_hyperparameters` sends the same
+callback to FortOpt L-BFGS-B under explicit log bounds. The independent
+`test_mlp_adagrad_hypergradient` fixture checks central differences, a
+directional JVP, the scalar adjoint, optimizer convergence, and typed refusal
+for unsupported optimizer/device choices. Mini-batch, schedules, clipping,
+and CUDA-resident Adagrad state remain separate contracts until their state and
+reproducibility derivatives are implemented.
