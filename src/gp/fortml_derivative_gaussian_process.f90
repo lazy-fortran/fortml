@@ -2194,7 +2194,7 @@ contains
                     !! ratio through n(z); n can vanish away from the origin.
                     p2_dot = variance/(4.0_dp*lengthscale**4)* &
                         (-4.0_dp*cosine_numerator/z**3 - sine_value/z + &
-                        3.0_dp*cosine_numerator/z**4)
+                        3.0_dp*cosine_numerator/z**3)
                 else
                     call status_set(status, FORTNUM_DOMAIN_ERROR, &
                         "kernel leaf parameter JVP: cosine parameter index is invalid")
