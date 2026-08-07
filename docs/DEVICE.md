@@ -97,10 +97,12 @@ activation and copies only the query and result. It never invokes a CPU MLP
 fallback. The typed Fortran `cuda_dense_plan_t` wrapper converts ordinary
 column-major arrays to the explicit ABI layout, while the ordinary build
 returns `FORTNUM_NOT_IMPLEMENTED` through a stub. `test/run_cuda_dense_plan.sh`
-checks all activations, repeated batches, and finite-input rejection against a
-separate CPU recurrence. This is inference-only evidence: MLP gradients,
-hypergradients, and optimizer updates still require a resident FortAD/FortSym
-graph and are not implied by this plan.
+checks all activations, repeated batches, value/JVP/VJP products, and
+finite-input rejection against a separate CPU recurrence. The resident VJP
+returns input, weight, and bias cotangents through deterministic native CUDA
+kernels. This is still one-layer evidence: full MLP gradients,
+hypergradients, and optimizer updates require a resident FortAD/FortSym graph
+and are not implied by this plan.
 
 ## Direct RMSprop state kernel
 

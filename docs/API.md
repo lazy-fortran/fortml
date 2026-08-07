@@ -85,7 +85,9 @@ device_index,status)` validates finite `weights(n_inputs,n_outputs)` and
 `outputs(n_query,n_outputs)`; only the query batch and result cross the host /
 device boundary. `jvp(query_x,query_x_dot,weights_dot,bias_dot,outputs,
 outputs_dot,status)` evaluates the forward output and tangent for the resident
-weights, a feature tangent, and output-major parameter tangents. The supported
+weights, a feature tangent, and output-major parameter tangents. `vjp(query_x,
+output_bar,query_x_bar,weights_bar,bias_bar,status)` returns query, weight,
+and bias cotangents for an output cotangent. The supported
 activations are `MLP_LINEAR`, `MLP_TANH`,
 `MLP_RELU`, `MLP_GELU`, `MLP_SILU`, `MLP_ELU`, `MLP_SOFTPLUS`, and
 `MLP_LEAKY_RELU`. `fitted`, `input_count`, `output_count`, `activation_kind`,
@@ -95,12 +97,12 @@ probe.
 
 The ordinary GNU build links an unavailable stub and returns
 `FORTNUM_NOT_IMPLEMENTED`; it never executes a CPU fallback. The plan exposes
-no VJP, HVP, or optimizer state. The JVP graph is resident and has an
-independent CPU recurrence oracle for all eight activations; VJP/HVP and full
-MLP training remain on the FortAD/FortSym reference path until their complete
+no HVP or optimizer state. The JVP and VJP graphs are resident and have
+independent CPU recurrence oracles for all eight activations; HVP and full MLP
+training remain on the FortAD/FortSym reference path until their complete
 resident graphs are linked. See [`docs/CUDA_DENSE_PLAN.md`](CUDA_DENSE_PLAN.md)
 and the independent `test/run_cuda_dense_plan.sh` gate for the ABI layout,
-finite-input refusal, eight-activation value/JVP oracle, and repeated
+finite-input refusal, eight-activation value/JVP/VJP oracle, and repeated
 resident-batch evidence.
 
 | Type | Value or prediction | JVP | VJP or gradient | HVP |
@@ -2398,6 +2400,31 @@ closed-form bound. `predict(x_star,mean,variance,status)` returns variational
 latent marginals. The type does not optimize or pack its inducing and
 variational parameters. The caller owns that update loop.
 
+### `fortml_gp_variational_classification`
+
+`gp_variational_classification_t` is the Bernoulli counterpart of
+`sparse_gp_t`. `initialize(inducing_points,kernel,n_mc_samples,seed,status
+[,likelihood,jitter])` constructs an inducing posterior and fixes a seeded
+reparameterization table. The supported likelihood constants are
+`GP_VARIATIONAL_LOGISTIC` and `GP_VARIATIONAL_PROBIT`; labels are integer
+zero/one values. The packed vector returned by `parameters()` contains the
+inducing mean followed by lower-Cholesky covariance columns, with each
+diagonal represented in log coordinates. `set_parameters` validates positive
+diagonals and finite values.
+
+`elbo(x,labels,value,status[,expected_log_likelihood,kl_value,scale])` uses
+the deterministic Monte Carlo expected Bernoulli log likelihood and the
+analytic `KL(q(u)||N(0,K_uu))`. `elbo_gradient` gives the analytic gradient of
+that same packed objective, including the variance reparameterization and KL
+terms. `elbo_jvp` is the matching forward directional product; finite
+differences of `elbo` therefore provide a direct independent oracle. `scale`
+scales only the likelihood term for minibatch callers. `elbo_device` dispatches
+CPU exactly and returns `FORTNUM_NOT_IMPLEMENTED` for CUDA until an inducing
+solve, likelihood evaluation, and reduction are resident; it never stages a
+hidden host fallback. Kernel and inducing-point derivatives, natural-gradient
+updates, multiclass coupling, and resident GPU inference remain separate
+roadmap work.
+
 ### `fortml_sparse_prior_gp`
 
 `sparse_prior_gp_t` implements `SPARSE_SOR`, `SPARSE_DTC`, `SPARSE_FITC`, and
@@ -2594,6 +2621,14 @@ return the trainable unconstrained vector and its projected L-BFGS-B bounds;
 frozen blocks are omitted without changing their live model state. The
 registry is a coordinate/metadata layer only: an objective must provide its
 own analytic gradient/HVP and explicit device capability.
+
+`physical_derivatives(unconstrained,physical,first,second,status)` returns the
+exact physical value, first derivative, and second derivative for each
+separable coordinate. `unconstrained_gradient` pulls a physical gradient back
+to the trainable optimizer vector. `unconstrained_hvp` applies the exact
+coordinate chain rule to a physical HVP evaluated along the transformed
+direction, including transform curvature. These are pure coordinate products;
+the model objective still owns cross-block derivatives.
 
 ### `fortml_parameter_products`
 

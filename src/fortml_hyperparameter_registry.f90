@@ -60,6 +60,7 @@ module fortml_hyperparameter_registry
         procedure, public :: set_unconstrained => hyperparameter_block_set_unconstrained
         procedure, public :: unconstrained_bounds => hyperparameter_block_unconstrained_bounds
         procedure, public :: project_unconstrained => hyperparameter_block_project
+        procedure, public :: physical_derivatives => hyperparameter_block_physical_derivatives
     end type hyperparameter_block_t
 
     type, public :: hyperparameter_registry_t
@@ -83,6 +84,8 @@ module fortml_hyperparameter_registry
         procedure, public :: optimizer_bounds => hyperparameter_registry_optimizer_bounds
         procedure, public :: project => hyperparameter_registry_project
         procedure, public :: range => hyperparameter_registry_range
+        procedure, public :: unconstrained_gradient => hyperparameter_registry_unconstrained_gradient
+        procedure, public :: unconstrained_hvp => hyperparameter_registry_unconstrained_hvp
     end type hyperparameter_registry_t
 
     public :: hyperparameter_transform_name
@@ -514,6 +517,55 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine hyperparameter_block_project
 
+    subroutine hyperparameter_block_physical_derivatives(self, unconstrained, physical, &
+            first, second, status)
+        !! Return p(u), dp/du, and d2p/du2 for a separable block transform.
+        class(hyperparameter_block_t), intent(in) :: self
+        real(dp), intent(in) :: unconstrained(:)
+        real(dp), intent(out) :: physical(:), first(:), second(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: logistic, width
+        integer :: i
+
+        if (.not. self%initialized() .or. size(unconstrained) /= self%size() .or. &
+            size(physical) /= self%size() .or. size(first) /= self%size() .or. &
+            size(second) /= self%size()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "hyperparameter block: derivative shapes or state are invalid")
+            return
+        end if
+        call unconstrained_to_physical(self%transform_kind, self%lower_bound, &
+            self%upper_bound, unconstrained, physical, status)
+        if (status%code /= FORTNUM_OK) return
+        call validate_physical_values(self, physical, status)
+        if (status%code /= FORTNUM_OK) return
+        do i = 1, self%size()
+            select case (self%transform_kind)
+            case (HYPERPARAMETER_IDENTITY)
+                first(i) = 1.0_dp
+                second(i) = 0.0_dp
+            case (HYPERPARAMETER_LOG)
+                first(i) = physical(i)
+                second(i) = physical(i)
+            case (HYPERPARAMETER_LOGIT)
+                width = self%upper_bound(i) - self%lower_bound(i)
+                logistic = (physical(i) - self%lower_bound(i))/width
+                first(i) = width*logistic*(1.0_dp - logistic)
+                second(i) = first(i)*(1.0_dp - 2.0_dp*logistic)
+            case default
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "hyperparameter block: unknown transform")
+                return
+            end select
+        end do
+        if (any(.not. ieee_is_finite(first)) .or. any(.not. ieee_is_finite(second))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "hyperparameter block: transform derivatives are nonfinite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine hyperparameter_block_physical_derivatives
+
     subroutine hyperparameter_registry_clear(self)
         class(hyperparameter_registry_t), intent(inout) :: self
 
@@ -675,6 +727,90 @@ contains
         first = 0
         last = -1
     end subroutine hyperparameter_registry_range
+
+    subroutine hyperparameter_registry_unconstrained_gradient(self, unconstrained, &
+            physical_gradient, unconstrained_gradient, status)
+        !! Pull back a physical gradient through trainable block transforms.
+        class(hyperparameter_registry_t), intent(in) :: self
+        real(dp), intent(in) :: unconstrained(:), physical_gradient(:)
+        real(dp), intent(out) :: unconstrained_gradient(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: physical(:), first(:), second(:)
+        integer :: i, first_index, last_index
+
+        if (size(unconstrained) /= self%n_trainable .or. &
+            size(physical_gradient) /= self%n_trainable .or. &
+            size(unconstrained_gradient) /= self%n_trainable .or. &
+            any(.not. ieee_is_finite(unconstrained)) .or. &
+            any(.not. ieee_is_finite(physical_gradient))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "hyperparameter registry: gradient shapes or values are invalid")
+            return
+        end if
+        unconstrained_gradient = 0.0_dp
+        first_index = 1
+        do i = 1, self%n_blocks
+            if (.not. self%blocks(i)%trainable()) cycle
+            last_index = first_index + self%blocks(i)%size() - 1
+            allocate(physical(self%blocks(i)%size()), first(self%blocks(i)%size()), &
+                second(self%blocks(i)%size()))
+            call self%blocks(i)%physical_derivatives(unconstrained(first_index:last_index), &
+                physical, first, second, status)
+            if (status%code /= FORTNUM_OK) return
+            unconstrained_gradient(first_index:last_index) = &
+                physical_gradient(first_index:last_index)*first
+            deallocate(physical, first, second)
+            first_index = last_index + 1
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine hyperparameter_registry_unconstrained_gradient
+
+    subroutine hyperparameter_registry_unconstrained_hvp(self, unconstrained, &
+            physical_gradient, physical_hvp, direction, unconstrained_hvp, status)
+        !! Pull back a physical Hessian-vector product through block transforms.
+        !!
+        !! `physical_hvp` is the physical Hessian applied to the transformed
+        !! direction `dp/du * direction`. For p=p(u), the exact pullback is
+        !! `H_u*d = p' * physical_hvp + g_p*p''*d` blockwise. Cross-block
+        !! derivatives are preserved by the caller's physical HVP.
+        class(hyperparameter_registry_t), intent(in) :: self
+        real(dp), intent(in) :: unconstrained(:), physical_gradient(:), physical_hvp(:), direction(:)
+        real(dp), intent(out) :: unconstrained_hvp(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: physical(:), first(:), second(:)
+        integer :: i, first_index, last_index
+
+        if (size(unconstrained) /= self%n_trainable .or. &
+            size(physical_gradient) /= self%n_trainable .or. &
+            size(physical_hvp) /= self%n_trainable .or. &
+            size(direction) /= self%n_trainable .or. &
+            size(unconstrained_hvp) /= self%n_trainable .or. &
+            any(.not. ieee_is_finite(unconstrained)) .or. &
+            any(.not. ieee_is_finite(physical_gradient)) .or. &
+            any(.not. ieee_is_finite(physical_hvp)) .or. &
+            any(.not. ieee_is_finite(direction))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "hyperparameter registry: HVP shapes or values are invalid")
+            return
+        end if
+        unconstrained_hvp = 0.0_dp
+        first_index = 1
+        do i = 1, self%n_blocks
+            if (.not. self%blocks(i)%trainable()) cycle
+            last_index = first_index + self%blocks(i)%size() - 1
+            allocate(physical(self%blocks(i)%size()), first(self%blocks(i)%size()), &
+                second(self%blocks(i)%size()))
+            call self%blocks(i)%physical_derivatives(unconstrained(first_index:last_index), &
+                physical, first, second, status)
+            if (status%code /= FORTNUM_OK) return
+            unconstrained_hvp(first_index:last_index) = &
+                physical_hvp(first_index:last_index)*first + &
+                physical_gradient(first_index:last_index)*second*direction(first_index:last_index)
+            deallocate(physical, first, second)
+            first_index = last_index + 1
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine hyperparameter_registry_unconstrained_hvp
 
     subroutine pack_all(self, values, status, unconstrained)
         class(hyperparameter_registry_t), intent(in) :: self

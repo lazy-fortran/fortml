@@ -36,6 +36,14 @@ represented are rejected with `FORTNUM_DOMAIN_ERROR`.
 coordinates. `unconstrained_bounds` returns the bounds to pass to a bounded
 optimizer; `project_unconstrained` clips one block to those bounds.
 
+For a smooth separable transform, `physical_derivatives` returns `p(u)`,
+`dp/du`, and `d2p/du2`. The registry-level `unconstrained_gradient` and
+`unconstrained_hvp` methods pull physical objective products into the exact
+trainable optimizer coordinates. In particular, for a physical gradient `g`,
+physical HVP evaluated along `p'*v`, and optimizer direction `v`, the returned
+product is `p'*(H*(p'*v)) + g*p''*v` blockwise. This keeps transform curvature in bounded
+L-BFGS-B hyperparameter optimization without finite differences.
+
 ## Registry and L-BFGS-B vectors
 
 ```fortran

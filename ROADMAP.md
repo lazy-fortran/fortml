@@ -25,7 +25,7 @@ slices, binary MLP loss products, trainable exact-GP mean products, ARD GP
 products, XGBoost sampling, XGBoost serialization, and the transform-aware
 hyperparameter registry and the differentiable basis-pipeline training
 objective. The independent CUDA gate additionally covers the resident
-dense-affine value/JVP path. The build emits GNU
+dense-affine value/JVP/VJP path. The build emits GNU
 array-temporary warnings in existing GP benchmark call boundaries and in the
 new basis-pipeline objective's shape conversions. They are non-fatal and
 isolated to array construction; lint and all behavioral tests pass. NVIDIA
@@ -164,11 +164,12 @@ only listed as gaps:
   covered by `test_xgboost_serialization`; distributed model state remains open.
   The release evidence is `results/XGBOOST_SERIALIZATION.md` in `fortml-bench`.
 
-- The resident CUDA dense-affine plan now exposes a forward-mode `jvp` for
-  feature, weight, and bias tangents. Its native kernel covers all eight MLP
-  activations, keeps the immutable layer resident, and has an independent CPU
-  value/JVP oracle. Ordinary builds retain the typed `FORTNUM_NOT_IMPLEMENTED`
-  refusal; VJP, HVP, optimizer state, and resident MLP training remain open.
+- The resident CUDA dense-affine plan now exposes forward-mode `jvp` and
+  reverse-mode `vjp` products for feature, weight, bias, and output cotangents.
+  Its native kernels cover all eight MLP activations, keep the immutable layer
+  resident, and have independent CPU value/JVP/VJP oracles. Ordinary builds
+  retain the typed `FORTNUM_NOT_IMPLEMENTED` refusal; HVP, optimizer state,
+  and resident MLP training remain open.
   The gate is `test/run_cuda_dense_plan.sh`; the contract is documented in
   `docs/CUDA_DENSE_PLAN.md` and `docs/API.md`.
 - `basis_pipeline_training_objective_t` now optimizes a composable basis map
@@ -344,12 +345,12 @@ multiclass, weighted, probabilistic, derivative, or GPU coverage.
 | Nearest-neighbor and margin methods | Dense exact kNN and closed-radius classifiers, weighted linear SVM and SVR | KD-tree or ball-tree search, sparse inputs, kernel SVM/SVR, calibrated probabilities, and differentiable soft-neighbor policies |
 | Trees and ensembles | Partial | Deterministic finite-only regression stumps, weighted depth-limited CART regression and classification, seeded bootstrap random-forest classification, seeded randomized-threshold Extra-Trees classification, squared-loss stump boosting, and exact/histogram depth-limited second-order squared/logistic/Poisson/squared-log/Huber/quantile boosting are implemented. XGBoost-style trees support weighted quantile cuts, bounded histograms, explicit NaN rejection, learned default directions, forced-left/right routing, and per-feature monotonic constraints with recursive leaf bounds; bagging, ranking, categorical, and interaction constraints remain planned |
 | Clustering and unsupervised learning | Centered dense `pca_t` is implemented with deterministic SVD signs, rank selection, whitening, reconstruction, variance metadata, and fixed-state input products; `linear_autoencoder_t` reuses fitted PCA as the tied linear optimum with exact encode/reconstruction JVPs | Incremental/randomized/sparse/kernel PCA, ICA, NMF, k-means/minibatch k-means, Gaussian mixtures/EM, density and graph clustering, manifold methods, outlier detection, matrix factorization, and density metrics |
-| Neural networks | MLP/BNN/VAE/RNN primitives, a separable Hamiltonian MLP, a named sequential `mlp_chain_t` parameter tree, dense MLP linear/`tanh`/ReLU/GELU/SiLU/ELU/softplus/leaky-ReLU products, deterministic MLP Adam/AdamW/Adagrad/RMSprop/SGD training, bounded full-batch MLP and composed-chain L-BFGS-B paths, named group-wise log-L2 hyperparameters with exact mixed HVPs, in-memory resumable optimizer checkpoints, and a resident dense-affine CUDA value/JVP primitive exist | Alias-aware module/buffer tree, the remaining activation/loss/module catalog, convolution/attention/sequence/graph extensions, mixed precision, distributed training, compile/fusion, and serialized/distributed trainers |
+| Neural networks | MLP/BNN/VAE/RNN primitives, a separable Hamiltonian MLP, a named sequential `mlp_chain_t` parameter tree, dense MLP linear/`tanh`/ReLU/GELU/SiLU/ELU/softplus/leaky-ReLU products, deterministic MLP Adam/AdamW/Adagrad/RMSprop/SGD training, bounded full-batch MLP and composed-chain L-BFGS-B paths, named group-wise log-L2 hyperparameters with exact mixed HVPs, in-memory resumable optimizer checkpoints, and a resident dense-affine CUDA value/JVP/VJP primitive exist | Alias-aware module/buffer tree, the remaining activation/loss/module catalog, convolution/attention/sequence/graph extensions, mixed precision, distributed training, compile/fusion, and serialized/distributed trainers |
 | Gaussian processes | Exact, derivative, sparse, structured and local variants are partial-to-implemented. Exact fitted GPs and binary/shared-kernel one-vs-rest Laplace classifiers have bounded FortOpt L-BFGS-B adapters | GPyTorch/GPflow-style kernels, likelihoods, multitask/batch shapes, exact/variational/lazy inference, derivative operators, constraints, calibration, coupled multiclass GP classification, evidence-corrected and likelihood-parameter training |
 | Derivatives | Exact GP, analytic polynomial/Fourier/radial/spline basis and pipeline HVPs, and selected neural/kernel products exist | Value/JVP/VJP/HVP and implicit/hypergradients for every declared parameter/input path, including preprocessing, likelihood, optimizer/search variables, and device kernels |
 | Model selection and metrics | Benchmark-specific checks exist | Shared metrics, splitters, cross-validation, calibration, grid/random/Bayesian/differentiable search, nested validation, and leakage/refusal checks |
 | Persistence and serving | Missing public contract | Versioned state dictionaries, safe model/trainer serialization, compiler-independent metadata, streaming inference, batching, and reproducible deployment manifests |
-| GPU and scale-out | Operator-specific OpenACC/CUDA paths; kNN has a resident native-CUDA plan, dense-affine value/JVP has a resident CUDA C plan, and direct RMSprop/AdamW state has resident CUDA C plans. Elastic-net, OVO, LDA/QDA, random forest, MLP-classifier prediction products, basis/pipeline HVPs, Laplace-GP (binary and OVR multiclass), probability calibration, neural losses, XGBoost (binary/OVR and robust objectives), and typed schedules expose explicit CPU/CUDA capability and typed CUDA refusals; complete RMSprop training, staged XGBoost, robust/discriminant/forest training, basis transforms, and GP-classification-training release rows remain CPU-only | Complete resident CPU/CUDA/OpenACC training and inference for supported estimators, mixed precision, multi-GPU/MPI sharding, transfer accounting, and deterministic reductions |
+| GPU and scale-out | Operator-specific OpenACC/CUDA paths; kNN has a resident native-CUDA plan, dense-affine value/JVP/VJP has a resident CUDA C plan, and direct RMSprop/AdamW state has resident CUDA C plans. Elastic-net, OVO, LDA/QDA, random forest, MLP-classifier prediction products, basis/pipeline HVPs, Laplace-GP (binary and OVR multiclass), probability calibration, neural losses, XGBoost (binary/OVR and robust objectives), and typed schedules expose explicit CPU/CUDA capability and typed CUDA refusals; complete RMSprop training, staged XGBoost, robust/discriminant/forest training, basis transforms, and GP-classification-training release rows remain CPU-only | Complete resident CPU/CUDA/OpenACC training and inference for supported estimators, mixed precision, multi-GPU/MPI sharding, transfer accounting, and deterministic reductions |
 | Performance evidence | Several model/GP lanes exist | Matched correctness-gated comparisons with scikit-learn, XGBoost/LightGBM, PyTorch/JAX, GPyTorch/GPflow, and published hardware/toolchain provenance |
 
 ### Production closure ledger
@@ -491,6 +492,15 @@ when a lower-level primitive already exists.
   gradients, stochastic ELBO minibatches, interdomain features, SKI/KISS-GP,
   local experts, deep GPs, variational classification, and distributed inducing
   points.
+- [x] Add a bounded Bernoulli variational-classification slice:
+  `gp_variational_classification_t` owns inducing-point `q(u)`, deterministic
+  seeded logistic/probit ELBO samples, analytic KL and packed variational
+  gradients, exact deterministic JVPs, minibatch likelihood scaling, and an
+  explicit CUDA refusal until the inducing solve and reductions are resident.
+  The independent finite-difference/JVP oracle is
+  `test_gp_variational_classification`; multiclass coupling, kernel/inducing
+  hyperparameter products, natural gradients, and resident GPU inference stay
+  open.
 - [ ] Derivative observations for every supported smooth kernel, mixed orders,
   vector fields, Hessian observations, operator-valued outputs, analytic
   third-order query products, and covariance products over value/derivative
@@ -1574,6 +1584,11 @@ state phases are reported separately.
   share the existing parameter-block contract; model-specific priors,
   inducing locations, validation-weight derivatives, and complete FortOpt
   objective adapters remain follow-up work.
+- [x] Add exact transform Jacobian and curvature pullbacks. Registry blocks
+  expose `physical_derivatives`; trainable registries expose physical-gradient
+  and physical-HVP pullbacks into identity, log, and bounded-logit optimizer
+  coordinates. An independent analytic transform oracle covers the chain rule;
+  model objective adapters and implicit solve derivatives remain open.
 - [ ] Route complete hyperparameter gradients and HVPs through bounded
   FortOpt L-BFGS-B, with projected-gradient stopping, active-bound diagnostics,
   line-search status, seeded multistart, and best-finite-state retention.
@@ -1962,8 +1977,8 @@ peak memory, and batch-size scaling with the same correctness gate as training.
   product, centered branch, and explicit CPU/CUDA capability rows are recorded
   in [`results/RMSPROP_HYPERGRADIENT.md`](../fortml-bench/results/RMSPROP_HYPERGRADIENT.md).
 - [x] Add resident CUDA device-contract gates for kNN prediction, the
-  no-autodiff RMSprop state recurrence, and dense-affine value/JVP across all
-  eight MLP activations. Independent NumPy fixtures, concise pass/skipped/failed
+  no-autodiff RMSprop state recurrence, and dense-affine value/JVP/VJP across
+  all eight MLP activations. Independent NumPy fixtures, concise pass/skipped/failed
   CSV rows, and hardware/revision provenance are recorded in
   [`results/DEVICE_CONTRACTS.md`](../fortml-bench/results/DEVICE_CONTRACTS.md);
   resident timing and end-to-end model GPU parity remain open.
@@ -2307,7 +2322,7 @@ The maintained reports and their raw artifacts are in `../fortml-bench/results`:
   objective, derivative gate, and typed CUDA refusal.
 - [`DEVICE_CONTRACTS.md`](../fortml-bench/results/DEVICE_CONTRACTS.md), backed by
   `device_contracts.csv` for resident kNN, forest, MSE, optimizer-state, and
-  dense-affine value/JVP CUDA correctness gates.
+  dense-affine value/JVP/VJP CUDA correctness gates.
 - [`XGBOOST_ROBUST.md`](../fortml-bench/results/XGBOOST_ROBUST.md), backed by
   `xgboost_robust.csv` for independent Huber and quantile objective oracles.
 - [`DERIVATIVE_GP.md`](../fortml-bench/results/DERIVATIVE_GP.md), backed by

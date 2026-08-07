@@ -23,14 +23,16 @@ tangents and returns both the value and forward tangent. The native kernel
 keeps the resident weights and evaluates the affine tangent followed by the
 analytic derivative of each supported activation. An ordinary GNU build links
 a stub and returns `FORTNUM_NOT_IMPLEMENTED` without changing output
-sentinels. The `fortml_device` capability probe includes this native
-availability symbol.
+sentinels. Its reverse `vjp` keeps the same immutable layer resident and
+returns query, weight, and bias cotangents for the output cotangent; no host
+autodiff callback is involved. The `fortml_device` capability probe includes
+this native availability symbol.
 
 `test/run_cuda_dense_plan.sh` compiles the C ABI and an independent CPU oracle
 when `nvcc` and a CUDA device are present. The gate checks every activation,
-value and JVP products, two batches on a resident plan, finite-input
+value/JVP/VJP products, two batches on a resident plan, finite-input
 validation, and complete output arrays to a `3e-13` absolute tolerance.
 Machines without a CUDA toolchain are reported as skipped, never as CPU
-evidence. This primitive intentionally does not expose VJP, HVP, or optimizer
-state; those remain on the FortAD/FortSym reference path until a full resident
+evidence. This primitive intentionally does not expose HVP or optimizer state;
+those remain on the FortAD/FortSym reference path until a full resident
 derivative graph is available.

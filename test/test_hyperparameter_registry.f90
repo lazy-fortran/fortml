@@ -21,6 +21,8 @@ program test_hyperparameter_registry
     real(dp) :: wrong(1)
     real(dp) :: all_unconstrained(5), optimizer(4), optimizer_lower(4), optimizer_upper(4)
     real(dp) :: shifted(4)
+    real(dp) :: physical_gradient(4), physical_hvp(4), direction(4)
+    real(dp) :: unconstrained_gradient(4), unconstrained_hvp(4)
     logical :: found
     integer :: first, last
 
@@ -108,6 +110,24 @@ program test_hyperparameter_registry
     if (.not. found .or. first /= 3 .or. last /= 4) error stop 40
     call registry%range("fixed.seed", first, last, found, trainable_only=.true.)
     if (found) error stop 41
+
+    ! Exact transform pullbacks are the coordinates consumed by an outer
+    ! L-BFGS-B objective.  The registry order is log(rate), then bounded-logit
+    ! probability; the expected products are evaluated independently here.
+    physical_gradient = [3.0_dp, -4.0_dp, 1.0_dp, 2.0_dp]
+    call registry%unconstrained_gradient(optimizer, physical_gradient, &
+        unconstrained_gradient, status)
+    call require(status, 49)
+    if (maxval(abs(unconstrained_gradient - [0.75_dp, -8.0_dp, 0.16_dp, 0.36_dp])) > &
+        1.0e-13_dp) error stop 50
+    physical_hvp = [0.05_dp, -2.0_dp, 0.032_dp, -0.108_dp]
+    direction = [0.1_dp, -0.2_dp, 0.1_dp, -0.2_dp]
+    call registry%unconstrained_hvp(optimizer, physical_gradient, physical_hvp, &
+        direction, unconstrained_hvp, status)
+    call require(status, 51)
+    if (maxval(abs(unconstrained_hvp - [0.0875_dp, -2.4_dp, 0.01472_dp, 0.03816_dp])) > &
+        1.0e-13_dp) error stop 52
+
     call registry%add(rate, status)
     if (status_ok(status)) error stop 42
 
