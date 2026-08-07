@@ -1705,6 +1705,21 @@ refusal. `missing_policy()` and `accepts_missing()` report the fitted policy.
 returns a zero feature cotangent away from split boundaries and refuses the
 same discontinuities, nonfinite cotangents, and malformed shapes.
 
+For `fit_squared_log`, margins are the transformed coordinate
+`log(1 + prediction)` and the public inverse link is `exp(margin) - 1`. The
+constant base margin is the weighted mean of `log(1 + target)`, which is the
+geometric optimum for the RMSLE coordinate rather than the transform of the
+arithmetic target mean. The objective products are
+`gradient = (margin - log(1 + target))/exp(margin)` and
+`hessian = (1 - margin + log(1 + target))/exp(margin)`, with the same positive
+Hessian floor used by the Newton tree gain when the exact curvature is
+nonpositive. Targets must be finite and nonnegative. The guarded inverse link
+is finite and has the mathematical lower bound `-1`; it does not silently
+claim a nonnegative output when a Newton update crosses below zero. Exact and
+weighted-histogram paths have an independent hand-formula oracle. No resident
+CUDA tree kernel is linked, so CUDA prediction returns
+`FORTNUM_NOT_IMPLEMENTED`.
+
 For `fit_poisson`, margins are log expected counts and `predict`/staged
 predictions apply a finite guarded exponential. The Newton products are
 `gradient = exp(margin) - target` and `hessian = exp(margin)` (with a positive

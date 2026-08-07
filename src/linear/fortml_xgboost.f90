@@ -14,6 +14,7 @@ module fortml_xgboost
     integer, parameter, public :: XGB_OBJECTIVE_POISSON = 3
     integer, parameter, public :: XGB_OBJECTIVE_HUBER = 4
     integer, parameter, public :: XGB_OBJECTIVE_QUANTILE = 5
+    integer, parameter, public :: XGB_OBJECTIVE_SQUARED_LOG = 6
     integer, parameter, public :: XGB_MISSING_ERROR = 0
     integer, parameter, public :: XGB_MISSING_LEARN = 1
     integer, parameter, public :: XGB_MISSING_LEFT = 2
@@ -47,7 +48,10 @@ module fortml_xgboost
         real(dp) :: l2 = 1.0_dp
         real(dp) :: gamma = 0.0_dp
         real(dp) :: min_child_weight = 1.0e-3_dp
-        character(len=16) :: objective = "squared"
+        ! XGBoost's canonical names include `reg:squaredlogerror` and
+        ! `reg:pseudohubererror`; keep enough storage for the full names so
+        ! aliases are never silently truncated before parsing.
+        character(len=32) :: objective = "squared"
         real(dp) :: huber_delta = 1.0_dp
         real(dp) :: quantile_alpha = 0.5_dp
         character(len=16) :: missing_policy = "error"
@@ -77,8 +81,8 @@ module fortml_xgboost
         logical, allocatable :: missing_left(:)
     end type xgb_tree_t
 
-    !> Second-order boosting for squared, binary logistic, Poisson count,
-    !> Huber, and quantile objectives.
+    !> Second-order boosting for squared, squared-log (RMSLE), binary
+    !> logistic, Poisson count, Huber, and quantile objectives.
     !> Fit is discrete; predictions are deterministic and the objective's
     !> Hessians are aggregated exactly for every retained candidate split.
     type, public :: xgboost_t
@@ -102,6 +106,7 @@ module fortml_xgboost
         procedure, public :: fit_poisson => xgb_fit_poisson
         procedure, public :: fit_huber => xgb_fit_huber
         procedure, public :: fit_quantile => xgb_fit_quantile
+        procedure, public :: fit_squared_log => xgb_fit_squared_log
         procedure, public :: predict_matrix => xgb_predict_matrix
         procedure, public :: predict_vector => xgb_predict_vector
         generic, public :: predict => predict_matrix, predict_vector
@@ -226,6 +231,12 @@ contains
                     "xgboost fit: poisson targets must be nonnegative counts")
                 return
             end if
+        else if (objective_code == XGB_OBJECTIVE_SQUARED_LOG) then
+            if (any(y < 0.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "xgboost fit: squared-log targets must be nonnegative")
+                return
+            end if
         end if
         if (objective_code == XGB_OBJECTIVE_HUBER) then
             if (.not. ieee_is_finite(settings%huber_delta) .or. &
@@ -273,6 +284,15 @@ contains
             self%base_score = stable_logit(mean_target)
         else if (objective_code == XGB_OBJECTIVE_POISSON) then
             self%base_score = stable_log_rate(mean_target)
+        else if (objective_code == XGB_OBJECTIVE_SQUARED_LOG) then
+            ! The constant optimum is the weighted geometric mean in the
+            ! transformed `log(1+y)` coordinate, not `log(1+mean(y))`.
+            self%base_score = sum(observation_weight*log(1.0_dp + y))/weight_sum
+            if (.not. ieee_is_finite(self%base_score)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "xgboost fit: squared-log base margin is nonfinite")
+                return
+            end if
         else if (objective_code == XGB_OBJECTIVE_QUANTILE) then
             self%base_score = weighted_quantile(y, observation_weight, &
                 settings%quantile_alpha)
@@ -382,6 +402,31 @@ contains
         end if
     end subroutine xgb_fit_poisson
 
+    subroutine xgb_fit_squared_log(self, x, y, status, options, sample_weight)
+        !! Fit the XGBoost `reg:squaredlogerror` objective (RMSLE loss).
+        !!
+        !! Margins represent `log(1 + prediction)`.  Targets must be
+        !! nonnegative and public predictions apply the inverse link
+        !! `expm1(margin)`.  The exact CPU tree path uses the analytic
+        !! gradient and a positive-clipped analytic Hessian.  CUDA prediction
+        !! remains a typed refusal until a resident tree kernel is linked.
+        class(xgboost_t), intent(out) :: self
+        real(dp), intent(in) :: x(:, :), y(:)
+        type(fortnum_status_t), intent(out) :: status
+        type(xgboost_options_t), intent(in), optional :: options
+        real(dp), intent(in), optional :: sample_weight(:)
+        type(xgboost_options_t) :: settings
+
+        settings = xgboost_options_t()
+        if (present(options)) settings = options
+        settings%objective = "squaredlog"
+        if (present(sample_weight)) then
+            call xgb_fit(self, x, y, status, settings, sample_weight)
+        else
+            call xgb_fit(self, x, y, status, settings)
+        end if
+    end subroutine xgb_fit_squared_log
+
     subroutine xgb_fit_huber(self, x, y, status, options, sample_weight)
         !! Fit a robust Huber regression tree ensemble.  The objective uses
         !! the exact piecewise Huber gradient and a positive Hessian floor on
@@ -443,6 +488,8 @@ contains
             y(:, 1) = stable_sigmoid_array(margin)
         else if (self%objective_code == XGB_OBJECTIVE_POISSON) then
             y(:, 1) = stable_poisson_array(margin)
+        else if (self%objective_code == XGB_OBJECTIVE_SQUARED_LOG) then
+            y(:, 1) = stable_squared_log_array(margin)
         else
             y(:, 1) = margin
         end if
@@ -468,6 +515,8 @@ contains
             y = stable_sigmoid_array(margin)
         else if (self%objective_code == XGB_OBJECTIVE_POISSON) then
             y = stable_poisson_array(margin)
+        else if (self%objective_code == XGB_OBJECTIVE_SQUARED_LOG) then
+            y = stable_squared_log_array(margin)
         else
             y = margin
         end if
@@ -608,6 +657,8 @@ contains
                 staged(:, i) = stable_sigmoid_array(margin)
             else if (self%objective_code == XGB_OBJECTIVE_POISSON) then
                 staged(:, i) = stable_poisson_array(margin)
+            else if (self%objective_code == XGB_OBJECTIVE_SQUARED_LOG) then
+                staged(:, i) = stable_squared_log_array(margin)
             else
                 staged(:, i) = margin
             end if
@@ -972,6 +1023,8 @@ contains
             name = "huber"
         case (XGB_OBJECTIVE_QUANTILE)
             name = "quantile"
+        case (XGB_OBJECTIVE_SQUARED_LOG)
+            name = "squaredlog"
         case default
             name = "unfitted"
         end select
@@ -1057,7 +1110,7 @@ contains
         type(fortnum_status_t), intent(out) :: status
         real(dp), parameter :: minimum_hessian = 1.0e-12_dp
         real(dp), allocatable :: probability(:)
-        real(dp) :: residual
+        real(dp) :: residual, probability_value
         integer :: i
 
         if (size(margin) /= size(target) .or. size(gradient) /= size(target) .or. &
@@ -1080,6 +1133,19 @@ contains
             probability = stable_poisson_array(margin)
             gradient = probability - target
             hessian = max(probability, minimum_hessian)
+        case (XGB_OBJECTIVE_SQUARED_LOG)
+            ! f(m) = 1/2 [m-log(1+y)]^2 after setting prediction=expm1(m).
+            ! The chain rule gives g=(m-log1p(y))/exp(m) and
+            ! h=(1-(m-log1p(y)))/exp(m).  XGBoost's tree gain formulas
+            ! require positive curvature, so retain the standard floor when
+            ! the exact Hessian is nonpositive in a far tail.
+            do i = 1, size(margin)
+                residual = margin(i) - log(1.0_dp + target(i))
+                probability_value = stable_poisson_mean(margin(i))
+                gradient(i) = residual/probability_value
+                hessian(i) = max((1.0_dp - residual)/probability_value, &
+                    minimum_hessian)
+            end do
         case (XGB_OBJECTIVE_HUBER)
             do i = 1, size(margin)
                 residual = margin(i) - target(i)
@@ -1521,6 +1587,9 @@ contains
             code = XGB_OBJECTIVE_HUBER
         case ("quantile", "reg:quantile", "pinball")
             code = XGB_OBJECTIVE_QUANTILE
+        case ("squaredlog", "squared-log", "squaredlogerror", &
+                "reg:squaredlogerror", "rmsle")
+            code = XGB_OBJECTIVE_SQUARED_LOG
         case default
             code = 0
         end select
@@ -1687,6 +1756,35 @@ contains
 
         means = stable_poisson_element(values)
     end function stable_poisson_array
+
+    pure real(dp) function stable_squared_log_mean(value) result(mean_value)
+        !! Overflow/underflow-safe inverse link `expm1(value)`.
+        !!
+        !! Tree updates can temporarily move a margin below zero even though
+        !! the final prediction is constrained to be at least -1 by the
+        !! squared-log link.  Clipping before exponentiation keeps both tails
+        !! finite without changing ordinary double-precision values.
+        real(dp), intent(in) :: value
+        real(dp) :: clipped
+
+        clipped = min(max(value, log(tiny(1.0_dp))), &
+            log(huge(1.0_dp)) - 1.0_dp)
+        mean_value = exp(clipped) - 1.0_dp
+    end function stable_squared_log_mean
+
+    pure elemental real(dp) function stable_squared_log_element(value) &
+            result(mean_value)
+        real(dp), intent(in) :: value
+
+        mean_value = stable_squared_log_mean(value)
+    end function stable_squared_log_element
+
+    function stable_squared_log_array(values) result(means)
+        real(dp), intent(in) :: values(:)
+        real(dp) :: means(size(values))
+
+        means = stable_squared_log_element(values)
+    end function stable_squared_log_array
 
     pure real(dp) function safe_midpoint(left, right) result(midpoint)
         !! Overflow-safe midpoint for finite ordered values.  Computing each
