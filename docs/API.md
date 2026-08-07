@@ -1065,7 +1065,8 @@ softmax, and `predict` maps the largest probability back to the stored labels.
 `set_parameters`, and `fitted` expose the state. `loss_gradient` returns the
 cross-entropy value and packed network gradient for a fitted model. Its
 optional sample-weight vector uses the same positive-mass reduction. Binary,
-multilabel, ordinal, and GP likelihood classifier adapters remain roadmap work.
+multilabel, and GP likelihood classifier adapters remain roadmap work;
+`ordinal_logistic_classifier_t` is the separate cumulative-logit contract.
 
 ### `fortml_tree`
 
