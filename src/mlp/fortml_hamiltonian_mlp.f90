@@ -1,14 +1,15 @@
 module fortml_hamiltonian_mlp
-    !! A separable Hamiltonian neural network with exact split products.
+    !! Hamiltonian neural networks with exact derivative products.
     !!
     !! The model stores two scalar MLPs, V(q) and T(p), and defines
-    !! H(q,p) = V(q) + T(p).  The split is intentional: the explicit
-    !! leapfrog map below is symplectic for every differentiable V and T,
-    !! whereas a general learned H(q,p) needs an implicit integrator.
+    !! H(q,p) = V(q) + T(p), or a general scalar H(q,p).  The split is
+    !! intentional: the explicit leapfrog map below is symplectic for every
+    !! differentiable V and T, whereas a general learned H(q,p) needs an
+    !! implicit integrator.
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, status_ok, &
-        FORTNUM_OK, FORTNUM_DOMAIN_ERROR
+        FORTNUM_OK, FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED
     use fortml_mlp, only: mlp_t, MLP_TANH
     implicit none
     private
@@ -17,9 +18,12 @@ module fortml_hamiltonian_mlp
         private
         type(mlp_t) :: potential
         type(mlp_t) :: kinetic
+        type(mlp_t) :: general
         integer :: n_coordinates = 0
+        logical :: general_mode = .false.
     contains
         procedure, public :: initialize => hamiltonian_mlp_initialize
+        procedure, public :: initialize_general => hamiltonian_mlp_initialize_general
         procedure, public :: parameter_count => hamiltonian_mlp_parameter_count
         procedure, public :: parameters => hamiltonian_mlp_parameters
         procedure, public :: set_parameters => hamiltonian_mlp_set_parameters
@@ -31,6 +35,7 @@ module fortml_hamiltonian_mlp
         procedure, public :: vector_field_jvp => hamiltonian_mlp_vector_field_jvp
         procedure, public :: leapfrog => hamiltonian_mlp_leapfrog
         procedure, public :: coordinate_count => hamiltonian_mlp_coordinate_count
+        procedure, public :: is_general => hamiltonian_mlp_is_general
     end type hamiltonian_mlp_t
 
 contains
@@ -64,8 +69,37 @@ contains
             hidden_activation=activation, initialization_seed=seed + 7919)
         if (.not. status_ok(status)) return
         self%n_coordinates = n_coordinates
+        self%general_mode = .false.
         call status_set(status, FORTNUM_OK, "")
     end subroutine hamiltonian_mlp_initialize
+
+    subroutine hamiltonian_mlp_initialize_general(self, n_coordinates, layers, &
+            status, hidden_activation, initialization_seed)
+        class(hamiltonian_mlp_t), intent(out) :: self
+        integer, intent(in) :: n_coordinates, layers(:)
+        type(fortnum_status_t), intent(out) :: status
+        integer, intent(in), optional :: hidden_activation, initialization_seed
+        integer :: activation, seed
+
+        activation = MLP_TANH
+        if (present(hidden_activation)) activation = hidden_activation
+        seed = 17
+        if (present(initialization_seed)) seed = initialization_seed
+        if (n_coordinates < 1 .or. size(layers) < 2 .or. &
+            layers(1) /= 2*n_coordinates .or. layers(size(layers)) /= 1 .or. &
+            seed < 0) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "Hamiltonian MLP initialize_general: invalid layer shapes")
+            return
+        end if
+
+        call self%general%initialize(layers, status, hidden_activation=activation, &
+            initialization_seed=seed)
+        if (.not. status_ok(status)) return
+        self%n_coordinates = n_coordinates
+        self%general_mode = .true.
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine hamiltonian_mlp_initialize_general
 
     integer function hamiltonian_mlp_coordinate_count(self) result(count)
         class(hamiltonian_mlp_t), intent(in) :: self
@@ -73,10 +107,20 @@ contains
         count = self%n_coordinates
     end function hamiltonian_mlp_coordinate_count
 
+    logical function hamiltonian_mlp_is_general(self) result(general)
+        class(hamiltonian_mlp_t), intent(in) :: self
+
+        general = self%general_mode
+    end function hamiltonian_mlp_is_general
+
     integer function hamiltonian_mlp_parameter_count(self) result(count)
         class(hamiltonian_mlp_t), intent(in) :: self
 
-        count = self%potential%parameter_count() + self%kinetic%parameter_count()
+        if (self%general_mode) then
+            count = self%general%parameter_count()
+        else
+            count = self%potential%parameter_count() + self%kinetic%parameter_count()
+        end if
     end function hamiltonian_mlp_parameter_count
 
     function hamiltonian_mlp_parameters(self) result(theta)
@@ -84,6 +128,10 @@ contains
         real(dp), allocatable :: theta(:)
         integer :: np, nk
 
+        if (self%general_mode) then
+            theta = self%general%parameters()
+            return
+        end if
         np = self%potential%parameter_count()
         nk = self%kinetic%parameter_count()
         allocate(theta(np + nk))
@@ -97,6 +145,16 @@ contains
         type(fortnum_status_t), intent(out) :: status
         integer :: np, nk
 
+        if (self%general_mode) then
+            if (size(theta) /= self%general%parameter_count() .or. &
+                any(.not. ieee_is_finite(theta))) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "Hamiltonian MLP set_parameters: invalid parameter vector")
+                return
+            end if
+            call self%general%set_parameters(theta, status)
+            return
+        end if
         np = self%potential%parameter_count()
         nk = self%kinetic%parameter_count()
         if (self%n_coordinates < 1 .or. size(theta) /= np + nk .or. &
@@ -120,6 +178,10 @@ contains
         if (.not. valid_state(self, state) .or. any(shape(energy) /= [size(state, 1), 1])) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "Hamiltonian MLP energy: invalid state or output shape")
+            return
+        end if
+        if (self%general_mode) then
+            call self%general%predict(state, energy, status)
             return
         end if
         call split_state(self, state, q, p)
@@ -147,6 +209,14 @@ contains
             any(shape(gradient) /= shape(state))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "Hamiltonian MLP energy_gradient: invalid state or output shape")
+            return
+        end if
+        if (self%general_mode) then
+            allocate(one(n, 1), potential_bar(self%general%parameter_count()))
+            one = 1.0_dp
+            call self%general%predict(state, energy, status)
+            if (.not. status_ok(status)) return
+            call self%general%vjp(state, one, potential_bar, gradient, status)
             return
         end if
         call split_state(self, state, q, p)
@@ -180,6 +250,18 @@ contains
         integer :: np, nk, n
 
         n = size(state, 1)
+        if (self%general_mode) then
+            if (.not. valid_state(self, state) .or. any(shape(dstate) /= shape(state)) .or. &
+                size(dtheta) /= self%general%parameter_count() .or. &
+                any(.not. ieee_is_finite(dtheta)) .or. any(.not. ieee_is_finite(dstate)) .or. &
+                any(shape(energy) /= [n, 1]) .or. any(shape(denergy) /= [n, 1])) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "Hamiltonian MLP energy_jvp: invalid state, direction, or output")
+                return
+            end if
+            call self%general%jvp(state, dtheta, dstate, energy, denergy, status)
+            return
+        end if
         np = self%potential%parameter_count()
         nk = self%kinetic%parameter_count()
         if (.not. valid_state(self, state) .or. any(shape(dstate) /= shape(state)) .or. &
@@ -213,6 +295,20 @@ contains
 
         n = size(state, 1)
         nq = self%n_coordinates
+        if (self%general_mode) then
+            if (.not. valid_state(self, state) .or. size(energy_bar) /= n .or. &
+                size(parameter_bar) /= self%general%parameter_count() .or. &
+                any(shape(state_bar) /= shape(state)) .or. &
+                any(.not. ieee_is_finite(energy_bar))) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "Hamiltonian MLP energy_vjp: invalid state, cotangent, or output")
+                return
+            end if
+            allocate(cotangent(n, 1))
+            cotangent(:, 1) = energy_bar
+            call self%general%vjp(state, cotangent, parameter_bar, state_bar, status)
+            return
+        end if
         np = self%potential%parameter_count()
         nk = self%kinetic%parameter_count()
         if (.not. valid_state(self, state) .or. size(energy_bar) /= n .or. &
@@ -271,6 +367,30 @@ contains
 
         n = size(state, 1)
         nq = self%n_coordinates
+        if (self%general_mode) then
+            if (.not. valid_state(self, state) .or. any(shape(dstate) /= shape(state)) .or. &
+                any(shape(field) /= shape(state)) .or. any(shape(dfield) /= shape(state)) .or. &
+                size(dtheta) /= self%general%parameter_count() .or. &
+                any(.not. ieee_is_finite(dtheta)) .or. any(.not. ieee_is_finite(dstate))) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "Hamiltonian MLP vector_field_jvp: invalid state or direction")
+                return
+            end if
+            allocate(one(n, 1), potential_bar(self%general%parameter_count()))
+            allocate(potential_hvp(self%general%parameter_count()), q_hvp(n, 2*nq))
+            allocate(gradient(n, 2*nq))
+            one = 1.0_dp
+            call self%general%vjp(state, one, potential_bar, gradient, status)
+            if (.not. status_ok(status)) return
+            call self%general%hvp(state, one, dtheta, dstate, potential_hvp, &
+                q_hvp, status)
+            if (.not. status_ok(status)) return
+            field(:, 1:nq) = gradient(:, nq + 1:2*nq)
+            field(:, nq + 1:2*nq) = -gradient(:, 1:nq)
+            dfield(:, 1:nq) = q_hvp(:, nq + 1:2*nq)
+            dfield(:, nq + 1:2*nq) = -q_hvp(:, 1:nq)
+            return
+        end if
         np = self%potential%parameter_count()
         nk = self%kinetic%parameter_count()
         if (.not. valid_state(self, state) .or. any(shape(dstate) /= shape(state)) .or. &
@@ -320,6 +440,12 @@ contains
             any(shape(next_state) /= shape(state))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "Hamiltonian MLP leapfrog: invalid state, step, or output shape")
+            return
+        end if
+        if (self%general_mode) then
+            next_state = state
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "Hamiltonian MLP leapfrog: general H(q,p) requires an implicit integrator")
             return
         end if
         call split_state(self, state, q, p)

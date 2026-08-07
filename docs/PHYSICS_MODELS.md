@@ -7,8 +7,8 @@ networks are complete.
 
 ## Current implementation
 
-`fortml_hamiltonian_mlp` provides `hamiltonian_mlp_t` for a separable scalar
-Hamiltonian,
+`fortml_hamiltonian_mlp` provides `hamiltonian_mlp_t` for separable and general
+scalar Hamiltonians. The original initializer stores two scalar networks,
 
 ```text
 H(q,p) = V(q) + T(p),       f(q,p) = ( dT/dp, -dV/dq ).
@@ -17,15 +17,19 @@ H(q,p) = V(q) + T(p),       f(q,p) = ( dT/dp, -dV/dq ).
 The two scalar MLPs have a deterministic packed parameter vector. The public
 products are `energy`, `energy_gradient`, `vector_field`, `energy_jvp`,
 `energy_vjp`, `vector_field_jvp`, and an explicit velocity-Verlet (`leapfrog`)
-step. The implementation refuses malformed layer shapes, non-finite states,
-and non-finite directions. The independent test
+step. `initialize_general` selects one scalar MLP over the full `[q,p]` state;
+the same products then differentiate a nonseparable Hamiltonian without a
+finite-difference fallback. The explicit leapfrog map is refused with
+`FORTNUM_NOT_IMPLEMENTED` in general mode because it is a split integrator;
+an implicit symplectic method is a separate contract. Both modes refuse
+malformed layer shapes, non-finite states, and non-finite directions. The independent test
 [`test_hamiltonian_mlp.f90`](../test/test_hamiltonian_mlp.f90) checks the value
-products against central differences, the VJP dot-product identity, and the
-finite-difference Jacobian's symplectic-form defect and reversibility.
+products against central differences, the VJP dot-product identity, general
+state/parameter JVPs, and the separable finite-difference Jacobian's
+symplectic-form defect and reversibility.
 
-This is deliberately narrower than a general HNN or LNN. The current model is
-separable, has canonical coordinates, and does not learn a Poisson tensor or
-an implicit integrator. `linear_autoencoder_t` is likewise only the exact
+The Hamiltonian model has canonical coordinates and does not learn a Poisson
+tensor or an implicit integrator. `linear_autoencoder_t` is likewise only the exact
 tied, centered PCA reconstruction seam. It is not a nonlinear or physics
 autoencoder initializer.
 

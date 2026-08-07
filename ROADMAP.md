@@ -2476,12 +2476,14 @@ checkouts before deciding that a product is unavailable.
   `T(p)` MLPs, packed energy/state JVP and VJP products, canonical vector-field
   products, and an explicit leapfrog map. Independent finite-difference,
   adjoint, reversibility, and symplectic-form oracles cover the contract.
-  General nonseparable Hamiltonians, learned Poisson structures, and implicit
-  integrators remain open.
-- [ ] Extend the Hamiltonian MLP to a general nonseparable scalar H(q,p),
-  canonical J, optional learned skew structure matrix, and parameter/input
-  products. Promote that matrix to a Poisson structure only after skew
-  symmetry and the Jacobi identity have independent tests.
+- [x] Extend the Hamiltonian MLP to a general nonseparable scalar H(q,p) with
+  canonical `J`: `initialize_general` stores one full-state scalar MLP and
+  exposes exact energy, canonical vector-field, JVP, VJP, and HVP-backed
+  vector-field-JVP products. The independent test covers parameter/state
+  finite differences and the adjoint identity. The explicit split leapfrog
+  method returns `FORTNUM_NOT_IMPLEMENTED` in general mode; an implicit
+  symplectic integrator is still required. Learned skew/Poisson structures
+  remain open and require independent skew-symmetry and Jacobi tests.
 - [ ] Add `lagrangian_mlp_t` with Euler-Lagrange residuals, mass-matrix checks,
   and a refusal for a singular velocity Hessian. Positive definiteness is an
   additional requirement only for a separable mechanical mass metric.
