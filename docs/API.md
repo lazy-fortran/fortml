@@ -95,15 +95,25 @@ and `device` expose the plan metadata, while `destroy(status)` releases the
 resident allocations. `fortml_cuda_dense_available()` is the native capability
 probe.
 
+`train_mse(query_x,target,learning_rate,loss,status)` performs one resident
+full-batch mean-squared-error update for the affine layer and returns the
+pre-update mean loss. `parameters(weights,bias,status)` snapshots the updated
+resident parameters, and `transfer_stats(host_to_device_bytes,
+device_to_host_bytes,resident_bytes,status)` reports successful copy bytes and
+the permanent model allocation. This is deliberately a single-layer
+no-autodiff kernel; it does not expose optimizer moments or a general
+multi-layer trainer.
+
 The ordinary GNU build links an unavailable stub and returns
 `FORTNUM_NOT_IMPLEMENTED`; it never executes a CPU fallback. The plan exposes
-no HVP or optimizer state. The JVP and VJP graphs are resident and have
-independent CPU recurrence oracles for all eight activations; HVP and full MLP
-training remain on the FortAD/FortSym reference path until their complete
-resident graphs are linked. See [`docs/CUDA_DENSE_PLAN.md`](CUDA_DENSE_PLAN.md)
-and the independent `test/run_cuda_dense_plan.sh` gate for the ABI layout,
-finite-input refusal, eight-activation value/JVP/VJP oracle, and repeated
-resident-batch evidence.
+no HVP or optimizer state. The JVP, VJP, and MSE-update graphs are resident and
+have independent CPU recurrence/oracle checks for all eight activations; HVP
+and full MLP training remain on the FortAD/FortSym reference path until their
+complete resident graphs are linked. See
+[`docs/CUDA_DENSE_PLAN.md`](CUDA_DENSE_PLAN.md) and the independent
+`test/run_cuda_dense_plan.sh` gate for the ABI layout, finite-input refusal,
+eight-activation value/JVP/VJP oracle, MSE update, transfer counters, and
+repeated resident-batch evidence.
 
 | Type | Value or prediction | JVP | VJP or gradient | HVP |
 | --- | --- | --- | --- | --- |
@@ -117,7 +127,7 @@ resident-batch evidence.
 | `logistic_regression_t` | Decision score and probabilities | Parameter/input JVP, probability JVP | Parameter/input VJP, probability VJP | No |
 | `linear_svm_classifier_t` | Signed decision score and labels | Parameter/input JVP away from fit-time boundaries | Parameter/input VJP; hinge objective value/gradient | No |
 | `softmax_regression_t` | Multiclass decision scores and probabilities | Parameter/input JVP, probability JVP | Parameter/input VJP, probability VJP | No |
-| `softmax_training_objective_t` | Weighted multiclass cross-entropy + feature L2 | Packed parameter/L2 products | Packed parameter/L2 gradient | Exact joint parameter/L2 HVP |
+| `softmax_training_objective_t` | Weighted multiclass cross-entropy + feature L2 (or positive log-L2) | Packed parameter/hyperparameter JVP | Packed parameter/hyperparameter VJP and gradient | Exact joint parameter/hyperparameter HVP |
 | `gaussian_naive_bayes_t` | Log probabilities and probabilities | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
 | `bernoulli_naive_bayes_t` | Log probabilities and probabilities | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
 | `multinomial_naive_bayes_t` | Log probabilities and probabilities | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
@@ -890,25 +900,30 @@ parameter products for GP classifiers remain separate roadmap contracts.
 
 `softmax_training_objective_t` packages a fitted `softmax_regression_t` and a
 weighted multiclass data set as an exact FortOpt objective. Call
-`initialize(model,x,labels,l2,status[,optimize_l2,sample_weight,class_weight])`,
-then use `parameters`, `parameter_count`, `value_gradient`, and `hvp`.
+`initialize(model,x,labels,l2,status[,optimize_l2,sample_weight,class_weight,
+optimize_log_l2])`, then use `parameters`, `parameter_count`,
+`value_gradient`, `jvp`, `vjp`, and `hvp`.
 The packed vector contains column-major coefficient blocks followed by the
-intercept block and, with `optimize_l2=.true.`, one final non-negative L2
-coordinate. The objective is the weighted mean cross-entropy plus feature-only
-L2; class weights are in sorted-class order and multiply sample weights before
-the positive-mass reduction. The gradient and HVP include the exact mixed
-parameter/L2 block, so hyperparameter derivatives do not use finite
-differences.
+intercept block and, with `optimize_l2=.true.` or `optimize_log_l2=.true.`, one
+final L2 coordinate. The direct coordinate is non-negative; the transformed coordinate
+stores `log(L2)` and is exponentiated inside the objective, which keeps the
+regularization strictly positive. The objective is the weighted mean
+cross-entropy plus feature-only L2; class weights are in sorted-class order and
+multiply sample weights before the positive-mass reduction. The gradient, JVP,
+VJP, and HVP include the exact mixed parameter/hyperparameter blocks, so
+hyperparameter derivatives do not use finite differences. The two optimization
+modes are mutually exclusive.
 
 `fortopt(objective,status)` installs a context callback for
 `fortopt_objective`. `softmax_optimize_lbfgsb(model,x,labels,options,result,
 status[,sample_weight,class_weight])` owns a bounded FortOpt L-BFGS-B lifecycle.
-`softmax_lbfgsb_options_t` supplies explicit model and optional L2 bounds; the
-result reports convergence, iterations, line-search evaluations, objective,
-gradient norm, and final L2. The adapter requires a fitted model; use
-`softmax_regression_t%fit` first to obtain an initial state. The model also
-exposes `regularization()` and `set_regularization(value,status)` for explicit
-L2 state management.
+`softmax_lbfgsb_options_t` supplies explicit model bounds, direct
+`l2_lower_bound`/`l2_upper_bound`, or transformed
+`log_l2_lower_bound`/`log_l2_upper_bound`. The result reports convergence,
+iterations, line-search evaluations, objective, gradient norm, and final L2. The
+adapter requires a fitted model; use `softmax_regression_t%fit` first to obtain
+an initial state. The model also exposes `regularization()` and
+`set_regularization(value,status)` for explicit L2 state management.
 
 ### `fortml_ovr_logistic_classifier`
 
