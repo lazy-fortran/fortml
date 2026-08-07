@@ -62,6 +62,10 @@ module fortml_gp_classification
         procedure, public :: predict => gp_classification_predict
         procedure, public :: classes => gp_classification_classes
         procedure, public :: feature_count => gp_classification_feature_count
+        procedure, public :: parameter_count => gp_classification_parameter_count
+        procedure, public :: parameters => gp_classification_parameters
+        procedure, public :: hyperparameter_gradient => &
+            gp_classification_hyperparameter_gradient
         procedure, public :: fitted => gp_classification_fitted
         procedure, public :: likelihood_kind => gp_classification_likelihood
     end type gp_classification_t
@@ -367,6 +371,45 @@ contains
 
         count = self%n_features
     end function gp_classification_feature_count
+
+    integer function gp_classification_parameter_count(self) result(count)
+        class(gp_classification_t), intent(in) :: self
+
+        count = 0
+        if (.not. self%fitted()) return
+        count = self%kernel%parameter_count()
+    end function gp_classification_parameter_count
+
+    function gp_classification_parameters(self) result(parameters)
+        class(gp_classification_t), intent(in) :: self
+        real(dp), allocatable :: parameters(:)
+
+        if (.not. self%fitted()) then
+            allocate(parameters(0))
+            return
+        end if
+        parameters = self%kernel%parameters()
+    end function gp_classification_parameters
+
+    subroutine gp_classification_hyperparameter_gradient(self, gradient, status)
+        class(gp_classification_t), intent(in) :: self
+        real(dp), intent(out) :: gradient(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        gradient = 0.0_dp
+        if (.not. self%fitted()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP classification hyperparameter gradient: model is not fitted")
+            return
+        end if
+        if (size(gradient) /= self%parameter_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP classification hyperparameter gradient: output shape is invalid")
+            return
+        end if
+        call status_set(status, FORTNUM_DOMAIN_ERROR, &
+            "GP classification hyperparameter gradient: Laplace parameter products are not implemented")
+    end subroutine gp_classification_hyperparameter_gradient
 
     logical function gp_classification_fitted(self) result(fitted)
         class(gp_classification_t), intent(in) :: self

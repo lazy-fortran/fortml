@@ -49,6 +49,11 @@ module fortml_gp_multiclass_classification
         procedure, public :: class_count => gp_multiclass_classification_class_count
         procedure, public :: feature_count => &
             gp_multiclass_classification_feature_count
+        procedure, public :: parameter_count => &
+            gp_multiclass_classification_parameter_count
+        procedure, public :: parameters => gp_multiclass_classification_parameters
+        procedure, public :: hyperparameter_gradient => &
+            gp_multiclass_classification_hyperparameter_gradient
         procedure, public :: fitted => gp_multiclass_classification_fitted
     end type gp_multiclass_classification_t
 
@@ -261,6 +266,58 @@ contains
 
         count = self%n_features
     end function gp_multiclass_classification_feature_count
+
+    integer function gp_multiclass_classification_parameter_count(self) result(count)
+        class(gp_multiclass_classification_t), intent(in) :: self
+        integer :: i
+
+        count = 0
+        if (.not. self%fitted()) return
+        do i = 1, self%n_classes
+            count = count + self%models(i)%parameter_count()
+        end do
+    end function gp_multiclass_classification_parameter_count
+
+    function gp_multiclass_classification_parameters(self) result(parameters)
+        class(gp_multiclass_classification_t), intent(in) :: self
+        real(dp), allocatable :: parameters(:)
+        real(dp), allocatable :: model_parameters(:)
+        integer :: i, first, last
+
+        if (.not. self%fitted()) then
+            allocate(parameters(0))
+            return
+        end if
+        allocate(parameters(self%parameter_count()))
+        first = 1
+        do i = 1, self%n_classes
+            model_parameters = self%models(i)%parameters()
+            last = first + size(model_parameters) - 1
+            parameters(first:last) = model_parameters
+            first = last + 1
+        end do
+    end function gp_multiclass_classification_parameters
+
+    subroutine gp_multiclass_classification_hyperparameter_gradient(self, gradient, &
+            status)
+        class(gp_multiclass_classification_t), intent(in) :: self
+        real(dp), intent(out) :: gradient(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        gradient = 0.0_dp
+        if (.not. self%fitted()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP multiclass hyperparameter gradient: model is not fitted")
+            return
+        end if
+        if (size(gradient) /= self%parameter_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP multiclass hyperparameter gradient: output shape is invalid")
+            return
+        end if
+        call status_set(status, FORTNUM_DOMAIN_ERROR, &
+            "GP multiclass hyperparameter gradient: Laplace parameter products are not implemented")
+    end subroutine gp_multiclass_classification_hyperparameter_gradient
 
     logical function gp_multiclass_classification_fitted(self) result(fitted)
         class(gp_multiclass_classification_t), intent(in) :: self

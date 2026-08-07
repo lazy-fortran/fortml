@@ -18,6 +18,7 @@ program test_gp_classification
     real(dp) :: mean_plus(5), mean_minus(5), variance_plus(5), variance_minus(5)
     real(dp) :: probabilities(5, 2), probabilities_dot(5, 2)
     real(dp) :: probabilities_plus(5, 2), probabilities_minus(5, 2)
+    real(dp), allocatable :: kernel_parameters(:), model_parameters(:), gradient(:)
     integer :: labels(8), predicted(8), classes(2), failures
     real(dp) :: h
 
@@ -37,6 +38,15 @@ program test_gp_classification
     classes = model%classes()
     call check(all(classes == [-7, 11]) .and. model%feature_count() == 1, &
         "class metadata", failures)
+    kernel_parameters = kernel%parameters()
+    model_parameters = model%parameters()
+    allocate(gradient(model%parameter_count()))
+    call check(model%parameter_count() == size(kernel_parameters) .and. &
+        maxval(abs(model_parameters - kernel_parameters)) < 1.0e-14_dp, &
+        "kernel parameter metadata", failures)
+    call model%hyperparameter_gradient(gradient, status)
+    call check(.not. status_ok(status), &
+        "unimplemented Laplace hyperparameter gradient refusal", failures)
     call model%predict(x, predicted, status)
     call check(status_ok(status) .and. count(predicted == labels) >= 7, &
         "training classification", failures)

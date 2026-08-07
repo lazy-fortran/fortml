@@ -18,6 +18,7 @@ program test_gp_multiclass_classification
     real(dp) :: query_minus(6, 2), probabilities(6, 3), probabilities_dot(6, 3)
     real(dp) :: probabilities_plus(6, 3), probabilities_minus(6, 3)
     real(dp) :: repeat_probabilities(6, 3), probit_probabilities(6, 3)
+    real(dp), allocatable :: kernel_parameters(:), model_parameters(:), gradient(:)
     integer :: labels(9), predicted(9), query_predicted(6), classes(3)
     integer :: failures
 
@@ -52,6 +53,15 @@ program test_gp_multiclass_classification
     classes = model%classes()
     call check(all(classes == [-7, 10, 42]) .and. model%class_count() == 3 .and. &
         model%feature_count() == 2, "sorted class metadata", failures)
+    kernel_parameters = kernel%parameters()
+    model_parameters = model%parameters()
+    allocate(gradient(model%parameter_count()))
+    call check(model%parameter_count() == 3*size(kernel_parameters) .and. &
+        size(model_parameters) == model%parameter_count(), &
+        "multiclass packed kernel metadata", failures)
+    call model%hyperparameter_gradient(gradient, status)
+    call check(.not. status_ok(status), &
+        "unimplemented multiclass hyperparameter gradient refusal", failures)
     call model%predict_proba(query, probabilities, status)
     call model%predict(query, query_predicted, status)
     call check(status_ok(status) .and. &

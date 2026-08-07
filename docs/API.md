@@ -564,18 +564,26 @@ and jitter. `predict_latent` returns posterior latent mean and variance.
 `predict_proba` returns two observed-probability columns. Both have input-JVP
 variants, and `predict` returns the stored integer labels. Every kernel that
 supplies the existing matrix and input-derivative contracts is supported.
-This is currently a Laplace binary classifier: variational likelihoods,
-multiclass coupling, kernel hyperparameter products, and derivative
-observations remain explicit roadmap work.
+`parameter_count()` and `parameters()` expose read-only kernel-log-parameter
+metadata in the fitted model. `hyperparameter_gradient` validates its output
+shape and then returns a domain-status refusal: the Laplace mode, likelihood
+curvature, and posterior factorization are fit-time state and are not yet
+recomputed by a classifier parameter product. Variational likelihoods,
+multiclass coupling, kernel hyperparameter products, and derivative observations
+remain explicit roadmap work.
 
 `gp_multiclass_classification_t` provides deterministic one-vs-rest multiclass
 GP classification over the same binary Laplace models. It fits one model per
 sorted integer class, normalizes their positive probabilities onto a simplex,
 and exposes `classes`, `class_count`, `feature_count`, `predict_proba`,
-`predict`, and `fitted`. The wrapper inherits the selected logistic or probit
-likelihood and kernel/refusal behavior. It is a coupling policy rather than a
-multinomial likelihood, so variational categorical likelihoods and shared
-multiclass hyperparameter training remain separate work.
+`predict`, and `fitted`. `parameter_count()` and `parameters()` concatenate
+the read-only kernel metadata for each one-vs-rest model in sorted class order.
+`hyperparameter_gradient` returns an explicit domain-status refusal until the
+coupled Laplace objective and all posterior refactorizations are differentiable.
+The wrapper inherits the selected logistic or probit likelihood and
+kernel/refusal behavior. It is a coupling policy rather than a multinomial
+likelihood, so variational categorical likelihoods and shared multiclass
+hyperparameter training remain separate work.
 
 ### `fortml_derivative_gaussian_process`
 
