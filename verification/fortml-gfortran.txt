@@ -1,16 +1,29 @@
-Static: OK (303 modules, 303 changed, 303 affected)
+Static: OK (305 modules, 305 changed, 305 affected)
 fo build [--------------------] 0/757 0%
 fo build [####################] 757/757 100%
-fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_xgboost_squared_log.f90:124:19: Warning: Creating array temporary at (1) [-Warray-temporaries]
-fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_xgboost.f90:254:18: Warning: Creating array temporary at (1) [-Warray-temporaries]
-fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_xgboost.f90:254:18: Warning: Creating array temporary at (1) [-Warray-temporaries]
-fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_xgboost.f90:254:18: Warning: Creating array temporary at (1) [-Warray-temporaries]
-fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_xgboost.f90:254:18: Warning: Creating array temporary at (1) [-Warray-temporaries]
+fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_gp_features.f90:536:37: Warning: Creating array temporary at (1) [-Warray-temporaries]
+fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_gp_features.f90:563:42: Warning: Creating array temporary at (1) [-Warray-temporaries]
+fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_gp_features.f90:297:26: Warning: Creating array temporary at (1) [-Warray-temporaries]
+fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_gp_features.f90:297:26: Warning: Creating array temporary at (1) [-Warray-temporaries]
+fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_gp_features.f90:235:26: Warning: Creating array temporary at (1) [-Warray-temporaries]
+fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_gp_features.f90:185:26: Warning: Creating array temporary at (1) [-Warray-temporaries]
+fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_gp_features.f90:185:27: Warning: Creating array temporary at (1) [-Warray-temporaries]
+fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_gp_features.f90:185:26: Warning: Creating array temporary at (1) [-Warray-temporaries]
+fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_gp_features.f90:79:26: Warning: Creating array temporary at (1) [-Warray-temporaries]
+fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_gp_features.f90:79:26: Warning: Creating array temporary at (1) [-Warray-temporaries]
+fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_gp_hyperparameter_training.f90:51:17: Warning: Creating array temporary at (1) [-Warray-temporaries]
+fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_scalable_gp.f90:338:30: Warning: Creating array temporary at (1) [-Warray-temporaries]
+fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_scalable_gp.f90:342:20: Warning: Creating array temporary at (1) [-Warray-temporaries]
+fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_gp_classification_training.f90:139:21: Warning: Creating array temporary at (1) [-Warray-temporaries]
+fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_gp_classification_training.f90:72:21: Warning: Creating array temporary at (1) [-Warray-temporaries]
+fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_gp_classification_training.f90:72:21: Warning: Creating array temporary at (1) [-Warray-temporaries]
+fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_gp_classification_training.f90:72:21: Warning: Creating array temporary at (1) [-Warray-temporaries]
+fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_gp_classification_training.f90:72:21: Warning: Creating array temporary at (1) [-Warray-temporaries]
 Build: OK
 fo build [--------------------] 0/690 0%
 fo build [####################] 690/690 100%
-fo test [--------------------] 0/136 0%
-fo test [####################] 136/136 100%
+fo test [--------------------] 0/138 0%
+fo test [####################] 138/138 100%
 Tests: OK
 Lint: OK
 All stages passed (11.0s)

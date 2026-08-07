@@ -9,7 +9,7 @@ and implementation limits in [`docs/DESIGN.md`](docs/DESIGN.md) and
 
 | Compiler | Command | Result |
 | --- | --- | --- |
-| GNU Fortran | `fo` | Static, build, test, and lint checks passed. The fresh 2026-08-07 run passed all 136 tests (303 modules; 757 build units). See [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
+| GNU Fortran | `fo` | Static, build, test, and lint checks passed. The fresh 2026-08-07 run passed all 138 tests (305 modules; 757 build units). See [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
 | NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded compiler lane. The checked-in NVIDIA log predates the latest 130-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
@@ -21,10 +21,11 @@ capability refusals, resident-MSE and dense-affine CUDA contracts, resident
 forest plan boundary, PCA-initialized linear autoencoder, seeded exact-GP
 multistart, multilabel/ordinal neural losses, squared-log XGBoost, named MLP
 parameter layout, softmax objective products, and validation-stopping XGBoost
-slices, binary MLP loss products, trainable exact-GP mean products, and
-XGBoost sampling. The build emits five GNU array-temporary warnings in the XGBoost
-release-app call boundaries. They are non-fatal and isolated to benchmark
-argument construction; lint and all behavioral tests pass. NVIDIA compiler coverage remains an
+slices, binary MLP loss products, trainable exact-GP mean products, ARD GP
+products, XGBoost sampling, and XGBoost serialization. The build emits GNU
+array-temporary warnings in existing GP benchmark call boundaries. They are
+non-fatal and isolated to benchmark argument construction; lint and all
+behavioral tests pass. NVIDIA compiler coverage remains an
 explicit older-build result.
 
 Behavioral oracles include dense or analytic references, finite differences,
@@ -89,7 +90,7 @@ oracles.
 
 ### 2026-08-07 closure slice
 
-The current release adds three cross-package contracts that were previously
+The current release adds several cross-package contracts that were previously
 only listed as gaps:
 
 - `softmax_training_objective_t` supplies weighted multinomial cross-entropy,
@@ -122,6 +123,15 @@ only listed as gaps:
   while warm starts, serialized trees, and distributed histogram reduction stay
   open. The release evidence is `results/XGBOOST_SAMPLING.md` in
   `fortml-bench`.
+- The exact GP kernel catalog now includes an ARD squared-exponential kernel
+  with one log length scale per input feature. Scalar, matrix, input-derivative,
+  parameter-product, and exact-GP likelihood paths share the same packed
+  parameter contract. The independent kernel/GP oracle is
+  `test_gp_ard_kernel`; resident CUDA remains a typed refusal.
+- XGBoost models now have versioned `FORTML_XGBOOST_TEXT` save/load with strict
+  schema, finite-value, topology, EOF, and unknown-record validation. Round-trip
+  prediction, staged margins, missing routing, and validation diagnostics are
+  covered by `test_xgboost_serialization`; distributed model state remains open.
 
 The FortBO and FortMC companion pins were rechecked against their `main`
 branches on this date: FortBO `0141e22` and FortMC `4dde0cc`. Their roadmaps
@@ -1047,9 +1057,11 @@ hyperparameter block. A deliberate train/validation leakage fixture must fail.
   positive `int64` seed, stable ascending selected-index order, exact full-data
   defaults, and invalid-fraction refusals. Independent seed and structure tests
   cover the contract.
-- [ ] Add warm-start continuation, serialized tree state, and deterministic
-  distributed feature reduction. Learning-rate shrinkage and L1/L2 leaf
-  penalties are implemented in the current core.
+- [ ] Add warm-start continuation and deterministic distributed feature
+  reduction. Learning-rate shrinkage and L1/L2 leaf penalties are implemented
+  in the current core. Versioned serialized tree state is implemented by
+  `xgboost_t%save_text/%load_text` and covered by an independent round-trip
+  oracle.
 - [x] Add a deterministic seeded random-forest classifier built from weighted
   Gini/entropy CART trees. It aligns bootstrap-tree probability columns,
   exposes class/tree/depth metadata, and has independent cluster, simplex,
@@ -1466,6 +1478,10 @@ state phases are reported separately.
   prediction/LML JVP, VJP, and HVP products include the mean block. Automatic
   relevance determination length scales, priors, and inducing-location blocks
   remain open.
+- [x] Add an ARD RBF kernel with per-feature log length scales, scalar and dense
+  matrix products, input gradients/mixed Hessians, parameter VJP/HVP products,
+  composed-kernel compatibility, and exact-GP likelihood integration. The
+  isotropic RBF default remains unchanged and CUDA returns a typed refusal.
 - [x] Add bounded exact-GP hyperparameter optimization with deterministic
   seeded restarts, explicit first-start retention, convergence accounting, and
   restoration of the best finite converged state. The API reports start and
