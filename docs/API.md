@@ -1140,6 +1140,22 @@ constant, hence have zero tangent and cotangent. Fitted statistics are state,
 not silently promoted to trainable parameters; callers that need statistic
 hypergradients must differentiate the fitting objective explicitly.
 
+### `fortml_missing_indicator`
+
+`missing_indicator_t%fit(x,status[,features])` fits a dense binary missingness
+mask over row-oriented IEEE-NaN data. `features="all"` emits one column per
+input feature; the default `"missing-only"` records only columns that contain
+at least one missing value in the fit data. `transform` emits `1` for a NaN and
+`0` for an observed entry, while `feature_indices`, `input_count`,
+`output_count`, `mode`, and `fitted` expose the fitted schema. Infinities,
+empty matrices, unknown policies, and shape mismatches return a domain status.
+
+The mask is locally constant, so `transform_jvp` and `transform_vjp` return
+exact zero products after validating finite tangents/cotangents. This is an
+explicit smoothness contract, not a hidden finite-difference approximation;
+the sparse-view and device-resident indicator kernels remain separate
+follow-up work.
+
 ### `fortml_one_hot_encoder`
 
 `one_hot_encoder_t%fit(x,status[,handle_unknown,missing_value,handle_missing,drop_first])`

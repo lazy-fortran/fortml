@@ -1127,14 +1127,15 @@ return status errors.
   validate shapes and return an explicit `FORTNUM_NOT_IMPLEMENTED` boundary
   rather than claiming a derivative that has no canonical meaning. Independent
   value, metadata, policy, and refusal tests are in `test_one_hot_encoder`.
-- [ ] Add missing-indicator features and sparse CSR/CSC one-hot views. Column
-  selection is implemented for basis unions; general transformer columns remain
-  open. The dense one-hot correctness lane is now in
-  `../fortml-bench/results/ONE_HOT_ENCODER.md`; sparse throughput and memory
-  comparisons remain before this family is performance-complete.
+- [x] Add dense `missing_indicator_t` features with `all` and `missing-only`
+  fit-time column policies, explicit NaN/Infinity handling, schema metadata,
+  exact zero input JVP/VJP products, and independent refusal tests. The
+  sparse CSR/CSC one-hot views and device-resident indicator kernels remain
+  open; the dense one-hot correctness lane is in
+  `../fortml-bench/results/ONE_HOT_ENCODER.md`.
 - [ ] Add robust scaling, quantile and power transforms, normalization,
-  missing-indicator features, ordinal encoding, target encoding with leakage
-  guards, polynomial interactions, hashing, and sparse CSR/CSC feature views.
+  ordinal encoding, target encoding with leakage guards, polynomial
+  interactions, hashing, and sparse CSR/CSC feature views.
   Every fitted transform records statistics, feature names, dtypes, and the
   treatment of unseen or missing categories.
 - [x] Add sequential basis pipelines. Basis maps work as fitted or fixed
