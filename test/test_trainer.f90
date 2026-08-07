@@ -1,6 +1,6 @@
 program test_trainer
     !! Independent quadratic oracle for the model-agnostic trainer core.
-    use, intrinsic :: iso_fortran_env, only: real64, error_unit
+    use, intrinsic :: iso_fortran_env, only: error_unit
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_ok, status_set, FORTNUM_OK
     use fortopt_objective, only: objective_t
