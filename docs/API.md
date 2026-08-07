@@ -1513,14 +1513,13 @@ feature, tree, depth, criterion, seed, and fitted metadata.
 Tree routing is piecewise constant, so this estimator intentionally exposes no
 derivative products. `device_supported`, `predict_proba_device`, and
 `predict_device` execute on a selected CPU context and return
-`FORTNUM_NOT_IMPLEMENTED` for CUDA until a resident ensemble kernel exists;
-there is no hidden host fallback. Independent tests cover separated clusters,
-probability-simplex alignment, seeded determinism, invalid options, and the
-CUDA refusal. `random_forest_cuda_plan_t` exposes ABI version 1 and records
-the fitted shape/device metadata without allocating or copying host trees;
-its create/predict/destroy methods remain typed refusals until the native
-no-autodiff kernel is linked. The sibling benchmark records both prediction
-and plan-creation rows as explicit unavailable results.
+`FORTNUM_NOT_IMPLEMENTED` for CUDA until the private CART storage is bound to a
+resident ensemble kernel; there is no hidden host fallback. Independent tests
+cover separated clusters, probability-simplex alignment, seeded determinism,
+invalid options, and the CUDA refusal. The explicit flattened
+`cuda_forest_plan_t` below is the supported native-CUDA boundary; it does not
+pretend that a fitted `random_forest_classifier_t` has been copied to the
+device.
 
 For callers that already have a flattened tree representation, the
 `fortml_cuda_forest_api` module exposes `cuda_forest_plan_t`. `create` accepts
@@ -1988,8 +1987,8 @@ direction,mean,mean_dot,variance,variance_dot,status)` and
 `predict_input_vjp(x,components,mean_bar,variance_bar,x_bar,status)` provide
 query-input products while holding model parameters and training inputs fixed.
 The query products use exact third-input products for RBF, Matérn 3/2, Matérn
-5/2, periodic, rational-quadratic, cosine, linear, constant, and sum/product
-kernels.
+5/2, periodic, rational-quadratic, cosine, linear, constant, polynomial, and
+sum/product kernels when the polynomial base is positive.
 The smooth leaf and composition rules are propagated directly through the
 value, first-gradient, and mixed-Hessian covariance blocks; no finite-
 difference fallback is used. Matérn 1/2 remains restricted to noncoincident
@@ -2007,7 +2006,7 @@ covariance graph is linked. No hidden host fallback is used.
 `hyperparameter_gradient`, and `hyperparameter_hvp` provide likelihood
 products. The gradient uses analytic parameter tangents of the supported RBF,
 Matérn 1/2, 3/2, 5/2, periodic, rational-quadratic, cosine, linear, constant,
-validated user-formula, and sum/product kernels. Matérn 1/2 still refuses
+polynomial, validated user-formula, and sum/product kernels. Matérn 1/2 still refuses
 coincident derivative
 observations, as do user formulas containing `push_distance` at coincidence.
 
