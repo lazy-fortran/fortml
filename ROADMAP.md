@@ -1070,7 +1070,7 @@ results as an external literature claim.
   count, and fallback reason in generated-kernel provenance.
 
 The repository snapshot used for this roadmap resolves `fortad` `main` at
-`8fa5465` and `fortsym` `main` at `58a0e06`. The RBF log-length tangent used
+`61f5a71` and `fortsym` `main` at `58a0e06`. The RBF log-length tangent used
 by the derivative-GP products was independently checked with a temporary
 FortSym proof against the dense numerical oracle. Future derivative work must
 refresh both checkouts before deciding that a product is unavailable.
