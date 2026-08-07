@@ -571,6 +571,12 @@ contains
                 "derivative GP query covariance: direction or component is invalid")
             return
         end if
+        if (kernel_contains_white_noise(kernel) .and. &
+            (component1 > 0 .or. component2 > 0)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "derivative GP query covariance: white-noise derivative is undefined")
+            return
+        end if
         allocate(gradient_x1(size(x1)), gradient_x2(size(x2)))
         allocate(mixed_hessian(size(x1), size(x2)))
         allocate(gradient_x1_dot(size(x1)), gradient_x2_dot(size(x2)))
