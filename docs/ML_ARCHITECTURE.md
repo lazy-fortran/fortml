@@ -175,6 +175,15 @@ so it is not presented as a generated second-order kernel product. `fortsym`
 generated products remain the preferred route when a smaller proven expression
 is available, with FortAD and an independent dense oracle retained as checks.
 
+The ordinary RBF kernel now uses a FortSym-generated natural-parameter leaf for
+its value and first derivatives with respect to variance, squared distance, and
+lengthscale. The leaf is lowered once and shared by the kernel parameter JVP
+and VJP paths; its generated header records FortSym `58a0e06`, 15 IR nodes, and
+7 compound operations. The independent scalar/finite-difference test is
+`test_fortsym_rbf_leaf`. RBF HVPs and Matérn derivative products still use their
+FortAD or explicit paths until a symbolic operation-count comparison accepts a
+replacement.
+
 Exact inference uses dense Cholesky for small problems. Large problems use the
 same lazy operator boundary for tiled products, tensor/Kronecker,
 Toeplitz/FFT, compact sparse, and Krylov solves. Implemented approximations

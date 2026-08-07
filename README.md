@@ -82,7 +82,7 @@ current surface is:
 | --- | --- | --- |
 | Linear regression, scalers, basis maps, and basis pipelines | Value, input/parameter JVPs and VJPs where the public API declares them | General DAG transforms and second-order products remain open |
 | Dense MLP and MSE training objective | Parameter/input JVPs, VJPs, exact MSE+L2 HVPs, L2 hyperparameter derivative, Adam, and SGD momentum/Nesterov training | Other losses, optimizers, and neural module families are partial |
-| Exact GP regression | Kernel-parameter products, input derivatives, prediction products, and differentiated-solve HVPs | Approximate and matrix-free training products are partial |
+| Exact GP regression | Kernel-parameter products, input derivatives, prediction products, and differentiated-solve HVPs; RBF first-order parameter products use the FortSym-generated natural leaf | Approximate and matrix-free training products are partial; RBF/Matérn HVPs retain FortAD or explicit products |
 | Derivative-observation GP | Mixed value/first-derivative observations, parameter products, and query-input JVP/VJP products. Validated user-formula kernels carry analytic value/gradient/Hessian products | Query-input products and the likelihood HVP use documented deterministic finite differences. Analytic third-order kernels and joint posterior covariance remain open |
 | Trees, boosting, and classifiers | Piecewise JVPs where declared, with split-boundary refusals | Classifier HVPs and smooth split derivatives remain open |
 | BNN, VAE, RNN, and most approximate GP paths | Value or model-specific gradient surfaces | Full JVP/VJP/HVP coverage is a roadmap item |
