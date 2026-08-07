@@ -9,6 +9,7 @@ module fortml_validation
     use, intrinsic :: iso_fortran_env, only: int64
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
         FORTNUM_DOMAIN_ERROR
+    use fortml_estimator_capabilities, only: estimator_capability_t
     implicit none
     private
 
@@ -44,7 +45,26 @@ module fortml_validation
         procedure, public :: shuffled => stratified_shuffled
     end type stratified_kfold_splitter_t
 
+    public :: validate_estimator_capability
+    public :: require_estimator_capability
+
 contains
+
+    !> Validate a model capability record in the same status style as splits.
+    subroutine validate_estimator_capability(capability, status)
+        type(estimator_capability_t), intent(in) :: capability
+        type(fortnum_status_t), intent(out) :: status
+
+        call capability%validate(status)
+    end subroutine validate_estimator_capability
+
+    !> Check a requested capability before entering a validation workflow.
+    subroutine require_estimator_capability(capability, requirement, status)
+        type(estimator_capability_t), intent(in) :: capability, requirement
+        type(fortnum_status_t), intent(out) :: status
+
+        call capability%require(requirement, status)
+    end subroutine require_estimator_capability
 
     subroutine kfold_initialize(self, n_samples, n_splits, status, shuffle, seed)
         class(kfold_splitter_t), intent(out) :: self

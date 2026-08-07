@@ -4,6 +4,8 @@ module fortml_pipeline
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
         FORTNUM_DOMAIN_ERROR
     use fortml_basis, only: basis_map_t
+    use fortml_estimator_capabilities, only: estimator_capability_t, &
+        make_transformer_capabilities
     implicit none
     private
 
@@ -48,6 +50,7 @@ module fortml_pipeline
             pipeline_stage_parameter_offset
         procedure, public :: static_lowering_eligible => &
             pipeline_static_lowering_eligible
+        procedure, public :: capabilities => pipeline_capabilities
         procedure, public :: valid => pipeline_valid
         procedure, public :: is_fitted => pipeline_is_fitted
     end type basis_pipeline_t
@@ -94,6 +97,7 @@ module fortml_pipeline
             sequential_pipeline_stage_parameter_offset
         procedure, public :: static_lowering_eligible => &
             sequential_pipeline_static_lowering_eligible
+        procedure, public :: capabilities => sequential_pipeline_capabilities
         procedure, public :: valid => sequential_pipeline_valid
         procedure, public :: is_fitted => sequential_pipeline_is_fitted
     end type sequential_basis_pipeline_t
@@ -579,6 +583,31 @@ contains
         class(basis_pipeline_t), intent(in) :: self
         fitted = self%fitted .and. pipeline_valid(self)
     end function pipeline_is_fitted
+
+    !> Return the generic transformer contract for this feature union.
+    subroutine pipeline_capabilities(self, report, status)
+        class(basis_pipeline_t), intent(in) :: self
+        type(estimator_capability_t), intent(out) :: report
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. pipeline_valid(self)) then
+            call report%initialize("basis_pipeline", 1, 1, status)
+            if (status%code == FORTNUM_OK) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "basis pipeline capabilities: pipeline is invalid")
+            end if
+            return
+        end if
+        report = make_transformer_capabilities("basis_pipeline", self%n_inputs, &
+            self%feature_count(), status, self%is_fitted())
+        if (status%code /= FORTNUM_OK) return
+        report%supports_input_jvp = .true.
+        report%supports_input_vjp = .true.
+        report%supports_input_hvp = .true.
+        report%supports_parameter_jvp = .true.
+        report%supports_parameter_vjp = .true.
+        report%supports_parameter_hvp = .true.
+    end subroutine pipeline_capabilities
 
     subroutine sequential_pipeline_initialize(self, n_inputs, status)
         class(sequential_basis_pipeline_t), intent(out) :: self
@@ -1142,6 +1171,31 @@ contains
         if (.not. fitted) return
         fitted = sequential_pipeline_valid(self)
     end function sequential_pipeline_is_fitted
+
+    !> Return the generic transformer contract for this sequential pipeline.
+    subroutine sequential_pipeline_capabilities(self, report, status)
+        class(sequential_basis_pipeline_t), intent(in) :: self
+        type(estimator_capability_t), intent(out) :: report
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. sequential_pipeline_valid(self)) then
+            call report%initialize("sequential_basis_pipeline", 1, 1, status)
+            if (status%code == FORTNUM_OK) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "sequential basis pipeline capabilities: pipeline is invalid")
+            end if
+            return
+        end if
+        report = make_transformer_capabilities("sequential_basis_pipeline", &
+            self%n_inputs, self%feature_count(), status, self%is_fitted())
+        if (status%code /= FORTNUM_OK) return
+        report%supports_input_jvp = .true.
+        report%supports_input_vjp = .true.
+        report%supports_input_hvp = .true.
+        report%supports_parameter_jvp = .true.
+        report%supports_parameter_vjp = .true.
+        report%supports_parameter_hvp = .true.
+    end subroutine sequential_pipeline_capabilities
 
     function default_stage_name(index) result(name)
         integer, intent(in) :: index

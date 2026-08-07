@@ -4,6 +4,8 @@ module fortml_column_pipeline
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
         FORTNUM_DOMAIN_ERROR
     use fortml_basis, only: basis_map_t
+    use fortml_estimator_capabilities, only: estimator_capability_t, &
+        make_transformer_capabilities
     implicit none
     private
 
@@ -54,6 +56,7 @@ module fortml_column_pipeline
         procedure, public :: stage_columns => column_pipeline_stage_columns
         procedure, public :: static_lowering_eligible => &
             column_pipeline_static_lowering_eligible
+        procedure, public :: capabilities => column_pipeline_capabilities
         procedure, public :: valid => column_pipeline_valid
         procedure, public :: is_fitted => column_pipeline_is_fitted
     end type column_basis_pipeline_t
@@ -629,6 +632,31 @@ contains
         if (.not. fitted) return
         fitted = column_pipeline_valid(self)
     end function column_pipeline_is_fitted
+
+    !> Return the generic transformer contract for this column union.
+    subroutine column_pipeline_capabilities(self, report, status)
+        class(column_basis_pipeline_t), intent(in) :: self
+        type(estimator_capability_t), intent(out) :: report
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. column_pipeline_valid(self)) then
+            call report%initialize("column_basis_pipeline", 1, 1, status)
+            if (status%code == FORTNUM_OK) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "column basis pipeline capabilities: pipeline is invalid")
+            end if
+            return
+        end if
+        report = make_transformer_capabilities("column_basis_pipeline", &
+            self%n_inputs, self%feature_count(), status, self%is_fitted())
+        if (status%code /= FORTNUM_OK) return
+        report%supports_input_jvp = .true.
+        report%supports_input_vjp = .true.
+        report%supports_input_hvp = .true.
+        report%supports_parameter_jvp = .true.
+        report%supports_parameter_vjp = .true.
+        report%supports_parameter_hvp = .true.
+    end subroutine column_pipeline_capabilities
 
     subroutine gather_columns(x, columns, selected)
         real(dp), intent(in) :: x(:, :)
