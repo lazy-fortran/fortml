@@ -5,7 +5,8 @@ program fortml_bench_multilabel_metrics
     use fortml_classification_metrics, only: &
         classification_multilabel_precision_recall_f1, &
         classification_multilabel_probability_metrics, classification_roc_auc, &
-        classification_roc_auc_ovr, CLASSIFICATION_AVERAGE_MICRO, &
+        classification_roc_auc_ovr, classification_multilabel_jaccard, &
+        classification_multilabel_hamming_loss, CLASSIFICATION_AVERAGE_MICRO, &
         CLASSIFICATION_AVERAGE_MACRO, CLASSIFICATION_AVERAGE_SAMPLES
     implicit none
 
@@ -39,6 +40,29 @@ program fortml_bench_multilabel_metrics
         precision, recall, f1, status, CLASSIFICATION_AVERAGE_MICRO, threshold=0.5_real64)
     if (.not. status_ok(status)) error stop 1
     write (*, '(a,3(",",es24.16))') "multilabel_threshold", precision, recall, f1
+    call classification_multilabel_jaccard(labels, predictions, roc_value, status, &
+        CLASSIFICATION_AVERAGE_MICRO)
+    if (.not. status_ok(status)) error stop 1
+    write (*, '(a,",",es24.16)') "multilabel_jaccard_micro", roc_value
+    call classification_multilabel_jaccard(labels, predictions, roc_value, status, &
+        CLASSIFICATION_AVERAGE_MACRO)
+    if (.not. status_ok(status)) error stop 1
+    write (*, '(a,",",es24.16)') "multilabel_jaccard_macro", roc_value
+    call classification_multilabel_jaccard(labels, predictions, roc_value, status, &
+        CLASSIFICATION_AVERAGE_SAMPLES)
+    if (.not. status_ok(status)) error stop 1
+    write (*, '(a,",",es24.16)') "multilabel_jaccard_samples", roc_value
+    call classification_multilabel_hamming_loss(labels, predictions, roc_value, status)
+    if (.not. status_ok(status)) error stop 1
+    write (*, '(a,",",es24.16)') "multilabel_hamming_micro", roc_value
+    call classification_multilabel_hamming_loss(labels, predictions, roc_value, status, &
+        average=CLASSIFICATION_AVERAGE_MACRO)
+    if (.not. status_ok(status)) error stop 1
+    write (*, '(a,",",es24.16)') "multilabel_hamming_macro", roc_value
+    call classification_multilabel_hamming_loss(labels, predictions, roc_value, status, &
+        average=CLASSIFICATION_AVERAGE_SAMPLES)
+    if (.not. status_ok(status)) error stop 1
+    write (*, '(a,",",es24.16)') "multilabel_hamming_samples", roc_value
 
     scores = [0.9_real64, 0.8_real64, 0.8_real64, 0.2_real64]
     binary_labels = [42, 42, -7, -7]
