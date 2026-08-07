@@ -108,9 +108,11 @@ probit observations use the closed-form Gaussian-CDF map. Latent and observed
 probability input JVPs are assembled from the kernel input derivatives, so a
 kernel that refuses an input derivative (for example a coincident Matérn
 1/2 query) propagates that refusal rather than silently differentiating a
-finite-difference approximation. The current classifier intentionally stops
-at binary Laplace inference. Variational and multiclass likelihoods need their
-own objective and state contracts.
+finite-difference approximation. `fortml_gp_multiclass_classification` wraps
+that binary contract as deterministic one-vs-rest Laplace inference, normalizes
+the positive probabilities, and preserves sorted integer labels. Variational
+likelihoods and joint multiclass objectives need their own objective and state
+contracts.
 
 The exact depth-one `fortml_xgboost` lane is deliberately separate from the
 smooth derivative graph. Each boosting iteration computes objective gradients
