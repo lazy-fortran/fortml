@@ -475,6 +475,10 @@ results as an external literature claim.
 - [ ] Record the `fortad` and `fortsym` revisions, proof strength, operation
   count, and fallback reason in generated-kernel provenance.
 
+The repository snapshot used for this roadmap resolves `fortad` `main` at
+`e4345f9` and `fortsym` `main` at `58a0e06`. Future derivative work must refresh
+both checkouts before deciding that a product is unavailable.
+
 #### WP9b: Hamiltonian, Lagrangian, and symplectic networks
 
 - [ ] Add `hamiltonian_mlp_t` with scalar H(q,p), canonical J, symplectic
