@@ -9,15 +9,15 @@ and implementation limits in [`docs/DESIGN.md`](docs/DESIGN.md) and
 
 | Compiler | Command | Result |
 | --- | --- | --- |
-| GNU Fortran | `fo` | Static, build, and lint checks passed. The fresh 2026-08-07 run passed all 111 tests. See [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
-| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded compiler lane. The checked-in NVIDIA log predates the latest 111-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
+| GNU Fortran | `fo` | Static, build, and lint checks passed. The fresh 2026-08-07 run passed all 115 tests (261 modules; 736 build units). See [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
+| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded compiler lane. The checked-in NVIDIA log predates the latest 115-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
-The checked-in compiler logs above are older compiler snapshots. A fresh GNU
-Fortran `fo` run on 2026-08-07 passed static analysis, the build, all 111 tests,
-and lint. The fresh run includes implementation work whose compiler logs have
-not yet replaced those snapshots. NVIDIA compiler coverage therefore remains
-an explicit older-build result.
+The checked-in GNU compiler log is the fresh 2026-08-07 run. It includes the
+kernel-catalog, weighted LDA/QDA, robust XGBoost, and neural NLL slices. The
+build emits three GNU array-temporary warnings in the discriminant benchmark
+path; lint and all behavioral tests pass. NVIDIA compiler coverage remains an
+explicit older-build result.
 
 Behavioral oracles include dense or analytic references, finite differences,
 adjoint identities, convergence checks, and seeded known-answer cases.
