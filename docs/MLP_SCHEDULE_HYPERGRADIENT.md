@@ -42,6 +42,12 @@ base-rate, minimum-fraction, and decay-factor products.  Therefore the
 `value_gradient`, `jvp`, and `vjp` paths share one objective and do not use
 finite-difference or optimizer fallback code.
 
+The type also exposes `hvp(parameters, direction, product, status)`.  It
+returns a typed `FORTNUM_NOT_IMPLEMENTED` refusal for valid inputs until the
+third network derivatives needed by an outer hyper-HVP are available; invalid
+shapes remain domain errors.  This boundary is tested rather than replaced by
+a hidden finite-difference approximation.
+
 `mlp_optimize_schedule_hyperparameters` wraps the objective in FortOpt's
 projected L-BFGS-B implementation.  Bounds are on the packed log/logit
 coordinates, so every accepted point has positive learning rate and L2 and

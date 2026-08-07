@@ -32,6 +32,7 @@ program test_mlp_schedule_hypergradient
     real(dp) :: direction(MLP_SCHEDULE_HYPERPARAMETER_COUNT)
     real(dp) :: gradient(MLP_SCHEDULE_HYPERPARAMETER_COUNT)
     real(dp) :: vjp_gradient(MLP_SCHEDULE_HYPERPARAMETER_COUNT)
+    real(dp) :: hvp_product(MLP_SCHEDULE_HYPERPARAMETER_COUNT)
     real(dp) :: value, value_plus, value_minus, tangent, h, output_bar
     integer :: i, failures
 
@@ -93,6 +94,9 @@ program test_mlp_schedule_hypergradient
     call objective%value_gradient(parameters, value, gradient, status)
     call check(maxval(abs(vjp_gradient-output_bar*gradient)) < 2.0e-12_dp, &
         "schedule VJP scalar adjoint", failures)
+    call objective%hvp(parameters, direction, hvp_product, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
+        "outer schedule HVP typed refusal", failures)
 
     call objective%fortopt(fortopt_objective, status)
     call check(status_ok(status), "FortOpt schedule context adapter", failures)

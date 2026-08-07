@@ -109,6 +109,7 @@ module fortml_mlp_schedule_hypergradient
         procedure, public :: value_gradient => schedule_hypergradient_value_gradient
         procedure, public :: jvp => schedule_hypergradient_jvp
         procedure, public :: vjp => schedule_hypergradient_vjp
+        procedure, public :: hvp => schedule_hypergradient_hvp
         procedure, public :: fortopt => schedule_hypergradient_fortopt
         procedure, public :: is_initialized => schedule_hypergradient_is_initialized
     end type mlp_schedule_hypergradient_objective_t
@@ -272,6 +273,39 @@ contains
         gradient = output_bar*gradient
         call status_set(status, FORTNUM_OK, "")
     end subroutine schedule_hypergradient_vjp
+
+    subroutine schedule_hypergradient_hvp(self, parameters, direction, product, status)
+        !! Refuse an outer hyper-HVP until third network derivatives are available.
+        !!
+        !! The inner trajectory already consumes the exact MLP HVP.  A Hessian
+        !! of the outer schedule objective additionally differentiates that HVP
+        !! with respect to the trajectory, which is a third derivative of a
+        !! nonlinear network loss.  Returning a typed refusal keeps callers
+        !! from accidentally treating a finite-difference approximation as an
+        !! exact product.
+        class(mlp_schedule_hypergradient_objective_t), intent(in) :: self
+        real(dp), intent(in) :: parameters(:), direction(:)
+        real(dp), intent(out) :: product(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        product = 0.0_dp
+        if (size(parameters) /= MLP_SCHEDULE_HYPERPARAMETER_COUNT .or. &
+            size(direction) /= MLP_SCHEDULE_HYPERPARAMETER_COUNT .or. &
+            size(product) /= MLP_SCHEDULE_HYPERPARAMETER_COUNT .or. &
+            any(.not. ieee_is_finite(parameters)) .or. &
+            any(.not. ieee_is_finite(direction))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP schedule hypergradient HVP: packed shape is invalid")
+            return
+        end if
+        if (.not. self%is_initialized()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP schedule hypergradient HVP: objective is not initialized")
+            return
+        end if
+        call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+            "MLP schedule hypergradient HVP requires third network derivatives")
+    end subroutine schedule_hypergradient_hvp
 
     subroutine schedule_hypergradient_fortopt(self, objective, status)
         class(mlp_schedule_hypergradient_objective_t), target, intent(inout) :: self
