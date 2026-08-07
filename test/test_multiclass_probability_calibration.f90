@@ -118,7 +118,7 @@ program test_multiclass_probability_calibration
     call invalid%fit(scores(:, :2), labels, status, options=options)
     call check(.not. status_ok(status), "logit-class shape refusal", failures)
     call invalid%fit(scores, labels, status, options=options, &
-        sample_weight=[1.0_dp, 1.0_dp, 1.0_dp, 1.0_dp, 1.0_dp, 0.0_dp])
+        sample_weight=[1.0_dp, 1.0_dp, 1.0_dp, 1.0_dp, 0.0_dp, 0.0_dp])
     call check(.not. status_ok(status), "zero weighted class refusal", failures)
     call unfitted%predict_proba(scores, probabilities, status)
     call check(.not. status_ok(status), "unfitted multiclass prediction refusal", failures)
