@@ -5,10 +5,11 @@ program test_probability_calibration
     use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU, FORTML_DEVICE_CUDA
     use fortml_probability_calibration, only: &
         probability_calibrator_t, probability_calibration_options_t, &
-        probability_calibration_state_t, CALIBRATION_SIGMOID, CALIBRATION_ISOTONIC
+        probability_calibration_state_t, CALIBRATION_SIGMOID, CALIBRATION_ISOTONIC, &
+        CALIBRATION_TEMPERATURE
     implicit none
 
-    type(probability_calibrator_t) :: sigmoid_model, isotonic_model, unfitted
+    type(probability_calibrator_t) :: sigmoid_model, temperature_model, isotonic_model, unfitted
     type(probability_calibration_options_t) :: options
     type(probability_calibration_state_t) :: state
     type(fortnum_status_t) :: status
@@ -17,6 +18,8 @@ program test_probability_calibration
     real(dp) :: probabilities_plus(8, 2), probabilities_minus(8, 2)
     real(dp) :: probabilities_bar(8, 2), scores_bar(8)
     real(dp) :: parameter_probabilities_dot(8, 2), parameters_dot(2), parameters_bar(2)
+    real(dp) :: temperature_probabilities_dot(8, 2), temperature_parameters_dot(1)
+    real(dp) :: temperature_parameters_bar(1)
     real(dp) :: isotonic_scores(7), isotonic_query(3), isotonic_dot(3)
     real(dp) :: isotonic_probabilities(3, 2), isotonic_probabilities_dot(3, 2)
     real(dp) :: isotonic_plus(3, 2), isotonic_minus(3, 2)
@@ -93,6 +96,50 @@ program test_probability_calibration
         1.0e-14_dp .and. sigmoid_model%device_supported(FORTML_DEVICE_CPU), &
         "sigmoid CPU device dispatch", failures)
 
+    options = probability_calibration_options_t(method=CALIBRATION_TEMPERATURE, &
+        max_iterations=500, tolerance=1.0e-10_dp, damping=1.0_dp, l2=1.0e-8_dp)
+    call temperature_model%fit(scores, labels, status, options=options, state=state)
+    call check(status_ok(status) .and. temperature_model%fitted() .and. state%converged .and. &
+        temperature_model%method() == CALIBRATION_TEMPERATURE .and. &
+        temperature_model%parameter_count() == 1, "temperature fit metadata", failures)
+    parameters = temperature_model%parameters()
+    call check(size(parameters) == 1 .and. parameters(1) > 0.0_dp, &
+        "temperature positive parameter", failures)
+    call temperature_model%predict_proba(scores, probabilities, status)
+    call check(status_ok(status) .and. maxval(abs(probabilities(:, 2) - &
+        temperature_probability_oracle(scores, parameters(1)))) < 2.0e-14_dp, &
+        "temperature probability oracle", failures)
+    call temperature_model%predict_proba_jvp(scores, scores_dot, probabilities, &
+        probabilities_dot, status)
+    call temperature_model%predict_proba(scores + h*scores_dot, probabilities_plus, status)
+    call temperature_model%predict_proba(scores - h*scores_dot, probabilities_minus, status)
+    call check(status_ok(status) .and. maxval(abs(probabilities_dot - &
+        (probabilities_plus - probabilities_minus)/(2.0_dp*h))) < 2.0e-7_dp, &
+        "temperature score JVP finite difference", failures)
+    temperature_parameters_dot = [0.03_dp]
+    call temperature_model%predict_proba_parameter_jvp(scores, temperature_parameters_dot, &
+        probabilities, temperature_probabilities_dot, status)
+    parameters_plus = parameters
+    parameters_plus(1) = parameters(1) + h*temperature_parameters_dot(1)
+    call temperature_model%set_parameters(parameters_plus, status)
+    call temperature_model%predict_proba(scores, probabilities_plus, status)
+    parameters_minus = parameters
+    parameters_minus(1) = parameters(1) - h*temperature_parameters_dot(1)
+    call temperature_model%set_parameters(parameters_minus, status)
+    call temperature_model%predict_proba(scores, probabilities_minus, status)
+    call temperature_model%set_parameters(parameters, status)
+    call check(status_ok(status) .and. maxval(abs(temperature_probabilities_dot - &
+        (probabilities_plus - probabilities_minus)/(2.0_dp*h))) < 2.0e-7_dp, &
+        "temperature parameter JVP finite difference", failures)
+    call temperature_model%predict_proba_parameter_vjp(scores, probabilities_bar, &
+        temperature_parameters_bar, status)
+    lhs = sum(probabilities_bar*temperature_probabilities_dot)
+    rhs = sum(temperature_parameters_bar*temperature_parameters_dot)
+    call check(status_ok(status) .and. abs(lhs-rhs) < 2.0e-7_dp, &
+        "temperature parameter VJP adjoint identity", failures)
+    call temperature_model%set_parameters([-1.0_dp], status)
+    call check(status%code /= 0, "temperature nonpositive parameter refusal", failures)
+
     isotonic_scores = [-3.0_dp, -2.0_dp, -1.0_dp, 0.0_dp, 1.0_dp, 2.0_dp, 3.0_dp]
     isotonic_labels = [10, 42, 10, 42, 42, 10, 42]
     options = probability_calibration_options_t(method=CALIBRATION_ISOTONIC)
@@ -140,5 +187,22 @@ contains
             write (error_unit, '(a)') "  FAIL [probability-calibration] "//description
         end if
     end subroutine check
+
+    pure function temperature_probability_oracle(query, temperature) result(probability)
+        real(dp), intent(in) :: query(:), temperature
+        real(dp) :: probability(size(query))
+        real(dp) :: eta, exponential
+        integer :: i
+
+        do i = 1, size(query)
+            eta = query(i)/temperature
+            if (eta >= 0.0_dp) then
+                probability(i) = 1.0_dp/(1.0_dp + exp(-eta))
+            else
+                exponential = exp(eta)
+                probability(i) = exponential/(1.0_dp + exponential)
+            end if
+        end do
+    end function temperature_probability_oracle
 
 end program test_probability_calibration

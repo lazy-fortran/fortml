@@ -327,6 +327,11 @@ The parity target includes the following independent model variants. The matrix
 is intentionally explicit so a binary implementation cannot be mistaken for
 multiclass, weighted, probabilistic, derivative, or GPU coverage.
 
+Calibration update (2026-08-07): `CALIBRATION_TEMPERATURE` now fits a positive
+scalar temperature for binary, pre-oriented logits and exposes exact score and
+temperature-parameter JVP/VJP products. Multiclass temperature scaling,
+reliability diagrams, and calibration-aware cross-validation remain open.
+
 | Family | Required variants | Current FortML baseline | Missing production gates |
 | --- | --- | --- | --- |
 | Classification | binary, multinomial/softmax, OVR, OVO, multilabel, Naive Bayes, LDA/QDA, tree, neural, Laplace GP, variational GP, calibrated, ordinal | binary/softmax/OVR/OVO/multilabel and weighted ordinal cumulative-logit heads, weighted Gaussian/Bernoulli/Multinomial/Complement/Categorical NB, weighted LDA/QDA, CART, MLP, binary/OVR Laplace GP, Platt sigmoid and weighted PAVA isotonic calibration, exact and histogram boosted trees | sparse/multioutput multilabel, ordinal GP and variational/coupled GP likelihoods, resident GPU training, shared preprocessing/search |
@@ -449,8 +454,10 @@ when a lower-level primitive already exists.
   affine prediction JVP/VJP products, exact objective hypergradients, ordinary
   epsilon-kink refusal, and explicit CUDA refusal. Kernel SVR, one-class SVM,
   and support-vector metadata remain open.
-- [ ] Calibration workflows: Platt/sigmoid, isotonic, temperature scaling,
-  reliability diagrams, class weighting, and calibration-aware cross-validation.
+- [ ] Calibration workflows: reliability diagrams, class weighting, and
+  calibration-aware cross-validation. Positive-temperature, Platt/sigmoid,
+  and weighted isotonic fitting now have independent derivative/refusal tests;
+  multiclass temperature maps, calibration curves, and cross-validation remain.
 - [x] Deterministic seeded random-forest and randomized-threshold Extra-Trees
   classifiers provide aligned probabilities, arbitrary integer labels, Gini or
   entropy criteria, depth/leaf controls, positive sample weights, seeded
@@ -911,9 +918,9 @@ CUDA refusal until private CART storage is safely bound to the C ABI.
   semantics. The standalone sigmoid and isotonic calibrator estimators below
   provide fitted probability maps; multiclass coupling remains a separate
   contract.
-- [x] Add probability calibration by Platt sigmoid and weighted PAVA isotonic
+- [x] Add probability calibration by positive temperature scaling, Platt sigmoid, and weighted PAVA isotonic
   fits. `probability_calibrator_t` validates arbitrary integer classes and
-  weights, exposes smooth sigmoid score/parameter JVP/VJP products and
+  weights, exposes smooth temperature and sigmoid score/parameter JVP/VJP products and
   linearly interpolated isotonic score products away from knots, and refuses
   active-set knot/PAVA-parameter derivatives explicitly. CPU complete-array
   behavior is benchmarked; selected CUDA contexts return a typed refusal until

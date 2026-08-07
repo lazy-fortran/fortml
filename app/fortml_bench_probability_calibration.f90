@@ -3,21 +3,22 @@ program fortml_bench_probability_calibration
     use, intrinsic :: iso_fortran_env, only: dp => real64, int64
     use fortml_probability_calibration, only: &
         probability_calibrator_t, probability_calibration_options_t, &
-        CALIBRATION_SIGMOID, CALIBRATION_ISOTONIC
+        CALIBRATION_TEMPERATURE, CALIBRATION_SIGMOID, CALIBRATION_ISOTONIC
     use fortnum_status, only: fortnum_status_t, status_ok
     implicit none
 
     integer, parameter :: n_samples = 256, prediction_repetitions = 128
     real(dp) :: scores(n_samples), probabilities(n_samples, 2)
     integer :: labels(n_samples), predicted(n_samples)
-    type(probability_calibrator_t) :: models(2)
+    type(probability_calibrator_t) :: models(3)
     type(probability_calibration_options_t) :: options
     type(fortnum_status_t) :: status
     integer(int64) :: clock_start, clock_end, clock_rate
-    real(dp) :: fit_seconds(2), predict_seconds(2)
+    real(dp) :: fit_seconds(3), predict_seconds(3)
     character(len=1024) :: oracle_path
     integer :: environment_status, unit, i, method_index, repetition
-    character(len=12), parameter :: method_name(2) = ["sigmoid     ", "isotonic    "]
+    character(len=12), parameter :: method_name(3) = ["temperature ", "sigmoid     ", &
+        "isotonic    "]
 
     call get_environment_variable("FORTML_BENCH_CALIBRATION_ORACLE", oracle_path, &
         status=environment_status)
@@ -25,23 +26,29 @@ program fortml_bench_probability_calibration
         error stop "FORTML_BENCH_CALIBRATION_ORACLE is required"
     end if
     call make_fixture(scores, labels)
-    options = probability_calibration_options_t(method=CALIBRATION_SIGMOID, &
+    options = probability_calibration_options_t(method=CALIBRATION_TEMPERATURE, &
         max_iterations=500, tolerance=1.0e-10_dp, damping=1.0_dp, l2=0.1_dp)
     call system_clock(clock_start, clock_rate)
     call models(1)%fit(scores, labels, status, options=options)
     call system_clock(clock_end)
-    if (.not. status_ok(status)) error stop "calibration sigmoid benchmark fit failed"
+    if (.not. status_ok(status)) error stop "calibration temperature benchmark fit failed"
     fit_seconds(1) = real(clock_end-clock_start, dp)/real(clock_rate, dp)
-    options%method = CALIBRATION_ISOTONIC
+    options%method = CALIBRATION_SIGMOID
     call system_clock(clock_start, clock_rate)
     call models(2)%fit(scores, labels, status, options=options)
     call system_clock(clock_end)
-    if (.not. status_ok(status)) error stop "calibration isotonic benchmark fit failed"
+    if (.not. status_ok(status)) error stop "calibration sigmoid benchmark fit failed"
     fit_seconds(2) = real(clock_end-clock_start, dp)/real(clock_rate, dp)
+    options%method = CALIBRATION_ISOTONIC
+    call system_clock(clock_start, clock_rate)
+    call models(3)%fit(scores, labels, status, options=options)
+    call system_clock(clock_end)
+    if (.not. status_ok(status)) error stop "calibration isotonic benchmark fit failed"
+    fit_seconds(3) = real(clock_end-clock_start, dp)/real(clock_rate, dp)
 
     open (newunit=unit, file=trim(oracle_path), status="replace", action="write")
     write (unit, '(a)') "method,quantity,row,column,value"
-    do method_index = 1, 2
+    do method_index = 1, 3
         call models(method_index)%predict_proba(scores, probabilities, status)
         call models(method_index)%predict(scores, predicted, status)
         if (.not. status_ok(status)) error stop "calibration benchmark prediction failed"
