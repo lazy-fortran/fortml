@@ -1,15 +1,15 @@
-Static: OK (148 modules, 148 changed, 148 affected)
-fo build [--------------------] 0/671 0%
-fo build [##################--] 610/671 90%
-fo build [####################] 671/671 100%
+Static: OK (150 modules, 150 changed, 150 affected)
+fo build [--------------------] 0/672 0%
+fo build [##################--] 611/672 90%
+fo build [####################] 672/672 100%
 fo: warning: Warning: Creating array temporary at (1) [-Warray-temporaries]
 fo: warning: Warning: Creating array temporary at (1) [-Warray-temporaries]
 fo: warning: Warning: Creating array temporary at (1) [-Warray-temporaries]
 Build: OK
-fo build [--------------------] 0/649 0%
-fo build [####################] 649/649 100%
-fo test [--------------------] 0/64 0%
-fo test [####################] 64/64 100%
+fo build [--------------------] 0/650 0%
+fo build [####################] 650/650 100%
+fo test [--------------------] 0/65 0%
+fo test [####################] 65/65 100%
 Tests: OK
 Lint: OK
 All stages passed (3.4s)
