@@ -1,7 +1,8 @@
 program test_xgboost_multiclass
     !! Independent behavior and input-JVP checks for OVR XGBoost classification.
     use, intrinsic :: iso_fortran_env, only: error_unit
-    use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_quiet_nan
+    use, intrinsic :: ieee_arithmetic, only: ieee_is_finite, ieee_value, &
+        ieee_quiet_nan
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_ok
     use fortml_xgboost, only: xgboost_options_t
@@ -12,6 +13,7 @@ program test_xgboost_multiclass
 
     failures = 0
     call test_probability_and_labels(failures)
+    call test_staged_and_importance(failures)
     call test_probability_jvp(failures)
     call test_missing_value_routing(failures)
     call test_refusals(failures)
@@ -23,6 +25,69 @@ program test_xgboost_multiclass
     write (*, '(a)') "PASS XGBoost multiclass independent behavioral oracles"
 
 contains
+
+    subroutine test_staged_and_importance(failures)
+        integer, intent(inout) :: failures
+        type(xgboost_multiclass_t) :: model
+        type(xgboost_options_t) :: options
+        type(fortnum_status_t) :: status
+        real(dp) :: x(9, 2), query(3, 2), probabilities(3, 3)
+        real(dp) :: staged(3, 3, 2), margins(3, 3, 2)
+        real(dp) :: gain(2), weight(2), cover(2), normalized(2)
+        real(dp) :: expected(3, 3), totals(3)
+        integer :: labels(9), stage, class, sample
+
+        x(:, 1) = [-4.0_dp, -3.0_dp, -2.0_dp, -1.0_dp, 0.0_dp, 1.0_dp, &
+            2.0_dp, 3.0_dp, 4.0_dp]
+        x(:, 2) = 0.0_dp
+        labels = [-8, -8, -8, 2, 2, 2, 11, 11, 11]
+        query(:, 1) = [-2.3_dp, 0.1_dp, 2.4_dp]
+        query(:, 2) = 0.0_dp
+        options%n_estimators = 2
+        options%max_depth = 1
+        options%learning_rate = 0.4_dp
+        options%l2 = 1.0_dp
+        options%min_child_weight = 0.0_dp
+        call model%fit(x, labels, status, options)
+        call model%predict_proba_staged(query, staged, status)
+        call model%decision_function_staged(query, margins, status)
+        call model%predict_proba(query, probabilities, status)
+        call model%feature_importance(gain, status, "gain")
+        call model%feature_importance(weight, status, "weight")
+        call model%feature_importance(cover, status, "cover")
+        call model%feature_importance(normalized, status, "gain", .true.)
+        do stage = 1, 2
+            do class = 1, 3
+                do sample = 1, size(query, 1)
+                    expected(sample, class) = stable_sigmoid( &
+                        margins(sample, class, stage))
+                end do
+            end do
+            totals = sum(expected, dim=2)
+            do class = 1, 3
+                expected(:, class) = expected(:, class)/totals
+            end do
+            call check(maxval(abs(staged(:, :, stage) - expected)) < &
+                3.0e-14_dp, "staged margin-to-probability oracle", failures)
+        end do
+        call check(status_ok(status), "staged and diagnostics status", failures)
+        call check(maxval(abs(sum(staged, dim=2) - 1.0_dp)) < 3.0e-14_dp, &
+            "staged probabilities normalize at every stage", failures)
+        call check(maxval(abs(staged(:, :, 2) - probabilities)) < 3.0e-14_dp, &
+            "multiclass final stage equals predict_proba", failures)
+        call check(all(ieee_is_finite(margins)), "staged margins are finite", &
+            failures)
+        call check(weight(1) > 0.0_dp .and. abs(weight(2)) < 3.0e-14_dp .and. &
+            cover(1) > 0.0_dp .and. abs(cover(2)) < 3.0e-14_dp .and. &
+            gain(1) > 0.0_dp .and. abs(gain(2)) < 3.0e-14_dp, &
+            "multiclass feature diagnostics isolate split feature", failures)
+        call check(abs(sum(normalized) - 1.0_dp) < 3.0e-14_dp .and. &
+            normalized(1) > 0.0_dp .and. abs(normalized(2)) < 3.0e-14_dp, &
+            "multiclass normalized feature importance", failures)
+        call model%feature_importance(gain, status, "unsupported")
+        call check(.not. status_ok(status), "multiclass importance kind refusal", &
+            failures)
+    end subroutine test_staged_and_importance
 
     subroutine test_missing_value_routing(failures)
         integer, intent(inout) :: failures

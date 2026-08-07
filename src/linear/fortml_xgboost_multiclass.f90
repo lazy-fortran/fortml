@@ -25,9 +25,15 @@ module fortml_xgboost_multiclass
     contains
         procedure, public :: fit => xgb_multiclass_fit
         procedure, public :: predict_proba => xgb_multiclass_predict_proba
+        procedure, public :: predict_proba_staged => &
+            xgb_multiclass_predict_proba_staged
+        procedure, public :: decision_function_staged => &
+            xgb_multiclass_decision_function_staged
         procedure, public :: predict_proba_jvp => xgb_multiclass_predict_proba_jvp
         procedure, public :: decision_function => xgb_multiclass_decision_function
         procedure, public :: predict => xgb_multiclass_predict
+        procedure, public :: feature_importance => &
+            xgb_multiclass_feature_importance
         procedure, public :: classes => xgb_multiclass_classes
         procedure, public :: feature_count => xgb_multiclass_feature_count
         procedure, public :: class_count => xgb_multiclass_class_count
@@ -115,6 +121,132 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine xgb_multiclass_predict_proba
+
+    !> Return normalized one-vs-rest probabilities after every boosting stage.
+    !>
+    !> The output has shape `(n_samples, n_classes, n_estimators)`.  Each
+    !> stage is normalized across classes, just like `predict_proba`.
+    subroutine xgb_multiclass_predict_proba_staged(self, x, probabilities, &
+            status)
+        class(xgboost_multiclass_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: probabilities(:, :, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: binary_staged(:, :), totals(:, :)
+        integer :: i
+
+        if (.not. valid_query(self, x)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "XGBoost multiclass predict_proba_staged: model or input is invalid")
+            return
+        end if
+        if (size(probabilities, 1) /= size(x, 1) .or. &
+            size(probabilities, 2) /= self%class_count() .or. &
+            size(probabilities, 3) /= self%estimator_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "XGBoost multiclass predict_proba_staged: output shape is invalid")
+            return
+        end if
+        allocate(binary_staged(size(x, 1), self%estimator_count()), &
+            totals(size(x, 1), self%estimator_count()))
+        probabilities = 0.0_dp
+        do i = 1, self%class_count()
+            call self%one_vs_rest(i)%predict_staged(x, binary_staged, status)
+            if (status%code /= FORTNUM_OK) return
+            probabilities(:, i, :) = binary_staged
+        end do
+        totals = sum(probabilities, dim=2)
+        if (any(.not. ieee_is_finite(totals)) .or. any(totals <= 0.0_dp)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "XGBoost multiclass predict_proba_staged: normalization failed")
+            return
+        end if
+        do i = 1, self%class_count()
+            probabilities(:, i, :) = probabilities(:, i, :)/totals
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine xgb_multiclass_predict_proba_staged
+
+    !> Return one-vs-rest raw margins after every boosting stage.
+    !>
+    !> The output has shape `(n_samples, n_classes, n_estimators)` and is not
+    !> normalized; use `predict_proba_staged` for class probabilities.
+    subroutine xgb_multiclass_decision_function_staged(self, x, margins, status)
+        class(xgboost_multiclass_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: margins(:, :, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: binary_margins(:, :)
+        integer :: i
+
+        if (.not. valid_query(self, x)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "XGBoost multiclass decision_function_staged: model or "// &
+                "input is invalid")
+            return
+        end if
+        if (size(margins, 1) /= size(x, 1) .or. &
+            size(margins, 2) /= self%class_count() .or. &
+            size(margins, 3) /= self%estimator_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "XGBoost multiclass decision_function_staged: output shape is invalid")
+            return
+        end if
+        allocate(binary_margins(size(x, 1), self%estimator_count()))
+        do i = 1, self%class_count()
+            call self%one_vs_rest(i)%predict_staged_margin(x, binary_margins, status)
+            if (status%code /= FORTNUM_OK) return
+            margins(:, i, :) = binary_margins
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine xgb_multiclass_decision_function_staged
+
+    !> Aggregate feature diagnostics across all one-vs-rest estimators.
+    !>
+    !> The `kind` and normalization semantics match the binary estimator's
+    !> `feature_importance` method.  Raw values are summed across classes.
+    subroutine xgb_multiclass_feature_importance(self, importance, status, &
+            kind, normalize)
+        class(xgboost_multiclass_t), intent(in) :: self
+        real(dp), intent(out) :: importance(:)
+        type(fortnum_status_t), intent(out) :: status
+        character(len=*), intent(in), optional :: kind
+        logical, intent(in), optional :: normalize
+        real(dp), allocatable :: contribution(:)
+        logical :: should_normalize
+        real(dp) :: total
+        integer :: i
+
+        if (.not. self%initialized .or. .not. allocated(self%one_vs_rest)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "XGBoost multiclass feature_importance: model is not initialized")
+            return
+        end if
+        if (size(importance) /= self%n_inputs) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "XGBoost multiclass feature_importance: output shape is invalid")
+            return
+        end if
+        allocate(contribution(self%n_inputs))
+        importance = 0.0_dp
+        do i = 1, self%class_count()
+            if (present(kind)) then
+                call self%one_vs_rest(i)%feature_importance(contribution, status, &
+                    kind, .false.)
+            else
+                call self%one_vs_rest(i)%feature_importance(contribution, status)
+            end if
+            if (status%code /= FORTNUM_OK) return
+            importance = importance + contribution
+        end do
+        should_normalize = .false.
+        if (present(normalize)) should_normalize = normalize
+        if (should_normalize) then
+            total = sum(importance)
+            if (total > 0.0_dp) importance = importance/total
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine xgb_multiclass_feature_importance
 
     subroutine xgb_multiclass_predict_proba_jvp(self, x, x_dot, probabilities, &
             probabilities_dot, status)
