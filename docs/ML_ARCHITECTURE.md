@@ -180,9 +180,10 @@ its value and first derivatives with respect to variance, squared distance, and
 lengthscale. The leaf is lowered once and shared by the kernel parameter JVP
 and VJP paths; its generated header records FortSym `f71a1aa`, 15 IR nodes, and
 7 compound operations. The independent scalar/finite-difference test is
-`test_fortsym_rbf_leaf`. RBF HVPs and Matérn derivative products still use their
-FortAD or explicit paths until a symbolic operation-count comparison accepts a
-replacement.
+`test_fortsym_rbf_leaf`. Matérn 1/2 HVPs now use a second generated FortSym
+leaf (`9482261`, 37 IR nodes, 28 compound operations), checked by
+`test_fortsym_matern12`; Matérn 3/2 and 5/2 retain FortAD products until a
+symbolic operation-count comparison accepts a smaller replacement.
 
 Exact inference uses dense Cholesky for small problems. Large problems use the
 same lazy operator boundary for tiled products, tensor/Kronecker,

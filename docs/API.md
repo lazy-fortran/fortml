@@ -990,11 +990,12 @@ observations, as do user formulas containing `push_distance` at coincidence.
 Value-only covariances and their variance-parameter products remain defined at
 coincidence. The refusal applies only when an input derivative is requested.
 The HVP is a deterministic directional finite difference of that analytic
-gradient. It is intentionally listed as such until a generated second-order
-derivative product is added. The RBF parameter JVP/VJP path uses the checked
-FortSym-generated natural-leaf value and first derivatives (FortSym `f71a1aa`,
-15 IR nodes, 7 compound operations). Matérn and RBF HVP paths retain their
-FortAD or explicit products. User formulas use the validated forward
+gradient. The RBF parameter JVP/VJP path uses the checked FortSym-generated
+natural-leaf value and first derivatives (FortSym `f71a1aa`, 15 IR nodes, 7
+compound operations). The Matérn 1/2 HVP now uses a FortSym-generated leaf
+(`9482261`, 37 IR nodes, 28 compound operations) after an independent
+analytic/directional finite-difference test; Matérn 3/2 and 5/2 retain their
+FortAD products. User formulas use the validated forward
 derivative stack and do not call a procedure pointer.
 
 `fortml_derivative_gp_training` provides
