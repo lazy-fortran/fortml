@@ -1441,6 +1441,11 @@ count as a production lazy implementation.
 - [x] Add the matching resident no-autodiff AdamW state plan with explicit
   device-resident gradients, bias-corrected moments, decoupled weight decay,
   lifecycle operations, and an independent multi-step recurrence oracle.
+- [x] Add the resident no-autodiff weighted-MSE C-ABI plan. It uploads target,
+  prediction, and optional weights once, executes five repeated reductions,
+  preserves the scalar across invalid-size refusal, and is checked against an
+  independent CPU oracle. This primitive does not claim resident estimator
+  training or autodiff support.
 - [x] Keep backend selection explicit: when OpenACC cannot preserve residency
   or deterministic semantics and no autodiff product is required, use a native
   CUDA kernel with a CPU oracle; autodiff-bearing trajectories remain on the
