@@ -329,7 +329,7 @@ The source inventory is dated 2026-08-07.
 | GP derivatives and hyperparameters | Partial | Exact GP likelihood and prediction products include parameter gradients and HVPs. Mixed value and first-derivative observations can be fitted and predicted. | Exact, derivative, multi-output, sparse, and matrix-free GP families expose documented trainable parameters, scalar objectives, parameter gradients, and train-state adapters. |
 | GPU and device execution | Partial | Kernel, structured, and sparse operator products have selected OpenACC or CUDA paths, including resident CG for kernel operators. `fortml_device` now gives callers an explicit CPU/CUDA selector, runtime capability probe, backend identity, residency ownership metadata, transfer counters, and structured CUDA refusal. | Supported training and prediction workflows keep model, optimizer, and batch state resident on a selected device and have CPU parity tests. |
 | Serialization and distributed execution | Missing | No public model-file or distributed-execution contract exists. | Versioned model and trainer files round-trip across supported compilers, and MPI training or inference agrees with a one-rank oracle. |
-| Benchmark coverage | Partial | Correctness-gated model and GP applications feed release harnesses in `../fortml-bench`; current release lanes include Bernoulli/MultinomialNB, MLP SGD/Nesterov, differentiable imputation, basis/pipeline, exact/approximate GP, and boosting workloads. | Every completed parity package has a pinned external oracle, release timings, memory measurements, provenance, raw data, and a maintained report. |
+| Benchmark coverage | Partial | Correctness-gated model and GP applications feed release harnesses in `../fortml-bench`; current release lanes include Bernoulli/Multinomial/ComplementNB, integer one-hot encoding, MLP SGD/Nesterov/AdamW, fixed-trajectory MLP hypergradients, differentiable imputation, basis/pipeline, exact/approximate GP, and boosting workloads. | Every completed parity package has a pinned external oracle, release timings, memory measurements, provenance, raw data, and a maintained report. |
 
 ### WP1: classification
 
@@ -473,8 +473,9 @@ return status errors.
   value, metadata, policy, and refusal tests are in `test_one_hot_encoder`.
 - [ ] Add missing-indicator features and sparse CSR/CSC one-hot views. Column
   selection is implemented for basis unions; general transformer columns remain
-  open. The benchmark lane must add dense one-hot correctness and throughput
-  comparisons before this family is called performance-complete.
+  open. The dense one-hot correctness lane is now in
+  `../fortml-bench/results/ONE_HOT_ENCODER.md`; sparse throughput and memory
+  comparisons remain before this family is performance-complete.
 - [ ] Add robust scaling, quantile and power transforms, normalization,
   missing-indicator features, ordinal encoding, target encoding with leakage
   guards, polynomial interactions, hashing, and sparse CSR/CSC feature views.
@@ -610,8 +611,11 @@ state, scoring, and refusal rules.
 - [ ] Add linear and kernel SVM/SVR, one-class SVM, and kernel approximation
   (Nyström and random Fourier features), with probability calibration and
   explicit solver/feature-memory limits.
-- [ ] Add Multinomial, Bernoulli, Complement, and Categorical naive Bayes,
-  LDA/QDA, and discriminant shrinkage with stable log-probability products.
+- [x] Add weighted Multinomial, Bernoulli, and Complement naive Bayes with
+  stable log-probability products and declared input/parameter derivative
+  boundaries.
+- [ ] Add Categorical naive Bayes, LDA/QDA, and discriminant shrinkage with
+  stable log-probability products.
 - [ ] Add k-means/minibatch k-means, Gaussian mixtures, Bayesian mixtures,
   spectral and agglomerative clustering, DBSCAN/OPTICS, affinity propagation,
   BIRCH, and graph-connected components where dependencies and memory limits
@@ -1063,6 +1067,15 @@ peak memory, and batch-size scaling with the same correctness gate as training.
   logistic/probit lanes with independent NumPy oracles. The release records are
   [`results/XGBOOST.md`](../fortml-bench/results/XGBOOST.md) and
   [`results/CLASSIFICATION_EXTENSIONS.md`](../fortml-bench/results/CLASSIFICATION_EXTENSIONS.md).
+- [x] Add ComplementNB and integer one-hot benchmark lanes with independent
+  NumPy oracles, contextual scikit-learn rows, explicit categorical derivative
+  refusals, and parseable unavailable FortML release-target rows. The release
+  records are [`results/COMPLEMENT_NB.md`](../fortml-bench/results/COMPLEMENT_NB.md)
+  and [`results/ONE_HOT_ENCODER.md`](../fortml-bench/results/ONE_HOT_ENCODER.md).
+- [x] Add AdamW training and fixed full-batch MLP hypergradient lanes with
+  independent NumPy recurrences/finite differences, explicit CPU-only and CUDA
+  refusal rows, and clean revision provenance. The release record is
+  [`results/ADAMW_HYPERGRADIENT.md`](../fortml-bench/results/ADAMW_HYPERGRADIENT.md).
 - [ ] Define one versioned result schema for correctness, train time, predict
   time, peak host and device memory, compiler, flags, dependency revisions,
   hardware, seed, warmup, repetitions, and refusal reason.
@@ -1345,6 +1358,15 @@ The maintained reports and their raw artifacts are in `../fortml-bench/results`:
 - [`MULTINOMIAL_NB.md`](../fortml-bench/results/MULTINOMIAL_NB.md), backed by
   `multinomial_naive_bayes.csv` for token-mass smoothing, stable probabilities,
   predictions, and complete input-JVP output arrays.
+- [`COMPLEMENT_NB.md`](../fortml-bench/results/COMPLEMENT_NB.md), backed by
+  `complement_naive_bayes.csv` for complement counts, stable probabilities,
+  predictions, and complete input-JVP oracle checks.
+- [`ONE_HOT_ENCODER.md`](../fortml-bench/results/ONE_HOT_ENCODER.md), backed by
+  `one_hot_encoder.csv` for sorted categories, packed one-based offsets,
+  dense transforms, and explicit categorical derivative refusals.
+- [`ADAMW_HYPERGRADIENT.md`](../fortml-bench/results/ADAMW_HYPERGRADIENT.md),
+  backed by `adamw_training.csv` and `mlp_hypergradient.csv` for independent
+  AdamW recurrence and fixed-trajectory hypergradient finite-difference oracles.
 - [`TRAINING_IMPUTER.md`](../fortml-bench/results/TRAINING_IMPUTER.md), backed
   by `training_imputer.csv` for Adam-independent momentum-SGD/Nesterov MLP
   trajectories and mean/median/constant imputer transform/JVP/VJP products.
