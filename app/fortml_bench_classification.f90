@@ -22,7 +22,7 @@ contains
         real(dp) :: x(n_samples, n_features), transformed(n_samples, n_features)
         real(dp) :: tangent(n_samples, n_features), tangent_out(n_samples, n_features)
         real(dp) :: elapsed_fit, elapsed_transform, elapsed_jvp
-        real(dp) :: checksum
+        real(dp) :: checksum, jvp_checksum
         integer(int64) :: clock_start, clock_end, clock_rate
         integer :: i, j, repetition
         type(standard_scaler_t) :: standard
@@ -58,10 +58,12 @@ contains
         call system_clock(clock_end)
         elapsed_jvp = real(clock_end - clock_start, dp)/real(clock_rate, dp) &
             /real(repetitions, dp)
+        jvp_checksum = sum(tangent_out)
         if (.not. status_ok(status)) error stop "scaler benchmark failed"
-        write (*, '(a,i0,a,i0,a,es24.16,a,es24.16,a,es24.16,a,es24.16)') &
+        write (*, '(a,i0,a,i0,a,es24.16,a,es24.16,a,es24.16,a,es24.16,a,es24.16)') &
             "standard_scaler,", n_samples, ",", n_features, ",", elapsed_fit, &
-            ",", elapsed_transform, ",", elapsed_jvp, ",", checksum
+            ",", elapsed_transform, ",", elapsed_jvp, ",", checksum, ",", &
+            jvp_checksum
 
         call minmax%transform(x, transformed, status)
         checksum = sum(transformed)
