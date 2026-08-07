@@ -309,6 +309,43 @@ surfaces separately. CUDA requests are intentionally typed
 `FORTNUM_NOT_IMPLEMENTED` until a resident linear-SVM kernel is linked; no
 host fallback is performed.
 
+### `fortml_linear_svr`
+
+`linear_svr_regression_t%fit(x,targets,status[,l2,epsilon,fit_intercept,loss,
+max_iterations,tolerance,sample_weight])` fits a weighted dense primal linear
+support-vector regressor through FortOpt L-BFGS-B. Targets are arbitrary finite
+real values. The default `SVR_LOSS_SQUARED_EPSILON` objective is the weighted
+mean of `max(0,abs(prediction-target)-epsilon)**2` plus feature-only L2
+regularization; `SVR_LOSS_EPSILON` selects the ordinary epsilon-insensitive
+loss. Epsilon and L2 are finite and nonnegative, and the effective sample
+weight mass must be positive. Intercepts are not regularized.
+
+`predict(x,targets,status)` and `decision_function(x,targets,status)` return
+the same fitted affine prediction. `coefficients()`, `intercept()`,
+`regularization()`, `epsilon()`, `loss()`, `fit_intercept()`,
+`feature_count()`, `parameter_count()`, `parameters()`, `set_parameters()`,
+and `fitted()` expose the packed coefficient-then-intercept state.
+`predict_jvp(x,theta_dot,x_dot,targets,targets_dot,status)` and
+`predict_vjp(x,targets_bar,theta_bar,x_bar,status)` (also available as `jvp`
+and `vjp`) are exact fixed-state affine products with respect to packed
+parameters and continuous input rows. Hard fit-time loss boundaries are not
+differentiated.
+
+`objective_value_gradient(x,targets,theta,value,gradient,status[,l2,
+epsilon,fit_intercept,loss,sample_weight,l2_gradient,epsilon_gradient])`
+exposes the weighted objective for FortOpt search. It returns the exact
+feature-L2 derivative and, when requested, the epsilon derivative. For the
+ordinary loss, an exact residual kink (`abs(prediction-target)==epsilon`) is a
+split derivative and returns `FORTNUM_NOT_IMPLEMENTED`; the squared loss has a
+continuous first derivative. Ordinary-loss fitting uses only a small C1
+continuation inside its optimizer callback so the Armijo line search remains
+well-defined; the public objective remains exact.
+
+`device_supported(FORTML_DEVICE_CPU)` is true for a fitted model. CPU device
+prediction dispatches to the same affine product. CUDA prediction is an
+explicit `FORTNUM_NOT_IMPLEMENTED` refusal until a resident linear-SVR kernel
+is linked; no host fallback is performed.
+
 ### `fortml_logistic_training`
 
 `logistic_training_objective_t` packages a fitted
