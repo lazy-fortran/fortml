@@ -134,7 +134,8 @@ contains
         real(dp) :: x(n_samples, n_features), query(n_query, n_features)
         real(dp) :: probabilities(n_query, 2), mean(n_query), variance(n_query)
         real(dp) :: multiclass_probabilities(n_query, 3)
-        real(dp) :: elapsed_fit, elapsed_predict, accuracy, checksum
+        real(dp) :: elapsed_fit, elapsed_predict, elapsed_multiclass
+        real(dp) :: accuracy, checksum
         integer :: labels(n_samples), predicted(n_samples), multiclass_labels(n_samples)
         integer :: multiclass_predicted(n_samples), i, repetition
         integer(int64) :: clock_start, clock_end, clock_rate
@@ -193,8 +194,14 @@ contains
         multiclass_options%max_iterations = 80
         multiclass_options%tolerance = 1.0e-8_dp
         multiclass_options%jitter = 1.0e-7_dp
-        call multiclass_model%fit(x, multiclass_labels, kernel, status, &
-            multiclass_options, multiclass_state)
+        call system_clock(clock_start, clock_rate)
+        do repetition = 1, repetitions
+            call multiclass_model%fit(x, multiclass_labels, kernel, status, &
+                multiclass_options, multiclass_state)
+        end do
+        call system_clock(clock_end)
+        elapsed_multiclass = real(clock_end - clock_start, dp) &
+            /real(clock_rate, dp)/real(repetitions, dp)
         call multiclass_model%predict(x, multiclass_predicted, status)
         call multiclass_model%predict_proba(x, multiclass_probabilities, status)
         accuracy = real(count(multiclass_predicted == multiclass_labels), dp) &
@@ -202,7 +209,7 @@ contains
         if (.not. status_ok(status)) error stop "GP multiclass benchmark failed"
         write (*, '(a,i0,a,i0,a,es24.16,a,es24.16,a,es24.16)') &
             "gp_classification_multiclass,", n_samples, ",", n_features, ",", &
-            accuracy, ",", sum(multiclass_probabilities), ",", &
+            elapsed_multiclass, ",", accuracy, ",", sum(multiclass_probabilities), ",", &
             real(multiclass_state%total_iterations, dp)
     end subroutine benchmark_gp_classification
 
