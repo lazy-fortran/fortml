@@ -54,6 +54,12 @@ module fortml_gp_variational_classification
         procedure, public :: elbo => gvc_elbo
         procedure, public :: elbo_gradient => gvc_elbo_gradient
         procedure, public :: elbo_jvp => gvc_elbo_jvp
+        procedure, public :: predict_latent => gvc_predict_latent
+        procedure, public :: predict_proba => gvc_predict_proba
+        procedure, public :: predict_latent_parameter_jvp => &
+            gvc_predict_latent_parameter_jvp
+        procedure, public :: predict_proba_parameter_jvp => &
+            gvc_predict_proba_parameter_jvp
         procedure, public :: elbo_device => gvc_elbo_device
         procedure, public :: device_supported => gvc_device_supported
     end type gp_variational_classification_t
@@ -78,9 +84,17 @@ contains
         requested_jitter = 1.0e-8_dp
         if (present(jitter)) requested_jitter = jitter
         if (size(inducing_points, 1) < 1 .or. &
-            size(inducing_points, 2) /= kernel%input_dim .or. &
-            n_mc_samples < 1 .or. requested_jitter <= 0.0_dp .or. &
-            .not. ieee_is_finite(requested_jitter)) then
+            size(inducing_points, 2) /= kernel%input_dim .or. n_mc_samples < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP classification: initialization shape/options are invalid")
+            return
+        end if
+        if (requested_jitter <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP classification: initialization shape/options are invalid")
+            return
+        end if
+        if (.not. ieee_is_finite(requested_jitter)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "variational GP classification: initialization shape/options are invalid")
             return
@@ -198,7 +212,12 @@ contains
         if (.not. valid_data(self, x, labels, status)) return
         multiplier = 1.0_dp
         if (present(scale)) multiplier = scale
-        if (multiplier <= 0.0_dp .or. .not. ieee_is_finite(multiplier)) then
+        if (multiplier <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP classification: likelihood scale is invalid")
+            return
+        end if
+        if (.not. ieee_is_finite(multiplier)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "variational GP classification: likelihood scale is invalid")
             return
@@ -251,7 +270,12 @@ contains
         end if
         multiplier = 1.0_dp
         if (present(scale)) multiplier = scale
-        if (multiplier <= 0.0_dp .or. .not. ieee_is_finite(multiplier)) then
+        if (multiplier <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP classification: likelihood scale is invalid")
+            return
+        end if
+        if (.not. ieee_is_finite(multiplier)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "variational GP classification: likelihood scale is invalid")
             return
@@ -333,7 +357,12 @@ contains
         end if
         multiplier = 1.0_dp
         if (present(scale)) multiplier = scale
-        if (multiplier <= 0.0_dp .or. .not. ieee_is_finite(multiplier)) then
+        if (multiplier <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP classification: likelihood scale is invalid")
+            return
+        end if
+        if (.not. ieee_is_finite(multiplier)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "variational GP classification: likelihood scale is invalid")
             return
@@ -389,6 +418,148 @@ contains
         tangent = likelihood_tangent - divergence_tangent
         call status_set(status, FORTNUM_OK, "")
     end subroutine gvc_elbo_jvp
+
+    !> Return the variational posterior marginal at query points.
+    !!
+    !! The fitted inducing state is held fixed.  The returned variance is the
+    !! diagonal of the inducing posterior approximation, including the prior
+    !! Schur complement.  This is a prediction primitive rather than an
+    !! optimization step; callers own the update of ``parameters()``.
+    subroutine gvc_predict_latent(self, x, mean, variance, status)
+        class(gp_variational_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: mean(:), variance(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: projection(:, :), local_mean(:), local_variance(:)
+
+        if (.not. prediction_valid(self, x, mean, variance, status)) return
+        call build_projection(self, x, projection, local_mean, local_variance, status)
+        if (status%code /= FORTNUM_OK) return
+        mean = local_mean
+        variance = local_variance
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gvc_predict_latent
+
+    !> Predict Bernoulli probabilities from variational latent marginals.
+    !! Columns are ``[negative, positive]``.  Logistic uses the standard
+    !! variance correction and probit uses the analytic Gaussian integral.
+    subroutine gvc_predict_proba(self, x, probabilities, status)
+        class(gp_variational_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: probabilities(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: mean(:), variance(:)
+        real(dp) :: p, scale
+        integer :: i
+
+        if (.not. prediction_probability_valid(self, x, probabilities, status)) return
+        allocate(mean(size(x, 1)), variance(size(x, 1)))
+        call self%predict_latent(x, mean, variance, status)
+        if (status%code /= FORTNUM_OK) return
+        do i = 1, size(x, 1)
+            if (self%likelihood == GP_VARIATIONAL_PROBIT) then
+                scale = sqrt(1.0_dp + variance(i))
+                p = 0.5_dp*erfc(-mean(i)/(scale*SQRT_TWO))
+            else
+                scale = sqrt(1.0_dp + PI*variance(i)/8.0_dp)
+                p = 1.0_dp/(1.0_dp + exp(-mean(i)/scale))
+            end if
+            probabilities(i, 2) = p
+            probabilities(i, 1) = 1.0_dp - p
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gvc_predict_proba
+
+    !> Forward product of latent prediction with respect to packed variational
+    !! parameters.  The query points and kernel hyperparameters are held fixed.
+    subroutine gvc_predict_latent_parameter_jvp(self, x, direction, mean, &
+            mean_dot, variance, variance_dot, status)
+        class(gp_variational_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), direction(:)
+        real(dp), intent(out) :: mean(:), mean_dot(:), variance(:), variance_dot(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: projection(:, :), local_mean(:), local_variance(:)
+        real(dp), allocatable :: mean_tangent(:), factor_tangent(:, :), noise_factor(:)
+        integer :: i, j, position
+
+        if (.not. prediction_valid(self, x, mean, variance, status)) return
+        if (size(direction) /= self%parameter_count() .or. &
+            any(.not. ieee_is_finite(direction)) .or. &
+            size(mean_dot) /= size(mean) .or. size(variance_dot) /= size(variance)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP prediction JVP: parameter direction or output shape is invalid")
+            return
+        end if
+        call build_projection(self, x, projection, local_mean, local_variance, status)
+        if (status%code /= FORTNUM_OK) return
+        allocate(mean_tangent(self%n_inducing), factor_tangent(self%n_inducing, &
+            self%n_inducing), noise_factor(self%n_inducing))
+        mean_tangent = direction(1:self%n_inducing)
+        factor_tangent = 0.0_dp
+        position = self%n_inducing + 1
+        do j = 1, self%n_inducing
+            factor_tangent(j, j) = self%variational_factor(j, j)*direction(position)
+            position = position + 1
+            do i = j + 1, self%n_inducing
+                factor_tangent(i, j) = direction(position)
+                position = position + 1
+            end do
+        end do
+        mean = local_mean
+        variance = local_variance
+        mean_dot = matmul(transpose(projection), mean_tangent)
+        do i = 1, size(x, 1)
+            noise_factor = matmul(transpose(self%variational_factor), projection(:, i))
+            variance_dot(i) = 2.0_dp*dot_product(noise_factor, &
+                matmul(transpose(factor_tangent), projection(:, i)))
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gvc_predict_latent_parameter_jvp
+
+    !> Forward product of Bernoulli probabilities with respect to packed
+    !! variational parameters.
+    subroutine gvc_predict_proba_parameter_jvp(self, x, direction, probabilities, &
+            probabilities_dot, status)
+        class(gp_variational_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), direction(:)
+        real(dp), intent(out) :: probabilities(:, :), probabilities_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: mean(:), mean_dot(:), variance(:), variance_dot(:)
+        real(dp) :: p, p_mu, p_variance, scale, z, density
+        integer :: i
+
+        if (.not. prediction_probability_valid(self, x, probabilities, status)) return
+        if (any(shape(probabilities_dot) /= shape(probabilities))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP probability JVP: output shape is invalid")
+            return
+        end if
+        allocate(mean(size(x, 1)), mean_dot(size(x, 1)), variance(size(x, 1)), &
+            variance_dot(size(x, 1)))
+        call self%predict_latent_parameter_jvp(x, direction, mean, mean_dot, &
+            variance, variance_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        do i = 1, size(x, 1)
+            if (self%likelihood == GP_VARIATIONAL_PROBIT) then
+                scale = sqrt(1.0_dp + variance(i))
+                z = mean(i)/scale
+                density = exp(-0.5_dp*z*z)/SQRT_TWO_PI
+                p = 0.5_dp*erfc(-z/SQRT_TWO)
+                p_mu = density/scale
+                p_variance = density*(-mean(i)/(2.0_dp*scale**3))
+            else
+                scale = sqrt(1.0_dp + PI*variance(i)/8.0_dp)
+                p = 1.0_dp/(1.0_dp + exp(-mean(i)/scale))
+                p_mu = p*(1.0_dp-p)/scale
+                p_variance = p*(1.0_dp-p)*(-mean(i)*PI/(16.0_dp*scale**3))
+            end if
+            probabilities(i, 2) = p
+            probabilities(i, 1) = 1.0_dp - p
+            probabilities_dot(i, 2) = p_mu*mean_dot(i) + p_variance*variance_dot(i)
+            probabilities_dot(i, 1) = -probabilities_dot(i, 2)
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gvc_predict_proba_parameter_jvp
 
     subroutine gvc_elbo_device(self, device, x, labels, value, status, scale)
         class(gp_variational_classification_t), intent(inout) :: self
@@ -554,7 +725,12 @@ contains
         end if
         do i = 1, n
             diagonal = factor(i, i)
-            if (diagonal <= 0.0_dp .or. .not. ieee_is_finite(diagonal)) then
+            if (diagonal <= 0.0_dp) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "variational GP classification: covariance factor is invalid")
+                return
+            end if
+            if (.not. ieee_is_finite(diagonal)) then
                 call status_set(status, FORTNUM_DOMAIN_ERROR, &
                     "variational GP classification: covariance factor is invalid")
                 return
@@ -629,6 +805,51 @@ contains
         valid = .true.
         call status_set(status, FORTNUM_OK, "")
     end function valid_data
+
+    logical function prediction_valid(self, x, mean, variance, status) result(valid)
+        class(gp_variational_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), mean(:), variance(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        valid = .false.
+        if (self%n_inducing < 1 .or. .not. allocated(self%variational_mean)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP prediction: model is not initialized")
+            return
+        end if
+        if (size(x, 1) < 1 .or. size(x, 2) /= self%kernel%input_dim .or. &
+            size(mean) /= size(x, 1) .or. size(variance) /= size(x, 1) .or. &
+            any(.not. ieee_is_finite(x))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP prediction: input or output shape is invalid")
+            return
+        end if
+        valid = .true.
+        call status_set(status, FORTNUM_OK, "")
+    end function prediction_valid
+
+    logical function prediction_probability_valid(self, x, probabilities, status) &
+            result(valid)
+        class(gp_variational_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), probabilities(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        valid = .false.
+        if (.not. allocated(self%variational_mean) .or. self%n_inducing < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP probability prediction: model is not initialized")
+            return
+        end if
+        if (size(x, 1) < 1 .or. size(x, 2) /= self%kernel%input_dim .or. &
+            any(shape(probabilities) /= [size(x, 1), 2]) .or. &
+            any(.not. ieee_is_finite(x))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP probability prediction: input or output shape is invalid")
+            return
+        end if
+        valid = .true.
+        call status_set(status, FORTNUM_OK, "")
+    end function prediction_probability_valid
 
     subroutine bernoulli_terms(label, latent, likelihood, value, gradient)
         integer, intent(in) :: label, likelihood
