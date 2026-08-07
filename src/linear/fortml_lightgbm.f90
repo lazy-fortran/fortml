@@ -523,7 +523,6 @@ contains
         integer, allocatable :: order(:), finite_rows(:), positions(:)
         integer :: feature, i, n, nfinite, npositions, p, k, left_count
         real(dp) :: total_g, total_h, left_g, left_h, right_g, right_h, gain, threshold
-        real(dp), allocatable :: left_rows(:)
 
         best%valid = .false.
         if (size(rows) < 2*options%min_data_in_leaf .or. &
