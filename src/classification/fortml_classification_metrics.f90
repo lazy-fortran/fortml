@@ -25,7 +25,9 @@ module fortml_classification_metrics
     public :: classification_calibration_error
     public :: classification_maximum_calibration_error
     public :: classification_multilabel_precision_recall_f1
+    public :: classification_multilabel_precision_recall_fbeta
     public :: classification_multilabel_probability_metrics
+    public :: classification_multilabel_probability_fbeta
     public :: classification_multilabel_jaccard
     public :: classification_multilabel_hamming_loss
     public :: classification_multilabel_hamming
@@ -478,6 +480,134 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine classification_multilabel_precision_recall_f1
 
+    subroutine classification_multilabel_precision_recall_fbeta(labels, predictions, &
+            beta, precision, recall, fbeta, status, average, sample_weight, &
+            zero_division)
+        !! Precision, recall, and F-beta for binary indicator matrices.
+        !!
+        !! `beta` is strictly positive: values above one weight recall more
+        !! heavily and values below one weight precision more heavily.  The
+        !! micro, macro, and samples reductions use the same per-label/per-row
+        !! score semantics as `classification_multilabel_precision_recall_f1`.
+        !! A zero denominator is assigned `zero_division` (zero by default or
+        !! one when explicitly requested), with no warning or NaN path.
+        integer, intent(in) :: labels(:, :), predictions(:, :)
+        real(dp), intent(in) :: beta
+        real(dp), intent(out) :: precision, recall, fbeta
+        type(fortnum_status_t), intent(out) :: status
+        integer, intent(in) :: average
+        real(dp), intent(in), optional :: sample_weight(:)
+        integer, intent(in), optional :: zero_division
+        integer :: zero_value, i, j
+        real(dp) :: weight, denominator, tp, fp, fn, row_tp, row_fp, row_fn
+        real(dp) :: label_precision, label_recall, label_fbeta, beta_squared
+
+        precision = 0.0_dp
+        recall = 0.0_dp
+        fbeta = 0.0_dp
+        zero_value = CLASSIFICATION_ZERO_DIVISION_ZERO
+        if (present(zero_division)) zero_value = zero_division
+        if (.not. ieee_is_finite(beta) .or. beta <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multilabel F-beta: beta must be finite and positive")
+            return
+        end if
+        beta_squared = beta*beta
+        if (.not. ieee_is_finite(beta_squared)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multilabel F-beta: beta is too large")
+            return
+        end if
+        if (average < CLASSIFICATION_AVERAGE_MICRO .or. &
+                average > CLASSIFICATION_AVERAGE_SAMPLES .or. &
+                (zero_value /= CLASSIFICATION_ZERO_DIVISION_ZERO .and. &
+                zero_value /= CLASSIFICATION_ZERO_DIVISION_ONE)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multilabel F-beta: average or zero-division policy is invalid")
+            return
+        end if
+        call validate_multilabel_inputs(labels, predictions, status, &
+            "multilabel F-beta")
+        if (status%code /= FORTNUM_OK) return
+        call validate_weights(size(labels, 1), sample_weight, denominator, status, &
+            "multilabel F-beta")
+        if (status%code /= FORTNUM_OK) return
+
+        select case (average)
+        case (CLASSIFICATION_AVERAGE_MICRO)
+            tp = 0.0_dp
+            fp = 0.0_dp
+            fn = 0.0_dp
+            do i = 1, size(labels, 1)
+                weight = 1.0_dp
+                if (present(sample_weight)) weight = sample_weight(i)
+                do j = 1, size(labels, 2)
+                    if (labels(i, j) == 1 .and. predictions(i, j) == 1) then
+                        tp = tp + weight
+                    else if (labels(i, j) == 0 .and. predictions(i, j) == 1) then
+                        fp = fp + weight
+                    else if (labels(i, j) == 1 .and. predictions(i, j) == 0) then
+                        fn = fn + weight
+                    end if
+                end do
+            end do
+            precision = safe_multilabel_ratio(tp, tp + fp, zero_value)
+            recall = safe_multilabel_ratio(tp, tp + fn, zero_value)
+            fbeta = safe_multilabel_ratio((1.0_dp + beta_squared)*tp, &
+                (1.0_dp + beta_squared)*tp + beta_squared*fn + fp, zero_value)
+        case (CLASSIFICATION_AVERAGE_MACRO)
+            do j = 1, size(labels, 2)
+                tp = 0.0_dp
+                fp = 0.0_dp
+                fn = 0.0_dp
+                do i = 1, size(labels, 1)
+                    weight = 1.0_dp
+                    if (present(sample_weight)) weight = sample_weight(i)
+                    if (labels(i, j) == 1 .and. predictions(i, j) == 1) then
+                        tp = tp + weight
+                    else if (labels(i, j) == 0 .and. predictions(i, j) == 1) then
+                        fp = fp + weight
+                    else if (labels(i, j) == 1 .and. predictions(i, j) == 0) then
+                        fn = fn + weight
+                    end if
+                end do
+                precision = precision + safe_multilabel_ratio(tp, tp + fp, zero_value)
+                recall = recall + safe_multilabel_ratio(tp, tp + fn, zero_value)
+                fbeta = fbeta + safe_multilabel_ratio((1.0_dp + beta_squared)*tp, &
+                    (1.0_dp + beta_squared)*tp + beta_squared*fn + fp, zero_value)
+            end do
+            precision = precision/real(size(labels, 2), dp)
+            recall = recall/real(size(labels, 2), dp)
+            fbeta = fbeta/real(size(labels, 2), dp)
+        case (CLASSIFICATION_AVERAGE_SAMPLES)
+            do i = 1, size(labels, 1)
+                weight = 1.0_dp
+                if (present(sample_weight)) weight = sample_weight(i)
+                row_tp = 0.0_dp
+                row_fp = 0.0_dp
+                row_fn = 0.0_dp
+                do j = 1, size(labels, 2)
+                    if (labels(i, j) == 1 .and. predictions(i, j) == 1) then
+                        row_tp = row_tp + 1.0_dp
+                    else if (labels(i, j) == 0 .and. predictions(i, j) == 1) then
+                        row_fp = row_fp + 1.0_dp
+                    else if (labels(i, j) == 1 .and. predictions(i, j) == 0) then
+                        row_fn = row_fn + 1.0_dp
+                    end if
+                end do
+                label_precision = safe_multilabel_ratio(row_tp, row_tp + row_fp, zero_value)
+                label_recall = safe_multilabel_ratio(row_tp, row_tp + row_fn, zero_value)
+                label_fbeta = safe_multilabel_ratio((1.0_dp + beta_squared)*row_tp, &
+                    (1.0_dp + beta_squared)*row_tp + beta_squared*row_fn + row_fp, &
+                    zero_value)
+                precision = precision + weight*label_precision/denominator
+                recall = recall + weight*label_recall/denominator
+                fbeta = fbeta + weight*label_fbeta/denominator
+            end do
+        end select
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine classification_multilabel_precision_recall_fbeta
+
     subroutine classification_multilabel_probability_metrics(probabilities, labels, &
             precision, recall, f1, status, average, threshold, sample_weight, &
             zero_division)
@@ -523,6 +653,64 @@ contains
         call classification_multilabel_precision_recall_f1(labels, predictions, &
             precision, recall, f1, status, average, sample_weight, zero_division)
     end subroutine classification_multilabel_probability_metrics
+
+    subroutine classification_multilabel_probability_fbeta(probabilities, labels, &
+            beta, precision, recall, fbeta, status, average, threshold, &
+            sample_weight, zero_division)
+        !! Threshold probabilities and evaluate the multilabel F-beta contract.
+        real(dp), intent(in) :: probabilities(:, :), beta
+        integer, intent(in) :: labels(:, :)
+        real(dp), intent(out) :: precision, recall, fbeta
+        type(fortnum_status_t), intent(out) :: status
+        integer, intent(in) :: average
+        real(dp), intent(in), optional :: threshold
+        real(dp), intent(in), optional :: sample_weight(:)
+        integer, intent(in), optional :: zero_division
+        integer, allocatable :: predictions(:, :)
+        real(dp) :: cutoff
+        integer :: i, j
+
+        precision = 0.0_dp
+        recall = 0.0_dp
+        fbeta = 0.0_dp
+        cutoff = 0.5_dp
+        if (present(threshold)) cutoff = threshold
+        if (.not. ieee_is_finite(cutoff) .or. cutoff < 0.0_dp .or. cutoff > 1.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multilabel probability F-beta: threshold must be in [0,1]")
+            return
+        end if
+        if (size(probabilities, 1) < 1 .or. size(probabilities, 2) < 1 .or. &
+                any(shape(probabilities) /= shape(labels)) .or. &
+                any(.not. ieee_is_finite(probabilities)) .or. &
+                any(probabilities < 0.0_dp) .or. any(probabilities > 1.0_dp)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multilabel probability F-beta: probabilities or shapes are invalid")
+            return
+        end if
+        allocate(predictions(size(labels, 1), size(labels, 2)))
+        do i = 1, size(labels, 1)
+            do j = 1, size(labels, 2)
+                predictions(i, j) = merge(1, 0, probabilities(i, j) >= cutoff)
+            end do
+        end do
+        if (present(sample_weight)) then
+            if (present(zero_division)) then
+                call classification_multilabel_precision_recall_fbeta(labels, predictions, &
+                    beta, precision, recall, fbeta, status, average, sample_weight, &
+                    zero_division)
+            else
+                call classification_multilabel_precision_recall_fbeta(labels, predictions, &
+                    beta, precision, recall, fbeta, status, average, sample_weight=sample_weight)
+            end if
+        else if (present(zero_division)) then
+            call classification_multilabel_precision_recall_fbeta(labels, predictions, &
+                beta, precision, recall, fbeta, status, average, zero_division=zero_division)
+        else
+            call classification_multilabel_precision_recall_fbeta(labels, predictions, &
+                beta, precision, recall, fbeta, status, average)
+        end if
+    end subroutine classification_multilabel_probability_fbeta
 
     subroutine classification_multilabel_jaccard(labels, predictions, value, &
             status, average, sample_weight, zero_division)

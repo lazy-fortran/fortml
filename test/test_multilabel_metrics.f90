@@ -4,14 +4,16 @@ program test_multilabel_metrics
     use fortnum_status, only: fortnum_status_t, status_ok
     use fortml_classification_metrics, only: &
         classification_multilabel_precision_recall_f1, &
+        classification_multilabel_precision_recall_fbeta, &
         classification_multilabel_probability_metrics, &
+        classification_multilabel_probability_fbeta, &
         CLASSIFICATION_AVERAGE_MICRO, CLASSIFICATION_AVERAGE_MACRO, &
         CLASSIFICATION_AVERAGE_SAMPLES, CLASSIFICATION_ZERO_DIVISION_ONE
     implicit none
 
     integer :: labels(3, 3), predictions(3, 3), failures
     real(dp) :: probabilities(3, 3), weights(3)
-    real(dp) :: precision, recall, f1
+    real(dp) :: precision, recall, f1, fbeta
     type(fortnum_status_t) :: status
 
     failures = 0
@@ -51,6 +53,32 @@ program test_multilabel_metrics
         abs(f1 - 5.0_dp/9.0_dp) < 1.0e-14_dp, &
         "zero-division one oracle", failures)
 
+    call classification_multilabel_precision_recall_fbeta(labels, predictions, 2.0_dp, &
+        precision, recall, fbeta, status, CLASSIFICATION_AVERAGE_MICRO)
+    call check(status_ok(status), "F-beta micro status", failures)
+    call check(abs(precision - 0.5_dp) < 1.0e-14_dp .and. &
+        abs(recall - 0.5_dp) < 1.0e-14_dp .and. abs(fbeta - 0.5_dp) < 1.0e-14_dp, &
+        "F-beta micro hand oracle", failures)
+
+    call classification_multilabel_precision_recall_fbeta(labels, predictions, 2.0_dp, &
+        precision, recall, fbeta, status, CLASSIFICATION_AVERAGE_SAMPLES)
+    call check(status_ok(status), "F-beta samples status", failures)
+    call check(abs(precision - 1.0_dp/6.0_dp) < 1.0e-14_dp .and. &
+        abs(recall - 1.0_dp/3.0_dp) < 1.0e-14_dp .and. &
+        abs(fbeta - 5.0_dp/18.0_dp) < 1.0e-14_dp, &
+        "F-beta samples hand oracle", failures)
+
+    call classification_multilabel_precision_recall_fbeta(labels, predictions, 2.0_dp, &
+        precision, recall, fbeta, status, CLASSIFICATION_AVERAGE_SAMPLES, &
+        zero_division=CLASSIFICATION_ZERO_DIVISION_ONE)
+    call check(status_ok(status), "F-beta zero-division status", failures)
+    call check(abs(fbeta - 11.0_dp/18.0_dp) < 1.0e-14_dp, &
+        "F-beta zero-division hand oracle", failures)
+
+    call classification_multilabel_precision_recall_fbeta(labels, predictions, 0.0_dp, &
+        precision, recall, fbeta, status, CLASSIFICATION_AVERAGE_MICRO)
+    call check(.not. status_ok(status), "nonpositive beta refusal", failures)
+
     probabilities = reshape([0.5_dp, 0.1_dp, 0.2_dp, &
         0.2_dp, 0.5_dp, 0.1_dp, 0.8_dp, 0.2_dp, 0.3_dp], shape(probabilities))
     call classification_multilabel_probability_metrics(probabilities, labels, &
@@ -59,6 +87,12 @@ program test_multilabel_metrics
     call check(abs(precision - 2.0_dp/3.0_dp) < 1.0e-14_dp .and. &
         abs(recall - 1.0_dp) < 1.0e-14_dp .and. abs(f1 - 0.8_dp) < 1.0e-14_dp, &
         "probability >= threshold tie oracle", failures)
+
+    call classification_multilabel_probability_fbeta(probabilities, labels, 2.0_dp, &
+        precision, recall, fbeta, status, CLASSIFICATION_AVERAGE_MICRO, threshold=0.5_dp)
+    call check(status_ok(status), "probability F-beta status", failures)
+    call check(abs(fbeta - 10.0_dp/11.0_dp) < 1.0e-14_dp, &
+        "probability F-beta threshold oracle", failures)
 
     call classification_multilabel_probability_metrics(probabilities, labels, &
         precision, recall, f1, status, CLASSIFICATION_AVERAGE_MICRO, threshold=1.5_dp)

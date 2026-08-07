@@ -4,6 +4,7 @@ program fortml_bench_multilabel_metrics
     use fortnum_status, only: fortnum_status_t, status_ok
     use fortml_classification_metrics, only: &
         classification_multilabel_precision_recall_f1, &
+        classification_multilabel_precision_recall_fbeta, &
         classification_multilabel_probability_metrics, classification_roc_auc, &
         classification_roc_auc_ovr, classification_multilabel_jaccard, &
         classification_multilabel_hamming_loss, CLASSIFICATION_AVERAGE_MICRO, &
@@ -14,6 +15,7 @@ program fortml_bench_multilabel_metrics
     integer :: labels(n_samples, n_labels), predictions(n_samples, n_labels)
     integer :: binary_labels(4), classes(3), multiclass_labels(6), repetition
     real(real64) :: probabilities(n_samples, n_labels), precision, recall, f1
+    real(real64) :: fbeta
     real(real64) :: scores(4), multiclass_scores(6, 3), roc_value, roc_macro
     real(real64) :: elapsed
     integer :: clock_start, clock_end, clock_rate
@@ -36,6 +38,14 @@ program fortml_bench_multilabel_metrics
         precision, recall, f1, status, CLASSIFICATION_AVERAGE_SAMPLES)
     if (.not. status_ok(status)) error stop 1
     write (*, '(a,3(",",es24.16))') "multilabel_samples", precision, recall, f1
+    call classification_multilabel_precision_recall_fbeta(labels, predictions, 2.0_real64, &
+        precision, recall, fbeta, status, CLASSIFICATION_AVERAGE_MICRO)
+    if (.not. status_ok(status)) error stop 1
+    write (*, '(a,3(",",es24.16))') "multilabel_fbeta_micro", precision, recall, fbeta
+    call classification_multilabel_precision_recall_fbeta(labels, predictions, 2.0_real64, &
+        precision, recall, fbeta, status, CLASSIFICATION_AVERAGE_SAMPLES)
+    if (.not. status_ok(status)) error stop 1
+    write (*, '(a,3(",",es24.16))') "multilabel_fbeta_samples", precision, recall, fbeta
     call classification_multilabel_probability_metrics(probabilities, labels, &
         precision, recall, f1, status, CLASSIFICATION_AVERAGE_MICRO, threshold=0.5_real64)
     if (.not. status_ok(status)) error stop 1

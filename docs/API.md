@@ -537,6 +537,18 @@ recall, and F1 whenever its denominator is zero. Nonbinary indicators,
 malformed weights, empty matrices, and invalid averaging or zero-division
 codes return a domain status.
 
+`classification_multilabel_precision_recall_fbeta` provides the same weighted
+micro, macro, and samples reductions for any finite positive `beta`. The
+returned F-beta score uses `(1+beta**2)*TP / ((1+beta**2)*TP + beta**2*FN +
+FP)`, so `beta>1` emphasizes recall and `beta<1` emphasizes precision. The
+per-label and per-row score is reduced before macro or samples averaging,
+matching scikit-learn's F-beta semantics. The
+`classification_multilabel_probability_fbeta` wrapper applies the explicit
+`>= threshold` rule before evaluating the same contract. Nonpositive or
+nonfinite beta, malformed probabilities, invalid thresholds, and unsupported
+zero-division policies return a domain status. These are CPU reference
+metrics; no implicit CUDA transfer or fallback is performed.
+
 `classification_multilabel_probability_metrics` applies an explicit global
 threshold to a probability matrix (`>= threshold` is positive; the default is
 `0.5`) and delegates to the same averaging and zero-division contract. The

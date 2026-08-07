@@ -691,9 +691,12 @@ CUDA refusal until private CART storage is safely bound to the C ABI.
   one-vs-rest ROC AUC with half-credit ties, sample weights, and typed CUDA
   refusals. Add weighted binary/OVR PR AUC with average-precision step
   semantics, and multilabel Jaccard and Hamming reductions with micro, macro,
-  and samples averaging. Independent indicator and ranking oracles cover all
-  CPU paths; malformed and zero-support behavior is explicit, and ranking
-  device entry points return typed CUDA refusals until resident kernels exist.
+  and samples averaging. Add weighted multilabel F-beta (`beta>0`) and its
+  probability-threshold wrapper with per-label/per-row reduction semantics;
+  the beta=2 CPU lane is covered by an independent NumPy oracle in
+  `fortml-bench`. Independent indicator and ranking oracles cover all CPU
+  paths; malformed and zero-support behavior is explicit, and ranking device
+  entry points return typed CUDA refusals until resident kernels exist.
 - [x] Add deterministic multiclass expected and maximum calibration error
   metrics with row normalization, first-maximum tie handling, equal-width
   bins, optional sample weights, and explicit empty-bin and confidence-one
