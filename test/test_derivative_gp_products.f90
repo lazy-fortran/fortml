@@ -381,6 +381,28 @@ contains
                 "FAIL [user formula GP] parameter JVP finite difference ", error
             failures = failures + 1
         end if
+
+        call formula%reset()
+        call formula%push_distance()
+        call formula%negate()
+        call formula%exponential()
+        call formula%validate(status)
+        kernel = make_user_kernel(1, 1.1_dp, formula, status)
+        call model%fit(x_train, [0, 0, 0], y_train, kernel, 0.05_dp, status, &
+            jitter=1.0e-10_dp)
+        if (.not. status_ok(status)) then
+            write (error_unit, '(a)') &
+                "FAIL [user distance formula GP] value-only fit at coincidence"
+            failures = failures + 1
+            return
+        end if
+        call model%predict_jvp(x_query, [0, 0], direction, mean, mean_dot, &
+            variance, variance_dot, status)
+        if (.not. status_ok(status)) then
+            write (error_unit, '(a)') &
+                "FAIL [user distance formula GP] value-only parameter JVP"
+            failures = failures + 1
+        end if
     end subroutine test_user_formula_observations
 
     subroutine test_parameter_guards(failures)

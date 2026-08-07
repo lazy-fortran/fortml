@@ -914,6 +914,12 @@ contains
         real(dp), allocatable :: gradient_x2_dot(:), mixed_hessian_dot(:, :)
         real(dp) :: value, value_dot
 
+        if (component1 == 0 .and. component2 == 0) then
+            call kernel_value_parameter_jvp(kernel, x1, x2, parameter, covariance, &
+                covariance_dot, status)
+            return
+        end if
+
         if ((component1 > 0 .or. component2 > 0) .and. &
             kernel_contains_white_noise(kernel)) then
             covariance = 0.0_dp
@@ -952,6 +958,81 @@ contains
             covariance_dot = 0.0_dp
         end if
     end subroutine derivative_covariance_parameter
+
+    recursive subroutine kernel_value_parameter_jvp(kernel, x1, x2, parameter, &
+            value, value_dot, status)
+        !! Value-only parameter products do not need input derivatives.  Keep
+        !! this path separate so a user formula containing `push_distance` can
+        !! still train on function values at coincident points; derivative
+        !! observations continue to refuse the singular input derivative.
+        type(kernel_t), intent(in) :: kernel
+        real(dp), intent(in) :: x1(:), x2(:)
+        integer, intent(in) :: parameter
+        real(dp), intent(out) :: value, value_dot
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: gradient_x1(:), gradient_x2(:)
+        real(dp), allocatable :: mixed_hessian(:, :), gradient_x1_dot(:)
+        real(dp), allocatable :: gradient_x2_dot(:), mixed_hessian_dot(:, :)
+        real(dp) :: left_value, right_value, left_dot, right_dot
+        integer :: left_count
+
+        value = 0.0_dp
+        value_dot = 0.0_dp
+        if (parameter < 1 .or. parameter > kernel%parameter_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "kernel value parameter JVP: parameter index is invalid")
+            return
+        end if
+        select case (kernel%kind)
+        case (KERNEL_SUM)
+            left_count = kernel%left%parameter_count()
+            if (parameter <= left_count) then
+                call kernel_value_parameter_jvp(kernel%left, x1, x2, parameter, &
+                    left_value, left_dot, status)
+                if (status%code /= FORTNUM_OK) return
+                right_value = kernel%right%value(x1, x2)
+                right_dot = 0.0_dp
+            else
+                left_value = kernel%left%value(x1, x2)
+                left_dot = 0.0_dp
+                call kernel_value_parameter_jvp(kernel%right, x1, x2, &
+                    parameter - left_count, right_value, right_dot, status)
+                if (status%code /= FORTNUM_OK) return
+            end if
+            value = left_value + right_value
+            value_dot = left_dot + right_dot
+        case (KERNEL_PRODUCT)
+            left_count = kernel%left%parameter_count()
+            if (parameter <= left_count) then
+                call kernel_value_parameter_jvp(kernel%left, x1, x2, parameter, &
+                    left_value, left_dot, status)
+                if (status%code /= FORTNUM_OK) return
+                right_value = kernel%right%value(x1, x2)
+                right_dot = 0.0_dp
+            else
+                left_value = kernel%left%value(x1, x2)
+                left_dot = 0.0_dp
+                call kernel_value_parameter_jvp(kernel%right, x1, x2, &
+                    parameter - left_count, right_value, right_dot, status)
+                if (status%code /= FORTNUM_OK) return
+            end if
+            value = left_value*right_value
+            value_dot = left_dot*right_value + left_value*right_dot
+        case (KERNEL_USER)
+            value = kernel%value(x1, x2)
+            value_dot = value
+        case default
+            allocate(gradient_x1(size(x1)), gradient_x2(size(x2)))
+            allocate(mixed_hessian(size(x1), size(x2)))
+            allocate(gradient_x1_dot(size(x1)), gradient_x2_dot(size(x2)))
+            allocate(mixed_hessian_dot(size(x1), size(x2)))
+            call kernel_input_parameter_jvp(kernel, x1, x2, parameter, value, &
+                gradient_x1, gradient_x2, mixed_hessian, value_dot, gradient_x1_dot, &
+                gradient_x2_dot, mixed_hessian_dot, status)
+            return
+        end select
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine kernel_value_parameter_jvp
 
     recursive subroutine kernel_input_parameter_jvp(kernel, x1, x2, parameter, &
             value, gradient_x1, gradient_x2, mixed_hessian, value_dot, &
