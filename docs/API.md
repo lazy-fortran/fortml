@@ -67,6 +67,7 @@ not supplied through a hidden generic interface.
 | `multinomial_naive_bayes_t` | Log probabilities and probabilities | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
 | `complement_naive_bayes_t` | Log probabilities and probabilities | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
 | `multilabel_logistic_classifier_t` | Independent positive probabilities for an indicator matrix | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
+| `ordinal_logistic_classifier_t` | Ordered cumulative-logit probabilities and labels | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
 | `basis_map_t` | `evaluate` | Parameters and inputs | Parameters and inputs | No |
 | `one_hot_encoder_t` | Dense one-hot `transform` | Refused: integer categories have no canonical tangent space | Refused: integer categories have no canonical cotangent space | No |
 | `mlp_t` | `predict` | Parameters and inputs | Parameters and inputs | Weighted-output HVP |
@@ -532,6 +533,27 @@ support in the current build. `decision_function_device`,
 `predict_proba_device`, and `predict_device` dispatch selected CPU contexts;
 CUDA requests return `FORTNUM_NOT_IMPLEMENTED` until a resident multi-head
 kernel is linked, with no hidden host fallback.
+
+### `fortml_ordinal_logistic_classifier`
+
+`ordinal_logistic_classifier_t%fit(x,labels,status[,l2,fit_intercept,
+max_iterations,tolerance,sample_weight,class_weight])` fits a weighted
+cumulative-logit model for sorted integer classes. The latent score is
+`x·coefficient + intercept`, and the ordered thresholds satisfy
+`P(Y <= k) = sigmoid(threshold(k) - score)`. Thresholds are fitted through
+positive increments internally, while `parameters()` exposes the packed
+coefficient, optional intercept, and actual strictly increasing thresholds;
+`set_parameters` validates that ordering. `predict_proba` returns the ordered
+class probabilities and `predict` returns the sorted integer labels.
+
+`predict_proba_jvp`/`predict_proba_vjp` differentiate the fixed fitted model
+with respect to continuous inputs. The corresponding
+`predict_proba_parameter_jvp`/`predict_proba_parameter_vjp` methods use the
+packed coefficient/intercept/threshold vector. `thresholds`, `classes`,
+`class_count`, `feature_count`, and `parameter_count` expose metadata. CPU
+device dispatch is exact; CUDA prediction methods return
+`FORTNUM_NOT_IMPLEMENTED` until a resident ordinal kernel is linked, with no
+hidden host fallback.
 
 ### `fortml_ovo_logistic_classifier`
 
