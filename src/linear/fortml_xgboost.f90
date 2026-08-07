@@ -157,6 +157,9 @@ module fortml_xgboost
         procedure, public :: predict_jvp => xgb_predict_jvp
         procedure, public :: predict_staged => xgb_predict_staged
         procedure, public :: predict_staged_margin => xgb_predict_staged_margin
+        procedure, public :: predict_contributions => xgb_predict_contributions
+        procedure, public :: predict_contributions_device => &
+            xgb_predict_contributions_device
         procedure, public :: predict_proba_staged => xgb_predict_proba_staged
         procedure, public :: predict_proba => xgb_predict_proba
         procedure, public :: decision_function => xgb_decision_function
@@ -1062,6 +1065,75 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine xgb_predict_staged_margin
+
+    !> Return additive raw-margin contributions for the fitted ensemble.
+    !>
+    !> The first column is the fitted base margin.  Column `i+1` is the
+    !> learning-rate-scaled contribution of tree `i`; therefore summing the
+    !> second dimension reproduces `predict_margin` exactly (up to rounding).
+    !> This is the deterministic tree-contribution contract used by model
+    !> explanation and deployment code.  For logistic, Poisson, and
+    !> squared-log objectives the columns are still raw-link contributions;
+    !> apply the objective link only after summing them.
+    subroutine xgb_predict_contributions(self, x, contributions, status)
+        class(xgboost_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: contributions(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: correction(:)
+        integer :: i
+
+        if (.not. self%initialized .or. size(x, 2) /= self%n_inputs .or. &
+            size(contributions, 1) /= size(x, 1) .or. &
+            size(contributions, 2) /= self%n_estimators + 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost predict_contributions: model, input, or output "// &
+                "shape is invalid")
+            return
+        end if
+        if (.not. valid_query_values(self%missing_code, x)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost predict_contributions: input has unsupported nonfinite values")
+            return
+        end if
+
+        allocate(correction(size(x, 1)))
+        contributions = 0.0_dp
+        contributions(:, 1) = self%base_score
+        do i = 1, self%n_estimators
+            call tree_predict(self%estimators(i), x, correction, status)
+            if (status%code /= FORTNUM_OK) return
+            contributions(:, i + 1) = self%learning_rate*correction
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine xgb_predict_contributions
+
+    !> Device-control-plane wrapper for additive margin contributions.
+    !> CUDA remains a typed refusal until a resident tree kernel is linked.
+    subroutine xgb_predict_contributions_device(self, device, x, contributions, &
+            status)
+        class(xgboost_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: contributions(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost contribution device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_contributions(x, contributions, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "xgboost contribution device: no resident CUDA tree kernel is linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost contribution device: device kind is invalid")
+        end select
+    end subroutine xgb_predict_contributions_device
 
     !> Return cumulative binary probabilities after every boosting stage.
     !>
