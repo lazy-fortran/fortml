@@ -14,14 +14,14 @@ gate is still open, so this work does not move or recreate that tag.
 
 | Compiler | Command | Result |
 | --- | --- | --- |
-| GNU Fortran | `fo` | Static, build, test, and lint checks passed in a clean FortML/FortAD-main replay. The fresh 2026-08-07 run passed all 158 tests (344 modules; 776 first-build units, 705 second-build units). See [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
-| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded compiler lane. The checked-in NVIDIA log predates the latest 158-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
+| GNU Fortran | `fo` | Static, build, test, and lint checks passed in a clean FortML/FortAD-main replay. The fresh 2026-08-07 run passed all 161 tests (352 modules; 781 first-build units, 708 second-build units). See [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
+| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded compiler lane. The checked-in NVIDIA log predates the latest 161-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
 The checked-in GNU compiler log is the fresh 2026-08-07 run against FortAD
-`origin/main` at `2b404b2957dbc5a8c205fdcf5429970bc75d0fd3`, replayed from clean
-worktrees under `/mnt/storage/code/lazy-fortran/fortml-clean-431` and
-`fortad-main-clean`. The run includes the
+`origin/main` at `d652cf0f5f7941f91ad43884f4e6a70ae5b5bb08`, replayed from clean
+worktrees under `/mnt/storage/code/lazy-fortran/fortml-clean-e051` and
+`/mnt/storage/code/lazy-fortran/fortad-main-clean`. The run includes the
   kernel-catalog, weighted LDA/QDA, robust/absolute XGBoost, neural NLL, random-forest,
 Extra-Trees, grouped MLP HVP and L-BFGS-B, basis/pipeline HVP, cosine
 derivative-GP, multilabel/ROC-AUC/PR-AUC/F-beta ranking, derivative-GP
@@ -45,12 +45,13 @@ parameter snapshots and transfer counters. NVIDIA
 compiler coverage remains an
 explicit older-build result.
 
-The companion benchmark harness is clean at FortML-bench revision `b14e8b6`;
+The companion benchmark harness is clean at FortML-bench revision `dfa8d35`;
 the trainer-checkpoint, binary-objective, variational-multiclass-GP,
-physics-objective, XGBoost-ranking, and resident dense-MSE CUDA CSV rows record
-their FortML source revisions and independent NumPy or analytic behavioral
-oracles. CUDA rows are explicit `unavailable`/typed-refusal records rather than
-host timings.
+physics-objective, XGBoost-ranking, resident dense-MSE CUDA, binary XGBoost
+classifier, calibrated neural classifier, and SGD-momentum hypergradient CSV
+rows record their FortML source revisions and independent NumPy or analytic
+behavioral oracles. CUDA rows are explicit `unavailable`/typed-refusal records
+rather than host timings.
 
 ### 2026-08-07 objective-trainer and tree-contribution slice
 
