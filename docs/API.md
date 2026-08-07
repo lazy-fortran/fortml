@@ -106,8 +106,9 @@ multi-layer trainer.
 
 The ordinary GNU build links an unavailable stub and returns
 `FORTNUM_NOT_IMPLEMENTED`; it never executes a CPU fallback. The plan exposes
-no HVP or optimizer state. The JVP and VJP graphs are resident with independent
-CPU recurrence/oracle checks for all eight activations. The MSE update has an
+no HVP or optimizer state. The JVP and VJP graphs are resident for the eight
+CUDA activation codes, with independent CPU recurrence/oracle checks; the CPU
+MLP path also covers stable sigmoid and Mish. The MSE update has an
 independent tanh loss/gradient/parameter oracle. HVP and full MLP training
 remain on the FortAD/FortSym reference path until their complete resident
 graphs are linked. See

@@ -1,6 +1,6 @@
 Verification date: 2026-08-07
-FortML revision: 4ef4581
-FortAD dependency: clean origin/main 597ea236fb5ede09c0e6fb752355f78511746608
+FortML revision: 9570ea1
+FortAD dependency: clean origin/main 7f56c371e22b5c8e6cc953b4f19b94df90f6ab06
 Command: fo (clean FortAD-main verification worktree under /mnt/storage)
 Static: OK (323 modules, 323 changed, 323 affected)
 First build: OK (764 units)
