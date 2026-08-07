@@ -38,6 +38,27 @@ transfer counters through `begin_residency`, `record_host_to_device`,
 copy arrays, and they never turn a CPU execution into a GPU claim. See
 [`docs/DEVICE.md`](DEVICE.md) for the ownership and refusal contract.
 
+## FortBO and FortMC interoperability boundary
+
+The companion repositories are optional consumers of FortML model and
+probability objects; FortML does not import either package. At the pinned
+2026-08-07 revisions (FortBO
+`0141e227a4af86cb6a088757d4e83dab5b353403`, FortMC
+`4dde0ccdc37b4c331126605406b08e1f3bda4f59`), their public modules contain
+protocol boundaries rather than samplers or acquisition implementations:
+
+| Companion | Current public protocol | Not yet supplied by the companion boundary |
+| --- | --- | --- |
+| FortMC `fortmc` | `fortmc_log_density_t%value(position,status)` and `%gradient(position,gradient,status)`, plus version constants and a default divergence threshold | Samplers, chain state, transforms, packed parameter registries, HVPs, checkpoints, diagnostics, and device execution |
+| FortBO `fortbo` | `fortbo_posterior_t%sample(points,samples,status)` and `%mean_variance(points,mean,variance,status)`, plus version constants | Acquisition functions, candidate search, constraints, covariance/input-derivative products, and device execution |
+
+The richer packed log-density and posterior contracts described in the
+companion roadmaps are planned adapter targets, not currently available
+FortML-to-companion integrations. Do not claim HMC/NUTS, Bayesian-optimization,
+or GPU parity for a FortML model until the corresponding companion adapter has
+an independent behavioral oracle, explicit refusal behavior, and a benchmark
+record.
+
 Several modules export a procedure both as a type-bound method and as a free
 procedure. This reference uses the type-bound spelling. Free `mlp_jvp`,
 `mlp_vjp`, `mlp_hvp`, `gp_fit`, `gp_predict`, `gp_predict_jvp`,
