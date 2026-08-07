@@ -952,7 +952,8 @@ peak memory, and batch-size scaling with the same correctness gate as training.
   independent NumPy oracles, contextual scikit-learn rows, and explicit
   PyTorch/JAX/XGBoost availability or refusal rows. The release record is
   [`results/FEATURES.md`](../fortml-bench/results/FEATURES.md).
-- [x] Add the exact depth-one XGBoost-style squared/logistic lane and the
+- [x] Add the exact depth-limited recursive XGBoost-style squared/logistic lane
+  (including depth/node diagnostics) and the
   fitted-scaler plus binary and one-vs-rest multiclass Laplace GP
   logistic/probit lanes with independent NumPy oracles. The release records are
   [`results/XGBOOST.md`](../fortml-bench/results/XGBOOST.md) and
