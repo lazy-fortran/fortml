@@ -705,6 +705,10 @@ state phases are reported separately.
   with damped Newton state, latent/probability prediction, and input JVPs over
   the kernel derivative contract. Kernel hyperparameter products and
   derivative-observation classifier paths remain open.
+- [x] Publish read-only fitted-kernel parameter metadata for binary and
+  one-vs-rest GP classifiers, with explicit domain-status refusals for
+  hyperparameter gradients until mode, likelihood-curvature, and posterior
+  refactorization paths are differentiated together.
 - [x] Add one-vs-rest multiclass GP classification as a deterministic wrapper
   over the binary Laplace contract, with sorted labels and normalized positive
   probabilities. Variational categorical likelihoods remain open.
