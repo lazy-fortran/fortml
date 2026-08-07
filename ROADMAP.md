@@ -788,6 +788,10 @@ state phases are reported separately.
   tests over parameter blocks. Check input, parameter, hyperparameter, and
   pipeline derivatives independently so a shared packing bug cannot pass all
   tests.
+- [x] Generate and ship the proven RBF and Matérn derivative leaves with
+  FortSym, retaining the generated Fortran/CUDA source, independent dense
+  numerical checks, and pinned FortSym/FortAD provenance. The general kernel
+  family matrix still follows the capability/refusal policy below.
 - [ ] Generate analytic kernels with `fortsym` when it proves a smaller
   expression, preserve the proof/operation-count/source hash, and compare the
   generated product against current FortAD `main` and an independent oracle.
