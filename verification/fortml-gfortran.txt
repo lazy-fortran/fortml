@@ -1,32 +1,12 @@
-Static: OK (316 modules, 316 changed, 316 affected)
-fo build [--------------------] 0/763 0%
-fo build [####################] 763/763 100%
-fo: warning: Warning: Creating array temporary at (1) [-Warray-temporaries]
-fo: warning: Warning: Creating array temporary at (1) [-Warray-temporaries]
-fo: warning: Warning: Creating array temporary at (1) [-Warray-temporaries]
-fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_gp_features.f90:536:37: Warning: Creating array temporary at (1) [-Warray-temporaries]
-fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_gp_features.f90:563:42: Warning: Creating array temporary at (1) [-Warray-temporaries]
-fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_gp_features.f90:297:26: Warning: Creating array temporary at (1) [-Warray-temporaries]
-fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_gp_features.f90:297:26: Warning: Creating array temporary at (1) [-Warray-temporaries]
-fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_gp_features.f90:235:26: Warning: Creating array temporary at (1) [-Warray-temporaries]
-fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_gp_features.f90:185:26: Warning: Creating array temporary at (1) [-Warray-temporaries]
-fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_gp_features.f90:185:27: Warning: Creating array temporary at (1) [-Warray-temporaries]
-fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_gp_features.f90:185:26: Warning: Creating array temporary at (1) [-Warray-temporaries]
-fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_gp_features.f90:79:26: Warning: Creating array temporary at (1) [-Warray-temporaries]
-fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_gp_features.f90:79:26: Warning: Creating array temporary at (1) [-Warray-temporaries]
-fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_gp_hyperparameter_training.f90:51:17: Warning: Creating array temporary at (1) [-Warray-temporaries]
-fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_scalable_gp.f90:338:30: Warning: Creating array temporary at (1) [-Warray-temporaries]
-fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_scalable_gp.f90:342:20: Warning: Creating array temporary at (1) [-Warray-temporaries]
-fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_gp_classification_training.f90:139:21: Warning: Creating array temporary at (1) [-Warray-temporaries]
-fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_gp_classification_training.f90:72:21: Warning: Creating array temporary at (1) [-Warray-temporaries]
-fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_gp_classification_training.f90:72:21: Warning: Creating array temporary at (1) [-Warray-temporaries]
-fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_gp_classification_training.f90:72:21: Warning: Creating array temporary at (1) [-Warray-temporaries]
-fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_gp_classification_training.f90:72:21: Warning: Creating array temporary at (1) [-Warray-temporaries]
-Build: OK
-fo build [--------------------] 0/698 0%
-fo build [####################] 698/698 100%
-fo test [--------------------] 0/144 0%
-fo test [####################] 144/144 100%
-Tests: OK
+Verification date: 2026-08-07
+FortML revision: 208594d
+FortAD dependency: clean origin/main 232a00143c1ff33f6411638ebd7b6b59a7328aa9
+Command: fo (clean FortAD-main verification worktree under /mnt/storage)
+Static: OK (322 modules, 322 changed, 322 affected)
+First build: OK (764 units)
+Second build: OK (699 units)
+Tests: OK (148/148)
 Lint: OK
-All stages passed (11.5s)
+Result: All stages passed
+Warnings: existing non-fatal GNU -Warray-temporaries in XGBoost benchmark
+applications and generated Matérn/RBF product applications.
