@@ -525,6 +525,35 @@ sample weights. Empty bins do not contribute, and confidence one belongs to
 the final bin. Shape, duplicate-class, unknown-label, nonfinite, negative-
 weight, invalid-bin, and zero-weight-mass cases return a domain status.
 
+`classification_multilabel_precision_recall_f1` evaluates binary indicator
+matrices with `CLASSIFICATION_AVERAGE_MICRO`,
+`CLASSIFICATION_AVERAGE_MACRO`, or `CLASSIFICATION_AVERAGE_SAMPLES`. Micro
+aggregates weighted TP/FP/FN across all labels; macro averages each label's
+score equally, including labels with no positive support; samples computes
+each row's score before the optional sample-weighted average. The optional
+`zero_division` is `CLASSIFICATION_ZERO_DIVISION_ZERO` (the default) or
+`CLASSIFICATION_ZERO_DIVISION_ONE` and is applied independently to precision,
+recall, and F1 whenever its denominator is zero. Nonbinary indicators,
+malformed weights, empty matrices, and invalid averaging or zero-division
+codes return a domain status.
+
+`classification_multilabel_probability_metrics` applies an explicit global
+threshold to a probability matrix (`>= threshold` is positive; the default is
+`0.5`) and delegates to the same averaging and zero-division contract. The
+threshold must be finite and in `[0,1]`; this hard prediction path is not
+differentiated. These metrics are CPU reference routines with no implicit
+CUDA transfer or fallback.
+
+`classification_roc_auc` computes binary ROC AUC from pairwise positive/negative
+score comparisons, awarding half credit to exact score ties. Labels may be
+arbitrary integers; the caller identifies the positive label explicitly.
+`classification_roc_auc_ovr` applies the same contract one-vs-rest to a score
+matrix and returns the macro average plus optional per-class values. Both
+accept optional nonnegative sample weights and refuse nonfinite scores,
+single-class support, malformed shapes, or zero pair mass. Their
+`*_device` entry points preserve outputs and return `FORTNUM_NOT_IMPLEMENTED`
+for CUDA until a resident ranking kernel is linked.
+
 ### `fortml_probability_calibration`
 
 `probability_calibrator_t%fit(scores,labels,status[,options,sample_weight,state])`

@@ -667,9 +667,14 @@ The source inventory is dated 2026-08-07.
   products separately so a user can train on logits without losing a stable
   deployment probability path.
 - [x] Add accuracy, top-k accuracy, balanced accuracy, confusion matrix, log
-  loss, Brier score, binary Matthews correlation, precision,
-  recall, and F1 with explicit class ordering, zero-support behavior, and
-  weighted accuracy/log-loss semantics. Binary ROC AUC remains open.
+  loss, Brier score, binary Matthews correlation, precision, recall, and F1
+  with explicit class ordering, zero-support behavior, and weighted
+  accuracy/log-loss semantics. Add multilabel indicator precision/recall/F1
+  with micro, macro, and sample averaging, explicit zero-division policy, and
+  probability threshold (`>=` is positive) semantics. Add pairwise binary and
+  one-vs-rest ROC AUC with half-credit ties, sample weights, and typed CUDA
+  refusals. Independent indicator and pairwise ranking oracles cover all
+  paths. PR AUC and multilabel Jaccard/Hamming metrics remain open.
 - [x] Add deterministic multiclass expected and maximum calibration error
   metrics with row normalization, first-maximum tie handling, equal-width
   bins, optional sample weights, and explicit empty-bin and confidence-one
