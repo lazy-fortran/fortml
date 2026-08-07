@@ -68,15 +68,15 @@ can reject an incompatible estimator before consuming a fold.
 The companion repositories are optional consumers of FortML model and
 probability objects; FortML does not import either package. At the pinned
 2026-08-08 revisions (FortBO
-`e272c27db4a840aabffe7ae0c3e5c5e9ec9a6154`, FortMC
+`b5b17f674a4e07c86d949131b0964a10b7ebb06c`, FortMC
 `4dde0ccdc37b4c331126605406b08e1f3bda4f59`), their public modules contain
-versioned contracts and state foundations, but not sampler or acquisition
-algorithms:
+versioned contracts and selected acquisition foundations, but not samplers or
+full candidate-search algorithms:
 
 | Companion | Current public protocol | Not yet supplied by the companion boundary |
 | --- | --- | --- |
 | FortMC `fortmc` | `fortmc_log_density_t%value(position,status)` and `%gradient(position,gradient,status)`, plus version constants and a default divergence threshold | Samplers, chain state, transforms, packed parameter registries, HVPs, checkpoints, diagnostics, and device execution |
-| FortBO `fortbo` | Versioned `fortbo_posterior_t` with capability-gated moments, covariance, joint/reparameterized samples, predictive log density, moment gradients/Hessians, plus `fortbo_history_t` gradient-observation/checkpoint state and `fortbo_space_t` normalized continuous/integer/categorical/mixed/conditional spaces with differentiable masks | Acquisition functions, candidate search/trust-region policies, FortML surrogate adapters, and device execution |
+| FortBO `fortbo` | Versioned `fortbo_posterior_t` with capability-gated moments, covariance, joint/reparameterized samples, predictive log density, moment gradients/Hessians; `fortbo_history_t` gradient-observation/checkpoint state; `fortbo_space_t` normalized continuous/integer/categorical/mixed/conditional spaces with differentiable masks; analytic EI/PI/UCB/log-EI; marginal Monte-Carlo EI/PI with CRN, antithetic draws, and pathwise gradients | Batch acquisitions, knowledge/entropy/noisy EI, candidate search/trust-region policies, FortML surrogate adapters, and device execution |
 
 FortML does not yet ship adapters to these contracts. Do not claim HMC/NUTS, Bayesian-optimization,
 or GPU parity for a FortML model until the corresponding companion adapter has

@@ -278,14 +278,16 @@ only listed as gaps:
 
 The FortBO and FortMC companion pins were rechecked against their remote
 `main` branches on 2026-08-08: FortBO
-`e272c27db4a840aabffe7ae0c3e5c5e9ec9a6154` and FortMC
+`b5b17f674a4e07c86d949131b0964a10b7ebb06c` and FortMC
 `4dde0ccdc37b4c331126605406b08e1f3bda4f59`. Their roadmaps remain authoritative
 for acquisition and sampling algorithms; FortML owns the posterior/log-density
-protocols and does not embed sampler or acquisition state. The pinned
-repositories currently provide only their public protocol boundaries, so no
-FortML sampler or acquisition adapter is counted as implemented. Any future
-adapter must add a focused oracle, typed GPU/refusal row, and a benchmark record
-in the companion harness.
+protocols and does not embed sampler or acquisition state. FortBO additionally
+provides analytic EI/PI/UCB/log-EI products and marginal Monte-Carlo EI/PI with
+common random numbers, antithetic draws, and pathwise gradients. These are
+companion foundations, not FortML adapters: the pinned repositories still
+provide no FortML sampler or surrogate adapter. Any future adapter must add a
+focused oracle, typed GPU/refusal row, and a benchmark record in the companion
+harness.
 
 ## Bayesian ecosystem split
 
@@ -318,11 +320,12 @@ only a position-valued `value` and a position-gradient `gradient`; packed
 parameter registries, transforms, HVPs, samplers, and chain state remain in its
 roadmap. FortBO now exposes a capability-gated posterior protocol, durable
 gradient-aware history, and normalized continuous/integer/categorical/mixed/
-conditional search spaces; acquisitions, trust regions, candidate-search
-state, and FortML surrogate adapters remain in its roadmap. Planned adapters
-will map FortML posterior moments, covariance, samples, and derivative
-products into those contracts without adding sampler or acquisition state to
-every estimator.
+conditional search spaces, analytic EI/PI/UCB/log-EI, and marginal Monte-Carlo
+EI/PI with CRN, antithetic, and pathwise-gradient products. Batch acquisitions,
+trust regions, candidate-search state, and FortML surrogate adapters remain in
+its roadmap. Planned adapters will map FortML posterior moments, covariance,
+samples, and derivative products into those contracts without adding sampler or
+acquisition state to every estimator.
 
 All three repositories use MIT licensing. FortAD is the default source of
 general derivatives. FortSym is preferred for compact fixed transition,
@@ -344,11 +347,12 @@ acquisition work packages:
 
 The companion repositories were checked on 2026-08-08 at FortMC
 `4dde0ccdc37b4c331126605406b08e1f3bda4f59` and FortBO
-`e272c27db4a840aabffe7ae0c3e5c5e9ec9a6154`, both on their `main` branches. The
+`b5b17f674a4e07c86d949131b0964a10b7ebb06c`, both on their `main` branches. The
 FortBO pin now includes a versioned capability-gated posterior contract,
 gradient-aware observation history/checkpointing, normalized continuous/integer/
-categorical/mixed/conditional search spaces, and a differentiable-coordinate
-mask; refresh these pins when
+categorical/mixed/conditional search spaces, a differentiable-coordinate mask,
+analytic EI/PI/UCB/log-EI, and marginal Monte-Carlo EI/PI with CRN, antithetic
+draws, and pathwise gradients; refresh these pins when
 their protocol or device contracts change.
 
 Both pinned companion revisions also clarify that FortSym is a generation-time
