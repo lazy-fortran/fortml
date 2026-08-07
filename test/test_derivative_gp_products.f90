@@ -6,9 +6,11 @@ program test_derivative_gp_products
     use fortml_derivative_gaussian_process, only: gp_derivative_regression_t
     use fortml_kernel_formula, only: kernel_formula_t
     use fortml_kernels, only: kernel_t, kernel_multiply, make_linear_kernel, &
-        make_matern32_kernel, make_rbf_kernel, make_user_kernel
+        make_matern32_kernel, make_matern52_kernel, &
+        make_periodic_kernel, make_rational_quadratic_kernel, &
+        make_rbf_kernel, make_user_kernel
     use fortnum_cholesky, only: cholesky_factorization_t
-    use fortnum_status, only: fortnum_status_t, status_ok
+    use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_NOT_IMPLEMENTED
     implicit none
 
     integer :: failures
@@ -19,6 +21,7 @@ program test_derivative_gp_products
     call test_product_parameter_products(failures)
     call test_prediction_products(failures)
     call test_query_input_products(failures)
+    call test_periodic_rational_query_products(failures)
     call test_user_formula_observations(failures)
     call test_parameter_guards(failures)
     if (failures /= 0) then
@@ -333,6 +336,81 @@ contains
         end if
     end subroutine test_query_input_products
 
+    subroutine test_periodic_rational_query_products(failures)
+        !! Independent finite-difference and adjoint checks for the exact
+        !! third-input products of the smooth built-in leaves.
+        integer, intent(inout) :: failures
+        type(kernel_t) :: periodic, rational_quadratic, matern32, matern52
+        type(fortnum_status_t) :: status
+
+        matern32 = make_matern32_kernel(1, 1.3_dp, 0.8_dp, status)
+        call check_smooth_query_kernel(matern32, "matern32", failures)
+        matern52 = make_matern52_kernel(1, 1.3_dp, 0.8_dp, status)
+        call check_smooth_query_kernel(matern52, "matern52", failures)
+        periodic = make_periodic_kernel(1, 1.3_dp, 0.8_dp, 2.1_dp, status)
+        call check_smooth_query_kernel(periodic, "periodic", failures)
+        rational_quadratic = make_rational_quadratic_kernel(1, 1.3_dp, 0.8_dp, &
+            1.7_dp, status)
+        call check_smooth_query_kernel(rational_quadratic, "rational-quadratic", failures)
+    end subroutine test_periodic_rational_query_products
+
+    subroutine check_smooth_query_kernel(kernel, name, failures)
+        type(kernel_t), intent(in) :: kernel
+        character(len=*), intent(in) :: name
+        integer, intent(inout) :: failures
+        type(gp_derivative_regression_t) :: model
+        type(fortnum_status_t) :: status
+        real(dp) :: x(3, 1), y(3, 1), x_test(2, 1), direction(2, 1)
+        real(dp) :: mean(2, 1), mean_dot(2, 1), variance(2), variance_dot(2)
+        real(dp) :: mean_plus(2, 1), mean_minus(2, 1), variance_plus(2), variance_minus(2)
+        real(dp) :: mean_bar(2, 1), variance_bar(2), x_bar(2, 1), fd_bar(2, 1)
+        real(dp) :: objective_plus, objective_minus, h, error, lhs, rhs
+        integer :: i
+
+        x(:, 1) = [0.0_dp, 0.45_dp, 1.05_dp]
+        y(:, 1) = [1.2_dp, -0.3_dp, 0.8_dp]
+        x_test(:, 1) = [0.25_dp, 0.8_dp]
+        direction(:, 1) = [0.07_dp, -0.11_dp]
+        call model%fit(x, [0, 1, 0], y, kernel, 0.07_dp, status, jitter=1.0e-10_dp)
+        if (.not. status_ok(status)) then
+            write (error_unit, '(a,a)') "FAIL [", trim(name)//" query] fit"
+            failures = failures + 1
+            return
+        end if
+        call model%predict_input_jvp(x_test, [1, 0], direction, mean, mean_dot, &
+            variance, variance_dot, status)
+        h = 1.0e-5_dp
+        call model%predict(x_test + h*direction, [1, 0], mean_plus, variance_plus, status)
+        call model%predict(x_test - h*direction, [1, 0], mean_minus, variance_minus, status)
+        error = max(maxval(abs(mean_dot - (mean_plus - mean_minus)/(2.0_dp*h))), &
+            maxval(abs(variance_dot - (variance_plus - variance_minus)/(2.0_dp*h))))
+        if (.not. status_ok(status) .or. error > 2.0e-5_dp) then
+            write (error_unit, '(a,a,es12.4)') "FAIL [", trim(name)//" query JVP] ", error
+            failures = failures + 1
+            return
+        end if
+        mean_bar(:, 1) = [0.35_dp, -0.2_dp]
+        variance_bar = [0.25_dp, -0.15_dp]
+        call model%predict_input_vjp(x_test, [1, 0], mean_bar, variance_bar, x_bar, status)
+        do i = 1, size(x_test, 1)
+            call model%predict(x_test + h*unit_matrix_column(2, 1, i), [1, 0], &
+                mean_plus, variance_plus, status)
+            objective_plus = sum(mean_bar*mean_plus) + sum(variance_bar*variance_plus)
+            call model%predict(x_test - h*unit_matrix_column(2, 1, i), [1, 0], &
+                mean_minus, variance_minus, status)
+            objective_minus = sum(mean_bar*mean_minus) + sum(variance_bar*variance_minus)
+            fd_bar(i, 1) = (objective_plus - objective_minus)/(2.0_dp*h)
+        end do
+        lhs = sum(mean_bar*mean_dot) + sum(variance_bar*variance_dot)
+        rhs = sum(x_bar*direction)
+        if (.not. status_ok(status) .or. maxval(abs(x_bar - fd_bar)) > 3.0e-5_dp .or. &
+            abs(lhs - rhs) > 3.0e-7_dp) then
+            write (error_unit, '(a,a,2es12.4)') "FAIL [", trim(name)//" query VJP] ", &
+                maxval(abs(x_bar - fd_bar)), abs(lhs - rhs)
+            failures = failures + 1
+        end if
+    end subroutine check_smooth_query_kernel
+
     subroutine test_user_formula_observations(failures)
         !! A validated formula must support mixed value/derivative GP states,
         !! including analytic kernel-parameter products.
@@ -344,7 +422,7 @@ contains
         real(dp) :: x_train(3, 1), y_train(3, 1), x_query(2, 1)
         real(dp) :: mean(2, 1), mean_dot(2, 1), variance(2), variance_dot(2)
         real(dp) :: mean_plus(2, 1), mean_minus(2, 1), variance_plus(2), variance_minus(2)
-        real(dp) :: direction(2), theta(2), h, error
+        real(dp) :: direction(2), input_direction(2, 1), theta(2), h, error
 
         call formula%reset()
         call formula%push_squared_distance()
@@ -379,6 +457,15 @@ contains
         if (.not. status_ok(status) .or. error > 2.0e-5_dp) then
             write (error_unit, '(a,es12.4)') &
                 "FAIL [user formula GP] parameter JVP finite difference ", error
+            failures = failures + 1
+        end if
+
+        input_direction(:, 1) = [0.11_dp, -0.09_dp]
+        call model%predict_input_jvp(x_query, [0, 1], input_direction, mean, mean_dot, &
+            variance, variance_dot, status)
+        if (status%code /= FORTNUM_NOT_IMPLEMENTED) then
+            write (error_unit, '(a,i0)') &
+                "FAIL [user formula GP] query product refusal code=", status%code
             failures = failures + 1
         end if
 

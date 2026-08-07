@@ -1586,10 +1586,15 @@ product over packed kernel/noise parameters. `predict_input_jvp(x,components,
 direction,mean,mean_dot,variance,variance_dot,status)` and
 `predict_input_vjp(x,components,mean_bar,variance_bar,x_bar,status)` provide
 query-input products while holding model parameters and training inputs fixed.
-The query products use a deterministic central finite difference of the
-existing covariance contract because derivative-observation queries can need
-third-order mixed input derivatives. An analytic third-order kernel contract
-remains open. Joint posterior covariance remains open.
+The query products use exact third-input products for RBF, Matérn 3/2, Matérn
+5/2, periodic, rational-quadratic, linear, constant, and sum/product kernels.
+The smooth leaf and composition rules are propagated directly through the
+value, first-gradient, and mixed-Hessian covariance blocks; no finite-
+difference fallback is used. Matérn 1/2 remains restricted to noncoincident
+queries because its derivative covariance is singular at coincidence. User
+formula leaves and other nonsmooth/unsupported leaves return
+`FORTNUM_NOT_IMPLEMENTED` for query-input products. Joint posterior covariance
+remains open.
 `log_marginal_likelihood`, `log_marginal_likelihood_jvp`,
 `hyperparameter_gradient`, and `hyperparameter_hvp` provide likelihood
 products. The gradient uses analytic parameter tangents of the supported RBF,

@@ -1221,11 +1221,14 @@ state phases are reported separately.
 - [x] Add parameter JVP and VJP products for derivative-observation GP
   prediction means and variances, with independent dense finite-difference and
   reverse-product oracles over value/first-derivative query components.
-- [x] Add deterministic finite-difference query-input JVP and VJP products for
-  derivative-observation GP means and variances, with independent directional
-  and adjoint finite-difference oracles. The products hold parameters and
-  training inputs fixed. An analytic third-order kernel contract and joint
-  posterior covariance remain open.
+- [x] Add exact query-input JVP and VJP products for derivative-observation GP
+  means and variances. RBF, Matérn 3/2, Matérn 5/2, periodic,
+  rational-quadratic, linear, constant, and sum/product kernels propagate the
+  third-input derivative analytically through value, gradient, and mixed
+  Hessian covariance blocks. Independent directional finite-difference and
+  adjoint tests cover the smooth leaves. Matérn 1/2 coincident derivatives,
+  user formulas, and other unsupported leaves return typed refusals; no hidden
+  finite-difference fallback is used. Joint posterior covariance remains open.
 - [x] Add an explicit device capability and prediction dispatch contract for
   mixed value/first-derivative GPs. CPU dispatch is reference-equivalent;
   CUDA refuses with `FORTNUM_NOT_IMPLEMENTED` until a resident covariance,

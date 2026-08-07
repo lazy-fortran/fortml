@@ -8,7 +8,8 @@ module fortml_derivative_gaussian_process
         FORTML_DEVICE_CUDA
     use fortml_kernels, only: kernel_t, clone_kernel_into, KERNEL_RBF, KERNEL_MATERN12, &
         KERNEL_MATERN32, KERNEL_MATERN52, KERNEL_LINEAR, KERNEL_CONSTANT, &
-        KERNEL_WHITE_NOISE, KERNEL_SUM, KERNEL_PRODUCT, KERNEL_USER
+        KERNEL_WHITE_NOISE, KERNEL_SUM, KERNEL_PRODUCT, KERNEL_USER, &
+        KERNEL_PERIODIC, KERNEL_RATIONAL_QUADRATIC
     implicit none
     private
 
@@ -546,55 +547,55 @@ contains
 
     subroutine derivative_covariance_query_direction(kernel, x1, component1, x2, component2, &
             direction1, direction2, covariance, covariance_dot, status)
-        !! Directional query derivative of one mixed value/derivative covariance.
-        !!
-        !! `direction1` and `direction2` are independent because a cross
-        !! covariance moves only its query argument, whereas a prior variance
-        !! moves both arguments together.  A deterministic central step keeps
-        !! this fallback reproducible across JVP and VJP calls.
+        !! Exact directional query derivative of one mixed value/derivative
+        !! covariance.  Smooth built-in leaves use their analytic third input
+        !! derivative; sum/product trees are propagated by the product rule.
+        !! User formulas and nonsmooth leaves return a typed refusal rather than
+        !! silently falling back to finite differences.
         type(kernel_t), intent(in) :: kernel
         real(dp), intent(in) :: x1(:), x2(:), direction1(:), direction2(:)
         integer, intent(in) :: component1, component2
         real(dp), intent(out) :: covariance, covariance_dot
         type(fortnum_status_t), intent(out) :: status
-        real(dp), allocatable :: x1_plus(:), x1_minus(:), x2_plus(:), x2_minus(:)
-        real(dp) :: covariance_plus, covariance_minus, scale, direction_scale, step
+        real(dp), allocatable :: gradient_x1(:), gradient_x2(:), mixed_hessian(:, :)
+        real(dp), allocatable :: gradient_x1_dot(:), gradient_x2_dot(:), mixed_hessian_dot(:, :)
+        real(dp) :: value, value_dot
 
         covariance = 0.0_dp
         covariance_dot = 0.0_dp
         if (size(x1) /= size(x2) .or. size(direction1) /= size(x1) .or. &
             size(direction2) /= size(x2) .or. any(.not. ieee_is_finite(x1)) .or. &
             any(.not. ieee_is_finite(x2)) .or. any(.not. ieee_is_finite(direction1)) .or. &
-            any(.not. ieee_is_finite(direction2))) then
+            any(.not. ieee_is_finite(direction2)) .or. component1 < 0 .or. &
+            component2 < 0 .or. component1 > size(x1) .or. component2 > size(x2)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
-                "derivative GP query covariance: direction shape or value is invalid")
+                "derivative GP query covariance: direction or component is invalid")
             return
         end if
-        call derivative_covariance(kernel, x1, component1, x2, component2, covariance, status)
+        allocate(gradient_x1(size(x1)), gradient_x2(size(x2)))
+        allocate(mixed_hessian(size(x1), size(x2)))
+        allocate(gradient_x1_dot(size(x1)), gradient_x2_dot(size(x2)))
+        allocate(mixed_hessian_dot(size(x1), size(x2)))
+        call kernel_input_third_direction(kernel, x1, x2, direction1, direction2, &
+            value, gradient_x1, gradient_x2, mixed_hessian, value_dot, gradient_x1_dot, &
+            gradient_x2_dot, mixed_hessian_dot, status)
         if (status%code /= FORTNUM_OK) return
-        direction_scale = max(maxval(abs(direction1)), maxval(abs(direction2)))
-        if (direction_scale == 0.0_dp) then
-            call status_set(status, FORTNUM_OK, "")
-            return
+        if (component1 == 0 .and. component2 == 0) then
+            covariance = value
+            covariance_dot = value_dot
+        else if (component1 > 0 .and. component2 == 0) then
+            covariance = gradient_x1(component1)
+            covariance_dot = gradient_x1_dot(component1)
+        else if (component1 == 0 .and. component2 > 0) then
+            covariance = gradient_x2(component2)
+            covariance_dot = gradient_x2_dot(component2)
+        else
+            covariance = mixed_hessian(component1, component2)
+            covariance_dot = mixed_hessian_dot(component1, component2)
         end if
-        scale = max(1.0_dp, max(maxval(abs(x1)), maxval(abs(x2))))
-        step = 1.0e-5_dp*scale/max(1.0_dp, direction_scale)
-        allocate(x1_plus(size(x1)), x1_minus(size(x1)))
-        allocate(x2_plus(size(x2)), x2_minus(size(x2)))
-        x1_plus = x1 + step*direction1
-        x1_minus = x1 - step*direction1
-        x2_plus = x2 + step*direction2
-        x2_minus = x2 - step*direction2
-        call derivative_covariance(kernel, x1_plus, component1, x2_plus, component2, &
-            covariance_plus, status)
-        if (status%code /= FORTNUM_OK) return
-        call derivative_covariance(kernel, x1_minus, component1, x2_minus, component2, &
-            covariance_minus, status)
-        if (status%code /= FORTNUM_OK) return
-        covariance_dot = (covariance_plus - covariance_minus)/(2.0_dp*step)
-        if (.not. ieee_is_finite(covariance_dot)) then
+        if (.not. ieee_is_finite(covariance) .or. .not. ieee_is_finite(covariance_dot)) then
             call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
-                "derivative GP query covariance: nonfinite directional product")
+                "derivative GP query covariance: nonfinite exact product")
             return
         end if
         call status_set(status, FORTNUM_OK, "")
@@ -1459,6 +1460,298 @@ contains
                 "kernel leaf parameter JVP: input derivatives are unsupported")
         end select
     end subroutine leaf_input_parameter_jvp
+
+    recursive subroutine kernel_input_third_direction(kernel, x1, x2, direction1, &
+            direction2, value, gradient_x1, gradient_x2, mixed_hessian, value_dot, &
+            gradient_x1_dot, gradient_x2_dot, mixed_hessian_dot, status)
+        !! Value, first input derivatives, mixed Hessian, and its exact
+        !! directional derivative.  The latter is the third input derivative
+        !! needed by derivative-observation query products.
+        type(kernel_t), intent(in) :: kernel
+        real(dp), intent(in) :: x1(:), x2(:), direction1(:), direction2(:)
+        real(dp), intent(out) :: value, gradient_x1(:), gradient_x2(:)
+        real(dp), intent(out) :: mixed_hessian(:, :), value_dot
+        real(dp), intent(out) :: gradient_x1_dot(:), gradient_x2_dot(:)
+        real(dp), intent(out) :: mixed_hessian_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: left_g1(:), right_g1(:), left_g2(:), right_g2(:)
+        real(dp), allocatable :: left_h(:, :), right_h(:, :), left_g1d(:), right_g1d(:)
+        real(dp), allocatable :: left_g2d(:), right_g2d(:), left_hd(:, :), right_hd(:, :)
+        real(dp) :: left_value, right_value, left_value_dot, right_value_dot
+        integer :: i, j
+
+        value = 0.0_dp
+        value_dot = 0.0_dp
+        gradient_x1 = 0.0_dp
+        gradient_x2 = 0.0_dp
+        mixed_hessian = 0.0_dp
+        gradient_x1_dot = 0.0_dp
+        gradient_x2_dot = 0.0_dp
+        mixed_hessian_dot = 0.0_dp
+        if (size(x1) /= size(x2) .or. size(direction1) /= size(x1) .or. &
+            size(direction2) /= size(x2)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "kernel third input derivative: dimension mismatch")
+            return
+        end if
+        if (kernel%kind == KERNEL_SUM .or. kernel%kind == KERNEL_PRODUCT) then
+            allocate(left_g1(size(x1)), right_g1(size(x1)), left_g2(size(x2)), right_g2(size(x2)))
+            allocate(left_h(size(x1), size(x2)), right_h(size(x1), size(x2)))
+            allocate(left_g1d(size(x1)), right_g1d(size(x1)), left_g2d(size(x2)), right_g2d(size(x2)))
+            allocate(left_hd(size(x1), size(x2)), right_hd(size(x1), size(x2)))
+            call kernel_input_third_direction(kernel%left, x1, x2, direction1, direction2, &
+                left_value, left_g1, left_g2, left_h, left_value_dot, left_g1d, left_g2d, &
+                left_hd, status)
+            if (status%code /= FORTNUM_OK) return
+            call kernel_input_third_direction(kernel%right, x1, x2, direction1, direction2, &
+                right_value, right_g1, right_g2, right_h, right_value_dot, right_g1d, right_g2d, &
+                right_hd, status)
+            if (status%code /= FORTNUM_OK) return
+            if (kernel%kind == KERNEL_SUM) then
+                value = left_value + right_value
+                value_dot = left_value_dot + right_value_dot
+                gradient_x1 = left_g1 + right_g1
+                gradient_x2 = left_g2 + right_g2
+                mixed_hessian = left_h + right_h
+                gradient_x1_dot = left_g1d + right_g1d
+                gradient_x2_dot = left_g2d + right_g2d
+                mixed_hessian_dot = left_hd + right_hd
+            else
+                value = left_value*right_value
+                value_dot = left_value_dot*right_value + left_value*right_value_dot
+                gradient_x1 = left_g1*right_value + right_g1*left_value
+                gradient_x2 = left_g2*right_value + right_g2*left_value
+                mixed_hessian = left_h*right_value + right_h*left_value + &
+                    spread(left_g1, dim=2, ncopies=size(x2))*spread(right_g2, dim=1, ncopies=size(x1)) + &
+                    spread(right_g1, dim=2, ncopies=size(x2))*spread(left_g2, dim=1, ncopies=size(x1))
+                gradient_x1_dot = left_g1d*right_value + right_g1d*left_value + &
+                    left_g1*right_value_dot + right_g1*left_value_dot
+                gradient_x2_dot = left_g2d*right_value + right_g2d*left_value + &
+                    left_g2*right_value_dot + right_g2*left_value_dot
+                mixed_hessian_dot = left_hd*right_value + right_hd*left_value + &
+                    left_h*right_value_dot + right_h*left_value_dot + &
+                    spread(left_g1d, dim=2, ncopies=size(x2))*spread(right_g2, dim=1, ncopies=size(x1)) + &
+                    spread(left_g1, dim=2, ncopies=size(x2))*spread(right_g2d, dim=1, ncopies=size(x1)) + &
+                    spread(right_g1d, dim=2, ncopies=size(x2))*spread(left_g2, dim=1, ncopies=size(x1)) + &
+                    spread(right_g1, dim=2, ncopies=size(x2))*spread(left_g2d, dim=1, ncopies=size(x1))
+            end if
+            call status_set(status, FORTNUM_OK, "")
+            return
+        end if
+        call smooth_leaf_input_third_direction(kernel, x1, x2, direction1, direction2, &
+            value, gradient_x1, gradient_x2, mixed_hessian, value_dot, gradient_x1_dot, &
+            gradient_x2_dot, mixed_hessian_dot, status)
+    end subroutine kernel_input_third_direction
+
+    subroutine smooth_leaf_input_third_direction(kernel, x1, x2, direction1, direction2, &
+            value, gradient_x1, gradient_x2, mixed_hessian, value_dot, gradient_x1_dot, &
+            gradient_x2_dot, mixed_hessian_dot, status)
+        type(kernel_t), intent(in) :: kernel
+        real(dp), intent(in) :: x1(:), x2(:), direction1(:), direction2(:)
+        real(dp), intent(out) :: value, gradient_x1(:), gradient_x2(:)
+        real(dp), intent(out) :: mixed_hessian(:, :), value_dot
+        real(dp), intent(out) :: gradient_x1_dot(:), gradient_x2_dot(:)
+        real(dp), intent(out) :: mixed_hessian_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: difference(size(x1)), delta(size(x1)), squared_distance, distance
+        real(dp) :: p, p2, p3, radial_first, radial_second, radial_third
+        real(dp) :: radial_scale, radial_coefficient, dot_difference
+        real(dp) :: variance, lengthscale, alpha, period, inverse_length_squared
+        real(dp) :: denominator, t, argument, sine_value, cosine_value, pi_over_period
+        real(dp) :: t1, t2, t3, b, f, rscale, rsecond
+        real(dp) :: a, exponential, z
+        integer :: i, j
+
+        value = 0.0_dp
+        value_dot = 0.0_dp
+        gradient_x1 = 0.0_dp
+        gradient_x2 = 0.0_dp
+        mixed_hessian = 0.0_dp
+        gradient_x1_dot = 0.0_dp
+        gradient_x2_dot = 0.0_dp
+        mixed_hessian_dot = 0.0_dp
+        if (kernel%kind == KERNEL_USER) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "derivative GP query products: user kernels have no third-input contract")
+            return
+        end if
+        if (kernel%kind == KERNEL_WHITE_NOISE) then
+            value = kernel%value(x1, x2)
+            call status_set(status, FORTNUM_OK, "")
+            return
+        end if
+        if (kernel%kind == KERNEL_CONSTANT) then
+            value = exp(kernel%log_parameters(1))
+            call status_set(status, FORTNUM_OK, "")
+            return
+        end if
+        if (kernel%kind == KERNEL_LINEAR) then
+            variance = exp(kernel%log_parameters(1))
+            value = variance*dot_product(x1, x2)
+            value_dot = variance*(dot_product(direction1, x2) + dot_product(x1, direction2))
+            gradient_x1 = variance*x2
+            gradient_x2 = variance*x1
+            gradient_x1_dot = variance*direction2
+            gradient_x2_dot = variance*direction1
+            do i = 1, size(x1)
+                mixed_hessian(i, i) = variance
+            end do
+            call status_set(status, FORTNUM_OK, "")
+            return
+        end if
+
+        difference = x1 - x2
+        delta = direction1 - direction2
+        squared_distance = sum(difference*difference)
+        distance = sqrt(squared_distance)
+        if (kernel%kind == KERNEL_RBF .or. kernel%kind == KERNEL_PERIODIC .or. &
+            kernel%kind == KERNEL_RATIONAL_QUADRATIC) then
+            variance = exp(kernel%log_parameters(1))
+            lengthscale = exp(kernel%log_parameters(2))
+            if (kernel%kind == KERNEL_RBF) then
+                inverse_length_squared = 1.0_dp/(lengthscale*lengthscale)
+                value = variance*exp(-0.5_dp*squared_distance*inverse_length_squared)
+                p = -0.5_dp*inverse_length_squared*value
+                p2 = 0.25_dp*inverse_length_squared**2*value
+                p3 = -0.125_dp*inverse_length_squared**3*value
+            else if (kernel%kind == KERNEL_RATIONAL_QUADRATIC) then
+                alpha = exp(kernel%log_parameters(3))
+                denominator = 1.0_dp + 0.5_dp*squared_distance/(alpha*lengthscale*lengthscale)
+                value = variance*denominator**(-alpha)
+                p = -0.5_dp*value/(lengthscale*lengthscale*denominator)
+                p2 = value*(alpha + 1.0_dp)/(4.0_dp*alpha*lengthscale**4*denominator**2)
+                p3 = -value*(alpha + 1.0_dp)*(alpha + 2.0_dp)/ &
+                    (8.0_dp*alpha*alpha*lengthscale**6*denominator**3)
+            else
+                period = exp(kernel%log_parameters(3))
+                pi_over_period = acos(-1.0_dp)/period
+                argument = pi_over_period*distance
+                b = 2.0_dp/(lengthscale*lengthscale)
+                if (distance <= 1.0e-8_dp) then
+                    t1 = pi_over_period*pi_over_period
+                    t2 = -2.0_dp*pi_over_period**4/3.0_dp
+                    t3 = 4.0_dp*pi_over_period**6/15.0_dp
+                else
+                    sine_value = sin(argument)
+                    cosine_value = cos(argument)
+                    t1 = pi_over_period*sin(2.0_dp*argument)/(2.0_dp*distance)
+                    t2 = pi_over_period*(2.0_dp*pi_over_period*distance* &
+                        cos(2.0_dp*argument) - sin(2.0_dp*argument))/(4.0_dp*distance**3)
+                    t3 = pi_over_period*( &
+                        3.0_dp*sin(2.0_dp*argument) - 6.0_dp*pi_over_period*distance* &
+                        cos(2.0_dp*argument) - 4.0_dp*pi_over_period**2*distance**2* &
+                        sin(2.0_dp*argument))/(8.0_dp*distance**5)
+                end if
+                t = sin(argument)**2
+                value = variance*exp(-b*t)
+                p = -b*t1*value
+                p2 = (b*b*t1*t1 - b*t2)*value
+                p3 = (-b**3*t1**3 + 3.0_dp*b*b*t1*t2 - b*t3)*value
+            end if
+            gradient_x1 = 2.0_dp*p*difference
+            gradient_x2 = -gradient_x1
+            dot_difference = dot_product(difference, delta)
+            value_dot = dot_product(gradient_x1, delta)
+            gradient_x1_dot = 2.0_dp*p*delta + 4.0_dp*p2*dot_difference*difference
+            gradient_x2_dot = -gradient_x1_dot
+            do i = 1, size(x1)
+                do j = 1, size(x2)
+                    mixed_hessian(i, j) = -2.0_dp*p*merge(1.0_dp, 0.0_dp, i == j) - &
+                        4.0_dp*p2*difference(i)*difference(j)
+                    mixed_hessian_dot(i, j) = -4.0_dp*p2*dot_difference* &
+                        merge(1.0_dp, 0.0_dp, i == j) - 8.0_dp*p3*dot_difference* &
+                        difference(i)*difference(j) - 4.0_dp*p2*(delta(i)*difference(j) + &
+                        difference(i)*delta(j))
+                end do
+            end do
+            call status_set(status, FORTNUM_OK, "")
+            return
+        end if
+
+        if (kernel%kind /= KERNEL_MATERN12 .and. kernel%kind /= KERNEL_MATERN32 .and. &
+            kernel%kind /= KERNEL_MATERN52) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "derivative GP query products: leaf has no third-input contract")
+            return
+        end if
+        variance = exp(kernel%log_parameters(1))
+        lengthscale = exp(kernel%log_parameters(2))
+        if (distance == 0.0_dp .and. kernel%kind == KERNEL_MATERN12) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "derivative GP query products: Matern 1/2 is singular at coincidence")
+            return
+        end if
+        if (kernel%kind == KERNEL_MATERN12) then
+            exponential = exp(-distance/lengthscale)
+            value = variance*exponential
+            radial_first = -value/lengthscale
+            radial_second = value/(lengthscale*lengthscale)
+            radial_third = -value/(lengthscale**3)
+        else if (kernel%kind == KERNEL_MATERN32) then
+            a = sqrt(3.0_dp)
+            z = distance/lengthscale
+            exponential = exp(-a*z)
+            value = variance*(1.0_dp + a*z)*exponential
+            radial_first = -3.0_dp*variance*z*exponential/lengthscale
+            radial_second = 3.0_dp*variance*exponential*(a*z - 1.0_dp)/(lengthscale**2)
+            radial_third = 3.0_dp*a*variance*exponential*(2.0_dp - a*z)/(lengthscale**3)
+            if (distance == 0.0_dp .and. dot_product(delta, delta) > 0.0_dp) then
+                call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                    "derivative GP query products: Matern 3/2 third derivative at coincidence")
+                return
+            end if
+        else
+            a = sqrt(5.0_dp)
+            z = distance/lengthscale
+            exponential = exp(-a*z)
+            value = variance*(1.0_dp + a*z + 5.0_dp*z*z/3.0_dp)*exponential
+            radial_first = -(5.0_dp/3.0_dp)*variance*z*(1.0_dp + a*z)*exponential/lengthscale
+            radial_second = (5.0_dp/3.0_dp)*variance*exponential*(5.0_dp*z*z - a*z - 1.0_dp)/ &
+                (lengthscale**2)
+            radial_third = (25.0_dp/3.0_dp)*variance*z*(3.0_dp - a*z)*exponential/ &
+                (lengthscale**3)
+        end if
+        if (distance == 0.0_dp) then
+            if (kernel%kind == KERNEL_MATERN32) then
+                radial_scale = -3.0_dp*variance/(lengthscale*lengthscale)
+            else if (kernel%kind == KERNEL_MATERN52) then
+                radial_scale = -5.0_dp*variance/(3.0_dp*lengthscale*lengthscale)
+            else
+                radial_scale = 0.0_dp
+            end if
+            gradient_x1 = 0.0_dp
+            gradient_x2 = 0.0_dp
+            do i = 1, size(x1)
+                mixed_hessian(i, i) = -radial_scale
+            end do
+            value_dot = 0.0_dp
+            gradient_x1_dot = 0.0_dp
+            gradient_x2_dot = 0.0_dp
+            mixed_hessian_dot = 0.0_dp
+            call status_set(status, FORTNUM_OK, "")
+            return
+        end if
+        radial_scale = radial_first/distance
+        radial_coefficient = (radial_second - radial_scale)/(distance*distance)
+        radial_third = radial_third/(distance**3) - 3.0_dp*radial_coefficient/(distance*distance)
+        value_dot = radial_scale*dot_product(difference, delta)
+        gradient_x1 = radial_scale*difference
+        gradient_x2 = -gradient_x1
+        gradient_x1_dot = radial_scale*delta + radial_coefficient* &
+            dot_product(difference, delta)*difference
+        gradient_x2_dot = -gradient_x1_dot
+        do i = 1, size(x1)
+            do j = 1, size(x2)
+                mixed_hessian(i, j) = -(radial_scale*merge(1.0_dp, 0.0_dp, i == j) + &
+                    radial_coefficient*difference(i)*difference(j))
+                mixed_hessian_dot(i, j) = -(radial_coefficient*dot_product(difference, delta)* &
+                    merge(1.0_dp, 0.0_dp, i == j) + radial_third*dot_product(difference, delta)* &
+                    difference(i)*difference(j) + radial_coefficient*(delta(i)*difference(j) + &
+                    difference(i)*delta(j)))
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine smooth_leaf_input_third_direction
 
     subroutine derivative_covariance( &
             kernel, x1, component1, x2, component2, covariance, status)
