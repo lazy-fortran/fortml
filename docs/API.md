@@ -80,6 +80,7 @@ not supplied through a hidden generic interface.
 | `mlp_classifier_t` | Logits, probabilities, and labels | Parameter/input JVP, probability JVP | Parameter/input VJP, probability VJP | No |
 | `mlp_chain_t` | Sequential composition of named MLP stages | Packed all-stage parameters and inputs | Packed all-stage parameters and inputs | Differentiated reverse chain rule for parameters and inputs |
 | `mlp_training_objective_t` | MSE+L2 scalar objective | Packed network/L2 JVP | Packed network/L2 gradient and scalar VJP | Joint network/L2 HVP |
+| `mlp_grouped_training_objective_t` | MSE with one positive log-L2 coefficient per named parameter range | Packed network/log-L2 JVP | Packed network/log-L2 gradient and scalar VJP | Exact mixed network/log-L2 HVP |
 | `mlp_chain_objective_t` | MSE+L2 scalar objective over a sequential MLP tree | Packed all-stage/L2 JVP | Packed all-stage/L2 gradient and scalar VJP | Exact all-stage/L2 HVP |
 | `mlp_hypergradient_objective_t` | Validation MSE after fixed full-batch GD trajectory | Outer `[log(learning_rate),log(l2)]` JVP | Exact trajectory value gradient and scalar VJP | Reverse trajectory products; inner MLP HVP |
 | `mlp_adamw_full_hypergradient_objective_t` | Validation MSE after fixed full-batch AdamW trajectory | Packed `[log(learning_rate),log(l2),log(weight_decay),logit(beta1),logit(beta2)]` JVP | Exact trajectory value gradient and scalar VJP | Forward state sensitivities through moments, bias correction, and decoupled decay |
@@ -91,6 +92,7 @@ not supplied through a hidden generic interface.
 | `kernel_t` | Scalar value and matrix | Parameter JVP | Parameter VJP | Parameter HVP |
 | `xgboost_t` | Squared/logistic/Poisson/Huber/quantile margins and predictions | Fixed-tree input JVP away from split boundaries | Fixed-tree input VJP away from split boundaries | No |
 | `random_forest_classifier_t` | Bootstrap-ensemble probabilities and labels | Refused: split routing is discrete | Refused: split routing is discrete | No |
+| `extra_trees_classifier_t` | Randomized-threshold ensemble probabilities and labels | Refused: split routing is discrete | Refused: split routing is discrete | No |
 | `gp_regression_t` | Mean, variance, LML | Prediction and LML parameters | Prediction and LML parameters | Mean and LML parameters |
 | `gp_derivative_regression_t` | Mean, variance, and LML | Prediction and LML parameter JVP | Prediction parameter VJP and analytic LML hyperparameter gradient | Directional HVP (finite difference of the analytic gradient) |
 | `gp_classification_t` | Latent and observed probabilities | Input JVP | Input VJP and Laplace-mode kernel hyperparameter gradient | No |
@@ -1209,6 +1211,35 @@ momentum/Nesterov acceleration) are available stochastic trainers.
 The optimizer consumes the analytic value/gradient path above, so no
 finite-difference hyperparameter approximation is introduced.
 
+### `fortml_mlp_grouped_training`
+
+`mlp_parameter_group_t` names a contiguous network-parameter range and stores
+its initial log regularization coefficient.  Build one or more groups with
+`initialize(name,first,last,log_l2,status)`, then pass the array to
+`mlp_grouped_training_objective_t%initialize(model,x,target,groups,status)`.
+The objective's packed vector is
+
+```text
+[ network parameters, log(lambda_1), ..., log(lambda_group_count) ]
+```
+
+where `lambda_i = exp(log(lambda_i))` and the safe log range is `[-50,50]`.
+Groups must have unique names and non-overlapping one-based ranges; parameters
+not included in a group remain unregularized.  `parameters`, `group_name`,
+`group_range`, `parameter_count`, and `group_count` expose the stable packing
+metadata.  `value_gradient` adds the group penalties and their exact
+log-coefficient derivatives.  `jvp`, `vjp`, and `hvp` are analytic; the HVP
+contains both the `lambda_i dtheta_i + lambda_i theta_i dlog(lambda_i)` block
+and the corresponding scalar mixed block.  Thus the same product can be passed
+to `fortopt_objective` through `fortopt` and optimized with FortOpt L-BFGS-B
+using explicit bounds on network and log-coefficient coordinates.
+
+The independent `test_mlp_grouped_training` fixture checks the value gradient,
+mixed HVP, JVP central-difference oracle, scalar VJP, and FortOpt callback
+against a hand-derived linear ridge objective.  The objective currently has a
+CPU-only dense graph: `device_kind=FORTML_DEVICE_CUDA` returns
+`FORTNUM_NOT_IMPLEMENTED`; no host copy is hidden behind a CUDA request.
+
 `mlp_batch_iterator_t` is the reusable deterministic row-index cursor used by
 `mlp_train`. Initialize it with `n_samples`, an optional `batch_size`,
 `shuffle`, and positive `seed`. Call `reset` once per epoch and
@@ -1408,6 +1439,29 @@ probability-simplex alignment, seeded determinism, invalid options, and the
 CUDA refusal. The proposed no-autodiff flattening and resident-kernel ABI is
 recorded in [`CUDA_TREE_PLAN.md`](CUDA_TREE_PLAN.md); until that ABI is linked,
 the sibling benchmark's CUDA row remains an explicit unavailable result.
+
+### `fortml_extra_trees_classifier`
+
+`extra_trees_classifier_t%fit(x,labels,status[,n_trees,max_depth,
+min_samples_leaf,max_features,random_splits,criterion,seed,sample_weight])`
+builds a deterministic Extra-Trees style classifier. Each tree uses the full
+training set and, at every node, evaluates seeded random thresholds on a
+randomized feature subset before retaining the best strict Gini or entropy
+improvement. `EXTRA_TREES_MAX_TREES` bounds the ensemble; defaults are 100
+trees, depth six, `sqrt(n_features)` candidate features, and 16 random
+thresholds per feature. Positive finite sample weights are accepted, class
+labels are sorted and retained verbatim, and `predict_proba` averages aligned
+leaf frequencies across trees. Accessors expose class, feature, tree, depth,
+candidate, criterion, seed, and fitted metadata.
+
+Routing is piecewise constant, so no derivative products are declared. The
+CPU path is available through `predict_proba_device` and `predict_device`;
+CUDA requests return `FORTNUM_NOT_IMPLEMENTED` without modifying caller
+buffers until a resident no-autodiff tree kernel is linked. Independent
+behavior tests cover empirical leaf probabilities, separated-cluster labels,
+seeded determinism, invalid options, and the no-fallback CUDA contract. The
+release benchmark is `../fortml-bench/scripts/bench_extra_trees.py` with report
+[`EXTRA_TREES.md`](../fortml-bench/results/EXTRA_TREES.md).
 
 ### `fortml_discriminant_analysis`
 
