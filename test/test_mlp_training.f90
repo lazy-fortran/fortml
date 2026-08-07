@@ -2,9 +2,11 @@ program test_mlp_training
     !! Independent behavioral checks for deterministic MLP training products.
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_ok
+    use fortopt_objective, only: objective_t
     use fortml_mlp, only: mlp_t, MLP_LINEAR
     use fortml_mlp_training, only: mlp_training_options_t, &
-        mlp_training_state_t, mlp_loss_value_gradient, mlp_loss_hvp, mlp_train
+        mlp_training_state_t, mlp_training_objective_t, &
+        mlp_loss_value_gradient, mlp_loss_hvp, mlp_train
     implicit none
 
     integer :: failures
@@ -15,6 +17,7 @@ program test_mlp_training
     call test_l2_hyperparameter_product(failures)
     call test_loss_hvp_oracle(failures)
     call test_nonlinear_loss_hvp(failures)
+    call test_optimizer_objective_adapter(failures)
     if (failures > 0) then
         write (*, '(a,i0)') "FAIL MLP training cases: ", failures
         error stop 1
@@ -189,6 +192,65 @@ contains
         call check(abs(l2_hvp - dot_product(theta, dtheta)) < 2.0e-10_dp, &
             "nonlinear mixed L2 HVP", failures)
     end subroutine test_nonlinear_loss_hvp
+
+    subroutine test_optimizer_objective_adapter(failures)
+        integer, intent(inout) :: failures
+        type(mlp_t), target :: model
+        type(mlp_training_objective_t), target :: adapter
+        type(objective_t) :: fortopt_objective
+        type(fortnum_status_t) :: status
+        real(dp) :: x(3, 1), target(3, 1), point(3), direction(3)
+        real(dp) :: gradient(3), gradient_plus(3), gradient_minus(3)
+        real(dp) :: product(3), finite_gradient(3)
+        real(dp) :: value, plus, minus, fortopt_value
+        real(dp) :: fortopt_gradient(3), h
+        integer :: i
+
+        x(:, 1) = [-1.0_dp, 0.5_dp, 2.0_dp]
+        target(:, 1) = [0.5_dp, -0.25_dp, 1.5_dp]
+        call model%initialize([1, 1], status, output_activation=MLP_LINEAR)
+        call model%set_parameters([0.3_dp, -0.2_dp], status)
+        call adapter%initialize(model, x, target, 0.4_dp, status, &
+            optimize_l2=.true.)
+        point = adapter%parameters()
+        direction = [-0.4_dp, 0.7_dp, -0.15_dp]
+        call adapter%value_gradient(point, value, gradient, status)
+        h = 1.0e-6_dp
+        do i = 1, size(point)
+            call adapter%value_gradient(point + unit_direction(size(point), i)*h, &
+                plus, gradient_plus, status)
+            call adapter%value_gradient(point - unit_direction(size(point), i)*h, &
+                minus, gradient_minus, status)
+            finite_gradient(i) = (plus - minus)/(2.0_dp*h)
+        end do
+        call adapter%value_gradient(point, value, gradient, status)
+        call adapter%hvp(point, direction, product, status)
+        call adapter%value_gradient(point + h*direction, plus, gradient_plus, &
+            status)
+        call adapter%value_gradient(point - h*direction, minus, gradient_minus, &
+            status)
+        call adapter%value_gradient(point, value, gradient, status)
+        call adapter%fortopt(fortopt_objective, status)
+        call fortopt_objective%value_gradient(point, fortopt_value, &
+            fortopt_gradient, status)
+        call check(status_ok(status), "optimizer objective adapter status", failures)
+        call check(maxval(abs(gradient - finite_gradient)) < 3.0e-9_dp, &
+            "optimizer objective gradient finite difference", failures)
+        call check(maxval(abs(product - &
+            (gradient_plus - gradient_minus)/(2.0_dp*h))) < 3.0e-8_dp, &
+            "optimizer objective HVP finite difference", failures)
+        call check(abs(fortopt_value - value) < 1.0e-14_dp .and. &
+            maxval(abs(fortopt_gradient - gradient)) < 1.0e-14_dp, &
+            "FortOpt objective adapter", failures)
+    end subroutine test_optimizer_objective_adapter
+
+    function unit_direction(n, index) result(direction)
+        integer, intent(in) :: n, index
+        real(dp) :: direction(n)
+
+        direction = 0.0_dp
+        direction(index) = 1.0_dp
+    end function unit_direction
 
     subroutine stop_at_three(epoch, loss, gradient_norm, stop)
         integer, intent(in) :: epoch

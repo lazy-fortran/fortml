@@ -15,6 +15,7 @@ module fortml_mlp_training
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
         FORTNUM_DOMAIN_ERROR
     use fortml_mlp, only: mlp_t
+    use fortopt_objective, only: objective_t
     use fortopt_adam, only: adam_t
     implicit none
     private
@@ -58,6 +59,28 @@ module fortml_mlp_training
         real(dp), allocatable :: loss_history(:)
     end type mlp_training_state_t
 
+    type, public :: mlp_training_objective_t
+        !! A value/gradient/HVP adapter suitable for FortOpt.
+        !!
+        !! The packed variable is the network parameter vector.  When
+        !! `optimize_l2` is true, one final scalar component is appended and
+        !! represents the non-negative L2 coefficient.  Every evaluation
+        !! updates the live model, so a FortOpt optimizer and direct products
+        !! use exactly the same loss implementation.
+        private
+        type(mlp_t), pointer :: model => null()
+        real(dp), allocatable :: features(:, :), targets(:, :)
+        real(dp) :: l2 = 0.0_dp
+        logical :: optimize_l2 = .false.
+    contains
+        procedure, public :: initialize => mlp_objective_initialize
+        procedure, public :: parameter_count => mlp_objective_parameter_count
+        procedure, public :: parameters => mlp_objective_parameters
+        procedure, public :: value_gradient => mlp_objective_value_gradient
+        procedure, public :: hvp => mlp_objective_hvp
+        procedure, public :: fortopt => mlp_objective_fortopt
+    end type mlp_training_objective_t
+
     public :: mlp_epoch_callback_proc
     public :: mlp_loss_value_gradient
     public :: mlp_loss_hvp
@@ -80,7 +103,7 @@ contains
         value = 0.0_dp
         l2_gradient = 0.0_dp
         if (.not. valid_data(model, x, target) .or. l2 < 0.0_dp .or. &
-                size(gradient) /= model%parameter_count()) then
+            size(gradient) /= model%parameter_count()) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "MLP loss: model, data, penalty, or gradient shape is invalid")
             return
@@ -131,8 +154,8 @@ contains
         l2_hvp = 0.0_dp
         n_parameters = model%parameter_count()
         if (.not. valid_data(model, x, target) .or. l2 < 0.0_dp .or. &
-                size(dtheta) /= n_parameters .or. &
-                size(parameter_hvp) /= n_parameters) then
+            size(dtheta) /= n_parameters .or. &
+            size(parameter_hvp) /= n_parameters) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "MLP loss HVP: model, data, penalty, or direction shape is invalid")
             return
@@ -164,6 +187,171 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine mlp_loss_hvp
 
+    subroutine mlp_objective_initialize(self, model, x, target, l2, status, &
+            optimize_l2)
+        class(mlp_training_objective_t), intent(out) :: self
+        type(mlp_t), target, intent(inout) :: model
+        real(dp), intent(in) :: x(:, :), target(:, :), l2
+        type(fortnum_status_t), intent(out) :: status
+        logical, intent(in), optional :: optimize_l2
+
+        self%l2 = 0.0_dp
+        self%optimize_l2 = .false.
+        if (present(optimize_l2)) self%optimize_l2 = optimize_l2
+        if (.not. valid_data(model, x, target)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP objective: model or data is invalid")
+            return
+        end if
+        if (.not. ieee_is_finite(l2) .or. l2 < 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP objective: L2 coefficient is invalid")
+            return
+        end if
+        self%model => model
+        allocate(self%features, source=x)
+        allocate(self%targets, source=target)
+        self%l2 = l2
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine mlp_objective_initialize
+
+    integer function mlp_objective_parameter_count(self) result(count)
+        class(mlp_training_objective_t), intent(in) :: self
+
+        count = 0
+        if (.not. associated(self%model)) return
+        count = self%model%parameter_count()
+        if (self%optimize_l2) count = count + 1
+    end function mlp_objective_parameter_count
+
+    function mlp_objective_parameters(self) result(parameters)
+        class(mlp_training_objective_t), intent(in) :: self
+        real(dp), allocatable :: parameters(:)
+        integer :: n_model
+
+        allocate(parameters(self%parameter_count()))
+        if (.not. associated(self%model)) return
+        n_model = self%model%parameter_count()
+        parameters(:n_model) = self%model%parameters()
+        if (self%optimize_l2) parameters(n_model + 1) = self%l2
+    end function mlp_objective_parameters
+
+    subroutine mlp_objective_value_gradient(self, parameters, value, gradient, &
+            status)
+        class(mlp_training_objective_t), intent(inout) :: self
+        real(dp), intent(in) :: parameters(:)
+        real(dp), intent(out) :: value, gradient(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: l2, l2_gradient
+        integer :: n_model
+
+        value = huge(1.0_dp)
+        gradient = 0.0_dp
+        if (.not. associated(self%model)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP objective: adapter is not initialized")
+            return
+        end if
+        n_model = self%model%parameter_count()
+        if (size(parameters) /= self%parameter_count() .or. &
+            size(gradient) /= size(parameters)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP objective: parameter or gradient shape is invalid")
+            return
+        end if
+        l2 = self%l2
+        if (self%optimize_l2) then
+            l2 = parameters(n_model + 1)
+            if (.not. ieee_is_finite(l2) .or. l2 < 0.0_dp) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP objective: optimized L2 coefficient is invalid")
+                return
+            end if
+        end if
+        call self%model%set_parameters(parameters(:n_model), status)
+        if (status%code /= FORTNUM_OK) return
+        call mlp_loss_value_gradient(self%model, self%features, self%targets, &
+            l2, value, gradient(:n_model), l2_gradient, status)
+        if (status%code /= FORTNUM_OK) return
+        if (self%optimize_l2) gradient(n_model + 1) = l2_gradient
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine mlp_objective_value_gradient
+
+    subroutine mlp_objective_hvp(self, parameters, direction, product, status)
+        class(mlp_training_objective_t), intent(inout) :: self
+        real(dp), intent(in) :: parameters(:), direction(:)
+        real(dp), intent(out) :: product(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: l2, l2_direction, l2_hvp
+        real(dp), allocatable :: parameter_hvp(:)
+        integer :: n_model
+
+        product = 0.0_dp
+        if (.not. associated(self%model)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP objective HVP: adapter is not initialized")
+            return
+        end if
+        n_model = self%model%parameter_count()
+        if (size(parameters) /= self%parameter_count() .or. &
+            size(direction) /= size(parameters) .or. &
+            size(product) /= size(parameters)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP objective HVP: parameter or direction shape is invalid")
+            return
+        end if
+        l2 = self%l2
+        l2_direction = 0.0_dp
+        if (self%optimize_l2) then
+            l2 = parameters(n_model + 1)
+            l2_direction = direction(n_model + 1)
+            if (.not. ieee_is_finite(l2) .or. l2 < 0.0_dp) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP objective HVP: optimized L2 coefficient is invalid")
+                return
+            end if
+        end if
+        call self%model%set_parameters(parameters(:n_model), status)
+        if (status%code /= FORTNUM_OK) return
+        allocate(parameter_hvp(n_model))
+        call mlp_loss_hvp(self%model, self%features, self%targets, l2, &
+            direction(:n_model), l2_direction, parameter_hvp, l2_hvp, status)
+        if (status%code /= FORTNUM_OK) return
+        product(:n_model) = parameter_hvp
+        if (self%optimize_l2) product(n_model + 1) = l2_hvp
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine mlp_objective_hvp
+
+    subroutine mlp_objective_fortopt(self, objective, status)
+        class(mlp_training_objective_t), target, intent(inout) :: self
+        type(objective_t), intent(out) :: objective
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. associated(self%model)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP objective: adapter is not initialized")
+            return
+        end if
+        call objective%initialize_context(self%parameter_count(), self, &
+            mlp_objective_context_callback, status)
+    end subroutine mlp_objective_fortopt
+
+    subroutine mlp_objective_context_callback(context, parameters, value, &
+            gradient, status)
+        class(*), intent(inout) :: context
+        real(dp), intent(in) :: parameters(:)
+        real(dp), intent(out) :: value, gradient(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        select type (adapter => context)
+            type is (mlp_training_objective_t)
+            call adapter%value_gradient(parameters, value, gradient, status)
+        class default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP objective: context has the wrong type")
+        end select
+    end subroutine mlp_objective_context_callback
+
     subroutine mlp_train(model, x, target, status, options, state)
         !! Train `model` with deterministic Adam updates.
         !!
@@ -192,7 +380,7 @@ contains
 
         if (present(options)) config = options
         if (.not. valid_options(config) .or. &
-                .not. valid_data(model, x, target)) then
+            .not. valid_data(model, x, target)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "MLP train: invalid model, data, or options")
             if (present(state)) state = result

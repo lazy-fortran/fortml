@@ -32,7 +32,7 @@ module fortml_softmax_regression
 contains
 
     subroutine softmax_fit(self, x, labels, status, l2, fit_intercept, &
-            max_iterations, tolerance, sample_weight)
+            max_iterations, tolerance, sample_weight, class_weight)
         class(softmax_regression_t), intent(out) :: self
         real(dp), intent(in) :: x(:, :)
         integer, intent(in) :: labels(:)
@@ -41,12 +41,14 @@ contains
         logical, intent(in), optional :: fit_intercept
         integer, intent(in), optional :: max_iterations
         real(dp), intent(in), optional :: sample_weight(:)
+        real(dp), intent(in), optional :: class_weight(:)
         type(objective_t) :: objective
         type(lbfgsb_t) :: optimizer
         type(lbfgsb_options_t) :: options
         type(lbfgsb_result_t) :: result
         real(dp), allocatable :: theta(:), lower(:), upper(:), encoded(:)
         real(dp), allocatable :: weights(:)
+        real(dp), allocatable :: class_factors(:)
         real(dp) :: penalty, requested_tolerance, weight_sum
         integer :: iterations, n_features, n_classes, n_parameters
         integer :: i, j, position
@@ -69,12 +71,6 @@ contains
             end if
             weights = sample_weight
         end if
-        weight_sum = sum(weights)
-        if (.not. ieee_is_finite(weight_sum) .or. weight_sum <= 0.0_dp) then
-            call status_set(status, FORTNUM_DOMAIN_ERROR, &
-                "softmax fit: sample weights must have positive mass")
-            return
-        end if
         if (any(.not. ieee_is_finite(x))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "softmax fit: inputs must be finite")
@@ -93,8 +89,17 @@ contains
         if (present(max_iterations)) iterations = max_iterations
         requested_tolerance = 1.0e-8_dp
         if (present(tolerance)) requested_tolerance = tolerance
-        if (iterations < 1 .or. requested_tolerance <= 0.0_dp .or. &
-            .not. ieee_is_finite(requested_tolerance)) then
+        if (iterations < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "softmax fit: invalid optimizer controls")
+            return
+        end if
+        if (requested_tolerance <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "softmax fit: invalid optimizer controls")
+            return
+        end if
+        if (.not. ieee_is_finite(requested_tolerance)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "softmax fit: invalid optimizer controls")
             return
@@ -106,6 +111,36 @@ contains
         if (n_classes < 2) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "softmax fit: at least two distinct classes are required")
+            return
+        end if
+        allocate(class_factors(n_classes))
+        class_factors = 1.0_dp
+        if (present(class_weight)) then
+            if (size(class_weight) /= n_classes) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "softmax fit: class weights must match sorted classes")
+                return
+            end if
+            if (any(.not. ieee_is_finite(class_weight)) .or. &
+                any(class_weight <= 0.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "softmax fit: class weights must be finite and positive")
+                return
+            end if
+            class_factors = class_weight
+        end if
+        do i = 1, size(labels)
+            do j = 1, n_classes
+                if (labels(i) == self%class_label(j)) then
+                    weights(i) = weights(i)*class_factors(j)
+                    exit
+                end if
+            end do
+        end do
+        weight_sum = sum(weights)
+        if (.not. ieee_is_finite(weight_sum) .or. weight_sum <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "softmax fit: effective weights must have positive mass")
             return
         end if
         n_parameters = n_features*n_classes

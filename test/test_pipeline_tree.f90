@@ -1,7 +1,8 @@
 program test_pipeline_tree
     use, intrinsic :: iso_fortran_env, only: dp => real64, error_unit
     use fortml_basis, only: basis_map_t, make_polynomial_basis, make_fourier_basis
-    use fortml_pipeline, only: basis_pipeline_t, make_basis_pipeline
+    use fortml_pipeline, only: basis_pipeline_t, make_basis_pipeline, &
+        sequential_basis_pipeline_t, make_sequential_basis_pipeline
     use fortml_tree, only: decision_stump_t, gradient_boosting_regressor_t
     use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_DOMAIN_ERROR
     implicit none
@@ -10,6 +11,7 @@ program test_pipeline_tree
 
     failures = 0
     call test_pipeline_products(failures)
+    call test_sequential_pipeline_products(failures)
     call test_pipeline_refusals(failures)
     call test_stump_oracle(failures)
     call test_boosting(failures)
@@ -81,6 +83,68 @@ contains
             failures = failures + 1
         end if
     end subroutine test_pipeline_products
+
+    subroutine test_sequential_pipeline_products(failures)
+        integer, intent(inout) :: failures
+        type(basis_map_t) :: polynomial, fourier
+        type(sequential_basis_pipeline_t) :: pipeline
+        type(fortnum_status_t) :: status
+        real(dp) :: x(4, 2), x_dot(4, 2), x_bar(4, 2)
+        real(dp) :: lhs, rhs, h
+        real(dp), allocatable :: y(:, :), y_dot(:, :), y_plus(:, :), y_minus(:, :)
+        real(dp), allocatable :: u(:, :), theta(:), theta_dot(:)
+        real(dp), allocatable :: theta_plus(:), theta_minus(:), theta_bar(:)
+        integer :: n_features, n_parameters
+
+        x = reshape([0.1_dp, -0.2_dp, 0.4_dp, 0.3_dp, &
+            -0.5_dp, 0.8_dp, 0.7_dp, -0.6_dp], shape(x))
+        x_dot = reshape([-0.3_dp, 0.2_dp, 0.1_dp, -0.4_dp, &
+            0.5_dp, 0.6_dp, -0.2_dp, 0.3_dp], shape(x_dot))
+        polynomial = make_polynomial_basis(2, 2, status, include_intercept=.true.)
+        fourier = make_fourier_basis(5, reshape([1.1_dp, 0.8_dp, 0.6_dp, &
+            1.4_dp, 0.9_dp], [1, 5]), status)
+        pipeline = make_sequential_basis_pipeline(2, status)
+        call pipeline%append(polynomial, status)
+        call pipeline%append(fourier, status)
+        call pipeline%fit(x, status)
+        n_features = pipeline%feature_count()
+        allocate(y(4, n_features), y_dot(4, n_features), y_plus(4, n_features), &
+            y_minus(4, n_features), u(4, n_features))
+        n_parameters = pipeline%parameter_count()
+        allocate(theta(n_parameters))
+        allocate(theta_dot(n_parameters), theta_plus(n_parameters), &
+            theta_minus(n_parameters), theta_bar(n_parameters))
+        theta = pipeline%parameters()
+        theta_dot = 0.0_dp
+        theta_dot(1) = 0.13_dp
+        theta_dot(3) = -0.21_dp
+        call pipeline%jvp(x, theta_dot, x_dot, y, y_dot, status)
+        h = 1.0e-6_dp
+        theta_plus = theta + h*theta_dot
+        theta_minus = theta - h*theta_dot
+        call pipeline%set_parameters(theta_plus, status)
+        call pipeline%transform(x + h*x_dot, y_plus, status)
+        call pipeline%set_parameters(theta_minus, status)
+        call pipeline%transform(x - h*x_dot, y_minus, status)
+        call pipeline%set_parameters(theta, status)
+        if (.not. status_ok(status) .or. pipeline%stage_count() /= 2 .or. &
+            .not. pipeline%is_fitted() .or. maxval(abs(y_dot - &
+            (y_plus - y_minus)/(2.0_dp*h))) > 4.0e-9_dp) then
+            write (error_unit, '(a)') &
+                "FAIL [sequential pipeline] value/JVP or shape"
+            failures = failures + 1
+        end if
+
+        call fill_cotangent(u)
+        call pipeline%vjp(x, u, theta_bar, x_bar, status)
+        lhs = sum(u*y_dot)
+        rhs = sum(theta_bar*theta_dot) + sum(x_bar*x_dot)
+        if (.not. status_ok(status) .or. abs(lhs - rhs) > 5.0e-10_dp) then
+            write (error_unit, '(a,es12.4)') &
+                "FAIL [sequential pipeline] VJP identity=", abs(lhs - rhs)
+            failures = failures + 1
+        end if
+    end subroutine test_sequential_pipeline_products
 
     subroutine test_pipeline_refusals(failures)
         integer, intent(inout) :: failures

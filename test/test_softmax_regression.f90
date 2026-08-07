@@ -46,10 +46,33 @@ program test_softmax_regression
         write (error_unit, '(a)') "FAIL [softmax] weighted probability oracle"
         failures = failures + 1
     end if
+
+    x(:, :) = 0.0_dp
+    expected(:, 1) = 1.0_dp/7.0_dp
+    expected(:, 2) = 2.0_dp/7.0_dp
+    expected(:, 3) = 4.0_dp/7.0_dp
+    call model%fit(x, labels, status, l2=0.0_dp, class_weight=[ &
+        1.0_dp, 2.0_dp, 4.0_dp], max_iterations=1000, tolerance=1.0e-8_dp)
+    call model%predict_proba(x, probabilities, status)
+    if (.not. status_ok(status) .or. maxval(abs(probabilities - expected)) > &
+        2.0e-7_dp) then
+        write (error_unit, '(a)') "FAIL [softmax] class-weighted probability oracle"
+        failures = failures + 1
+    end if
     call model%fit(x, labels, status, sample_weight=[0.0_dp, 0.0_dp, 0.0_dp, &
         0.0_dp, 0.0_dp, 0.0_dp])
     if (status_ok(status)) then
         write (error_unit, '(a)') "FAIL [softmax] zero sample-weight refusal"
+        failures = failures + 1
+    end if
+    call model%fit(x, labels, status, class_weight=[1.0_dp, 2.0_dp])
+    if (status_ok(status)) then
+        write (error_unit, '(a)') "FAIL [softmax] class-weight shape refusal"
+        failures = failures + 1
+    end if
+    call model%fit(x, labels, status, class_weight=[1.0_dp, 2.0_dp, 0.0_dp])
+    if (status_ok(status)) then
+        write (error_unit, '(a)') "FAIL [softmax] nonpositive class-weight refusal"
         failures = failures + 1
     end if
 

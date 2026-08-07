@@ -11,6 +11,7 @@ program test_logistic_regression
     call test_intercept_only_oracle(failures)
     call test_symmetric_coefficient_oracle(failures)
     call test_weighted_intercept_oracle(failures)
+    call test_class_weight_intercept_oracle(failures)
     call test_refusals(failures)
     if (failures > 0) then
         write (*, '(a,i0)') "FAIL logistic regression cases: ", failures
@@ -123,6 +124,31 @@ contains
             "weighted empirical probability", failures)
     end subroutine test_weighted_intercept_oracle
 
+    subroutine test_class_weight_intercept_oracle(failures)
+        integer, intent(inout) :: failures
+        type(logistic_regression_t) :: model
+        type(fortnum_status_t) :: status
+        real(dp) :: x(4, 1), probabilities(4, 2)
+        real(dp), parameter :: class_weights(2) = [1.0_dp, 3.0_dp]
+        real(dp) :: expected_probability, expected_score
+        integer :: labels(4)
+
+        x = 0.0_dp
+        labels = [-7, -7, -7, 42]
+        expected_probability = 1.0_dp/2.0_dp
+        expected_score = log(expected_probability/(1.0_dp - expected_probability))
+        call model%fit(x, labels, status, l2=0.0_dp, class_weight=class_weights, &
+            max_iterations=1000, tolerance=1.0e-10_dp)
+        call check(status_ok(status), "class-weighted intercept fit", failures)
+        if (.not. status_ok(status)) return
+        call model%predict_proba(x, probabilities, status)
+        call check(status_ok(status), "class-weighted intercept prediction", failures)
+        call check(abs(model%intercept_value() - expected_score) < 2.0e-8_dp, &
+            "class-weighted analytic intercept", failures)
+        call check(maxval(abs(probabilities(:, 2) - expected_probability)) < &
+            2.0e-8_dp, "class-weighted empirical probability", failures)
+    end subroutine test_class_weight_intercept_oracle
+
     subroutine test_refusals(failures)
         integer, intent(inout) :: failures
         type(logistic_regression_t) :: model
@@ -147,6 +173,10 @@ contains
         call check(.not. status_ok(status), "negative penalty refusal", failures)
         call model%fit(x, [0, 0, 1], status, sample_weight=[0.0_dp, 0.0_dp, 0.0_dp])
         call check(.not. status_ok(status), "zero sample-weight refusal", failures)
+        call model%fit(x, [0, 0, 1], status, class_weight=[1.0_dp])
+        call check(.not. status_ok(status), "class-weight shape refusal", failures)
+        call model%fit(x, [0, 0, 1], status, class_weight=[1.0_dp, 0.0_dp])
+        call check(.not. status_ok(status), "nonpositive class-weight refusal", failures)
         call model%fit(x, [0, 0, 1], status, fit_intercept=.false.)
         call check(status_ok(status), "no-intercept fit", failures)
         if (.not. status_ok(status)) return

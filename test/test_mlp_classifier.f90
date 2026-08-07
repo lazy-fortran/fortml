@@ -6,11 +6,12 @@ program test_mlp_classifier
     use fortnum_status, only: fortnum_status_t, status_ok
     implicit none
 
-    type(mlp_classifier_t) :: first_model, second_model, unfitted
+    type(mlp_classifier_t) :: first_model, second_model, weighted_model, unfitted
     type(mlp_classifier_options_t) :: options
     type(mlp_classifier_state_t) :: first_state, second_state
     type(fortnum_status_t) :: status
     real(dp) :: x(6, 3), probabilities(6, 3), scores(6, 3), wrong_scores(6, 2)
+    real(dp) :: weighted_probabilities(6, 3), weighted_x(6, 3)
     real(dp), allocatable :: theta(:), gradient(:), plus_gradient(:)
     real(dp) :: value, plus, minus, h
     integer :: labels(6), predicted(6), predicted_second(6), classes(3), failures
@@ -80,6 +81,24 @@ program test_mlp_classifier
     call check(maxval(abs(first_model%parameters() - second_model%parameters())) &
         < 1.0e-14_dp .and. all(predicted == predicted_second), &
         "deterministic Adam", failures)
+
+    weighted_x = 0.0_dp
+    options%max_epochs = 2000
+    options%learning_rate = 0.05_dp
+    options%l2 = 0.0_dp
+    options%tolerance = 1.0e-8_dp
+    options%restore_best = .false.
+    call weighted_model%fit(weighted_x, labels, status, options=options, &
+        class_weight=[1.0_dp, 2.0_dp, 4.0_dp])
+    call weighted_model%predict_proba(weighted_x, weighted_probabilities, status)
+    call check(status_ok(status) .and. maxval(abs(weighted_probabilities(:, 1) - &
+        1.0_dp/7.0_dp)) < 2.0e-4_dp .and. &
+        maxval(abs(weighted_probabilities(:, 2) - 2.0_dp/7.0_dp)) < 2.0e-4_dp .and. &
+        maxval(abs(weighted_probabilities(:, 3) - 4.0_dp/7.0_dp)) < 2.0e-4_dp, &
+        "class-weighted probability oracle", failures)
+    call weighted_model%fit(weighted_x, labels, status, options=options, &
+        class_weight=[1.0_dp, 2.0_dp])
+    call check(.not. status_ok(status), "class-weight shape refusal", failures)
 
     call first_model%fit(x, [1, 1, 1, 1, 1, 1], status, options=options)
     call check(.not. status_ok(status), "one-class refusal", failures)

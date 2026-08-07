@@ -279,7 +279,10 @@ contains
         phi = 0.0_dp
         phi_dot = 0.0_dp
         column = 1
-        if (self%include_intercept) column = column + 1
+        if (self%include_intercept) then
+            phi(:, 1) = 1.0_dp
+            column = column + 1
+        end if
         call self%implementation%jvp(x, theta_dot, x_dot, phi(:, column:), &
             phi_dot(:, column:), status)
     end subroutine basis_jvp

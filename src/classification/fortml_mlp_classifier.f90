@@ -11,8 +11,7 @@ module fortml_mlp_classifier
     use fortnum_status, only: fortnum_status_t, status_set, status_ok, &
         FORTNUM_OK, FORTNUM_DOMAIN_ERROR
     use fortml_mlp, only: mlp_t, MLP_TANH
-    use fortml_losses, only: softmax_value, softmax_cross_entropy_value, &
-        softmax_cross_entropy_vjp
+    use fortml_losses, only: softmax_value
     use fortopt_adam, only: adam_t
     implicit none
     private
@@ -70,7 +69,7 @@ module fortml_mlp_classifier
 contains
 
     subroutine mlp_classifier_fit(self, x, labels, status, hidden_layer_sizes, &
-            options, state)
+            options, state, class_weight)
         class(mlp_classifier_t), intent(out) :: self
         real(dp), intent(in) :: x(:, :)
         integer, intent(in) :: labels(:)
@@ -78,13 +77,15 @@ contains
         integer, intent(in), optional :: hidden_layer_sizes(:)
         type(mlp_classifier_options_t), intent(in), optional :: options
         type(mlp_classifier_state_t), intent(out), optional :: state
+        real(dp), intent(in), optional :: class_weight(:)
         type(mlp_classifier_options_t) :: config
         type(mlp_classifier_state_t) :: result
         type(adam_t) :: optimizer
         integer, allocatable :: layer_sizes(:), classes(:), encoded(:), order(:)
         integer, allocatable :: batch_labels(:)
         real(dp), allocatable :: theta(:), best_theta(:), gradient(:)
-        real(dp), allocatable :: x_batch(:, :)
+        real(dp), allocatable :: x_batch(:, :), sample_weights(:), batch_weights(:)
+        real(dp), allocatable :: class_factors(:)
         real(dp) :: loss, gradient_norm, best_loss, improvement
         integer :: n_samples, n_features, n_classes, n_hidden
         integer :: batch, first, last, n_batch, epoch, stale_epochs
@@ -119,6 +120,24 @@ contains
             if (present(state)) state = result
             return
         end if
+        allocate(class_factors(n_classes))
+        class_factors = 1.0_dp
+        if (present(class_weight)) then
+            if (size(class_weight) /= n_classes) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP classifier fit: class weights must match sorted classes")
+                if (present(state)) state = result
+                return
+            end if
+            if (any(.not. ieee_is_finite(class_weight)) .or. &
+                any(class_weight <= 0.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP classifier fit: class weights must be finite and positive")
+                if (present(state)) state = result
+                return
+            end if
+            class_factors = class_weight
+        end if
 
         n_samples = size(x, 1)
         n_features = size(x, 2)
@@ -145,6 +164,10 @@ contains
         end if
         allocate(self%class_label(n_classes))
         self%class_label = classes
+        allocate(sample_weights(n_samples))
+        do first = 1, n_samples
+            sample_weights(first) = class_factors(encoded(first))
+        end do
 
         theta = self%logits%parameters()
         allocate(best_theta, source=theta)
@@ -152,7 +175,7 @@ contains
         allocate(order(n_samples))
         allocate(result%loss_history(config%max_epochs))
         call mlp_classifier_loss_gradient(self%logits, x, encoded, config%l2, &
-            loss, gradient, status)
+            loss, gradient, status, sample_weights)
         if (.not. status_ok(status)) then
             if (present(state)) state = result
             return
@@ -180,12 +203,14 @@ contains
             do first = 1, n_samples, batch
                 last = min(first + batch - 1, n_samples)
                 n_batch = last - first + 1
-                allocate(x_batch(n_batch, n_features), batch_labels(n_batch))
+                allocate(x_batch(n_batch, n_features), batch_labels(n_batch), &
+                    batch_weights(n_batch))
                 x_batch = x(order(first:last), :)
                 batch_labels = encoded(order(first:last))
+                batch_weights = sample_weights(order(first:last))
                 call mlp_classifier_loss_gradient(self%logits, x_batch, &
-                    batch_labels, config%l2, loss, gradient, status)
-                deallocate(x_batch, batch_labels)
+                    batch_labels, config%l2, loss, gradient, status, batch_weights)
+                deallocate(x_batch, batch_labels, batch_weights)
                 if (.not. status_ok(status)) then
                     if (present(state)) state = result
                     return
@@ -204,7 +229,7 @@ contains
             end do
 
             call mlp_classifier_loss_gradient(self%logits, x, encoded, config%l2, &
-                loss, gradient, status)
+                loss, gradient, status, sample_weights)
             if (.not. status_ok(status)) then
                 if (present(state)) state = result
                 return
@@ -242,7 +267,7 @@ contains
                 return
             end if
             call mlp_classifier_loss_gradient(self%logits, x, encoded, config%l2, &
-                loss, gradient, status)
+                loss, gradient, status, sample_weights)
             if (.not. status_ok(status)) then
                 if (present(state)) state = result
                 return
@@ -255,15 +280,18 @@ contains
     end subroutine mlp_classifier_fit
 
     subroutine mlp_classifier_loss_gradient(model, x, labels, l2, value, &
-            gradient, status)
+            gradient, status, sample_weight)
         !! Cross-entropy value and parameter gradient for a logits MLP.
         class(mlp_t), intent(in) :: model
         real(dp), intent(in) :: x(:, :), l2
         integer, intent(in) :: labels(:)
         real(dp), intent(out) :: value, gradient(:)
         type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
         real(dp), allocatable :: logits(:, :), logits_bar(:, :), x_bar(:, :)
-        real(dp), allocatable :: theta(:)
+        real(dp), allocatable :: theta(:), weights(:)
+        real(dp) :: weight_sum, maximum, normalizer
+        integer :: row, column
 
         value = 0.0_dp
         gradient = 0.0_dp
@@ -302,20 +330,69 @@ contains
                 "MLP classifier loss: model, data, or gradient shape is invalid")
             return
         end if
+        allocate(weights(size(x, 1)))
+        weights = 1.0_dp
+        if (present(sample_weight)) then
+            if (size(sample_weight) /= size(x, 1)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP classifier loss: sample-weight shape is invalid")
+                return
+            end if
+            if (any(.not. ieee_is_finite(sample_weight)) .or. &
+                any(sample_weight < 0.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP classifier loss: sample weights must be finite and nonnegative")
+                return
+            end if
+            weights = sample_weight
+        end if
+        weight_sum = sum(weights)
+        if (.not. ieee_is_finite(weight_sum) .or. weight_sum <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier loss: sample weights must have positive mass")
+            return
+        end if
         allocate(logits(size(x, 1), model%layer_sizes(size(model%layer_sizes))))
         allocate(logits_bar(size(x, 1), size(logits, 2)))
         allocate(x_bar(size(x, 1), size(x, 2)))
         call model%predict(x, logits, status)
         if (.not. status_ok(status)) return
+        if (any(.not. ieee_is_finite(logits))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier loss: logits must be finite")
+            return
+        end if
         if (size(logits, 2) < 2) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "MLP classifier loss: logits need at least two classes")
             return
         end if
-        call softmax_cross_entropy_value(logits, labels, value, status)
-        if (.not. status_ok(status)) return
-        call softmax_cross_entropy_vjp(logits, labels, 1.0_dp, logits_bar, status)
-        if (.not. status_ok(status)) return
+        if (any(labels < 1)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier loss: class indices are invalid")
+            return
+        end if
+        if (any(labels > size(logits, 2))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier loss: class indices are invalid")
+            return
+        end if
+        value = 0.0_dp
+        logits_bar = 0.0_dp
+        do row = 1, size(logits, 1)
+            maximum = maxval(logits(row, :))
+            normalizer = 0.0_dp
+            do column = 1, size(logits, 2)
+                logits_bar(row, column) = exp(logits(row, column) - maximum)
+                normalizer = normalizer + logits_bar(row, column)
+            end do
+            value = value + weights(row)*(maximum - logits(row, labels(row)) + &
+                log(normalizer))
+            logits_bar(row, :) = weights(row)*logits_bar(row, :)/normalizer
+            logits_bar(row, labels(row)) = logits_bar(row, labels(row)) - weights(row)
+        end do
+        value = value/weight_sum
+        logits_bar = logits_bar/weight_sum
         call model%vjp(x, logits_bar, gradient, x_bar, status)
         if (.not. status_ok(status)) return
         theta = model%parameters()
@@ -330,12 +407,13 @@ contains
     end subroutine mlp_classifier_loss_gradient
 
     subroutine mlp_classifier_model_loss_gradient(self, x, labels, l2, value, &
-            gradient, status)
+            gradient, status, sample_weight)
         class(mlp_classifier_t), intent(in) :: self
         real(dp), intent(in) :: x(:, :), l2
         integer, intent(in) :: labels(:)
         real(dp), intent(out) :: value, gradient(:)
         type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
         integer, allocatable :: encoded(:)
 
         value = 0.0_dp
@@ -353,7 +431,7 @@ contains
         call encode_labels(labels, self%class_label, encoded, status)
         if (.not. status_ok(status)) return
         call mlp_classifier_loss_gradient(self%logits, x, encoded, l2, value, &
-            gradient, status)
+            gradient, status, sample_weight)
     end subroutine mlp_classifier_model_loss_gradient
 
     subroutine mlp_classifier_decision(self, x, scores, status)

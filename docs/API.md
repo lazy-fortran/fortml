@@ -84,13 +84,15 @@ must have the model shapes described above.
 ### `fortml_logistic_regression`
 
 `logistic_regression_t%fit(x,labels,status[,l2,fit_intercept,max_iterations,
-tolerance,sample_weight])` fits a binary logistic model with a stable weighted
+tolerance,sample_weight,class_weight])` fits a binary logistic model with a stable weighted
 cross-entropy objective and L2 penalty on the feature coefficients. The fit is
 delegated to `fortopt_lbfgsb`. Labels are arbitrary integers, but exactly two
 distinct values must occur. They are stored in ascending order and define the
 two probability columns. A nonnegative `sample_weight` vector changes the
 cross-entropy reduction to a positive-weight-mass average while leaving the
-feature penalty unchanged.
+feature penalty unchanged. A positive `class_weight` vector of length two is
+ordered by the stored classes and multiplies the sample weights before that
+reduction.
 
 `decision_function(x,scores,status)` returns one logit per row.
 `predict_proba(x,probabilities,status)` returns `(n_samples,2)` with columns
@@ -125,18 +127,19 @@ the shared objective layer for neural, multiclass, GP, and boosting adapters.
 ### `fortml_softmax_regression`
 
 `softmax_regression_t%fit(x,labels,status[,l2,fit_intercept,max_iterations,
-tolerance,sample_weight])` fits a multinomial softmax model with one column
+tolerance,sample_weight,class_weight])` fits a multinomial softmax model with one column
 per sorted integer
 class label. The objective is mean softmax cross-entropy with L2 regularization
 on feature coefficients and is optimized by `fortopt_lbfgsb`. A nonnegative
 `sample_weight` vector selects the corresponding positive-weight-mass
-cross-entropy reduction.
+cross-entropy reduction. A positive class-weight vector with one entry per
+sorted class multiplies the sample weights before reduction.
 `decision_function` returns one logit column per class, `predict_proba` applies
 the stable row-wise softmax, and `predict` maps the largest probability back to
 the stored class label with a first-column tie rule. `coefficients`,
 `intercept_values`, `classes`, `feature_count`, `class_count`, and `fitted`
-expose the model state. At least two distinct classes are required. Class
-weights, sparse targets, and multilabel weighting remain roadmap work.
+expose the model state. At least two distinct classes are required. Sparse
+targets and multilabel weighting remain roadmap work.
 
 ### `fortml_preprocessing`
 
@@ -195,6 +198,13 @@ and inputs. `stage_count`, `feature_count`, `parameter_count`, `valid`,
 capabilities. Sequential transforms and DAG branches require separate input
 and output contracts and are not inferred from this horizontal union.
 
+`sequential_basis_pipeline_t` provides that explicit sequential contract.
+Construct it with `make_sequential_basis_pipeline`, append a stage whose input
+count equals the previous stage's feature count, and call `fit` before
+`transform`. Its flattened parameters follow stage order. Forward JVPs and
+reverse VJPs propagate through every stage, including the input cotangent.
+Shape mismatches, empty chains, and unfitted transforms return status errors.
+
 ## Neural models and variational inference
 
 ### `fortml_mlp`
@@ -242,22 +252,32 @@ checked against independent central differences for linear and nonlinear MLP
 fixtures. Optimizer-trajectory, learning-rate, and Adam-beta hypergradients
 remain separate contracts.
 
+`mlp_training_objective_t` packages the same objective for FortOpt. Call
+`initialize(model,x,target,l2,status[,optimize_l2])`, then use `parameters`,
+`parameter_count`, `value_gradient`, and `hvp`. With `optimize_l2=.true.`, the
+packed vector appends the non-negative L2 coefficient and both the gradient and
+HVP include its mixed block. `fortopt(objective,status)` installs a context
+callback directly into `fortopt_objective`. An L-BFGS-B caller can therefore
+optimize network parameters and L2 with analytic products and explicit bounds.
+
 ### `fortml_mlp_classifier`
 
-`mlp_classifier_t%fit(x,labels,status[,hidden_layer_sizes,options,state])`
+`mlp_classifier_t%fit(x,labels,status[,hidden_layer_sizes,options,state,class_weight])`
 builds a deterministic MLP logits model and minimizes stable multiclass
 softmax cross-entropy with Adam. Integer labels are sorted and retained as
 class metadata. The final layer has one logit per class, and the options
 control hidden activation, seeded initialization and shuffling, mini-batches,
-L2 regularization, early stopping, and best-state restoration.
+L2 regularization, early stopping, and best-state restoration. An optional
+positive `class_weight` vector follows the sorted class order and is applied in
+full-batch and minibatch reductions.
 
 `decision_function` returns logits, `predict_proba` applies the shared stable
 softmax, and `predict` maps the largest probability back to the stored labels.
 `classes`, `feature_count`, `class_count`, `parameter_count`, `parameters`,
 `set_parameters`, and `fitted` expose the state. `loss_gradient` returns the
-cross-entropy value and packed network gradient for a fitted model, which is
-the current neural-classifier derivative seam. Binary, multilabel, ordinal,
-sample-weighted, and GP likelihood classifier adapters remain roadmap work.
+cross-entropy value and packed network gradient for a fitted model. Its
+optional sample-weight vector uses the same positive-mass reduction. Binary,
+multilabel, ordinal, and GP likelihood classifier adapters remain roadmap work.
 
 ### `fortml_tree`
 

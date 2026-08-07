@@ -30,7 +30,7 @@ module fortml_logistic_regression
 contains
 
     subroutine logistic_fit(self, x, labels, status, l2, fit_intercept, &
-            max_iterations, tolerance, sample_weight)
+            max_iterations, tolerance, sample_weight, class_weight)
         class(logistic_regression_t), intent(out) :: self
         real(dp), intent(in) :: x(:, :)
         integer, intent(in) :: labels(:)
@@ -39,12 +39,14 @@ contains
         logical, intent(in), optional :: fit_intercept
         integer, intent(in), optional :: max_iterations
         real(dp), intent(in), optional :: sample_weight(:)
+        real(dp), intent(in), optional :: class_weight(:)
         type(objective_t) :: objective
         type(lbfgsb_t) :: optimizer
         type(lbfgsb_options_t) :: options
         type(lbfgsb_result_t) :: result
         real(dp), allocatable :: theta(:), lower(:), upper(:), encoded(:)
         real(dp), allocatable :: weights(:)
+        real(dp) :: class_factors(2)
         real(dp) :: penalty, requested_tolerance, weight_sum
         integer :: i, iterations, n_features, n_parameters
         integer :: negative_label, positive_label
@@ -72,12 +74,6 @@ contains
             end if
             weights = sample_weight
         end if
-        weight_sum = sum(weights)
-        if (.not. ieee_is_finite(weight_sum) .or. weight_sum <= 0.0_dp) then
-            call status_set(status, FORTNUM_DOMAIN_ERROR, &
-                "logistic fit: sample weights must have positive mass")
-            return
-        end if
         if (any(.not. ieee_is_finite(x))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "logistic fit: inputs must be finite")
@@ -98,6 +94,35 @@ contains
                 return
             end if
         end do
+
+        class_factors = 1.0_dp
+        if (present(class_weight)) then
+            if (size(class_weight) /= 2) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "logistic fit: class weights must match the two sorted classes")
+                return
+            end if
+            if (any(.not. ieee_is_finite(class_weight)) .or. &
+                any(class_weight <= 0.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "logistic fit: class weights must be finite and positive")
+                return
+            end if
+            class_factors = class_weight
+        end if
+        do i = 1, size(labels)
+            if (labels(i) == negative_label) then
+                weights(i) = weights(i)*class_factors(1)
+            else
+                weights(i) = weights(i)*class_factors(2)
+            end if
+        end do
+        weight_sum = sum(weights)
+        if (.not. ieee_is_finite(weight_sum) .or. weight_sum <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "logistic fit: effective weights must have positive mass")
+            return
+        end if
 
         penalty = 1.0_dp
         if (present(l2)) penalty = l2

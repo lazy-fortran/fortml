@@ -96,8 +96,8 @@ documentation, refusal behavior, and benchmark evidence are all present.
 
 | Area | Current state | Production target |
 | --- | --- | --- |
-| Linear regression and generalized linear models | Linear regression is implemented. Logistic and softmax are partial | OLS, weighted/ridge/lasso/elastic-net, robust, quantile, Poisson/Gamma/Tweedie, multinomial, calibrated and regularized classifiers with shared solver and derivative contracts |
-| Feature transforms and basis maps | Polynomial, Fourier, radial, B-spline, callback bases, standard/min-max scalers, and horizontal basis unions are implemented | Sparse/categorical features, feature names, sequential/DAG pipelines, leakage-safe cross-validation, differentiable basis hyperparameters |
+| Linear regression and generalized linear models | Linear regression is implemented. Logistic and softmax support sample and positive sorted-class weights | OLS, weighted/ridge/lasso/elastic-net, robust, quantile, Poisson/Gamma/Tweedie, multinomial, calibrated and regularized classifiers with shared solver and derivative contracts |
+| Feature transforms and basis maps | Polynomial, Fourier, radial, B-spline, callback bases, standard/min-max scalers, and horizontal/sequential basis pipelines are implemented | Sparse/categorical features, feature names, DAG pipelines, leakage-safe cross-validation, differentiable basis hyperparameters |
 | Nearest-neighbor and margin methods | Missing | kNN/KD-tree or ball-tree search, kernel/radius neighbors, linear/kernel SVM and SVR, calibrated probabilities, deterministic tie and missing-value policies |
 | Trees and ensembles | Partial | Deterministic exhaustive-split regression stumps, squared-loss stump boosting, and exact depth-one second-order squared/logistic boosting are implemented. CART, forests, histograms, deeper XGBoost/LightGBM growth, ranking, monotonic and interaction constraints remain planned |
 | Clustering and unsupervised learning | Missing | k-means/minibatch k-means, Gaussian mixtures/EM, density and graph clustering, manifold methods, outlier detection, decomposition, matrix factorization, and density metrics |
@@ -254,7 +254,7 @@ The source inventory is dated 2026-08-07.
 | Work package | State | Implemented baseline | Package exit |
 | --- | --- | --- | --- |
 | Classification | Partial | `fortml_logistic_regression` and `fortml_softmax_regression` provide binary and multinomial integer-label fitting with sample-weighted reductions, `fortml_mlp_classifier` adds deterministic multiclass logits training with Adam, `fortml_gp_classification` adds binary Laplace logistic/probit inference, `fortml_gp_multiclass_classification` adds one-vs-rest multiclass GP probabilities, and shared metrics cover accuracy, balanced accuracy, confusion, precision/recall/F1, weighted accuracy, and log loss. | Binary and multiclass linear, neural, GP, and boosted-tree classifiers share label, probability, weighting, and metric conventions. |
-| Estimator contracts, pipelines, and bases | Partial | `basis_map_t`, the horizontal `basis_pipeline_t`, fitted standard/min-max scalers with input JVPs, row-oriented sample conventions, status objects, and the parameter registry are public. | Fitted transformers and estimators compose without data leakage, expose routed parameters, and run through cross-validation. |
+| Estimator contracts, pipelines, and bases | Partial | `basis_map_t`, horizontal and sequential basis pipelines, fitted standard/min-max scalers with input JVPs, row-oriented sample conventions, status objects, and the parameter registry are public. | Fitted transformers and estimators compose without data leakage, expose routed parameters, and run through cross-validation. |
 | Tree boosting | Partial | `decision_stump_t`, squared-loss `gradient_boosting_regressor_t`, and `xgboost_t` provide deterministic exhaustive split products. The XGBoost-style lane has exact depth-one squared/logistic gradients, Hessians, regularized gains, Newton leaves, diagnostics, and piecewise input JVP/refusal behavior. | Regression and classification trees support deterministic histogram boosting, validation-based stopping, missing values, deeper growth, and model persistence. |
 | Training infrastructure | Partial | Model-specific gradients, exact MSE+L2 neural HVPs including the L2 mixed hyperparameter block, `fortopt_adam` integration, natural-gradient seams, and seeded variational draws exist. | One trainer owns batches, optimizer state, schedules, clipping, validation, early stopping, callbacks, and resumable state for every model with a completed trainer adapter. |
 | GP derivatives and hyperparameters | Partial | Exact GP likelihood and prediction products include parameter gradients and HVPs. Mixed value and first-derivative observations can be fitted and predicted. | Exact, derivative, multi-output, sparse, and matrix-free GP families expose documented trainable parameters, scalar objectives, parameter gradients, and train-state adapters. |
@@ -271,7 +271,8 @@ The source inventory is dated 2026-08-07.
   `fit`, `decision_function`, `predict_proba`, and `predict`.
 - [x] Add nonnegative sample weights to binary logistic and multinomial softmax
   fits while preserving the documented positive-weight-mass reduction and
-  class-label contract. Class-weight convenience APIs remain open.
+  class-label contract. Add positive sorted-class weights and combine them
+  with sample weights in linear and MLP classifiers.
 - [x] Add multinomial softmax regression with a numerically stable log-sum-exp
   objective, sorted integer labels, and the shared sample-weight reduction.
 - [x] Add a multiclass `mlp_classifier_t` adapter with a logits layer, stable
@@ -327,8 +328,11 @@ return status errors.
   value, JVP, and VJP products.
 - [x] Provide a horizontal `basis_pipeline_t` that concatenates fixed basis
   stages, packs stage parameters, and routes value/JVP/VJP products with shape
-  and stage-initialization refusal tests. Sequential fitted transforms and
-  column-wise/DAG composition remain open.
+  and stage-initialization refusal tests.
+- [x] Provide `sequential_basis_pipeline_t` with explicit stage feature-count
+  contracts, flattened parameters, chained JVP/VJP products, and independent
+  finite-difference and adjoint tests. Column-wise and DAG composition remain
+  open.
 - [x] Add fitted `standard_scaler_t` and `minmax_scaler_t` transformers with
   explicit row-oriented fit/transform/inverse contracts, constant-column
   policies, and exact input JVPs. Fitted statistics are state rather than
@@ -529,6 +533,11 @@ trials remain visible in the result schema.
   parameter/L2 hyperparameter block. Independent linear and nonlinear finite-
   difference tests cover the product used by outer FortOpt objectives. Adam
   trajectory and schedule hypergradients remain open.
+- [x] Add `mlp_training_objective_t`, a FortOpt context adapter exposing the
+  packed MLP objective, analytic gradient, and exact HVP. Its optional final L2
+  component makes bounded L-BFGS-B regularization search use the same products
+  as training. Central-difference tests cover value gradients, HVPs, and the
+  FortOpt callback path.
 - [ ] Define objective and loss contracts with sum and mean reductions, sample
   weights, regularization terms, and named scalar diagnostics.
 - [ ] Define a module tree and parameter-tree API for nested neural networks.
@@ -797,7 +806,8 @@ peak memory, and batch-size scaling with the same correctness gate as training.
 ### WP8: benchmark and parity evidence
 
 - [x] Provide correctness-gated applications for linear regression, MLP, exact
-  GP, GP feature products, and approximate or matrix-free GP methods.
+  GP, GP feature products, approximate or matrix-free GP methods, and the
+  matched multinomial/neural classifier lane in `../fortml-bench`.
 - [x] Record release timings, peak RSS, build provenance, external Python
   comparisons, raw CSV files, and plots through `../fortml-bench`.
 - [x] Add the MLP-training, basis-pipeline, decision-stump, and residual-stump
