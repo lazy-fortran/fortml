@@ -13,8 +13,11 @@ module fortml_xgboost
     integer, parameter, public :: XGB_MISSING_LEARN = 1
     integer, parameter, public :: XGB_MISSING_LEFT = 2
     integer, parameter, public :: XGB_MISSING_RIGHT = 3
+    integer, parameter, public :: XGB_TREE_EXACT = 1
+    integer, parameter, public :: XGB_TREE_HIST = 2
 
-    !> Options for the deterministic exact-split XGBoost-style estimator.
+    !> Options for the deterministic exact- or histogram-split
+    !> XGBoost-style estimator.
     !>
     !> Numeric splits are enumerated exhaustively.  Trees may grow to
     !> `max_depth` and use the full second-order leaf and split formulas,
@@ -34,6 +37,8 @@ module fortml_xgboost
         real(dp) :: min_child_weight = 1.0e-3_dp
         character(len=16) :: objective = "squared"
         character(len=16) :: missing_policy = "error"
+        character(len=16) :: tree_method = "exact"
+        integer :: max_bin = 256
     end type xgboost_options_t
 
     type :: xgb_tree_t
@@ -57,14 +62,16 @@ module fortml_xgboost
         logical, allocatable :: missing_left(:)
     end type xgb_tree_t
 
-    !> Exact-split second-order boosting for squared and binary logistic
-    !> objectives.  Fit is discrete; predictions are deterministic and the
-    !> objective's Hessians are aggregated exactly for every candidate split.
+    !> Second-order boosting for squared and binary logistic objectives.
+    !> Fit is discrete; predictions are deterministic and the objective's
+    !> Hessians are aggregated exactly for every retained candidate split.
     type, public :: xgboost_t
         private
         integer :: n_inputs = 0
         integer :: n_estimators = 0
         integer :: objective_code = 0
+        integer :: tree_method_code = XGB_TREE_EXACT
+        integer :: max_bin = 256
         real(dp) :: learning_rate = 0.0_dp
         real(dp) :: base_score = 0.0_dp
         integer :: missing_code = XGB_MISSING_ERROR
@@ -98,22 +105,27 @@ module fortml_xgboost
         procedure, public :: base_margin => xgb_base_margin
         procedure, public :: objective_name => xgb_objective_name
         procedure, public :: missing_policy => xgb_missing_policy
+        procedure, public :: tree_method => xgb_tree_method
+        procedure, public :: max_bin_count => xgb_max_bin_count
         procedure, public :: accepts_missing => xgb_accepts_missing
         procedure, public :: fitted => xgb_fitted
     end type xgboost_t
 
 contains
 
-    subroutine xgb_fit(self, x, y, status, options)
+    subroutine xgb_fit(self, x, y, status, options, sample_weight)
         class(xgboost_t), intent(out) :: self
         real(dp), intent(in) :: x(:, :), y(:)
         type(fortnum_status_t), intent(out) :: status
         type(xgboost_options_t), intent(in), optional :: options
+        real(dp), intent(in), optional :: sample_weight(:)
         type(xgboost_options_t) :: settings
         real(dp), allocatable :: prediction(:), gradient(:), hessian(:)
         real(dp), allocatable :: correction(:)
-        real(dp) :: mean_target, rate
-        integer :: objective_code, missing_code, i, n_samples, n_features
+        real(dp), allocatable :: observation_weight(:)
+        real(dp) :: mean_target, rate, weight_sum
+        integer :: objective_code, missing_code, tree_method_code, i, n_samples
+        integer :: n_features
 
         settings = xgboost_options_t()
         if (present(options)) settings = options
@@ -127,6 +139,12 @@ contains
         if (missing_code < XGB_MISSING_ERROR) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "xgboost fit: missing_policy must be error, learn, left, or right")
+            return
+        end if
+        tree_method_code = parse_tree_method(settings%tree_method)
+        if (tree_method_code == 0) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost fit: tree_method must be exact or hist")
             return
         end if
 
@@ -143,7 +161,8 @@ contains
             .not. ieee_is_finite(settings%l2) .or. settings%l2 < 0.0_dp .or. &
             .not. ieee_is_finite(settings%gamma) .or. settings%gamma < 0.0_dp .or. &
             .not. ieee_is_finite(settings%min_child_weight) .or. &
-            settings%min_child_weight < 0.0_dp) then
+            settings%min_child_weight < 0.0_dp .or. &
+            (tree_method_code == XGB_TREE_HIST .and. settings%max_bin < 2)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "xgboost fit: invalid dimensions or hyperparameters")
             return
@@ -167,7 +186,31 @@ contains
             end if
         end if
 
-        mean_target = sum(y)/real(n_samples, dp)
+        allocate(observation_weight(n_samples))
+        observation_weight = 1.0_dp
+        if (present(sample_weight)) then
+            if (size(sample_weight) /= n_samples .or. &
+                any(.not. ieee_is_finite(sample_weight)) .or. &
+                any(sample_weight <= 0.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "xgboost fit: sample_weight must be positive and finite")
+                return
+            end if
+            observation_weight = sample_weight
+        end if
+        weight_sum = sum(observation_weight)
+        if (.not. ieee_is_finite(weight_sum) .or. weight_sum <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost fit: sample_weight has no positive mass")
+            return
+        end if
+
+        mean_target = sum(observation_weight*y)/weight_sum
+        if (.not. ieee_is_finite(mean_target)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost fit: weighted target mean is nonfinite")
+            return
+        end if
         if (objective_code == XGB_OBJECTIVE_LOGISTIC) then
             self%base_score = stable_logit(mean_target)
         else
@@ -182,8 +225,10 @@ contains
             call objective_derivatives(objective_code, prediction, y, gradient, &
                 hessian, status)
             if (status%code /= FORTNUM_OK) return
-            call build_tree(x, gradient, hessian, settings, self%estimators(i), &
-                status)
+            gradient = observation_weight*gradient
+            hessian = observation_weight*hessian
+            call build_tree(x, gradient, hessian, observation_weight, settings, &
+                self%estimators(i), status)
             if (status%code /= FORTNUM_OK) return
             call tree_predict(self%estimators(i), x, correction, status)
             if (status%code /= FORTNUM_OK) return
@@ -193,36 +238,48 @@ contains
         self%n_inputs = n_features
         self%n_estimators = settings%n_estimators
         self%objective_code = objective_code
+        self%tree_method_code = tree_method_code
+        self%max_bin = settings%max_bin
         self%learning_rate = rate
         self%missing_code = missing_code
         self%initialized = .true.
         call status_set(status, FORTNUM_OK, "")
     end subroutine xgb_fit
 
-    subroutine xgb_fit_regression(self, x, y, status, options)
+    subroutine xgb_fit_regression(self, x, y, status, options, sample_weight)
         class(xgboost_t), intent(out) :: self
         real(dp), intent(in) :: x(:, :), y(:)
         type(fortnum_status_t), intent(out) :: status
         type(xgboost_options_t), intent(in), optional :: options
+        real(dp), intent(in), optional :: sample_weight(:)
         type(xgboost_options_t) :: settings
 
         settings = xgboost_options_t()
         if (present(options)) settings = options
         settings%objective = "squared"
-        call xgb_fit(self, x, y, status, settings)
+        if (present(sample_weight)) then
+            call xgb_fit(self, x, y, status, settings, sample_weight)
+        else
+            call xgb_fit(self, x, y, status, settings)
+        end if
     end subroutine xgb_fit_regression
 
-    subroutine xgb_fit_binary(self, x, y, status, options)
+    subroutine xgb_fit_binary(self, x, y, status, options, sample_weight)
         class(xgboost_t), intent(out) :: self
         real(dp), intent(in) :: x(:, :), y(:)
         type(fortnum_status_t), intent(out) :: status
         type(xgboost_options_t), intent(in), optional :: options
+        real(dp), intent(in), optional :: sample_weight(:)
         type(xgboost_options_t) :: settings
 
         settings = xgboost_options_t()
         if (present(options)) settings = options
         settings%objective = "logistic"
-        call xgb_fit(self, x, y, status, settings)
+        if (present(sample_weight)) then
+            call xgb_fit(self, x, y, status, settings, sample_weight)
+        else
+            call xgb_fit(self, x, y, status, settings)
+        end if
     end subroutine xgb_fit_binary
 
     subroutine xgb_predict_matrix(self, x, y, status)
@@ -726,6 +783,33 @@ contains
         end select
     end function xgb_missing_policy
 
+    character(len=16) function xgb_tree_method(self) result(name)
+        class(xgboost_t), intent(in) :: self
+
+        if (.not. self%initialized) then
+            name = "unfitted"
+            return
+        end if
+        select case (self%tree_method_code)
+        case (XGB_TREE_EXACT)
+            name = "exact"
+        case (XGB_TREE_HIST)
+            name = "hist"
+        case default
+            name = "unfitted"
+        end select
+    end function xgb_tree_method
+
+    integer function xgb_max_bin_count(self) result(count)
+        class(xgboost_t), intent(in) :: self
+
+        if (self%initialized) then
+            count = self%max_bin
+        else
+            count = 0
+        end if
+    end function xgb_max_bin_count
+
     logical function xgb_accepts_missing(self) result(value)
         class(xgboost_t), intent(in) :: self
 
@@ -775,8 +859,10 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine objective_derivatives
 
-    subroutine build_tree(x, gradient, hessian, options, tree, status)
+    subroutine build_tree(x, gradient, hessian, observation_weight, options, tree, &
+            status)
         real(dp), intent(in) :: x(:, :), gradient(:), hessian(:)
+        real(dp), intent(in) :: observation_weight(:)
         type(xgboost_options_t), intent(in) :: options
         type(xgb_tree_t), intent(out) :: tree
         type(fortnum_status_t), intent(out) :: status
@@ -785,7 +871,8 @@ contains
 
         n_samples = size(x, 1)
         n_features = size(x, 2)
-        if (size(gradient) /= n_samples .or. size(hessian) /= n_samples) then
+        if (size(gradient) /= n_samples .or. size(hessian) /= n_samples .or. &
+            size(observation_weight) /= n_samples) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "xgboost tree: derivative array shape is invalid")
             return
@@ -820,8 +907,8 @@ contains
         end do
         next_node = 0
         tree%depth = 0
-        call build_tree_node(x, gradient, hessian, options, sample_index, 0, &
-            tree, next_node, root, status)
+        call build_tree_node(x, gradient, hessian, observation_weight, options, &
+            sample_index, 0, tree, next_node, root, status)
         if (status%code /= FORTNUM_OK) return
         tree%n_nodes = next_node
         tree%feature_index = tree%feature(root)
@@ -837,9 +924,10 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine build_tree
 
-    recursive subroutine build_tree_node(x, gradient, hessian, options, &
-            sample_index, depth, tree, next_node, node_id, status)
+    recursive subroutine build_tree_node(x, gradient, hessian, observation_weight, &
+            options, sample_index, depth, tree, next_node, node_id, status)
         real(dp), intent(in) :: x(:, :), gradient(:), hessian(:)
+        real(dp), intent(in) :: observation_weight(:)
         type(xgboost_options_t), intent(in) :: options
         integer, intent(in) :: sample_index(:), depth
         type(xgb_tree_t), intent(inout) :: tree
@@ -847,10 +935,12 @@ contains
         integer, intent(out) :: node_id
         type(fortnum_status_t), intent(out) :: status
         integer, allocatable :: order(:), left_index(:), right_index(:)
-        integer, allocatable :: finite_index(:)
+        integer, allocatable :: finite_index(:), candidate_position(:)
+        logical, allocatable :: candidate_mask(:)
         real(dp), allocatable :: feature_values(:), finite_values(:)
         integer :: n_local, n_features, feature, k, i, left_count
         integer :: n_finite, n_missing, direction, n_directions
+        integer :: n_candidates, candidate_index
         integer :: best_feature, left_node, right_node
         real(dp) :: total_gradient, total_hessian, left_gradient, left_hessian
         real(dp) :: right_gradient, right_hessian, candidate_gain, best_gain
@@ -907,6 +997,18 @@ contains
             end do
             if (n_finite < 2) cycle
             call sort_feature_indices(finite_values(:n_finite), order(:n_finite))
+            allocate(candidate_position(max(1, n_finite - 1)), &
+                candidate_mask(max(1, n_finite - 1)))
+            candidate_mask = .false.
+            if (parse_tree_method(options%tree_method) == XGB_TREE_HIST) then
+                call histogram_cut_positions(finite_values(:n_finite), order(:n_finite), &
+                    finite_index(:n_finite), observation_weight, options%max_bin, &
+                    candidate_position, n_candidates)
+                if (n_candidates > 0) candidate_mask(candidate_position(:n_candidates)) = .true.
+            else
+                n_candidates = n_finite - 1
+                candidate_mask(:n_candidates) = .true.
+            end if
             left_gradient = 0.0_dp
             left_hessian = 0.0_dp
             n_directions = 1
@@ -917,6 +1019,7 @@ contains
                 i = order(k)
                 left_gradient = left_gradient + gradient(finite_index(i))
                 left_hessian = left_hessian + hessian(finite_index(i))
+                if (.not. candidate_mask(k)) cycle
                 if (k < options%min_samples_leaf .or. &
                     n_finite - k + n_missing < options%min_samples_leaf) cycle
                 if (finite_values(order(k)) >= finite_values(order(k + 1))) cycle
@@ -971,6 +1074,7 @@ contains
                     end if
                 end do
             end do
+            deallocate(candidate_position, candidate_mask)
         end do
 
         if (best_feature == 0) then
@@ -1009,11 +1113,11 @@ contains
         tree%node_threshold(node_id) = best_threshold
         tree%node_gain(node_id) = best_gain
         tree%missing_left(node_id) = best_missing_left
-        call build_tree_node(x, gradient, hessian, options, left_index, depth + 1, &
-            tree, next_node, left_node, status)
+        call build_tree_node(x, gradient, hessian, observation_weight, options, &
+            left_index, depth + 1, tree, next_node, left_node, status)
         if (status%code /= FORTNUM_OK) return
-        call build_tree_node(x, gradient, hessian, options, right_index, depth + 1, &
-            tree, next_node, right_node, status)
+        call build_tree_node(x, gradient, hessian, observation_weight, options, &
+            right_index, depth + 1, tree, next_node, right_node, status)
         if (status%code /= FORTNUM_OK) return
         tree%left_child(node_id) = left_node
         tree%right_child(node_id) = right_node
@@ -1115,6 +1219,21 @@ contains
         end select
     end function parse_missing_policy
 
+    integer function parse_tree_method(name) result(code)
+        character(len=*), intent(in) :: name
+        character(len=:), allocatable :: normalized
+
+        normalized = trim(adjustl(name))
+        select case (normalized)
+        case ("exact", "auto")
+            code = XGB_TREE_EXACT
+        case ("hist", "histogram", "approx")
+            code = XGB_TREE_HIST
+        case default
+            code = 0
+        end select
+    end function parse_tree_method
+
     integer function missing_code_for_options(options) result(code)
         type(xgboost_options_t), intent(in) :: options
 
@@ -1129,6 +1248,54 @@ contains
         if (.not. valid) return
         valid = missing_code /= XGB_MISSING_ERROR .or. .not. any(ieee_is_nan(x))
     end function valid_query_values
+
+    !> Select deterministic weighted-quantile boundaries for a histogram node.
+    !>
+    !> `values` and `order` describe the finite values in ascending order;
+    !> `sample_index` maps them back to the original rows.  A NaN is never
+    !> passed here: the caller keeps it in an explicit missing bin and applies
+    !> the configured default direction separately.  Quantile targets are
+    !> cumulative observation mass, so sample weights affect bin boundaries but
+    !> cannot change their deterministic feature/value tie ordering.
+    subroutine histogram_cut_positions(values, order, sample_index, &
+            observation_weight, max_bin, positions, n_positions)
+        real(dp), intent(in) :: values(:), observation_weight(:)
+        integer, intent(in) :: order(:), sample_index(:), max_bin
+        integer, intent(out) :: positions(:), n_positions
+        integer :: n, n_bins, b, k, position
+        real(dp) :: total_weight, cumulative, target
+
+        n = size(values)
+        n_positions = 0
+        if (n < 2 .or. size(order) /= n .or. size(sample_index) /= n .or. &
+            size(positions) < n - 1 .or. max_bin < 2) return
+        total_weight = 0.0_dp
+        do k = 1, n
+            total_weight = total_weight + &
+                observation_weight(sample_index(order(k)))
+        end do
+        if (.not. ieee_is_finite(total_weight) .or. total_weight <= 0.0_dp) return
+        n_bins = min(max_bin, n)
+        do b = 1, n_bins - 1
+            target = total_weight*real(b, dp)/real(n_bins, dp)
+            cumulative = 0.0_dp
+            position = n
+            do k = 1, n - 1
+                cumulative = cumulative + &
+                    observation_weight(sample_index(order(k)))
+                if (cumulative >= target) then
+                    position = k
+                    exit
+                end if
+            end do
+            if (position >= n) cycle
+            if (values(order(position)) >= values(order(position + 1))) cycle
+            if (n_positions == 0 .or. positions(n_positions) /= position) then
+                n_positions = n_positions + 1
+                positions(n_positions) = position
+            end if
+        end do
+    end subroutine histogram_cut_positions
 
     logical function go_left(value, threshold, missing_left) result(value_is_left)
         real(dp), intent(in) :: value, threshold

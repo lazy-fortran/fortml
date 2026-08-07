@@ -904,14 +904,23 @@ selection remain unsupported.
 
 ### `fortml_xgboost`
 
-`xgboost_t` is a deterministic exact-split second-order boosting estimator. Use
+`xgboost_t` is a deterministic second-order boosting estimator. Use
 `fit_regression` for a squared objective or `fit_binary` for a logistic
-objective. `xgboost_options_t` controls estimator count, learning rate,
+objective. Both fit methods accept an optional positive `sample_weight(:)`;
+weights affect the base score and every gradient/Hessian reduction. The
+`xgboost_options_t` fields `tree_method="exact"` (the default) and
+`tree_method="hist"` select exhaustive split enumeration or deterministic
+weighted-quantile histogram growth. In histogram mode, `max_bin` bounds the
+number of finite bins per node; every NaN remains an explicit missing bin and
+is routed by `missing_policy` (`error`, `learn`, `left`, or `right`). With
+`max_bin` at least the number of finite values, histogram candidates reduce to
+the exact path. The remaining options control estimator count, learning rate,
 minimum leaf size, L1/L2 leaf regularization, split gamma, and minimum child
 Hessian. Candidate splits aggregate exact gradients and Hessians and use the
 regularized gain. `predict_margin`, `predict`, `predict_proba`,
 `decision_function`, `split_gain`, `leaf_weights`, `tree_node_count`, and
 `tree_depth` expose diagnostics.
+`tree_method()` and `max_bin_count()` expose the fitted execution policy.
 `predict_jvp` is zero away from learned split boundaries and returns a
 structured refusal at a discontinuity. `max_depth` grows each exact tree
 recursively, with deterministic feature/threshold tie ordering and
@@ -938,8 +947,9 @@ deterministic gain, split-count (`weight`), or cover totals. These diagnostics
 are fitted-state queries and preserve the selected NaN routing policy.
 
 `xgboost_multiclass_t` wraps the binary logistic estimator in a deterministic
-one-vs-rest classifier. `fit(x,labels,status[,options])` sorts arbitrary
-integer labels, fits one depth-limited booster per class, and normalizes the
+one-vs-rest classifier. `fit(x,labels,status[,options,sample_weight])` sorts
+arbitrary integer labels, applies an optional positive sample-weight vector to
+each one-vs-rest booster, and normalizes the
 positive OVR probabilities. `classes`, `class_count`, `feature_count`,
 `estimator_count`, `fitted`, `decision_function`, `predict`, and
 `predict_proba` expose the fitted state. `predict_proba_jvp` applies the exact

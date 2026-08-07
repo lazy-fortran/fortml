@@ -15,6 +15,8 @@ program test_xgboost
     call test_regularisation_and_determinism(failures)
     call test_missing_value_routing(failures)
     call test_missing_logistic_routing(failures)
+    call test_weighted_histogram_oracle(failures)
+    call test_histogram_logistic_and_missing(failures)
     call test_refusals(failures)
     if (failures /= 0) then
         write (error_unit, '(i0,a)') failures, " xgboost test(s) failed"
@@ -23,6 +25,74 @@ program test_xgboost
     write (*, '(a)') "PASS"
 
 contains
+
+    subroutine test_weighted_histogram_oracle(failures)
+        integer, intent(inout) :: failures
+        type(xgboost_t) :: model
+        type(xgboost_options_t) :: options
+        type(fortnum_status_t) :: status
+        real(dp) :: x(6, 1), y(6), weights(6), prediction(6), expected(6)
+
+        ! The weighted median is between x=4 and x=5: with max_bin=2 the
+        ! histogram path has exactly one admissible cut at 4.5.  The expected
+        ! leaf value on the left is the weighted mean 60/9, and the right
+        ! leaf is 100/10; these values are computed independently of fitting.
+        x(:, 1) = [0.0_dp, 1.0_dp, 2.0_dp, 3.0_dp, 4.0_dp, 5.0_dp]
+        y = [0.0_dp, 0.0_dp, 0.0_dp, 10.0_dp, 10.0_dp, 10.0_dp]
+        weights = [1.0_dp, 1.0_dp, 1.0_dp, 1.0_dp, 5.0_dp, 5.0_dp]
+        options%n_estimators = 1
+        options%max_depth = 1
+        options%learning_rate = 1.0_dp
+        options%l2 = 0.0_dp
+        options%min_child_weight = 0.0_dp
+        options%tree_method = "hist"
+        options%max_bin = 2
+        call model%fit_regression(x, y, status, options, weights)
+        call model%predict(x, prediction, status)
+        expected = [20.0_dp/3.0_dp, 20.0_dp/3.0_dp, 20.0_dp/3.0_dp, &
+            20.0_dp/3.0_dp, 20.0_dp/3.0_dp, 10.0_dp]
+        if (status%code /= FORTNUM_OK .or. trim(model%tree_method()) /= "hist" .or. &
+            model%max_bin_count() /= 2 .or. model%tree_node_count(1) /= 3 .or. &
+            maxval(abs(prediction - expected)) > 2.0e-12_dp) then
+            write (error_unit, '(a,es12.4)') &
+                "FAIL [xgb histogram] weighted-quantile oracle ", &
+                maxval(abs(prediction - expected))
+            failures = failures + 1
+        end if
+    end subroutine test_weighted_histogram_oracle
+
+    subroutine test_histogram_logistic_and_missing(failures)
+        integer, intent(inout) :: failures
+        type(xgboost_t) :: model
+        type(xgboost_options_t) :: options
+        type(fortnum_status_t) :: status
+        real(dp) :: x(6, 1), labels(6), probability(6), expected(6), nan
+        real(dp) :: negative, positive
+
+        nan = ieee_value(0.0_dp, ieee_quiet_nan)
+        x(:, 1) = [0.0_dp, 1.0_dp, 2.0_dp, 3.0_dp, nan, nan]
+        labels = [0.0_dp, 0.0_dp, 1.0_dp, 1.0_dp, 0.0_dp, 1.0_dp]
+        options%n_estimators = 1
+        options%max_depth = 1
+        options%learning_rate = 0.5_dp
+        options%l2 = 0.0_dp
+        options%min_child_weight = 0.0_dp
+        options%tree_method = "hist"
+        options%max_bin = 2
+        options%missing_policy = "left"
+        call model%fit_binary(x, labels, status, options)
+        call model%predict(x, probability, status)
+        negative = 1.0_dp/(1.0_dp + exp(0.5_dp))
+        positive = 1.0_dp/(1.0_dp + exp(-1.0_dp))
+        expected = [negative, negative, positive, positive, negative, negative]
+        if (status%code /= FORTNUM_OK .or. maxval(abs(probability - expected)) > &
+            2.0e-12_dp .or. trim(model%tree_method()) /= "hist") then
+            write (error_unit, '(a,es12.4)') &
+                "FAIL [xgb histogram] logistic/missing oracle ", &
+                maxval(abs(probability - expected))
+            failures = failures + 1
+        end if
+    end subroutine test_histogram_logistic_and_missing
 
     subroutine test_missing_value_routing(failures)
         integer, intent(inout) :: failures
@@ -304,6 +374,7 @@ contains
         real(dp) :: x(3, 1), y(3), prediction(3), probabilities(3, 2)
         real(dp) :: output_bar(3), x_bar(3, 1), x_dot(3, 1), prediction_dot(3)
         real(dp) :: boundary(1, 1), boundary_bar(1), boundary_x_bar(1, 1)
+        real(dp) :: invalid_weight(3)
 
         x(:, 1) = [0.0_dp, 1.0_dp, 2.0_dp]
         y = [0.0_dp, 1.0_dp, 2.0_dp]
@@ -318,6 +389,27 @@ contains
         call model%fit(x, y, status, options)
         if (status%code /= FORTNUM_DOMAIN_ERROR) then
             write (error_unit, '(a)') "FAIL [xgb refusal] invalid depth"
+            failures = failures + 1
+        end if
+        options = xgboost_options_t()
+        options%tree_method = "hist"
+        options%max_bin = 1
+        call model%fit(x, y, status, options)
+        if (status%code /= FORTNUM_DOMAIN_ERROR) then
+            write (error_unit, '(a)') "FAIL [xgb refusal] invalid histogram bins"
+            failures = failures + 1
+        end if
+        options = xgboost_options_t()
+        options%tree_method = "unsupported"
+        call model%fit(x, y, status, options)
+        if (status%code /= FORTNUM_DOMAIN_ERROR) then
+            write (error_unit, '(a)') "FAIL [xgb refusal] unsupported tree method"
+            failures = failures + 1
+        end if
+        invalid_weight = [1.0_dp, 0.0_dp, 1.0_dp]
+        call model%fit_regression(x, y, status, sample_weight=invalid_weight)
+        if (status%code /= FORTNUM_DOMAIN_ERROR) then
+            write (error_unit, '(a)') "FAIL [xgb refusal] nonpositive sample weight"
             failures = failures + 1
         end if
         call model%fit_regression(x, y, status)

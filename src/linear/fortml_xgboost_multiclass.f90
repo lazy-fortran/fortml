@@ -44,12 +44,13 @@ module fortml_xgboost_multiclass
 
 contains
 
-    subroutine xgb_multiclass_fit(self, x, labels, status, options)
+    subroutine xgb_multiclass_fit(self, x, labels, status, options, sample_weight)
         class(xgboost_multiclass_t), intent(out) :: self
         real(dp), intent(in) :: x(:, :)
         integer, intent(in) :: labels(:)
         type(fortnum_status_t), intent(out) :: status
         type(xgboost_options_t), intent(in), optional :: options
+        real(dp), intent(in), optional :: sample_weight(:)
         type(xgboost_options_t) :: settings
         integer, allocatable :: classes(:), binary_labels(:)
         integer :: i, n_classes, n_samples
@@ -61,6 +62,15 @@ contains
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "XGBoost multiclass fit: input dimensions are invalid")
             return
+        end if
+        if (present(sample_weight)) then
+            if (size(sample_weight) /= n_samples .or. &
+                any(.not. ieee_is_finite(sample_weight)) .or. &
+                any(sample_weight <= 0.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "XGBoost multiclass fit: sample_weight must be positive and finite")
+                return
+            end if
         end if
         call unique_sorted_labels(labels, classes)
         n_classes = size(classes)
@@ -76,8 +86,13 @@ contains
         do i = 1, n_classes
             binary_labels = 0
             where (labels == classes(i)) binary_labels = 1
-            call self%one_vs_rest(i)%fit_binary(x, real(binary_labels, dp), &
-                status, settings)
+            if (present(sample_weight)) then
+                call self%one_vs_rest(i)%fit_binary(x, real(binary_labels, dp), &
+                    status, settings, sample_weight)
+            else
+                call self%one_vs_rest(i)%fit_binary(x, real(binary_labels, dp), &
+                    status, settings)
+            end if
             if (status%code /= FORTNUM_OK) return
         end do
         self%n_inputs = size(x, 2)
