@@ -589,6 +589,8 @@ The maintained reports and their raw artifacts are in `../fortml-bench/results`:
   `model_workloads.csv`, `exact_gp_workloads.png`, and `mlp_workloads.png`.
 - [`GP_FEATURES.md`](../fortml-bench/results/GP_FEATURES.md), backed by
   `gp_features.csv` and `gp_features.png`.
+- [`CLASSIFICATION.md`](../fortml-bench/results/CLASSIFICATION.md), backed by
+  `classification_workloads.csv` with FortML and scikit-learn provenance.
 - Corrected GRBCM evidence in `scalable_gp_grbcm_corrected.csv` and
   `scalable_gp_grbcm_corrected_train_seconds.png`.
 - Current partition and dimension evidence in `scalable_gp_clustered.csv` and
