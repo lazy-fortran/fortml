@@ -222,6 +222,14 @@ class order and `[1-p,p]` probability columns.  CPU prediction is complete;
 CUDA remains an explicit capability refusal until calibration state and
 interpolation are resident in a native kernel.
 
+Weighted LDA and QDA follow the same explicit-state boundary. Their fitted
+means, Cholesky factors, precisions, priors, and sorted integer labels are
+resident host state; Gaussian log-probability JVP/VJP products differentiate
+the continuous normalization while argmax labels remain discrete. The packed
+parameter seam is stable for future optimizer adapters. CUDA prediction is a
+typed refusal until a resident discriminant kernel owns the factors and class
+metadata, so no OpenACC data movement is mistaken for GPU residency.
+
 ## GP and derivative observations
 
 Binary GP classification shares one signed-margin likelihood layer across

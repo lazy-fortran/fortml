@@ -1343,11 +1343,40 @@ depth up to 12, and count-based `min_samples_leaf` are supported. Missing-value
 routing, input derivatives, histogram growth, and differentiable split
 selection remain unsupported.
 
+### `fortml_discriminant_analysis`
+
+`lda_classifier_t%fit(x,labels,status[,reg_param,priors,sample_weight])` and
+`qda_classifier_t%fit(...)` implement weighted linear and quadratic
+discriminant analysis for arbitrary integer labels. Labels are sorted and
+retained verbatim. LDA fits one pooled covariance; QDA fits one covariance per
+class. `reg_param` is a finite diagonal shrinkage in `[0,1]`, and optional
+positive priors are normalized in sorted class order. Every class must retain
+positive effective sample mass. Covariances are Cholesky-factorized and
+probabilities use a stabilized log-sum-exp normalization.
+
+`predict_log_proba`, `predict_proba`, and `predict` return log probabilities,
+probabilities, or original integer labels. `classes`, `means`, `covariance`
+(LDA), `covariances` (QDA), `class_prior`, `weighted_class_counts`,
+`regularization`, `feature_count`, `class_count`, `parameter_count`,
+`parameters`, `set_parameters`, and `fitted` expose the state. The packed
+parameter order is column-major means, lower-triangle covariance entries
+(pooled for LDA or class-major for QDA), and class-prior coordinates.
+
+Input log-probability/probability JVPs and VJPs, plus packed-parameter JVPs
+and VJPs, differentiate the continuous Gaussian normalization and hold the
+fitted class labels fixed. Argmax labels are discrete and have no derivative
+product. `predict_device` and `predict_proba_device` dispatch CPU normally and
+return `FORTNUM_NOT_IMPLEMENTED` for CUDA until resident discriminant kernels
+are linked; there is no hidden host fallback.
+
 ### `fortml_xgboost`
 
 `xgboost_t` is a deterministic second-order boosting estimator. Use
 `fit_regression` for a squared objective, `fit_binary` for a logistic
-objective, or `fit_poisson` for nonnegative count targets with a log link.
+objective, `fit_poisson` for nonnegative count targets with a log link,
+`fit_huber` for robust Huber regression, or `fit_quantile` for pinball
+regression. The generic `fit` accepts `objective="squared"`, `"logistic"`,
+`"poisson"`, `"huber"`/`"pseudohuber"`, or `"quantile"`/`"pinball"`.
 All fit methods accept an optional positive `sample_weight(:)`;
 weights affect the base score and every gradient/Hessian reduction. The
 `xgboost_options_t` fields `tree_method="exact"` (the default) and
@@ -1357,7 +1386,12 @@ number of finite bins per node; every NaN remains an explicit missing bin and
 is routed by `missing_policy` (`error`, `learn`, `left`, or `right`). The
 histogram policy remains weighted-quantile even when `max_bin` is large; use
 `tree_method="exact"` when exhaustive split equivalence is required. The
-remaining options control estimator count, learning rate,
+The `huber_delta` and `quantile_alpha` options control the robust objectives;
+the fitted value is available through `objective_parameter_value()`.
+Huber uses the exact piecewise gradient with a positive Hessian floor on its
+linear tails. Quantile uses the declared subgradient (`alpha` at a zero or
+positive residual, `alpha-1` below zero) and the same explicit Hessian floor.
+The remaining options control estimator count, learning rate,
 minimum leaf size, L1/L2 leaf regularization, split gamma, and minimum child
 Hessian. Candidate splits aggregate exact gradients and Hessians and use the
 regularized gain. `predict_margin`, `predict`, `predict_proba`,

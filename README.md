@@ -12,7 +12,9 @@ The current public surface concentrates on regression, binary and multinomial
 classification, Laplace binary GP classification, shared classification
 metrics, differentiable preprocessing and basis pipelines, a deterministic MLP
 trainer and classifier, deterministic dense k-nearest-neighbor classification,
-exact depth-limited second-order XGBoost-style boosting with staged diagnostics,
+weighted LDA/QDA discriminant analysis, exact depth-limited second-order
+XGBoost-style boosting with squared/logistic/Poisson/Huber/quantile objectives
+and staged diagnostics,
 neural and variational model primitives, Gaussian processes, and structured
 linear algebra. Full estimator-family parity, histogram tree growth, model
 serialization, and distributed execution remain parity work packages. The MLP
@@ -90,7 +92,7 @@ current surface is:
 | Dense MLP and MSE training objective | Parameter/input JVPs, VJPs, exact MSE+L2 HVPs, L2 hyperparameter derivative, Adam/AdamW/Adagrad/RMSprop/SGD momentum/Nesterov training, typed constant/warmup/cosine/exponential schedules with analytic rate products, exact fixed-trajectory learning-rate/L2, AdamW (including beta logits), and RMSprop hypergradients, and exact in-memory optimizer checkpoints | Mini-batch/schedule optimizer-trajectory hypergradients and neural module families are partial |
 | Exact GP regression | Kernel-parameter products, input derivatives, prediction products, and differentiated-solve HVPs; RBF, Matérn 1/2 and 3/2, periodic, and rational-quadratic products use analytic leaves, with the RBF and Matérn products cross-checked against FortSym-generated forms | Approximate and matrix-free training products are partial; Matérn 5/2 HVPs retain the FortAD product |
 | Derivative-observation GP | Mixed value/first-derivative observations, parameter products, and query-input JVP/VJP products. Validated user-formula kernels carry analytic value/gradient/Hessian products | Query-input products and the likelihood HVP use documented deterministic finite differences. Analytic third-order kernels and joint posterior covariance remain open |
-| Trees, boosting, and classifiers | Piecewise JVPs where declared, with split-boundary refusals | Classifier HVPs and smooth split derivatives remain open |
+| Trees, boosting, and classifiers | Piecewise JVPs where declared, with split-boundary refusals; weighted LDA/QDA exposes smooth Gaussian probability products | Classifier HVPs, smooth split derivatives, and resident classifier GPU kernels remain open |
 | BNN, VAE, RNN, and most approximate GP paths | Value or model-specific gradient surfaces | Full JVP/VJP/HVP coverage is a roadmap item |
 
 `fortsym` is used when it proves a smaller or more stable closed form for a
