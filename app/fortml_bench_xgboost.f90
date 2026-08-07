@@ -15,6 +15,7 @@ program fortml_bench_xgboost
     call benchmark_multiclass()
     call benchmark_missing()
     call benchmark_weighted_histogram()
+    call benchmark_monotonic_constraints()
 
 contains
 
@@ -298,6 +299,98 @@ contains
         call benchmark_hist_logistic()
         call benchmark_hist_multiclass()
     end subroutine benchmark_weighted_histogram
+
+    subroutine benchmark_monotonic_constraints()
+        integer, parameter :: n_samples = 192, n_features = 2
+        integer, parameter :: n_estimators = 8, repetitions = 4
+        integer, parameter :: prediction_repetitions = 32, n_query = 257
+        real(dp) :: x(n_samples, n_features), y(n_samples)
+        real(dp) :: query(n_query, n_features), prediction(n_query)
+        real(dp) :: elapsed_fit, elapsed_predict, violation
+        integer(int64) :: clock_start, clock_end, clock_rate
+        integer :: i, repetition
+        type(xgboost_t) :: model
+        type(xgboost_options_t) :: options
+        type(fortnum_status_t) :: status
+
+        do i = 1, n_samples
+            x(i, 1) = -1.0_dp + 2.0_dp*real(i - 1, dp)/real(n_samples - 1, dp)
+            x(i, 2) = sin(0.07_dp*real(i, dp))
+            y(i) = x(i, 1) + 1.8_dp*x(i, 2)
+        end do
+        do i = 1, n_query
+            query(i, 1) = -1.0_dp + 2.0_dp*real(i - 1, dp)/real(n_query - 1, dp)
+            query(i, 2) = 0.35_dp
+        end do
+        options%n_estimators = n_estimators
+        options%max_depth = 3
+        options%min_samples_leaf = 2
+        options%learning_rate = 0.25_dp
+        options%l2 = 1.0_dp
+        options%min_child_weight = 0.0_dp
+        options%monotone_constraints = [1, 0]
+        call system_clock(clock_start, clock_rate)
+        do repetition = 1, repetitions
+            call model%fit_regression(x, y, status, options)
+            if (.not. status_ok(status)) error stop "XGBoost monotone exact fit failed"
+        end do
+        call system_clock(clock_end)
+        elapsed_fit = real(clock_end - clock_start, dp)/real(clock_rate, dp)/ &
+            real(repetitions, dp)
+        call model%fit_regression(x, y, status, options)
+        call model%predict(query, prediction, status)
+        if (.not. status_ok(status)) error stop "XGBoost monotone exact prediction failed"
+        violation = maxval(max(0.0_dp, prediction(:n_query - 1) - prediction(2:n_query)))
+        write (*, '(a,i0,a,i0,a,i0,a,es24.16,a,es24.16,a,es24.16)') &
+            "xgb_monotone_exact_fit,", n_samples, ",", n_features, ",", &
+            n_estimators, ",", elapsed_fit, ",", violation, ",", sum(prediction)
+        write (*, '(a,*(es24.16,1x))') "xgb_monotone_exact_values ", prediction
+
+        call system_clock(clock_start, clock_rate)
+        do repetition = 1, prediction_repetitions
+            call model%predict(query, prediction, status)
+            if (.not. status_ok(status)) error stop "XGBoost monotone exact timing failed"
+        end do
+        call system_clock(clock_end)
+        elapsed_predict = real(clock_end - clock_start, dp)/real(clock_rate, dp)/ &
+            real(prediction_repetitions, dp)
+        write (*, '(a,i0,a,i0,a,i0,a,es24.16,a,es24.16,a,es24.16)') &
+            "xgb_monotone_exact_predict,", n_samples, ",", n_features, ",", &
+            n_estimators, ",", elapsed_predict, ",", violation, ",", sum(prediction)
+
+        y = -x(:, 1) + 1.8_dp*x(:, 2)
+        options%tree_method = "hist"
+        options%max_bin = 16
+        options%monotone_constraints = [-1, 0]
+        call system_clock(clock_start, clock_rate)
+        do repetition = 1, repetitions
+            call model%fit_regression(x, y, status, options)
+            if (.not. status_ok(status)) error stop "XGBoost monotone hist fit failed"
+        end do
+        call system_clock(clock_end)
+        elapsed_fit = real(clock_end - clock_start, dp)/real(clock_rate, dp)/ &
+            real(repetitions, dp)
+        call model%fit_regression(x, y, status, options)
+        call model%predict(query, prediction, status)
+        if (.not. status_ok(status)) error stop "XGBoost monotone hist prediction failed"
+        violation = maxval(max(0.0_dp, prediction(2:n_query) - prediction(:n_query - 1)))
+        write (*, '(a,i0,a,i0,a,i0,a,es24.16,a,es24.16,a,es24.16)') &
+            "xgb_monotone_hist_fit,", n_samples, ",", n_features, ",", &
+            n_estimators, ",", elapsed_fit, ",", violation, ",", sum(prediction)
+        write (*, '(a,*(es24.16,1x))') "xgb_monotone_hist_values ", prediction
+
+        call system_clock(clock_start, clock_rate)
+        do repetition = 1, prediction_repetitions
+            call model%predict(query, prediction, status)
+            if (.not. status_ok(status)) error stop "XGBoost monotone hist timing failed"
+        end do
+        call system_clock(clock_end)
+        elapsed_predict = real(clock_end - clock_start, dp)/real(clock_rate, dp)/ &
+            real(prediction_repetitions, dp)
+        write (*, '(a,i0,a,i0,a,i0,a,es24.16,a,es24.16,a,es24.16)') &
+            "xgb_monotone_hist_predict,", n_samples, ",", n_features, ",", &
+            n_estimators, ",", elapsed_predict, ",", violation, ",", sum(prediction)
+    end subroutine benchmark_monotonic_constraints
 
     subroutine benchmark_hist_regression()
         integer, parameter :: n_samples = 6, n_features = 1

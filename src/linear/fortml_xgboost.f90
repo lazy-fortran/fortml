@@ -3,7 +3,9 @@ module fortml_xgboost
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite, ieee_is_nan
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
-        FORTNUM_DOMAIN_ERROR
+        FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED
+    use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU, &
+        FORTML_DEVICE_CUDA
     implicit none
     private
 
@@ -26,6 +28,13 @@ module fortml_xgboost
     !> `left`, or `right`.  `learn` evaluates both default directions for every
     !> candidate split and stores the direction with the best gain, while the
     !> fixed policies route all missing values to the requested child.
+    !>
+    !> `monotone_constraints`, when allocated, contains one entry per input
+    !> feature and uses the XGBoost convention `-1`, `0`, and `+1` for
+    !> decreasing, unconstrained, and increasing predictions.  Constraints
+    !> are enforced per tree by propagating leaf-value bounds through every
+    !> recursive split.  Fit remains piecewise/discrete; input products keep
+    !> the existing split-boundary refusal contract.
     type, public :: xgboost_options_t
         integer :: n_estimators = 50
         integer :: max_depth = 1
@@ -39,6 +48,7 @@ module fortml_xgboost
         character(len=16) :: missing_policy = "error"
         character(len=16) :: tree_method = "exact"
         integer :: max_bin = 256
+        integer, allocatable :: monotone_constraints(:)
     end type xgboost_options_t
 
     type :: xgb_tree_t
@@ -75,6 +85,7 @@ module fortml_xgboost
         real(dp) :: learning_rate = 0.0_dp
         real(dp) :: base_score = 0.0_dp
         integer :: missing_code = XGB_MISSING_ERROR
+        integer, allocatable :: monotone_constraints(:)
         type(xgb_tree_t), allocatable :: estimators(:)
         logical :: initialized = .false.
     contains
@@ -84,6 +95,8 @@ module fortml_xgboost
         procedure, public :: predict_matrix => xgb_predict_matrix
         procedure, public :: predict_vector => xgb_predict_vector
         generic, public :: predict => predict_matrix, predict_vector
+        procedure, public :: predict_device => xgb_predict_device
+        procedure, public :: device_supported => xgb_device_supported
         procedure, public :: predict_margin_matrix => xgb_predict_margin_matrix
         procedure, public :: predict_margin_vector => xgb_predict_margin_vector
         generic, public :: predict_margin => predict_margin_matrix, &
@@ -108,6 +121,7 @@ module fortml_xgboost
         procedure, public :: tree_method => xgb_tree_method
         procedure, public :: max_bin_count => xgb_max_bin_count
         procedure, public :: accepts_missing => xgb_accepts_missing
+        procedure, public :: monotone_constraint => xgb_monotone_constraint
         procedure, public :: fitted => xgb_fitted
     end type xgboost_t
 
@@ -166,6 +180,14 @@ contains
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "xgboost fit: invalid dimensions or hyperparameters")
             return
+        end if
+        if (allocated(settings%monotone_constraints)) then
+            if (size(settings%monotone_constraints) /= n_features .or. &
+                any(abs(settings%monotone_constraints) > 1)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "xgboost fit: monotone_constraints must have one entry per feature in {-1,0,1}")
+                return
+            end if
         end if
         if (any((.not. ieee_is_finite(x)) .and. (.not. ieee_is_nan(x))) .or. &
             any(.not. ieee_is_finite(y))) then
@@ -242,6 +264,11 @@ contains
         self%max_bin = settings%max_bin
         self%learning_rate = rate
         self%missing_code = missing_code
+        allocate(self%monotone_constraints(n_features))
+        self%monotone_constraints = 0
+        if (allocated(settings%monotone_constraints)) then
+            self%monotone_constraints = settings%monotone_constraints
+        end if
         self%initialized = .true.
         call status_set(status, FORTNUM_OK, "")
     end subroutine xgb_fit
@@ -327,6 +354,43 @@ contains
         end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine xgb_predict_vector
+
+    subroutine xgb_predict_device(self, device, x, y, status)
+        !! Predict through the explicit device control-plane contract.
+        !!
+        !! CPU dispatch reuses the validated host implementation.  XGBoost
+        !! tree growth/prediction has no resident CUDA kernel in this build;
+        !! selecting CUDA therefore returns a typed refusal and never times a
+        !! hidden host fallback as GPU work.
+        class(xgboost_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: y(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost device prediction: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_vector(x, y, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "xgboost device prediction: no resident CUDA tree kernel is linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost device prediction: device kind is invalid")
+        end select
+    end subroutine xgb_predict_device
+
+    logical function xgb_device_supported(self, device_kind) result(supported)
+        class(xgboost_t), intent(in) :: self
+        integer, intent(in) :: device_kind
+
+        supported = self%initialized .and. device_kind == FORTML_DEVICE_CPU
+    end function xgb_device_supported
 
     subroutine xgb_predict_margin_matrix(self, x, margin, status)
         class(xgboost_t), intent(in) :: self
@@ -816,6 +880,16 @@ contains
         value = self%initialized .and. self%missing_code /= XGB_MISSING_ERROR
     end function xgb_accepts_missing
 
+    integer function xgb_monotone_constraint(self, feature_index) result(value)
+        class(xgboost_t), intent(in) :: self
+        integer, intent(in) :: feature_index
+
+        value = 0
+        if (.not. self%initialized .or. .not. allocated(self%monotone_constraints)) return
+        if (feature_index < 1 .or. feature_index > size(self%monotone_constraints)) return
+        value = self%monotone_constraints(feature_index)
+    end function xgb_monotone_constraint
+
     logical function xgb_fitted(self) result(fitted)
         class(xgboost_t), intent(in) :: self
         fitted = self%initialized
@@ -908,7 +982,8 @@ contains
         next_node = 0
         tree%depth = 0
         call build_tree_node(x, gradient, hessian, observation_weight, options, &
-            sample_index, 0, tree, next_node, root, status)
+            sample_index, 0, tree, next_node, root, status, -huge(1.0_dp), &
+            huge(1.0_dp))
         if (status%code /= FORTNUM_OK) return
         tree%n_nodes = next_node
         tree%feature_index = tree%feature(root)
@@ -925,7 +1000,8 @@ contains
     end subroutine build_tree
 
     recursive subroutine build_tree_node(x, gradient, hessian, observation_weight, &
-            options, sample_index, depth, tree, next_node, node_id, status)
+            options, sample_index, depth, tree, next_node, node_id, status, &
+            lower_bound, upper_bound)
         real(dp), intent(in) :: x(:, :), gradient(:), hessian(:)
         real(dp), intent(in) :: observation_weight(:)
         type(xgboost_options_t), intent(in) :: options
@@ -934,6 +1010,7 @@ contains
         integer, intent(inout) :: next_node
         integer, intent(out) :: node_id
         type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in) :: lower_bound, upper_bound
         integer, allocatable :: order(:), left_index(:), right_index(:)
         integer, allocatable :: finite_index(:), candidate_position(:)
         logical, allocatable :: candidate_mask(:)
@@ -946,6 +1023,12 @@ contains
         real(dp) :: right_gradient, right_hessian, candidate_gain, best_gain
         real(dp) :: best_threshold, candidate_threshold, value
         real(dp) :: missing_gradient, missing_hessian
+        real(dp) :: candidate_left_weight, candidate_right_weight
+        real(dp) :: candidate_bound, candidate_left_lower, candidate_left_upper
+        real(dp) :: candidate_right_lower, candidate_right_upper
+        real(dp) :: best_left_lower, best_left_upper
+        real(dp) :: best_right_lower, best_right_upper
+        integer :: monotone
         logical :: best_missing_left, missing_left
 
         n_local = size(sample_index)
@@ -955,7 +1038,8 @@ contains
         tree%depth = max(tree%depth, depth)
         total_gradient = sum(gradient(sample_index))
         total_hessian = sum(hessian(sample_index))
-        value = regularized_leaf_weight(total_gradient, total_hessian, options)
+        value = bounded_leaf_weight(total_gradient, total_hessian, options, &
+            lower_bound, upper_bound)
         tree%weight(node_id) = value
         tree%node_gain(node_id) = 0.0_dp
         tree%node_cover(node_id) = total_hessian
@@ -977,6 +1061,10 @@ contains
         best_feature = 0
         best_threshold = 0.0_dp
         best_missing_left = .true.
+        best_left_lower = lower_bound
+        best_left_upper = upper_bound
+        best_right_lower = lower_bound
+        best_right_upper = upper_bound
         do feature = 1, n_features
             n_finite = 0
             n_missing = 0
@@ -1058,6 +1146,42 @@ contains
                         end if
                         cycle
                     end if
+                    candidate_left_weight = bounded_leaf_weight(left_gradient, &
+                        left_hessian, options, lower_bound, upper_bound)
+                    candidate_right_weight = bounded_leaf_weight(right_gradient, &
+                        right_hessian, options, lower_bound, upper_bound)
+                    monotone = monotone_constraint_for_feature(options, feature)
+                    candidate_left_lower = lower_bound
+                    candidate_left_upper = upper_bound
+                    candidate_right_lower = lower_bound
+                    candidate_right_upper = upper_bound
+                    if (monotone > 0) then
+                        if (candidate_left_weight > candidate_right_weight + &
+                            1.0e-14_dp) then
+                            if (missing_left) then
+                                left_gradient = left_gradient - missing_gradient
+                                left_hessian = left_hessian - missing_hessian
+                            end if
+                            cycle
+                        end if
+                        candidate_bound = 0.5_dp*(candidate_left_weight + &
+                            candidate_right_weight)
+                        candidate_left_upper = min(candidate_left_upper, candidate_bound)
+                        candidate_right_lower = max(candidate_right_lower, candidate_bound)
+                    else if (monotone < 0) then
+                        if (candidate_left_weight < candidate_right_weight - &
+                            1.0e-14_dp) then
+                            if (missing_left) then
+                                left_gradient = left_gradient - missing_gradient
+                                left_hessian = left_hessian - missing_hessian
+                            end if
+                            cycle
+                        end if
+                        candidate_bound = 0.5_dp*(candidate_left_weight + &
+                            candidate_right_weight)
+                        candidate_left_lower = max(candidate_left_lower, candidate_bound)
+                        candidate_right_upper = min(candidate_right_upper, candidate_bound)
+                    end if
                     candidate_gain = 0.5_dp*(regularized_leaf_score(left_gradient, &
                         left_hessian, options) + regularized_leaf_score(right_gradient, &
                         right_hessian, options) - regularized_leaf_score(total_gradient, &
@@ -1067,6 +1191,10 @@ contains
                         best_feature = feature
                         best_threshold = candidate_threshold
                         best_missing_left = missing_left
+                        best_left_lower = candidate_left_lower
+                        best_left_upper = candidate_left_upper
+                        best_right_lower = candidate_right_lower
+                        best_right_upper = candidate_right_upper
                     end if
                     if (missing_left) then
                         left_gradient = left_gradient - missing_gradient
@@ -1114,10 +1242,12 @@ contains
         tree%node_gain(node_id) = best_gain
         tree%missing_left(node_id) = best_missing_left
         call build_tree_node(x, gradient, hessian, observation_weight, options, &
-            left_index, depth + 1, tree, next_node, left_node, status)
+            left_index, depth + 1, tree, next_node, left_node, status, &
+            best_left_lower, best_left_upper)
         if (status%code /= FORTNUM_OK) return
         call build_tree_node(x, gradient, hessian, observation_weight, options, &
-            right_index, depth + 1, tree, next_node, right_node, status)
+            right_index, depth + 1, tree, next_node, right_node, status, &
+            best_right_lower, best_right_upper)
         if (status%code /= FORTNUM_OK) return
         tree%left_child(node_id) = left_node
         tree%right_child(node_id) = right_node
@@ -1174,6 +1304,15 @@ contains
             weight = -sign(thresholded, gradient)/(hessian + options%l2)
         end if
     end function regularized_leaf_weight
+
+    real(dp) function bounded_leaf_weight(gradient, hessian, options, lower, upper) &
+            result(weight)
+        real(dp), intent(in) :: gradient, hessian, lower, upper
+        type(xgboost_options_t), intent(in) :: options
+
+        weight = regularized_leaf_weight(gradient, hessian, options)
+        weight = min(max(weight, lower), upper)
+    end function bounded_leaf_weight
 
     real(dp) function regularized_leaf_score(gradient, hessian, options) &
             result(score)
@@ -1239,6 +1378,16 @@ contains
 
         code = parse_missing_policy(options%missing_policy)
     end function missing_code_for_options
+
+    integer function monotone_constraint_for_feature(options, feature) result(value)
+        type(xgboost_options_t), intent(in) :: options
+        integer, intent(in) :: feature
+
+        value = 0
+        if (.not. allocated(options%monotone_constraints)) return
+        if (feature < 1 .or. feature > size(options%monotone_constraints)) return
+        value = options%monotone_constraints(feature)
+    end function monotone_constraint_for_feature
 
     logical function valid_query_values(missing_code, x) result(valid)
         integer, intent(in) :: missing_code
