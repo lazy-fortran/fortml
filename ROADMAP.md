@@ -1383,6 +1383,9 @@ The maintained reports and their raw artifacts are in `../fortml-bench/results`:
 - [`COMPLEMENT_NB.md`](../fortml-bench/results/COMPLEMENT_NB.md), backed by
   `complement_naive_bayes.csv` for complement counts, stable probabilities,
   predictions, and complete input-JVP oracle checks.
+- [`CATEGORICAL_NB.md`](../fortml-bench/results/CATEGORICAL_NB.md), backed by
+  `categorical_naive_bayes.csv` for packed category metadata, smoothed
+  probabilities, predictions, and the discrete-derivative boundary.
 - [`ONE_HOT_ENCODER.md`](../fortml-bench/results/ONE_HOT_ENCODER.md), backed by
   `one_hot_encoder.csv` for sorted categories, packed one-based offsets,
   dense transforms, and explicit categorical derivative refusals.
