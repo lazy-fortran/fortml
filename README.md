@@ -157,11 +157,13 @@ end program exact_gp_example
 | Lazy inference | `fortml_linear_operator`, `fortml_kernel_operator`, `fortml_sparse_operator`, `fortml_structured_operator`, `fortml_toeplitz_operator`, `fortml_banded_precision` | Toeplitz products are host-resident |
 | Supporting contracts | `fortml_kernel_formula`, `fortml_lanczos`, `fortml_multilevel_grid`, `fortml_inference_policy`, `fortml_parameter_registry`, `fortml_parameter_products`, `fortml_device`, `fortml_cuda_metrics` | Product availability depends on the wrapped model. `fortml_device` records explicit CPU/CUDA capability, residency ownership, and transfer events; `fortml_cuda_metrics` adds a transfer-inclusive native-CUDA weighted MSE reduction with an unavailable stub and no host fallback. Neither module claims complete GPU execution. |
 
-The newly added elastic-net, OVO, Laplace-GP classification, probability
-calibration, and typed schedule APIs expose explicit CPU/CUDA capability/refusal methods. They are
-CPU-only until resident model kernels exist: selected CUDA contexts return
+The newly added elastic-net, OVO, multilabel logistic, Laplace-GP
+classification, probability calibration, typed schedule, and derivative-GP
+APIs expose explicit CPU/CUDA capability/refusal methods. They are CPU-only
+until resident model kernels exist: selected CUDA contexts return
 `FORTNUM_NOT_IMPLEMENTED`, and no benchmark may report GPU timing for these
-paths. The resident native-CUDA micro-kernels documented in
+paths. The transfer-inclusive weighted-MSE reduction and resident optimizer,
+kNN, and kernel micro-kernels documented in
 [`docs/DEVICE.md`](docs/DEVICE.md) remain separate no-autodiff building blocks.
 
 Validated user kernel formulas are lowered into the same postfix program as
