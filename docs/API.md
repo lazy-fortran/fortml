@@ -1326,11 +1326,24 @@ and the corresponding scalar mixed block.  Thus the same product can be passed
 to `fortopt_objective` through `fortopt` and optimized with FortOpt L-BFGS-B
 using explicit bounds on network and log-coefficient coordinates.
 
+For a complete grouped fit, `mlp_grouped_optimize_lbfgsb(model,x,target,groups,
+options,result,status)` owns the FortOpt `lbfgsb_t` lifecycle. The
+`mlp_grouped_lbfgsb_options_t` bounds the network block and all log-L2
+coordinates independently (equal bounds intentionally freeze a coordinate),
+while `mlp_grouped_lbfgsb_result_t` reports convergence, iteration and line
+search counts, objective, gradient norm, and final group log coefficients.
+The adapter uses the exact grouped value/gradient callback; it does not
+finite-difference hyperparameters. `device_kind=FORTML_DEVICE_CUDA` returns
+`FORTNUM_NOT_IMPLEMENTED` until a resident dense-MLP derivative graph exists,
+so a CUDA request cannot silently execute the CPU optimizer.
+
 The independent `test_mlp_grouped_training` fixture checks the value gradient,
 mixed HVP, JVP central-difference oracle, scalar VJP, and FortOpt callback
-against a hand-derived linear ridge objective.  The objective currently has a
-CPU-only dense graph: `device_kind=FORTML_DEVICE_CUDA` returns
-`FORTNUM_NOT_IMPLEMENTED`; no host copy is hidden behind a CUDA request.
+against a hand-derived linear ridge objective. It also checks the bounded
+grouped L-BFGS-B fit against the closed-form solution and verifies the typed
+CUDA refusal. The objective currently has a CPU-only dense graph:
+`device_kind=FORTML_DEVICE_CUDA` returns `FORTNUM_NOT_IMPLEMENTED`; no host
+fallback is hidden behind a CUDA request.
 
 `mlp_batch_iterator_t` is the reusable deterministic row-index cursor used by
 `mlp_train`. Initialize it with `n_samples`, an optional `batch_size`,

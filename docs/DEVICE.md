@@ -87,6 +87,21 @@ Fortran API against the same nearest-neighbor oracle. CUDA remains unavailable
 when the native object is not linked, and JVP/VJP products remain refused at
 the discrete neighbor boundary.
 
+## Resident dense-affine inference
+
+The no-autodiff dense neural primitive in
+`src/mlp/fortml_cuda_dense.{h,cu}` owns one affine layer's weights and bias on
+the selected device. `fortml_cuda_dense_plan_predict` evaluates the complete
+batch with linear, `tanh`, ReLU, GELU, SiLU, ELU, softplus, or leaky-ReLU
+activation and copies only the query and result. It never invokes a CPU MLP
+fallback. The typed Fortran `cuda_dense_plan_t` wrapper converts ordinary
+column-major arrays to the explicit ABI layout, while the ordinary build
+returns `FORTNUM_NOT_IMPLEMENTED` through a stub. `test/run_cuda_dense_plan.sh`
+checks all activations, repeated batches, and finite-input rejection against a
+separate CPU recurrence. This is inference-only evidence: MLP gradients,
+hypergradients, and optimizer updates still require a resident FortAD/FortSym
+graph and are not implied by this plan.
+
 ## Direct RMSprop state kernel
 
 The no-autodiff optimizer recurrence has a separate native CUDA C API in

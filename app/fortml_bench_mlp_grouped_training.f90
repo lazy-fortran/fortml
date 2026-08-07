@@ -3,7 +3,8 @@ program fortml_bench_mlp_grouped_training
     use, intrinsic :: iso_fortran_env, only: dp => real64, int64
     use fortml_mlp, only: mlp_t, MLP_LINEAR
     use fortml_mlp_grouped_training, only: mlp_parameter_group_t, &
-        mlp_grouped_training_objective_t
+        mlp_grouped_training_objective_t, mlp_grouped_lbfgsb_options_t, &
+        mlp_grouped_lbfgsb_result_t, mlp_grouped_optimize_lbfgsb
     use fortml_device, only: FORTML_DEVICE_CUDA
     use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_NOT_IMPLEMENTED
     implicit none
@@ -17,6 +18,8 @@ program fortml_bench_mlp_grouped_training
     type(mlp_t), target :: model
     type(mlp_parameter_group_t) :: groups(2)
     type(mlp_grouped_training_objective_t) :: objective
+    type(mlp_grouped_lbfgsb_options_t) :: optimizer_options
+    type(mlp_grouped_lbfgsb_result_t) :: optimizer_result
     type(fortnum_status_t) :: status
 
     do i = 1, n_samples
@@ -54,6 +57,25 @@ program fortml_bench_mlp_grouped_training
     write (*, '(a,es24.16)') "mlp_grouped_gradient_norm,", sqrt(dot_product(gradient, gradient))
     write (*, '(a,es24.16)') "mlp_grouped_hvp_norm,", sqrt(dot_product(product, product))
     write (*, '(a,es24.16)') "mlp_grouped_jvp,", tangent
+
+    optimizer_options%lower_bound = -2.0_dp
+    optimizer_options%upper_bound = 2.0_dp
+    optimizer_options%log_l2_lower_bound = -3.0_dp
+    optimizer_options%log_l2_upper_bound = 1.0_dp
+    optimizer_options%max_iterations = 100
+    call mlp_grouped_optimize_lbfgsb(model, x, target, groups, &
+        optimizer_options, optimizer_result, status)
+    if (.not. status_ok(status)) error stop "grouped benchmark L-BFGS-B failed"
+    write (*, '(a,i0)') "mlp_grouped_lbfgsb_iterations,", &
+        optimizer_result%iterations
+    write (*, '(a,es24.16)') "mlp_grouped_lbfgsb_objective,", &
+        optimizer_result%objective
+    write (*, '(a,es24.16)') "mlp_grouped_lbfgsb_gradient_norm,", &
+        optimizer_result%gradient_norm
+    write (*, '(a,es24.16)') "mlp_grouped_lbfgsb_log_l2_weight,", &
+        optimizer_result%log_l2(1)
+    write (*, '(a,es24.16)') "mlp_grouped_lbfgsb_log_l2_bias,", &
+        optimizer_result%log_l2(2)
 
     call objective%initialize(model, x, target, groups, status, device_kind=FORTML_DEVICE_CUDA)
     if (status%code /= FORTNUM_NOT_IMPLEMENTED) then

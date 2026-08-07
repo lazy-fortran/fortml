@@ -20,11 +20,12 @@ module fortml_mlp_grouped_training
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
-        FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED
+        FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED, FORTNUM_CONVERGENCE_ERROR
     use fortml_device, only: FORTML_DEVICE_CPU, FORTML_DEVICE_CUDA
     use fortml_mlp, only: mlp_t
     use fortml_mlp_training, only: mlp_loss_value_gradient, mlp_loss_hvp
     use fortopt_objective, only: objective_t
+    use fortopt_lbfgsb, only: lbfgsb_t, lbfgsb_options_t, lbfgsb_result_t
     implicit none
     private
 
@@ -65,6 +66,37 @@ module fortml_mlp_grouped_training
         procedure, public :: hvp => mlp_grouped_hvp
         procedure, public :: fortopt => mlp_grouped_fortopt
     end type mlp_grouped_training_objective_t
+
+    type, public :: mlp_grouped_lbfgsb_options_t
+        !! Bounds and convergence controls for group-wise L-BFGS-B.
+        !!
+        !! The network block uses one shared bound and each appended log-L2
+        !! coordinate uses the explicit group bound. Equal bounds are allowed
+        !! and provide a deterministic way to freeze a coordinate.
+        integer :: memory = 10
+        integer :: max_iterations = 100
+        integer :: max_line_search = 40
+        real(dp) :: gradient_tolerance = 1.0e-8_dp
+        real(dp) :: step_tolerance = 1.0e-12_dp
+        real(dp) :: objective_tolerance = 1.0e-12_dp
+        real(dp) :: lower_bound = -20.0_dp
+        real(dp) :: upper_bound = 20.0_dp
+        real(dp) :: log_l2_lower_bound = LOG_L2_MIN
+        real(dp) :: log_l2_upper_bound = LOG_L2_MAX
+        integer :: device_kind = FORTML_DEVICE_CPU
+    end type mlp_grouped_lbfgsb_options_t
+
+    type, public :: mlp_grouped_lbfgsb_result_t
+        !! Diagnostics and optimized group coefficients.
+        logical :: converged = .false.
+        integer :: iterations = 0
+        integer :: line_search_evaluations = 0
+        real(dp) :: objective = huge(1.0_dp)
+        real(dp) :: gradient_norm = huge(1.0_dp)
+        real(dp), allocatable :: log_l2(:)
+    end type mlp_grouped_lbfgsb_result_t
+
+    public :: mlp_grouped_optimize_lbfgsb
 
 contains
 
@@ -424,6 +456,87 @@ contains
             mlp_grouped_context_callback, status)
     end subroutine mlp_grouped_fortopt
 
+    subroutine mlp_grouped_optimize_lbfgsb(model, x, target, groups, options, &
+            result, status)
+        !! Optimize network parameters and group log-L2 coefficients together.
+        !!
+        !! This adapter passes the exact grouped value/gradient product to
+        !! FortOpt's projected L-BFGS-B implementation. It never
+        !! finite-differences a group hyperparameter. CUDA requests are routed
+        !! through the grouped objective and therefore return its typed
+        !! resident-derivative refusal rather than falling back to the host.
+        class(mlp_t), target, intent(inout) :: model
+        real(dp), intent(in) :: x(:, :), target(:, :)
+        type(mlp_parameter_group_t), intent(in) :: groups(:)
+        type(mlp_grouped_lbfgsb_options_t), intent(in) :: options
+        type(mlp_grouped_lbfgsb_result_t), intent(out) :: result
+        type(fortnum_status_t), intent(out) :: status
+
+        type(mlp_grouped_training_objective_t), target :: adapter
+        type(objective_t) :: objective
+        type(lbfgsb_t) :: optimizer
+        type(lbfgsb_options_t) :: optimizer_options
+        type(lbfgsb_result_t) :: optimizer_result
+        real(dp), allocatable :: parameters(:), lower(:), upper(:), gradient(:)
+        integer :: n_model, n_groups, n_parameters
+
+        result = mlp_grouped_lbfgsb_result_t()
+        if (.not. valid_lbfgsb_options(options)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP grouped L-BFGS-B: options or bounds are invalid")
+            return
+        end if
+        call adapter%initialize(model, x, target, groups, status, &
+            device_kind=options%device_kind)
+        if (status%code /= FORTNUM_OK) return
+
+        n_model = model%parameter_count()
+        n_groups = adapter%group_count()
+        n_parameters = adapter%parameter_count()
+        allocate(parameters(n_parameters), lower(n_parameters), &
+            upper(n_parameters), gradient(n_parameters), result%log_l2(n_groups))
+        parameters = adapter%parameters()
+        lower(:n_model) = options%lower_bound
+        upper(:n_model) = options%upper_bound
+        lower(n_model + 1:) = options%log_l2_lower_bound
+        upper(n_model + 1:) = options%log_l2_upper_bound
+
+        call adapter%fortopt(objective, status)
+        if (status%code /= FORTNUM_OK) return
+        optimizer_options%memory = options%memory
+        optimizer_options%max_iterations = options%max_iterations
+        optimizer_options%max_line_search = options%max_line_search
+        optimizer_options%gradient_tolerance = options%gradient_tolerance
+        optimizer_options%step_tolerance = options%step_tolerance
+        optimizer_options%objective_tolerance = options%objective_tolerance
+        call optimizer%minimize(objective, parameters, lower, upper, &
+            optimizer_options, optimizer_result, status)
+        if (status%code /= FORTNUM_OK) return
+
+        call model%set_parameters(parameters(:n_model), status)
+        if (status%code /= FORTNUM_OK) return
+        call adapter%value_gradient(parameters, result%objective, gradient, status)
+        if (status%code /= FORTNUM_OK) return
+        result%converged = optimizer_result%state%converged
+        result%iterations = optimizer_result%state%iteration
+        result%line_search_evaluations = optimizer_result%line_search_evaluations
+        result%gradient_norm = sqrt(sum(gradient*gradient))
+        result%log_l2 = parameters(n_model + 1:)
+        if (.not. ieee_is_finite(result%objective) .or. &
+            .not. ieee_is_finite(result%gradient_norm) .or. &
+            any(.not. ieee_is_finite(result%log_l2))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "MLP grouped L-BFGS-B: result is not finite")
+            return
+        end if
+        if (.not. result%converged) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "MLP grouped L-BFGS-B: iteration limit reached")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine mlp_grouped_optimize_lbfgsb
+
     subroutine mlp_grouped_context_callback(context, parameters, value, gradient, status)
         class(*), intent(inout) :: context
         real(dp), intent(in) :: parameters(:)
@@ -458,5 +571,22 @@ contains
         if (any(.not. ieee_is_finite(x)) .or. any(.not. ieee_is_finite(target))) return
         valid = .true.
     end function valid_data
+
+    logical function valid_lbfgsb_options(options) result(valid)
+        type(mlp_grouped_lbfgsb_options_t), intent(in) :: options
+
+        valid = options%memory >= 1 .and. options%max_iterations >= 1 .and. &
+            options%max_line_search >= 1 .and. options%gradient_tolerance >= 0.0_dp .and. &
+            options%step_tolerance >= 0.0_dp .and. options%objective_tolerance >= 0.0_dp .and. &
+            ieee_is_finite(options%lower_bound) .and. ieee_is_finite(options%upper_bound) .and. &
+            ieee_is_finite(options%log_l2_lower_bound) .and. &
+            ieee_is_finite(options%log_l2_upper_bound) .and. &
+            options%lower_bound <= options%upper_bound .and. &
+            options%log_l2_lower_bound >= LOG_L2_MIN .and. &
+            options%log_l2_upper_bound <= LOG_L2_MAX .and. &
+            options%log_l2_lower_bound <= options%log_l2_upper_bound .and. &
+            (options%device_kind == FORTML_DEVICE_CPU .or. &
+            options%device_kind == FORTML_DEVICE_CUDA)
+    end function valid_lbfgsb_options
 
 end module fortml_mlp_grouped_training

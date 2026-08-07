@@ -69,6 +69,14 @@ program test_multilabel_metrics
         "F-beta samples hand oracle", failures)
 
     call classification_multilabel_precision_recall_fbeta(labels, predictions, 2.0_dp, &
+        precision, recall, fbeta, status, CLASSIFICATION_AVERAGE_SAMPLES, weights)
+    call check(status_ok(status), "weighted F-beta samples status", failures)
+    call check(abs(precision - 1.0_dp/12.0_dp) < 1.0e-14_dp .and. &
+        abs(recall - 1.0_dp/6.0_dp) < 1.0e-14_dp .and. &
+        abs(fbeta - 5.0_dp/36.0_dp) < 1.0e-14_dp, &
+        "weighted F-beta samples hand oracle", failures)
+
+    call classification_multilabel_precision_recall_fbeta(labels, predictions, 2.0_dp, &
         precision, recall, fbeta, status, CLASSIFICATION_AVERAGE_SAMPLES, &
         zero_division=CLASSIFICATION_ZERO_DIVISION_ONE)
     call check(status_ok(status), "F-beta zero-division status", failures)

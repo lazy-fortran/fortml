@@ -6,7 +6,8 @@ program test_mlp_grouped_training
     use fortml_device, only: FORTML_DEVICE_CUDA
     use fortml_mlp, only: mlp_t, MLP_LINEAR
     use fortml_mlp_grouped_training, only: mlp_parameter_group_t, &
-        mlp_grouped_training_objective_t
+        mlp_grouped_training_objective_t, mlp_grouped_lbfgsb_options_t, &
+        mlp_grouped_lbfgsb_result_t, mlp_grouped_optimize_lbfgsb
     use fortopt_objective, only: objective_t
     implicit none
 
@@ -14,6 +15,8 @@ program test_mlp_grouped_training
     type(mlp_t) :: bad_model
     type(mlp_parameter_group_t) :: groups(2)
     type(mlp_grouped_training_objective_t) :: objective
+    type(mlp_grouped_lbfgsb_options_t) :: optimizer_options
+    type(mlp_grouped_lbfgsb_result_t) :: optimizer_result
     type(objective_t) :: fortopt_objective
     type(fortnum_status_t) :: status
     real(dp) :: x(3, 1), target(3, 1), parameters(4), direction(4)
@@ -83,6 +86,35 @@ program test_mlp_grouped_training
     call check(status_ok(status), "FortOpt grouped context adapter", failures)
     call fortopt_objective%value_gradient(parameters, value, product, status)
     call check(status_ok(status), "FortOpt grouped callback", failures)
+
+    call model%set_parameters([0.2_dp, -0.3_dp], status)
+    optimizer_options%lower_bound = -2.0_dp
+    optimizer_options%upper_bound = 2.0_dp
+    ! Freeze both log-L2 coordinates at lambda=1.  The linear ridge oracle is
+    ! then w=(2/3)/(2/3+1)=0.4 and b=0 for target=x.
+    optimizer_options%log_l2_lower_bound = 0.0_dp
+    optimizer_options%log_l2_upper_bound = 0.0_dp
+    optimizer_options%max_iterations = 200
+    optimizer_options%gradient_tolerance = 1.0e-8_dp
+    optimizer_options%step_tolerance = 1.0e-14_dp
+    optimizer_options%objective_tolerance = 1.0e-14_dp
+    target(:, 1) = x(:, 1)
+    call mlp_grouped_optimize_lbfgsb(model, x, target, groups, &
+        optimizer_options, optimizer_result, status)
+    parameters = model%parameters()
+    call check(status_ok(status) .and. optimizer_result%converged, &
+        "grouped L-BFGS-B convergence", failures)
+    call check(maxval(abs(parameters(:2) - [0.4_dp, 0.0_dp])) < 2.0e-6_dp, &
+        "grouped L-BFGS-B closed-form ridge oracle", failures)
+    call check(size(optimizer_result%log_l2) == 2 .and. &
+        maxval(abs(optimizer_result%log_l2)) < 2.0e-12_dp, &
+        "grouped L-BFGS-B log-L2 bounds", failures)
+
+    optimizer_options%device_kind = FORTML_DEVICE_CUDA
+    call mlp_grouped_optimize_lbfgsb(model, x, target, groups, &
+        optimizer_options, optimizer_result, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
+        "grouped L-BFGS-B CUDA typed refusal", failures)
 
     call objective%initialize(model, x, target, groups, status, &
         device_kind=FORTML_DEVICE_CUDA)

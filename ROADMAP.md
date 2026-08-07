@@ -194,7 +194,7 @@ derivatives, refusal behavior, and an independent benchmark oracle all exist.
 | GPyTorch/GPflow | Exact, derivative-observation, sparse/local/SKI/structured GP primitives; Laplace binary/OVR GP classification | Kernel/likelihood/constraint/batch-shape parity, variational categorical/count likelihoods, multitask, operator-valued derivatives, implicit hypergradients, serialization and resident GPU training |
 | XGBoost/LightGBM | Exact and bounded-histogram depth-limited squared/logistic/Poisson/Huber/quantile Newton trees, weighted binary/OVR multiclass staged predictions, margins, gain/weight/cover diagnostics, per-feature monotonic constraints, and explicit CPU/CUDA prediction contracts with typed CUDA refusals | Tweedie/ranking objectives, categorical splits, DART, interaction constraints, and distributed training |
 | Differentiability and search | Capability-specific JVP/VJP/HVP products, FortOpt L-BFGS-B for selected objectives, exact group-wise log-L2 mixed HVPs, and exact fixed-trajectory MLP hypergradients for SGD, AdamW (including beta logits), and RMSprop | Complete derivative matrix for every declared parameter/input/hyperparameter, stochastic/device optimizer hypergradients, implicit differentiation, and refusal rather than hidden finite differences |
-| Device and performance | OpenACC/native CUDA operator lanes plus explicit device control-plane contract; kNN and direct RMSprop state have correctness-gated native-CUDA oracles, while complete RMSprop training, staged boosting, and GP-classification training still report CPU-only benchmark rows | Resident model/optimizer/batch state for every supported estimator, CPU parity, transfer/memory accounting, mixed precision, and matched PyTorch/JAX/GPyTorch/XGBoost evidence |
+| Device and performance | OpenACC/native CUDA operator lanes plus explicit device control-plane contract; kNN, dense-affine inference, and direct RMSprop state have correctness-gated native-CUDA oracles, while complete RMSprop training, staged boosting, and GP-classification training still report CPU-only benchmark rows | Resident model/optimizer/batch state for every supported estimator, CPU parity, transfer/memory accounting, mixed precision, and matched PyTorch/JAX/GPyTorch/XGBoost evidence |
 
 The inventory deliberately distinguishes an implemented algorithm from an
 implemented *workflow*. For example, an XGBoost-style Newton tree without
@@ -1099,6 +1099,14 @@ trials remain visible in the result schema.
   hand-derived linear ridge oracle, the scalar FortOpt callback, and the
   explicit CUDA refusal. A resident CUDA graph for grouped MLP training is
   still open; the API never hides a host fallback.
+- [x] Add `mlp_grouped_optimize_lbfgsb` with shared network bounds and
+  independently bounded log-L2 coordinates. The convenience adapter passes
+  the exact grouped gradient callback to FortOpt, reports optimizer
+  diagnostics and final group coefficients, allows equal bounds to freeze a
+  hyperparameter, and returns the same typed CUDA derivative refusal. The
+  independent grouped test checks a closed-form linear ridge optimum; the
+  grouped benchmark reports objective, gradient norm, iterations, and each
+  optimized log-L2 coordinate.
 - [x] Add `mlp_batch_iterator_t` with explicit seeded Fisher--Yates epochs,
   reproducible copied cursors, and unpadded uneven final batches. `mlp_train`
   consumes this cursor rather than maintaining a second hidden batching
@@ -1516,6 +1524,13 @@ count as a production lazy implementation.
   models. The ordinary build links a typed unavailable stub and preserves
   caller buffers on refusal; native CUDA applications can bind the C plan
   without exposing private CART storage or adding an autodiff path.
+- [x] Add the first resident no-autodiff dense-neural primitive. The native
+  `cuda_dense_plan_t`/C ABI keeps one affine layer's weights and bias on the
+  selected CUDA device, supports every current MLP activation, and copies only
+  query batches and outputs. A typed ordinary-build refusal, independent CPU
+  activation oracle, repeated resident batches, finite-input validation, and
+  `fortml_device` capability probe prevent this inference kernel from being
+  mistaken for complete MLP training or a device-side FortAD/FortSym graph.
 - [ ] Keep batches, parameters, gradients, optimizer accumulators, and workspaces
   resident through complete MLP and variational training steps.
 - [ ] Extend residency to basis/pipeline transforms, tree histograms, classifier
