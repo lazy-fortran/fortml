@@ -37,6 +37,16 @@ int fortml_cuda_dense_plan_jvp(void *opaque_plan, const double *query_x,
                                const double *bias_dot, int n_query,
                                double *outputs, double *outputs_dot);
 
+/* Reverse-mode product through the resident affine layer and activation.
+ * `output_bar` is output-major and represents the cotangent of the returned
+ * values.  The three result arrays use feature-major, output-major, and
+ * output order respectively: query_x_bar[input*n_query+query],
+ * weights_bar[output*n_inputs+input], and bias_bar[output]. */
+int fortml_cuda_dense_plan_vjp(void *opaque_plan, const double *query_x,
+                               const double *output_bar, int n_query,
+                               double *query_x_bar, double *weights_bar,
+                               double *bias_bar);
+
 int fortml_cuda_dense_plan_destroy(void *opaque_plan);
 
 #ifdef __cplusplus

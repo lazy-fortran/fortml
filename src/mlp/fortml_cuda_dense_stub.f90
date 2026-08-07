@@ -41,6 +41,18 @@ function fortml_cuda_dense_plan_jvp(handle, query_x, query_x_dot, weights_dot, &
     value = 1_c_int
 end function fortml_cuda_dense_plan_jvp
 
+function fortml_cuda_dense_plan_vjp(handle, query_x, output_bar, n_query, &
+        query_x_bar, weights_bar, bias_bar) bind(C, &
+        name="fortml_cuda_dense_plan_vjp") result(value)
+    use, intrinsic :: iso_c_binding, only: c_int, c_ptr
+    implicit none
+    type(c_ptr), value :: handle, query_x, output_bar
+    integer(c_int), value :: n_query
+    type(c_ptr), value :: query_x_bar, weights_bar, bias_bar
+    integer(c_int) :: value
+    value = 1_c_int
+end function fortml_cuda_dense_plan_vjp
+
 function fortml_cuda_dense_plan_destroy(handle) bind(C, &
         name="fortml_cuda_dense_plan_destroy") result(value)
     use, intrinsic :: iso_c_binding, only: c_int, c_ptr

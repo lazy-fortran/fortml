@@ -102,6 +102,53 @@ void cpu_jvp_oracle(const double *weights, const double *bias,
   }
 }
 
+void cpu_vjp_oracle(const double *weights, const double *bias,
+                    int n_inputs, int n_outputs, int activation,
+                    const double *query_x, const double *output_bar,
+                    int n_query, double *query_x_bar, double *weights_bar,
+                    double *bias_bar) {
+  for (int input = 0; input < n_inputs; ++input) {
+    for (int query = 0; query < n_query; ++query) {
+      double value = 0.0;
+      for (int output = 0; output < n_outputs; ++output) {
+        double affine = bias[output];
+        for (int feature = 0; feature < n_inputs; ++feature)
+          affine += weights[output * n_inputs + feature] *
+              query_x[feature * n_query + query];
+        value += weights[output * n_inputs + input] *
+            output_bar[output * n_query + query] *
+            cpu_activation_derivative(affine, activation);
+      }
+      query_x_bar[input * n_query + query] = value;
+    }
+  }
+  for (int output = 0; output < n_outputs; ++output) {
+    double bias_value = 0.0;
+    for (int input = 0; input < n_inputs; ++input) {
+      double value = 0.0;
+      for (int query = 0; query < n_query; ++query) {
+        double affine = bias[output];
+        for (int feature = 0; feature < n_inputs; ++feature)
+          affine += weights[output * n_inputs + feature] *
+              query_x[feature * n_query + query];
+        const double cotangent = output_bar[output * n_query + query] *
+            cpu_activation_derivative(affine, activation);
+        value += cotangent * query_x[input * n_query + query];
+      }
+      weights_bar[output * n_inputs + input] = value;
+    }
+    for (int query = 0; query < n_query; ++query) {
+      double affine = bias[output];
+      for (int input = 0; input < n_inputs; ++input)
+        affine += weights[output * n_inputs + input] *
+            query_x[input * n_query + query];
+      bias_value += output_bar[output * n_query + query] *
+          cpu_activation_derivative(affine, activation);
+    }
+    bias_bar[output] = bias_value;
+  }
+}
+
 bool close(const double *actual, const double *expected, int count,
            double *max_error) {
   *max_error = 0.0;
@@ -136,10 +183,19 @@ int main() {
   const double weights_dot[n_inputs * n_outputs] = {
       -0.2, 0.3, 0.1, 0.4, -0.5, 0.6};
   const double bias_dot[n_outputs] = {0.15, -0.25};
+  const double output_bar[n_outputs * n_query] = {
+      0.2, -0.4, 0.7, 0.1, -0.3,
+      -0.6, 0.5, -0.2, 0.8, 0.15};
   double expected[n_outputs * n_query];
   double actual[n_outputs * n_query];
   double expected_dot[n_outputs * n_query];
   double actual_dot[n_outputs * n_query];
+  double expected_query_bar[n_inputs * n_query];
+  double actual_query_bar[n_inputs * n_query];
+  double expected_weights_bar[n_inputs * n_outputs];
+  double actual_weights_bar[n_inputs * n_outputs];
+  double expected_bias_bar[n_outputs];
+  double actual_bias_bar[n_outputs];
   double max_error = 0.0;
 
   // Exercise every activation exposed by fortml_mlp.  The CPU recurrence is
@@ -169,6 +225,23 @@ int main() {
     if (!close(actual_dot, expected_dot, n_outputs * n_query, &jvp_error))
       return 8;
     max_error = fmax(max_error, jvp_error);
+    cpu_vjp_oracle(weights, bias, n_inputs, n_outputs, activation, query_x,
+                   output_bar, n_query, expected_query_bar,
+                   expected_weights_bar, expected_bias_bar);
+    if (fortml_cuda_dense_plan_vjp(plan, query_x, output_bar, n_query,
+                                   actual_query_bar, actual_weights_bar,
+                                   actual_bias_bar) != 0)
+      return 13;
+    double vjp_error = 0.0;
+    if (!close(actual_query_bar, expected_query_bar, n_inputs * n_query,
+               &vjp_error))
+      return 14;
+    if (!close(actual_weights_bar, expected_weights_bar,
+               n_inputs * n_outputs, &vjp_error))
+      return 15;
+    if (!close(actual_bias_bar, expected_bias_bar, n_outputs, &vjp_error))
+      return 16;
+    max_error = fmax(max_error, vjp_error);
     if (fortml_cuda_dense_plan_destroy(plan) != 0) return 6;
   }
 
@@ -202,7 +275,7 @@ int main() {
                                     0, &bad_plan) == 0 || bad_plan != nullptr)
     return 12;
 
-  std::printf("PASS CUDA resident dense affine oracle (activations 8, JVPs 8, repeats 2, max error %.3e)\n",
+  std::printf("PASS CUDA resident dense affine oracle (activations 8, JVPs 8, VJPs 8, repeats 2, max error %.3e)\n",
               max_error);
   return 0;
 }

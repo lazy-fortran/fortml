@@ -12,6 +12,8 @@ program test_cuda_dense_api
     real(real64) :: weights(3, 2), bias(2), query_x(4, 3), outputs(4, 2)
     real(real64) :: query_x_dot(4, 3), weights_dot(3, 2), bias_dot(2)
     real(real64) :: outputs_dot(4, 2)
+    real(real64) :: output_bar(4, 2), query_x_bar(4, 3)
+    real(real64) :: weights_bar(3, 2), bias_bar(2)
     integer :: failures
 
     failures = 0
@@ -27,6 +29,10 @@ program test_cuda_dense_api
     weights_dot = -0.5_real64
     bias_dot = 0.125_real64
     outputs_dot = -17.0_real64
+    output_bar = 0.5_real64
+    query_x_bar = -23.0_real64
+    weights_bar = -29.0_real64
+    bias_bar = -31.0_real64
 
     call plan%create(weights, bias, MLP_TANH, -1, status)
     call check(status%code == FORTNUM_DOMAIN_ERROR, &
@@ -49,6 +55,12 @@ program test_cuda_dense_api
     call check(all(outputs == -31.0_real64) .and. &
         all(outputs_dot == -17.0_real64), &
         "JVP refusal preserves outputs", failures)
+    call plan%vjp(query_x, output_bar, query_x_bar, weights_bar, bias_bar, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
+        "VJP refusal is typed", failures)
+    call check(all(query_x_bar == -23.0_real64) .and. &
+        all(weights_bar == -29.0_real64) .and. all(bias_bar == -31.0_real64), &
+        "VJP refusal preserves outputs", failures)
     call plan%destroy(status)
     call check(status%code == FORTNUM_OK .and. .not. plan%fitted(), &
         "destroy clears plan state", failures)

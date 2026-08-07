@@ -55,6 +55,16 @@ module fortml_cuda_dense_api
             integer(c_int) :: value
         end function fortml_cuda_dense_plan_jvp
 
+        function fortml_cuda_dense_plan_vjp( &
+                handle, query_x, output_bar, n_query, query_x_bar, weights_bar, &
+                bias_bar) bind(C, name="fortml_cuda_dense_plan_vjp") result(value)
+            import :: c_double, c_int, c_ptr
+            type(c_ptr), value :: handle, query_x, output_bar
+            integer(c_int), value :: n_query
+            type(c_ptr), value :: query_x_bar, weights_bar, bias_bar
+            integer(c_int) :: value
+        end function fortml_cuda_dense_plan_vjp
+
         function fortml_cuda_dense_plan_destroy(handle) bind(C, &
                 name="fortml_cuda_dense_plan_destroy") result(value)
             import :: c_int, c_ptr
@@ -74,6 +84,7 @@ module fortml_cuda_dense_api
         procedure, public :: create => cuda_dense_plan_create
         procedure, public :: predict => cuda_dense_plan_predict
         procedure, public :: jvp => cuda_dense_plan_jvp
+        procedure, public :: vjp => cuda_dense_plan_vjp
         procedure, public :: destroy => cuda_dense_plan_destroy
         procedure, public :: fitted => cuda_dense_plan_fitted
         procedure, public :: input_count => cuda_dense_plan_input_count
@@ -229,6 +240,65 @@ contains
         end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine cuda_dense_plan_jvp
+
+    subroutine cuda_dense_plan_vjp(self, query_x, output_bar, query_x_bar, &
+            weights_bar, bias_bar, status)
+        class(cuda_dense_plan_t), intent(in) :: self
+        real(dp), intent(in), target, contiguous :: query_x(:, :), output_bar(:, :)
+        real(dp), intent(inout), target, contiguous :: query_x_bar(:, :), &
+            weights_bar(:, :), bias_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(c_double), allocatable, target :: query_x_bar_c(:), weights_bar_c(:), &
+            bias_bar_c(:)
+        type(c_ptr) :: query_ptr, output_bar_ptr, query_bar_ptr
+        type(c_ptr) :: weights_bar_ptr, bias_bar_ptr
+        integer(c_int) :: code
+        integer :: input, output, position
+
+        if (.not. c_associated(self%handle)) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "CUDA dense wrapper: plan is not fitted")
+            return
+        end if
+        if (size(query_x, 2) /= self%n_inputs .or. &
+            size(output_bar, 1) /= size(query_x, 1) .or. &
+            size(output_bar, 2) /= self%n_outputs .or. &
+            any(shape(query_x_bar) /= shape(query_x)) .or. &
+            size(weights_bar, 1) /= self%n_inputs .or. &
+            size(weights_bar, 2) /= self%n_outputs .or. &
+            size(bias_bar) /= self%n_outputs .or. size(query_x, 1) < 1 .or. &
+            any(.not. ieee_is_finite(query_x)) .or. &
+            any(.not. ieee_is_finite(output_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "CUDA dense wrapper: VJP query, cotangent, or output shape is invalid")
+            return
+        end if
+        allocate(query_x_bar_c(self%n_inputs*size(query_x, 1)), &
+            weights_bar_c(self%n_inputs*self%n_outputs), bias_bar_c(self%n_outputs))
+        query_ptr = c_loc(query_x)
+        output_bar_ptr = c_loc(output_bar)
+        query_bar_ptr = c_loc(query_x_bar_c)
+        weights_bar_ptr = c_loc(weights_bar_c)
+        bias_bar_ptr = c_loc(bias_bar_c)
+        code = fortml_cuda_dense_plan_vjp(self%handle, query_ptr, output_bar_ptr, &
+            int(size(query_x, 1), c_int), query_bar_ptr, weights_bar_ptr, &
+            bias_bar_ptr)
+        if (code /= 0_c_int) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "CUDA dense wrapper: resident VJP failed")
+            return
+        end if
+        query_x_bar = reshape(query_x_bar_c, shape(query_x_bar))
+        position = 0
+        do output = 1, self%n_outputs
+            do input = 1, self%n_inputs
+                position = position + 1
+                weights_bar(input, output) = weights_bar_c(position)
+            end do
+        end do
+        bias_bar = bias_bar_c
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine cuda_dense_plan_vjp
 
     subroutine cuda_dense_plan_destroy(self, status)
         class(cuda_dense_plan_t), intent(inout) :: self

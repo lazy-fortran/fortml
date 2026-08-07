@@ -125,6 +125,52 @@ __global__ void dense_jvp_kernel(
   }
 }
 
+__global__ void dense_vjp_zbar_kernel(
+    const DensePlan plan, const double *query_x, const double *output_bar,
+    int n_query, double *zbar) {
+  const int flat = blockIdx.x * blockDim.x + threadIdx.x;
+  const int count = plan.n_outputs * n_query;
+  if (flat >= count) return;
+  const int output = flat / n_query;
+  const int query = flat - output * n_query;
+  double value = plan.bias[output];
+  for (int input = 0; input < plan.n_inputs; ++input)
+    value += plan.weights[output * plan.n_inputs + input] *
+        query_x[input * n_query + query];
+  zbar[flat] = output_bar[flat] * activation_derivative(value, plan.activation);
+}
+
+__global__ void dense_vjp_input_kernel(
+    const DensePlan plan, const double *zbar, int n_query,
+    double *query_x_bar) {
+  const int flat = blockIdx.x * blockDim.x + threadIdx.x;
+  const int count = plan.n_inputs * n_query;
+  if (flat >= count) return;
+  const int input = flat / n_query;
+  const int query = flat - input * n_query;
+  double value = 0.0;
+  for (int output = 0; output < plan.n_outputs; ++output)
+    value += plan.weights[output * plan.n_inputs + input] *
+        zbar[output * n_query + query];
+  query_x_bar[flat] = value;
+}
+
+__global__ void dense_vjp_parameter_kernel(
+    const DensePlan plan, const double *query_x, const double *zbar,
+    int n_query, double *weights_bar, double *bias_bar) {
+  const int output = blockIdx.x * blockDim.x + threadIdx.x;
+  if (output >= plan.n_outputs) return;
+  double bias_value = 0.0;
+  for (int query = 0; query < n_query; ++query) {
+    const double cotangent = zbar[output * n_query + query];
+    bias_value += cotangent;
+    for (int input = 0; input < plan.n_inputs; ++input)
+      weights_bar[output * plan.n_inputs + input] +=
+          cotangent * query_x[input * n_query + query];
+  }
+  bias_bar[output] = bias_value;
+}
+
 bool finite_array(const double *values, std::size_t count) {
   for (std::size_t i = 0; i < count; ++i)
     if (!std::isfinite(values[i])) return false;
@@ -303,6 +349,89 @@ extern "C" int fortml_cuda_dense_plan_jvp(
   cudaFree(device_bias_dot);
   cudaFree(device_output);
   cudaFree(device_output_dot);
+  return static_cast<int>(error);
+}
+
+extern "C" int fortml_cuda_dense_plan_vjp(
+    void *opaque_plan, const double *query_x, const double *output_bar,
+    int n_query, double *query_x_bar, double *weights_bar, double *bias_bar) {
+  DensePlan *plan = static_cast<DensePlan *>(opaque_plan);
+  if (plan == nullptr || query_x == nullptr || output_bar == nullptr ||
+      query_x_bar == nullptr || weights_bar == nullptr || bias_bar == nullptr ||
+      n_query < 1 ||
+      !finite_array(query_x, static_cast<std::size_t>(plan->n_inputs) * n_query) ||
+      !finite_array(output_bar,
+                    static_cast<std::size_t>(plan->n_outputs) * n_query))
+    return static_cast<int>(cudaErrorInvalidValue);
+
+  cudaError_t error = cudaSetDevice(plan->device_index);
+  if (error != cudaSuccess) return static_cast<int>(error);
+  double *device_query = nullptr;
+  double *device_output_bar = nullptr;
+  double *device_zbar = nullptr;
+  double *device_query_bar = nullptr;
+  double *device_weights_bar = nullptr;
+  double *device_bias_bar = nullptr;
+  const std::size_t query_count =
+      static_cast<std::size_t>(plan->n_inputs) * n_query;
+  const std::size_t output_count =
+      static_cast<std::size_t>(plan->n_outputs) * n_query;
+  const std::size_t weight_count =
+      static_cast<std::size_t>(plan->n_inputs) * plan->n_outputs;
+  error = cudaMalloc(&device_query, sizeof(double) * query_count);
+  if (error == cudaSuccess)
+    error = cudaMalloc(&device_output_bar, sizeof(double) * output_count);
+  if (error == cudaSuccess)
+    error = cudaMalloc(&device_zbar, sizeof(double) * output_count);
+  if (error == cudaSuccess)
+    error = cudaMalloc(&device_query_bar, sizeof(double) * query_count);
+  if (error == cudaSuccess)
+    error = cudaMalloc(&device_weights_bar, sizeof(double) * weight_count);
+  if (error == cudaSuccess)
+    error = cudaMalloc(&device_bias_bar, sizeof(double) * plan->n_outputs);
+  if (error == cudaSuccess)
+    error = cudaMemset(device_weights_bar, 0, sizeof(double) * weight_count);
+  if (error == cudaSuccess)
+    error = cudaMemcpy(device_query, query_x, sizeof(double) * query_count,
+                       cudaMemcpyHostToDevice);
+  if (error == cudaSuccess)
+    error = cudaMemcpy(device_output_bar, output_bar,
+                       sizeof(double) * output_count, cudaMemcpyHostToDevice);
+  if (error == cudaSuccess) {
+    dense_vjp_zbar_kernel<<<(output_count + kThreads - 1) / kThreads,
+                            kThreads>>>(*plan, device_query, device_output_bar,
+                                        n_query, device_zbar);
+    error = cudaGetLastError();
+  }
+  if (error == cudaSuccess) {
+    dense_vjp_input_kernel<<<(query_count + kThreads - 1) / kThreads,
+                             kThreads>>>(*plan, device_zbar, n_query,
+                                         device_query_bar);
+    error = cudaGetLastError();
+  }
+  if (error == cudaSuccess) {
+    dense_vjp_parameter_kernel<<<(plan->n_outputs + kThreads - 1) / kThreads,
+                                 kThreads>>>(*plan, device_query, device_zbar,
+                                             n_query, device_weights_bar,
+                                             device_bias_bar);
+    error = cudaGetLastError();
+  }
+  if (error == cudaSuccess) error = cudaDeviceSynchronize();
+  if (error == cudaSuccess)
+    error = cudaMemcpy(query_x_bar, device_query_bar,
+                       sizeof(double) * query_count, cudaMemcpyDeviceToHost);
+  if (error == cudaSuccess)
+    error = cudaMemcpy(weights_bar, device_weights_bar,
+                       sizeof(double) * weight_count, cudaMemcpyDeviceToHost);
+  if (error == cudaSuccess)
+    error = cudaMemcpy(bias_bar, device_bias_bar,
+                       sizeof(double) * plan->n_outputs, cudaMemcpyDeviceToHost);
+  cudaFree(device_query);
+  cudaFree(device_output_bar);
+  cudaFree(device_zbar);
+  cudaFree(device_query_bar);
+  cudaFree(device_weights_bar);
+  cudaFree(device_bias_bar);
   return static_cast<int>(error);
 }
 
