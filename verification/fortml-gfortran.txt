@@ -1,5 +1,5 @@
 Verification date: 2026-08-08
-FortML revision: dbb43896d7848d8fe455db37ef8474301869fee6
+FortML revision: f56cdcd5f286cad57740622e1f02af74dd88e95e
 FortAD dependency: clean origin/main 3a3e94263a40f6a349f179f6ff5b982da7f1d930
 FortNum dependency: clean origin/main 38bc0e578ec5c6c0e636e8fdd3844f54f9e3e473
 Command: fo (clean FortML/FortAD verification worktrees under /mnt/storage)
