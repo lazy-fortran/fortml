@@ -18,6 +18,7 @@ module fortml_parameter_registry
     use fortml_logistic_regression, only: logistic_regression_t
     use fortml_softmax_regression, only: softmax_regression_t
     use fortml_pipeline, only: basis_pipeline_t, sequential_basis_pipeline_t
+    use fortml_mlp_chain, only: mlp_chain_t
     implicit none
     private
 
@@ -73,7 +74,7 @@ module fortml_parameter_registry
         parameter_block_from_gp, parameter_block_from_ridge, &
         parameter_block_from_elastic_net, parameter_block_from_logistic, &
         parameter_block_from_softmax, parameter_block_from_basis_pipeline, &
-        parameter_block_from_sequential_pipeline
+        parameter_block_from_sequential_pipeline, parameter_block_from_mlp_chain
 
 contains
 
@@ -288,6 +289,16 @@ contains
             mlp_parameter_get, mlp_parameter_set, status)
     end subroutine parameter_block_from_mlp
 
+    subroutine parameter_block_from_mlp_chain(self, name, model, status)
+        type(parameter_block_t), intent(out) :: self
+        character(*), intent(in) :: name
+        type(mlp_chain_t), target, intent(inout) :: model
+        type(fortnum_status_t), intent(out) :: status
+
+        call self%initialize(name, model%parameter_count(), model, &
+            mlp_chain_parameter_get, mlp_chain_parameter_set, status)
+    end subroutine parameter_block_from_mlp_chain
+
     subroutine parameter_block_from_kernel(self, name, model, status)
         type(parameter_block_t), intent(out) :: self
         character(*), intent(in) :: name
@@ -401,6 +412,42 @@ contains
                 "MLP parameter block: context has the wrong type")
         end select
     end subroutine mlp_parameter_set
+
+    subroutine mlp_chain_parameter_get(context, values, status)
+        class(*), pointer, intent(in) :: context
+        real(dp), intent(out) :: values(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: parameters(:)
+
+        select type (model => context)
+            type is (mlp_chain_t)
+            if (size(values) /= model%parameter_count()) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP chain parameter block: output shape is invalid")
+                return
+            end if
+            parameters = model%parameters()
+            values = parameters
+            call status_set(status, FORTNUM_OK, "")
+        class default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP chain parameter block: context has the wrong type")
+        end select
+    end subroutine mlp_chain_parameter_get
+
+    subroutine mlp_chain_parameter_set(context, values, status)
+        class(*), pointer, intent(inout) :: context
+        real(dp), intent(in) :: values(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        select type (model => context)
+            type is (mlp_chain_t)
+            call model%set_parameters(values, status)
+        class default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP chain parameter block: context has the wrong type")
+        end select
+    end subroutine mlp_chain_parameter_set
 
     subroutine kernel_parameter_get(context, values, status)
         class(*), pointer, intent(in) :: context

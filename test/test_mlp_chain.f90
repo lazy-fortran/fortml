@@ -7,6 +7,8 @@ program test_mlp_chain
     use fortml_mlp_chain, only: mlp_chain_t, mlp_chain_objective_t, &
         mlp_chain_lbfgsb_options_t, mlp_chain_lbfgsb_result_t, &
         mlp_chain_optimize_lbfgsb
+    use fortml_parameter_registry, only: parameter_block_t, parameter_registry_t, &
+        parameter_block_from_mlp_chain
     implicit none
 
     integer :: failures
@@ -26,7 +28,9 @@ contains
     subroutine test_composed_products(failures)
         integer, intent(inout) :: failures
         type(mlp_t) :: first, second
-        type(mlp_chain_t) :: chain
+        type(mlp_chain_t), target :: chain
+        type(parameter_block_t) :: chain_block
+        type(parameter_registry_t) :: registry
         type(fortnum_status_t) :: status
         real(dp) :: x(3, 2), dx(3, 2), u(3, 1)
         real(dp) :: y(3, 1), dy(3, 1), y_plus(3, 1), y_minus(3, 1)
@@ -51,6 +55,12 @@ contains
         call chain%parameter_range("head", first_range, last_range, found)
         call check(found .and. first_range == 7 .and. last_range == 9, &
             "deterministic named parameter range", failures)
+        call parameter_block_from_mlp_chain(chain_block, "network", chain, status)
+        call registry%add(chain_block, status)
+        allocate(theta(chain%parameter_count()))
+        call registry%pack(theta, status)
+        call check(status_ok(status) .and. maxval(abs(theta - chain%parameters())) < 1.0e-14_dp, &
+            "parameter registry routes the composed tree", failures)
 
         x = reshape([0.2_dp, -0.4_dp, 0.7_dp, 1.1_dp, -0.3_dp, 0.9_dp], shape(x))
         dx = reshape([-0.1_dp, 0.3_dp, 0.4_dp, -0.2_dp, 0.6_dp, 0.5_dp], shape(dx))
