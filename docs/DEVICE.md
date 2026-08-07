@@ -98,3 +98,22 @@ inspection boundary. `test/run_cuda_rmsprop_state.sh` checks centered momentum
 updates against an independent CPU recurrence. This kernel does not provide
 MLP gradient or hypergradient evaluation. Those autodiff-sensitive paths stay
 on the FortAD/FortSym reference until a complete device graph exists.
+
+## Direct AdamW state kernel
+
+The corresponding no-autodiff AdamW recurrence is exposed by the native CUDA C
+API in `src/mlp/fortml_cuda_adamw.cu` (declarations are in
+`src/mlp/fortml_cuda_adamw.h`). `fortml_cuda_adamw_plan_create` selects an
+explicit nonnegative CUDA device and copies the initial parameters and moment
+state to that device. `fortml_cuda_adamw_plan_step` requires a gradient pointer
+that is already resident on the selected device; it performs the bias-corrected
+first/second-moment update and decoupled weight decay without a hidden host
+copy. `plan_download` is the explicit inspection/checkpoint boundary and
+`plan_destroy` releases the resident state. `test/run_cuda_adamw_state.sh`
+compares a multi-step trajectory against an independent CPU AdamW recurrence.
+
+This fixed recurrence is intentionally not an MLP autodiff implementation. It
+does not evaluate network gradients, JVP/VJP/HVP products, or hypergradients.
+Those paths must remain on the FortAD/FortSym graph until a complete resident
+device graph and an independent derivative oracle are available. A caller
+must therefore not report end-to-end GPU training from this state kernel alone.
