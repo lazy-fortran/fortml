@@ -1121,6 +1121,13 @@ CUDA refusal until private CART storage is safely bound to the C ABI.
   active-set knot/PAVA-parameter derivatives explicitly. CPU complete-array
   behavior is benchmarked; selected CUDA contexts return a typed refusal until
   a resident calibration kernel is linked.
+- [x] Add `multiclass_probability_calibrator_t` for sorted arbitrary integer
+  classes and one positive softmax temperature. The weighted NLL fit, stable
+  probabilities, first-class tie policy, logit/temperature JVP/VJP products,
+  and explicit CUDA refusal are independently covered by
+  `test_multiclass_probability_calibration` and the grouped calibration
+  benchmark lane. Multiclass Platt and isotonic maps remain typed
+  `FORTNUM_NOT_IMPLEMENTED` policies rather than independent binary fits.
 
 Acceptance: hand-computed separable and nonseparable fixtures cover labels,
 weights, ties, probabilities, multilabel thresholds, and ordinal cut points.

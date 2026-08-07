@@ -799,6 +799,23 @@ probability is strictly greater, preserving first-class ties.  The explicit
 device contract supports selected CPU contexts; CUDA returns
 `FORTNUM_NOT_IMPLEMENTED` until a resident calibration kernel is linked.
 
+`multiclass_probability_calibrator_t` provides the matching multiclass
+temperature contract.  `fit(logits,labels,status[,options,sample_weight,state])`
+requires one logit column for every observed class, stores arbitrary integer
+classes in ascending order, and fits one positive temperature by weighted
+softmax negative log likelihood.  `predict_proba` returns columns in that
+stored class order and uses a stable row-wise softmax; `predict` chooses the
+first class on equal probabilities.  Platt and isotonic multiclass policies
+return `FORTNUM_NOT_IMPLEMENTED` rather than fitting independent binary maps.
+
+The multiclass `predict_proba_jvp/vjp` products cover logit tangents and
+cotangents.  The parameter products cover the single packed `[temperature]`
+coordinate and agree with finite differences and the adjoint identity.
+`classes`, `parameters`, `parameter_count`, `method`, `fitted`, and
+`device_supported` expose the fitted state.  Selected CPU prediction is
+supported; CUDA prediction returns a typed `FORTNUM_NOT_IMPLEMENTED` refusal
+until a resident calibration kernel is linked.
+
 ### `fortml_regression_metrics`
 
 The regression metric procedures accept row-oriented target and prediction

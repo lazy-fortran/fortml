@@ -77,6 +77,44 @@ module fortml_probability_calibration
         procedure, public :: device_supported => probability_calibration_device_supported
     end type probability_calibrator_t
 
+    type, public :: multiclass_probability_calibrator_t
+        !! Multiclass positive-temperature calibration for logit matrices.
+        !!
+        !! The input rows are logits in ascending sorted-class column order.
+        !! Fit learns one positive scalar temperature from a weighted softmax
+        !! NLL.  All products are analytic for fixed fitted state; Platt and
+        !! isotonic multiclass policies remain explicit capability refusals.
+        private
+        real(dp) :: temperature = 1.0_dp
+        integer, allocatable :: class_label(:)
+        logical :: is_fitted = .false.
+    contains
+        procedure, public :: fit => multiclass_probability_calibration_fit
+        procedure, public :: predict_proba => &
+            multiclass_probability_calibration_predict_proba
+        procedure, public :: predict_proba_device => &
+            multiclass_probability_calibration_predict_proba_device
+        procedure, public :: predict_proba_jvp => &
+            multiclass_probability_calibration_predict_proba_jvp
+        procedure, public :: predict_proba_vjp => &
+            multiclass_probability_calibration_predict_proba_vjp
+        procedure, public :: predict_proba_parameter_jvp => &
+            multiclass_probability_calibration_predict_proba_parameter_jvp
+        procedure, public :: predict_proba_parameter_vjp => &
+            multiclass_probability_calibration_predict_proba_parameter_vjp
+        procedure, public :: predict => multiclass_probability_calibration_predict
+        procedure, public :: set_parameters => &
+            multiclass_probability_calibration_set_parameters
+        procedure, public :: parameters => multiclass_probability_calibration_parameters
+        procedure, public :: parameter_count => &
+            multiclass_probability_calibration_parameter_count
+        procedure, public :: classes => multiclass_probability_calibration_classes
+        procedure, public :: method => multiclass_probability_calibration_method
+        procedure, public :: fitted => multiclass_probability_calibration_fitted
+        procedure, public :: device_supported => &
+            multiclass_probability_calibration_device_supported
+    end type multiclass_probability_calibrator_t
+
     public :: probability_calibration_fit
     public :: probability_calibration_predict_proba
     public :: probability_calibration_predict_proba_device
@@ -85,8 +123,633 @@ module fortml_probability_calibration
     public :: probability_calibration_predict_proba_parameter_jvp
     public :: probability_calibration_predict_proba_parameter_vjp
     public :: probability_calibration_predict
+    public :: multiclass_probability_calibration_fit
+    public :: multiclass_probability_calibration_predict_proba
+    public :: multiclass_probability_calibration_predict_proba_device
+    public :: multiclass_probability_calibration_predict_proba_jvp
+    public :: multiclass_probability_calibration_predict_proba_vjp
+    public :: multiclass_probability_calibration_predict_proba_parameter_jvp
+    public :: multiclass_probability_calibration_predict_proba_parameter_vjp
+    public :: multiclass_probability_calibration_predict
 
 contains
+
+    subroutine multiclass_probability_calibration_fit(self, scores, labels, status, &
+            options, sample_weight, state)
+        class(multiclass_probability_calibrator_t), intent(out) :: self
+        real(dp), intent(in) :: scores(:, :)
+        integer, intent(in) :: labels(:)
+        type(fortnum_status_t), intent(out) :: status
+        type(probability_calibration_options_t), intent(in), optional :: options
+        real(dp), intent(in), optional :: sample_weight(:)
+        type(probability_calibration_state_t), intent(out), optional :: state
+        type(probability_calibration_options_t) :: requested
+        type(probability_calibration_state_t) :: result
+        integer, allocatable :: classes(:), encoded(:)
+        real(dp), allocatable :: weights(:)
+        real(dp) :: total_weight
+        integer :: i, j
+
+        self%is_fitted = .false.
+        self%temperature = 1.0_dp
+        if (allocated(self%class_label)) deallocate(self%class_label)
+        requested = probability_calibration_options_t()
+        if (present(options)) requested = options
+        result = probability_calibration_state_t()
+        result%method = CALIBRATION_TEMPERATURE
+        if (present(state)) state = result
+        if (.not. valid_options(requested)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multiclass probability calibration fit: options are invalid")
+            return
+        end if
+        if (requested%method /= CALIBRATION_TEMPERATURE) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "multiclass probability calibration fit: only temperature scaling is implemented")
+            return
+        end if
+        if (size(scores, 1) < 1 .or. size(scores, 2) < 2 .or. &
+            size(labels) /= size(scores, 1) .or. any(.not. ieee_is_finite(scores))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multiclass probability calibration fit: scores and labels have invalid shape")
+            return
+        end if
+        call sorted_unique_labels(labels, classes)
+        if (size(classes) /= size(scores, 2)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multiclass probability calibration fit: logit columns must match sorted classes")
+            return
+        end if
+        allocate(weights(size(labels)), encoded(size(labels)))
+        weights = 1.0_dp
+        if (present(sample_weight)) then
+            if (size(sample_weight) /= size(labels)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "multiclass probability calibration fit: weight shape is invalid")
+                return
+            end if
+            if (any(.not. ieee_is_finite(sample_weight)) .or. &
+                any(sample_weight < 0.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "multiclass probability calibration fit: weights must be finite and nonnegative")
+                return
+            end if
+            weights = sample_weight
+        end if
+        total_weight = sum(weights)
+        if (.not. ieee_is_finite(total_weight) .or. total_weight <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multiclass probability calibration fit: weights need positive total mass")
+            return
+        end if
+        do j = 1, size(classes)
+            if (sum(weights, mask=labels == classes(j)) <= 0.0_dp) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "multiclass probability calibration fit: every class needs positive weight")
+                return
+            end if
+        end do
+        do i = 1, size(labels)
+            encoded(i) = 0
+            do j = 1, size(classes)
+                if (labels(i) == classes(j)) then
+                    encoded(i) = j
+                    exit
+                end if
+            end do
+            if (encoded(i) == 0) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "multiclass probability calibration fit: label encoding failed")
+                return
+            end if
+        end do
+        allocate(self%class_label(size(classes)))
+        self%class_label = classes
+        call fit_multiclass_temperature(self, scores, encoded, weights, total_weight, &
+            requested, result, status)
+        if (status%code /= FORTNUM_OK) then
+            if (present(state)) state = result
+            return
+        end if
+        self%is_fitted = .true.
+        if (present(state)) state = result
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine multiclass_probability_calibration_fit
+
+    subroutine fit_multiclass_temperature(self, scores, encoded, weights, total_weight, &
+            options, state, status)
+        class(multiclass_probability_calibrator_t), intent(inout) :: self
+        real(dp), intent(in) :: scores(:, :), weights(:), total_weight
+        integer, intent(in) :: encoded(:)
+        type(probability_calibration_options_t), intent(in) :: options
+        type(probability_calibration_state_t), intent(inout) :: state
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: probabilities(:, :)
+        real(dp) :: alpha, alpha_trial, objective, objective_trial
+        real(dp) :: gradient, hessian, step, step_scale, step_norm
+        real(dp) :: alpha_floor
+        integer :: iteration, line_search
+
+        allocate(probabilities(size(scores, 1), size(scores, 2)))
+        alpha_floor = sqrt(tiny(1.0_dp))
+        alpha = 1.0_dp
+        call multiclass_temperature_objective(scores, encoded, weights, total_weight, &
+            alpha, options%l2, probabilities, objective, status)
+        if (status%code /= FORTNUM_OK) return
+        state%iterations = 0
+        state%final_step_norm = huge(1.0_dp)
+        state%converged = .false.
+        do iteration = 1, options%max_iterations
+            call multiclass_temperature_derivatives(scores, encoded, weights, total_weight, &
+                alpha, options%l2, probabilities, gradient, hessian)
+            if (.not. ieee_is_finite(gradient) .or. .not. ieee_is_finite(hessian) .or. &
+                hessian <= 0.0_dp) then
+                call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                    "multiclass probability calibration fit: invalid Newton curvature")
+                return
+            end if
+            step = gradient/hessian
+            step_scale = 1.0_dp
+            alpha_trial = max(alpha_floor, alpha - step_scale*options%damping*step)
+            call multiclass_temperature_objective(scores, encoded, weights, total_weight, &
+                alpha_trial, options%l2, probabilities, objective_trial, status)
+            if (status%code /= FORTNUM_OK) return
+            do line_search = 1, 30
+                if (objective_trial <= objective .or. step_scale <= 1.0e-8_dp) exit
+                step_scale = 0.5_dp*step_scale
+                alpha_trial = max(alpha_floor, alpha - step_scale*options%damping*step)
+                call multiclass_temperature_objective(scores, encoded, weights, total_weight, &
+                    alpha_trial, options%l2, probabilities, objective_trial, status)
+                if (status%code /= FORTNUM_OK) return
+            end do
+            step_norm = abs(alpha_trial-alpha)/max(1.0_dp, abs(alpha))
+            alpha = alpha_trial
+            objective = objective_trial
+            state%iterations = iteration
+            state%final_step_norm = step_norm
+            if (step_norm <= options%tolerance .or. abs(gradient) <= options%tolerance) then
+                state%converged = .true.
+                exit
+            end if
+        end do
+        if (.not. state%converged) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "multiclass probability calibration fit: iteration limit reached")
+            return
+        end if
+        self%temperature = 1.0_dp/alpha
+        state%objective = objective
+        state%method = CALIBRATION_TEMPERATURE
+        state%knot_count = 0
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine fit_multiclass_temperature
+
+    subroutine multiclass_temperature_objective(scores, encoded, weights, total_weight, &
+            alpha, l2, probabilities, value, status)
+        real(dp), intent(in) :: scores(:, :), weights(:), total_weight, alpha, l2
+        integer, intent(in) :: encoded(:)
+        real(dp), intent(out) :: probabilities(:, :), value
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: max_score, normalizer
+        integer :: i, class_index
+
+        value = 0.0_dp
+        do i = 1, size(scores, 1)
+            max_score = maxval(alpha*scores(i, :))
+            normalizer = sum(exp(alpha*scores(i, :) - max_score))
+            if (.not. ieee_is_finite(normalizer) .or. normalizer <= 0.0_dp) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "multiclass probability calibration fit: softmax normalizer is invalid")
+                return
+            end if
+            probabilities(i, :) = exp(alpha*scores(i, :) - max_score)/normalizer
+            class_index = encoded(i)
+            value = value + weights(i)*(log(normalizer) + max_score - &
+                alpha*scores(i, class_index))
+        end do
+        value = value/total_weight + 0.5_dp*l2*alpha*alpha
+        if (.not. ieee_is_finite(value)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multiclass probability calibration fit: objective is nonfinite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine multiclass_temperature_objective
+
+    subroutine multiclass_temperature_derivatives(scores, encoded, weights, total_weight, &
+            alpha, l2, probabilities, gradient, hessian)
+        real(dp), intent(in) :: scores(:, :), weights(:), total_weight, alpha, l2
+        integer, intent(in) :: encoded(:)
+        real(dp), intent(in) :: probabilities(:, :)
+        real(dp), intent(out) :: gradient, hessian
+        real(dp) :: mean_score, mean_square
+        integer :: i, class_index
+
+        gradient = l2*alpha
+        hessian = l2
+        do i = 1, size(scores, 1)
+            class_index = encoded(i)
+            mean_score = sum(probabilities(i, :)*scores(i, :))
+            mean_square = sum(probabilities(i, :)*scores(i, :)*scores(i, :))
+            gradient = gradient + weights(i)*(mean_score - scores(i, class_index))/total_weight
+            hessian = hessian + weights(i)*(mean_square - mean_score*mean_score)/total_weight
+        end do
+    end subroutine multiclass_temperature_derivatives
+
+    subroutine multiclass_probability_calibration_predict_proba(self, scores, &
+            probabilities, status)
+        class(multiclass_probability_calibrator_t), intent(in) :: self
+        real(dp), intent(in) :: scores(:, :)
+        real(dp), intent(out) :: probabilities(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. multiclass_prediction_valid(self, scores, probabilities, status)) return
+        call multiclass_softmax(self, scores, probabilities, status)
+    end subroutine multiclass_probability_calibration_predict_proba
+
+    subroutine multiclass_softmax(self, scores, probabilities, status)
+        class(multiclass_probability_calibrator_t), intent(in) :: self
+        real(dp), intent(in) :: scores(:, :)
+        real(dp), intent(out) :: probabilities(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: alpha, max_score, normalizer
+        integer :: i
+
+        alpha = 1.0_dp/self%temperature
+        do i = 1, size(scores, 1)
+            max_score = maxval(alpha*scores(i, :))
+            normalizer = sum(exp(alpha*scores(i, :) - max_score))
+            if (.not. ieee_is_finite(normalizer) .or. normalizer <= 0.0_dp) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "multiclass probability calibration prediction: softmax normalizer is invalid")
+                return
+            end if
+            probabilities(i, :) = exp(alpha*scores(i, :) - max_score)/normalizer
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine multiclass_softmax
+
+    subroutine multiclass_probability_calibration_predict_proba_device(self, device, &
+            scores, probabilities, status)
+        class(multiclass_probability_calibrator_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: scores(:, :)
+        real(dp), intent(out) :: probabilities(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multiclass probability calibration device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_proba(scores, probabilities, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "multiclass probability calibration device: no resident CUDA kernel is linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multiclass probability calibration device: device kind is invalid")
+        end select
+    end subroutine multiclass_probability_calibration_predict_proba_device
+
+    subroutine multiclass_probability_calibration_predict_proba_jvp(self, scores, &
+            scores_dot, probabilities, probabilities_dot, status)
+        class(multiclass_probability_calibrator_t), intent(in) :: self
+        real(dp), intent(in) :: scores(:, :), scores_dot(:, :)
+        real(dp), intent(out) :: probabilities(:, :), probabilities_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: alpha, tangent, dot_product
+        integer :: i, j
+
+        if (.not. multiclass_prediction_valid(self, scores, probabilities, status)) return
+        if (any(shape(scores_dot) /= shape(scores)) .or. &
+            any(.not. ieee_is_finite(scores_dot)) .or. &
+            any(shape(probabilities_dot) /= shape(probabilities))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multiclass probability calibration JVP: tangent or output shape is invalid")
+            return
+        end if
+        call multiclass_softmax(self, scores, probabilities, status)
+        if (status%code /= FORTNUM_OK) return
+        alpha = 1.0_dp/self%temperature
+        do i = 1, size(scores, 1)
+            tangent = alpha*scores_dot(i, 1)
+            dot_product = probabilities(i, 1)*tangent
+            probabilities_dot(i, 1) = probabilities(i, 1)*tangent
+            do j = 2, size(scores, 2)
+                tangent = alpha*scores_dot(i, j)
+                dot_product = dot_product + probabilities(i, j)*tangent
+                probabilities_dot(i, j) = probabilities(i, j)*tangent
+            end do
+            probabilities_dot(i, :) = probabilities_dot(i, :) - &
+                probabilities(i, :)*dot_product
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine multiclass_probability_calibration_predict_proba_jvp
+
+    subroutine multiclass_probability_calibration_predict_proba_vjp(self, scores, &
+            probabilities_bar, scores_bar, status)
+        class(multiclass_probability_calibrator_t), intent(in) :: self
+        real(dp), intent(in) :: scores(:, :), probabilities_bar(:, :)
+        real(dp), intent(out) :: scores_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: probabilities(:, :)
+        real(dp) :: dot_product, eta_bar, alpha
+        integer :: i, j
+
+        if (.not. multiclass_vjp_valid(self, scores, probabilities_bar, scores_bar, status)) return
+        allocate(probabilities(size(scores, 1), size(scores, 2)))
+        call multiclass_softmax(self, scores, probabilities, status)
+        if (status%code /= FORTNUM_OK) return
+        alpha = 1.0_dp/self%temperature
+        scores_bar = 0.0_dp
+        do i = 1, size(scores, 1)
+            dot_product = sum(probabilities(i, :)*probabilities_bar(i, :))
+            do j = 1, size(scores, 2)
+                eta_bar = probabilities(i, j)*(probabilities_bar(i, j)-dot_product)
+                scores_bar(i, j) = alpha*eta_bar
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine multiclass_probability_calibration_predict_proba_vjp
+
+    subroutine multiclass_probability_calibration_predict_proba_parameter_jvp(self, &
+            scores, parameters_dot, probabilities, probabilities_dot, status)
+        class(multiclass_probability_calibrator_t), intent(in) :: self
+        real(dp), intent(in) :: scores(:, :), parameters_dot(:)
+        real(dp), intent(out) :: probabilities(:, :), probabilities_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: alpha, alpha_dot, tangent, dot_product
+        integer :: i
+
+        if (.not. multiclass_prediction_valid(self, scores, probabilities, status)) return
+        if (size(parameters_dot) /= 1 .or. any(.not. ieee_is_finite(parameters_dot)) .or. &
+            any(shape(probabilities_dot) /= shape(probabilities))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multiclass probability calibration parameter JVP: tangent or output shape is invalid")
+            return
+        end if
+        call multiclass_softmax(self, scores, probabilities, status)
+        if (status%code /= FORTNUM_OK) return
+        alpha = 1.0_dp/self%temperature
+        alpha_dot = -parameters_dot(1)/self%temperature**2
+        do i = 1, size(scores, 1)
+            probabilities_dot(i, :) = (alpha_dot*scores(i, :))*probabilities(i, :)
+            dot_product = sum(probabilities_dot(i, :))
+            probabilities_dot(i, :) = probabilities_dot(i, :) - &
+                probabilities(i, :)*dot_product
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine multiclass_probability_calibration_predict_proba_parameter_jvp
+
+    subroutine multiclass_probability_calibration_predict_proba_parameter_vjp(self, scores, &
+            probabilities_bar, parameters_bar, status)
+        class(multiclass_probability_calibrator_t), intent(in) :: self
+        real(dp), intent(in) :: scores(:, :), probabilities_bar(:, :)
+        real(dp), intent(out) :: parameters_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: probabilities(:, :)
+        real(dp) :: dot_product, eta_bar, alpha_bar
+        integer :: i, j
+
+        if (size(parameters_bar) > 0) parameters_bar = 0.0_dp
+        if (.not. multiclass_parameter_vjp_valid(self, scores, probabilities_bar, &
+            parameters_bar, status)) return
+        allocate(probabilities(size(scores, 1), size(scores, 2)))
+        call multiclass_softmax(self, scores, probabilities, status)
+        if (status%code /= FORTNUM_OK) return
+        alpha_bar = 0.0_dp
+        do i = 1, size(scores, 1)
+            dot_product = sum(probabilities(i, :)*probabilities_bar(i, :))
+            do j = 1, size(scores, 2)
+                eta_bar = probabilities(i, j)*(probabilities_bar(i, j)-dot_product)
+                alpha_bar = alpha_bar + scores(i, j)*eta_bar
+            end do
+        end do
+        parameters_bar(1) = -alpha_bar/self%temperature**2
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine multiclass_probability_calibration_predict_proba_parameter_vjp
+
+    subroutine multiclass_probability_calibration_predict(self, scores, labels, status)
+        class(multiclass_probability_calibrator_t), intent(in) :: self
+        real(dp), intent(in) :: scores(:, :)
+        integer, intent(out) :: labels(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: probabilities(:, :)
+        integer :: i, j, best_class
+
+        if (.not. self%is_fitted) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multiclass probability calibration predict: model is not fitted")
+            return
+        end if
+        if (.not. allocated(self%class_label)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multiclass probability calibration predict: class metadata is absent")
+            return
+        end if
+        if (size(labels) /= size(scores, 1)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multiclass probability calibration predict: output shape is invalid")
+            return
+        end if
+        allocate(probabilities(size(scores, 1), size(self%class_label)))
+        call self%predict_proba(scores, probabilities, status)
+        if (status%code /= FORTNUM_OK) return
+        do i = 1, size(scores, 1)
+            best_class = 1
+            do j = 2, size(self%class_label)
+                if (probabilities(i, j) > probabilities(i, best_class)) best_class = j
+            end do
+            labels(i) = self%class_label(best_class)
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine multiclass_probability_calibration_predict
+
+    subroutine multiclass_probability_calibration_set_parameters(self, parameters, status)
+        class(multiclass_probability_calibrator_t), intent(inout) :: self
+        real(dp), intent(in) :: parameters(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. self%is_fitted) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multiclass probability calibration set_parameters: model is not fitted")
+            return
+        end if
+        if (size(parameters) /= 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multiclass probability calibration set_parameters: temperature must be positive")
+            return
+        end if
+        if (.not. ieee_is_finite(parameters(1)) .or. parameters(1) <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multiclass probability calibration set_parameters: temperature must be positive")
+            return
+        end if
+        self%temperature = parameters(1)
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine multiclass_probability_calibration_set_parameters
+
+    function multiclass_probability_calibration_parameters(self) result(parameters)
+        class(multiclass_probability_calibrator_t), intent(in) :: self
+        real(dp), allocatable :: parameters(:)
+
+        if (self%is_fitted) then
+            allocate(parameters(1))
+            parameters = [self%temperature]
+        else
+            allocate(parameters(0))
+        end if
+    end function multiclass_probability_calibration_parameters
+
+    integer function multiclass_probability_calibration_parameter_count(self) result(count)
+        class(multiclass_probability_calibrator_t), intent(in) :: self
+
+        if (self%is_fitted) then
+            count = 1
+        else
+            count = 0
+        end if
+    end function multiclass_probability_calibration_parameter_count
+
+    function multiclass_probability_calibration_classes(self) result(classes)
+        class(multiclass_probability_calibrator_t), intent(in) :: self
+        integer, allocatable :: classes(:)
+
+        if (allocated(self%class_label)) then
+            allocate(classes(size(self%class_label)))
+            classes = self%class_label
+        else
+            allocate(classes(0))
+        end if
+    end function multiclass_probability_calibration_classes
+
+    integer function multiclass_probability_calibration_method(self) result(method)
+        class(multiclass_probability_calibrator_t), intent(in) :: self
+
+        method = CALIBRATION_TEMPERATURE
+    end function multiclass_probability_calibration_method
+
+    logical function multiclass_probability_calibration_fitted(self) result(fitted)
+        class(multiclass_probability_calibrator_t), intent(in) :: self
+
+        fitted = self%is_fitted
+    end function multiclass_probability_calibration_fitted
+
+    logical function multiclass_probability_calibration_device_supported(self, device_kind) &
+            result(supported)
+        class(multiclass_probability_calibrator_t), intent(in) :: self
+        integer, intent(in) :: device_kind
+
+        select case (device_kind)
+        case (FORTML_DEVICE_CPU)
+            supported = self%is_fitted
+        case (FORTML_DEVICE_CUDA)
+            supported = .false.
+        case default
+            supported = .false.
+        end select
+    end function multiclass_probability_calibration_device_supported
+
+    logical function multiclass_prediction_valid(self, scores, probabilities, status) &
+            result(valid)
+        class(multiclass_probability_calibrator_t), intent(in) :: self
+        real(dp), intent(in) :: scores(:, :), probabilities(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        valid = .false.
+        if (.not. self%is_fitted) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multiclass probability calibration prediction: model is not fitted")
+            return
+        end if
+        if (.not. allocated(self%class_label)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multiclass probability calibration prediction: class metadata is absent")
+            return
+        end if
+        if (size(scores, 1) < 1 .or. size(scores, 2) /= size(self%class_label) .or. &
+            any(shape(probabilities) /= [size(scores, 1), size(self%class_label)]) .or. &
+            any(.not. ieee_is_finite(scores))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multiclass probability calibration prediction: shape or logits are invalid")
+            return
+        end if
+        valid = .true.
+        call status_set(status, FORTNUM_OK, "")
+    end function multiclass_prediction_valid
+
+    logical function multiclass_vjp_valid(self, scores, probabilities_bar, scores_bar, status) &
+            result(valid)
+        class(multiclass_probability_calibrator_t), intent(in) :: self
+        real(dp), intent(in) :: scores(:, :), probabilities_bar(:, :)
+        real(dp), intent(out) :: scores_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        valid = .false.
+        if (.not. multiclass_prediction_valid(self, scores, probabilities_bar, status)) return
+        if (any(shape(scores_bar) /= shape(scores)) .or. &
+            any(.not. ieee_is_finite(probabilities_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multiclass probability calibration VJP: shape or cotangent is invalid")
+            return
+        end if
+        valid = .true.
+        call status_set(status, FORTNUM_OK, "")
+    end function multiclass_vjp_valid
+
+    logical function multiclass_parameter_vjp_valid(self, scores, probabilities_bar, &
+            parameters_bar, status) result(valid)
+        class(multiclass_probability_calibrator_t), intent(in) :: self
+        real(dp), intent(in) :: scores(:, :), probabilities_bar(:, :)
+        real(dp), intent(out) :: parameters_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        valid = .false.
+        if (.not. multiclass_prediction_valid(self, scores, probabilities_bar, status)) return
+        if (size(parameters_bar) /= 1 .or. any(.not. ieee_is_finite(probabilities_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multiclass probability calibration parameter VJP: shape or cotangent is invalid")
+            return
+        end if
+        valid = .true.
+        call status_set(status, FORTNUM_OK, "")
+    end function multiclass_parameter_vjp_valid
+
+    subroutine sorted_unique_labels(labels, classes)
+        integer, intent(in) :: labels(:)
+        integer, allocatable, intent(out) :: classes(:)
+        integer, allocatable :: sorted(:)
+        integer :: i, j, key, n_unique
+
+        allocate(sorted(size(labels)))
+        sorted = labels
+        do i = 2, size(sorted)
+            key = sorted(i)
+            j = i - 1
+            do while (j >= 1)
+                if (sorted(j) <= key) exit
+                sorted(j + 1) = sorted(j)
+                j = j - 1
+            end do
+            sorted(j + 1) = key
+        end do
+        n_unique = 1
+        do i = 2, size(sorted)
+            if (sorted(i) /= sorted(i - 1)) n_unique = n_unique + 1
+        end do
+        allocate(classes(n_unique))
+        classes(1) = sorted(1)
+        n_unique = 1
+        do i = 2, size(sorted)
+            if (sorted(i) /= sorted(i - 1)) then
+                n_unique = n_unique + 1
+                classes(n_unique) = sorted(i)
+            end if
+        end do
+    end subroutine sorted_unique_labels
 
     subroutine probability_calibration_fit(self, scores, labels, status, options, &
             sample_weight, state)
