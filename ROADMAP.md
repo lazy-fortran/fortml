@@ -1570,6 +1570,10 @@ peak memory, and batch-size scaling with the same correctness gate as training.
   logistic/probit lanes with independent NumPy oracles. The release records are
   [`results/XGBOOST.md`](../fortml-bench/results/XGBOOST.md) and
   [`results/CLASSIFICATION_EXTENSIONS.md`](../fortml-bench/results/CLASSIFICATION_EXTENSIONS.md).
+- [x] Extend the derivative-observation GP benchmark and independent covariance
+  oracle to the cosine kernel. Query JVP/VJP, joint covariance, and explicit
+  CUDA refusal rows are recorded in
+  [`results/DERIVATIVE_GP.md`](../fortml-bench/results/DERIVATIVE_GP.md).
 - [x] Add ComplementNB and integer one-hot benchmark lanes with independent
   NumPy oracles, contextual scikit-learn rows, explicit categorical derivative
   refusals, and parseable unavailable FortML release-target rows. The release
