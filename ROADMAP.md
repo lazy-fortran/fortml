@@ -135,12 +135,16 @@ only listed as gaps:
   covered by `test_xgboost_serialization`; distributed model state remains open.
   The release evidence is `results/XGBOOST_SERIALIZATION.md` in `fortml-bench`.
 
-The FortBO and FortMC companion pins were rechecked against their `main`
-branches on this date: FortBO `0141e22` and FortMC `4dde0cc`. Their roadmaps
-remain authoritative for acquisition and sampling algorithms; FortML owns the
-posterior/log-density protocols and does not embed sampler or acquisition
-state. Any future adapter must add a focused oracle, typed GPU/refusal row,
-and a benchmark record in the companion harness.
+The FortBO and FortMC companion pins were rechecked against their remote
+`main` branches on this date: FortBO
+`0141e227a4af86cb6a088757d4e83dab5b353403` and FortMC
+`4dde0ccdc37b4c331126605406b08e1f3bda4f59`. Their roadmaps remain authoritative
+for acquisition and sampling algorithms; FortML owns the posterior/log-density
+protocols and does not embed sampler or acquisition state. The pinned
+repositories currently provide only their public protocol boundaries, so no
+FortML sampler or acquisition adapter is counted as implemented. Any future
+adapter must add a focused oracle, typed GPU/refusal row, and a benchmark record
+in the companion harness.
 
 ## Bayesian ecosystem split
 
@@ -168,13 +172,17 @@ FortNum + FortAD + FortSym + FortOpt
        FortMC            FortBO
 ```
 
-FortML must not depend on FortMC or FortBO. FortMC consumes a generic FortML
-log-density contract (`value`, `gradient`, packed parameters, transforms, and
-optional HVP). FortBO consumes a generic FortML posterior contract (moments,
-joint or reparameterized samples, covariance, and input derivatives), and uses
-FortOpt for bounded local acquisition optimization. This keeps HMC/NUTS and BO
-usable for GP and neural models without adding sampler or acquisition state to
-every estimator.
+FortML must not depend on FortMC or FortBO. The current FortMC boundary accepts
+only a position-valued `value` and a position-gradient `gradient`; packed
+parameter registries, transforms, HVPs, samplers, and chain state remain in its
+roadmap. The current FortBO boundary accepts posterior `sample` and
+`mean_variance` products; covariance, input derivatives, acquisitions, and
+candidate-search state remain in its roadmap. The planned FortML adapters will
+extend these minimal boundaries with the richer log-density and posterior
+products (including moments, joint or reparameterized samples, covariance, and
+input derivatives) once the companion contracts land. This keeps HMC/NUTS and
+BO usable for GP and neural models without adding sampler or acquisition state
+to every estimator.
 
 All three repositories use MIT licensing. FortAD is the default source of
 general derivatives. FortSym is preferred for compact fixed transition,
