@@ -888,7 +888,8 @@ contains
                 end do
             end do
         end if
-        if (any(.not. ieee_is_finite(weights)) .or. sum(weights) <= 0.0_dp) then
+        if (any(.not. ieee_is_finite(weights)) .or. .not. ieee_is_finite(sum(weights)) .or. &
+            sum(weights) <= 0.0_dp) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "calibrated MLP fit: effective weights have no positive mass")
             return
