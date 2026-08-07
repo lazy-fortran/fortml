@@ -12,6 +12,7 @@ program test_mlp_batch_iterator
 
     failures = 0
     call test_iterator_oracle(failures)
+    call test_gradient_accumulation_oracle(failures)
     call test_training_schedule_and_clipping(failures)
     if (failures > 0) then
         write (*, '(a,i0)') "FAIL MLP batch/trainer cases: ", failures
@@ -63,6 +64,60 @@ contains
         call iterator%initialize(0, status)
         call check(.not. status_ok(status), "invalid iterator refusal", failures)
     end subroutine test_iterator_oracle
+
+    subroutine test_gradient_accumulation_oracle(failures)
+        integer, intent(inout) :: failures
+        type(mlp_t) :: full_batch_model, accumulated_model
+        type(mlp_training_options_t) :: full_options, accumulated_options
+        type(mlp_training_state_t) :: full_state, accumulated_state
+        type(fortnum_status_t) :: status
+        real(dp) :: x(5, 1), target(5, 1)
+        real(dp), allocatable :: full_parameters(:), accumulated_parameters(:)
+
+        x(:, 1) = [1.0_dp, 2.0_dp, 3.0_dp, 4.0_dp, 5.0_dp]
+        target(:, 1) = [2.0_dp, 1.0_dp, 3.0_dp, 5.0_dp, 4.0_dp]
+        call full_batch_model%initialize([1, 1], status, output_activation=MLP_LINEAR)
+        call check(status_ok(status), "full-batch model initialize", failures)
+        call full_batch_model%set_parameters([0.25_dp, -0.5_dp], status)
+        call check(status_ok(status), "full-batch model parameters", failures)
+        call accumulated_model%initialize([1, 1], status, output_activation=MLP_LINEAR)
+        call check(status_ok(status), "accumulated model initialize", failures)
+        call accumulated_model%set_parameters([0.25_dp, -0.5_dp], status)
+        call check(status_ok(status), "accumulated model parameters", failures)
+
+        full_options%max_epochs = 1
+        full_options%batch_size = 5
+        full_options%accumulation_steps = 1
+        full_options%learning_rate = 0.01_dp
+        full_options%l2 = 0.2_dp
+        full_options%tolerance = 0.0_dp
+        full_options%restore_best = .false.
+        accumulated_options = full_options
+        accumulated_options%batch_size = 2
+        accumulated_options%accumulation_steps = 3
+
+        call mlp_train(full_batch_model, x, target, status, full_options, &
+            full_state)
+        call check(status_ok(status), "full-batch training status", failures)
+        call mlp_train(accumulated_model, x, target, status, &
+            accumulated_options, accumulated_state)
+        call check(status_ok(status), "accumulated training status", failures)
+        full_parameters = full_batch_model%parameters()
+        accumulated_parameters = accumulated_model%parameters()
+        call check(full_state%updates == 1 .and. full_state%microbatches == 1, &
+            "full-batch update accounting", failures)
+        call check(accumulated_state%updates == 1 .and. &
+            accumulated_state%microbatches == 3 .and. &
+            accumulated_state%accumulation_steps == 3, &
+            "accumulated update accounting", failures)
+        call check(size(full_parameters) == size(accumulated_parameters) .and. &
+            maxval(abs(full_parameters - accumulated_parameters)) < 1.0e-12_dp, &
+            "sample-weighted accumulation matches full batch", failures)
+
+        accumulated_options%accumulation_steps = 0
+        call mlp_train(accumulated_model, x, target, status, accumulated_options)
+        call check(.not. status_ok(status), "invalid accumulation refusal", failures)
+    end subroutine test_gradient_accumulation_oracle
 
     subroutine test_training_schedule_and_clipping(failures)
         integer, intent(inout) :: failures

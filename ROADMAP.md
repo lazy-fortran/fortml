@@ -255,10 +255,10 @@ The source inventory is dated 2026-08-07.
 
 | Work package | State | Implemented baseline | Package exit |
 | --- | --- | --- | --- |
-| Classification | Partial | `fortml_logistic_regression` and `fortml_softmax_regression` provide binary and multinomial integer-label fitting with sample-weighted reductions, `fortml_mlp_classifier` adds deterministic multiclass logits training with Adam, `fortml_gp_classification` adds binary Laplace logistic/probit inference, `fortml_gp_multiclass_classification` adds one-vs-rest multiclass GP probabilities, and shared metrics cover accuracy, balanced accuracy, confusion, precision/recall/F1, weighted accuracy, and log loss. | Binary and multiclass linear, neural, GP, and boosted-tree classifiers share label, probability, weighting, and metric conventions. |
+| Classification | Partial | `fortml_logistic_regression` and `fortml_softmax_regression` provide binary and multinomial integer-label fitting with sample-weighted reductions, `fortml_mlp_classifier` adds deterministic multiclass logits training with Adam, `fortml_gp_classification` adds binary Laplace logistic/probit inference, `fortml_gp_multiclass_classification` adds one-vs-rest multiclass GP probabilities, and shared metrics cover accuracy, top-k, balanced accuracy, confusion, precision/recall/F1, Brier, binary Matthews, weighted accuracy, and log loss. | Binary and multiclass linear, neural, GP, and boosted-tree classifiers share label, probability, weighting, and metric conventions. |
 | Estimator contracts, pipelines, and bases | Partial | `basis_map_t`, horizontal and sequential basis pipelines, fitted standard/min-max scalers with input JVPs, row-oriented sample conventions, status objects, and the parameter registry are public. | Fitted transformers and estimators compose without data leakage, expose routed parameters, and run through cross-validation. |
 | Tree boosting | Partial | `decision_stump_t`, squared-loss `gradient_boosting_regressor_t`, `xgboost_t`, and `xgboost_multiclass_t` provide deterministic exhaustive split products. The XGBoost-style lane has exact depth-one squared/logistic gradients, Hessians, regularized gains, Newton leaves, diagnostics, binary probabilities, one-vs-rest multiclass probabilities, and piecewise input JVP/refusal behavior. | Regression and classification trees support deterministic histogram boosting, validation-based stopping, missing values, deeper growth, and model persistence. |
-| Training infrastructure | Partial | Model-specific gradients, exact MSE+L2 neural HVPs including the L2 mixed hyperparameter block, `fortopt_adam` integration, deterministic seeded batch cursors, per-update learning-rate callbacks, norm clipping, natural-gradient seams, and seeded variational draws exist. | One trainer owns batches, optimizer state, schedules, clipping, validation, early stopping, callbacks, and resumable state for every model with a completed trainer adapter. |
+| Training infrastructure | Partial | Model-specific gradients, exact MSE+L2 neural HVPs including the L2 mixed hyperparameter block, `fortopt_adam` integration, deterministic seeded batch cursors, per-update learning-rate callbacks, norm clipping, sample-weighted gradient accumulation, natural-gradient seams, and seeded variational draws exist. | One trainer owns batches, optimizer state, schedules, clipping, validation, early stopping, callbacks, and resumable state for every model with a completed trainer adapter. |
 | GP derivatives and hyperparameters | Partial | Exact GP likelihood and prediction products include parameter gradients and HVPs. Mixed value and first-derivative observations can be fitted and predicted. | Exact, derivative, multi-output, sparse, and matrix-free GP families expose documented trainable parameters, scalar objectives, parameter gradients, and train-state adapters. |
 | GPU and device execution | Partial | Kernel, structured, and sparse operator products have selected OpenACC or CUDA paths, including resident CG for kernel operators. | Supported training and prediction workflows keep model, optimizer, and batch state resident on a selected device and have CPU parity tests. |
 | Serialization and distributed execution | Missing | No public model-file or distributed-execution contract exists. | Versioned model and trainer files round-trip across supported compilers, and MPI training or inference agrees with a one-rank oracle. |
@@ -277,6 +277,11 @@ The source inventory is dated 2026-08-07.
   with sample weights in linear and MLP classifiers.
 - [x] Add multinomial softmax regression with a numerically stable log-sum-exp
   objective, sorted integer labels, and the shared sample-weight reduction.
+- [x] Add packed coefficient/intercept parameters plus input-and-parameter JVP
+  and VJP products for binary logistic and multinomial softmax scores and
+  probabilities. Products validate finite tangents/cotangents, preserve the
+  sorted class convention, and refuse unfitted, malformed, or nonsmooth paths.
+  Classifier HVPs remain a separate second-order contract.
 - [x] Add a multiclass `mlp_classifier_t` adapter with a logits layer, stable
   softmax cross-entropy, deterministic Adam, sorted integer labels, probability
   normalization, and a packed parameter-gradient product. Binary, multilabel,
@@ -307,7 +312,8 @@ The source inventory is dated 2026-08-07.
   calibrated outputs. Heads expose loss, logits, probabilities, and derivative
   products separately so a user can train on logits without losing a stable
   deployment probability path.
-- [x] Add accuracy, balanced accuracy, confusion matrix, log loss, precision,
+- [x] Add accuracy, top-k accuracy, balanced accuracy, confusion matrix, log
+  loss, Brier score, binary Matthews correlation, precision,
   recall, and F1 with explicit class ordering, zero-support behavior, and
   weighted accuracy/log-loss semantics. Binary ROC AUC remains open.
 - [ ] Add probability calibration by sigmoid and isotonic fits after the base
@@ -363,7 +369,13 @@ return status errors.
   treatment of unseen or missing categories.
 - [x] Add sequential basis pipelines. Basis maps work as fitted or fixed
   pipeline stages and propagate chained JVP/VJP products.
-- [ ] Add parallel feature unions and column-wise transformers.
+- [x] Add column-selecting basis feature unions. `column_basis_pipeline_t`
+  validates one-based per-stage column lists, gathers selected inputs, packs
+  stage parameters, and routes exact JVP/VJP products with scatter-add input
+  cotangents. Cross-stage column reuse is deterministic. Duplicate indices
+  within a stage are rejected.
+- [ ] Add parallel feature-union execution, device-resident transforms, and
+  general column-wise transformer graphs beyond fixed basis maps.
 - [ ] Add named DAG composition with fan-out/fan-in, residual branches,
   conditional stages, and a cycle refusal. Pipeline nodes expose local
   parameter blocks so hyperparameter derivatives and optimizer routing remain
@@ -558,6 +570,11 @@ trials remain visible in the result schema.
   clipping to the MLP Adam trainer. The resulting state records the effective
   per-epoch rates and clipping count, with independent schedule, clipping, and
   iterator oracles.
+- [x] Add sample-weighted MLP gradient accumulation. `accumulation_steps`
+  flushes a configurable number of consecutive microbatches into one Adam
+  update, adds L2 exactly once, clips only the accumulated gradient, and flushes
+  an uneven final group. Independent tests compare one accumulated update with
+  the equivalent full-batch Adam update and check update/microbatch accounting.
 - [ ] Define objective and loss contracts with sum and mean reductions, sample
   weights, regularization terms, and named scalar diagnostics.
 - [ ] Define a module tree and parameter-tree API for nested neural networks.
@@ -572,6 +589,9 @@ trials remain visible in the result schema.
   behavior. Separate training and validation streams remain open.
 - [ ] Add a trainer that owns optimizer state, learning-rate schedules, gradient
   clipping, accumulation, validation intervals, early stopping, and callbacks.
+  The current MLP trainer now covers deterministic accumulation, schedules,
+  clipping, patience, and callbacks. Validation streams, event typing, and
+  resumable optimizer state remain open.
 - [ ] Add production optimizers and schedules: SGD with momentum/Nesterov,
   Adam/AdamW, RMSprop, Adagrad, L-BFGS/L-BFGS-B, natural gradient, cosine,
   one-cycle, warmup/decay, plateau, and user callbacks. Optimizer state is
@@ -580,9 +600,11 @@ trials remain visible in the result schema.
   master weights, deterministic accumulation modes, and explicit fp16/bf16/fp32
   capability reports. A mixed-precision result must pass a full-precision
   accuracy oracle before it can enter a performance report.
-- [ ] Add gradient accumulation, microbatching, activation checkpointing,
-  truncated BPTT, gradient centralization/noise, norm/value clipping, and
-  anomaly detection with parameter-path diagnostics.
+- [x] Add sample-weighted MLP microbatch accumulation with an explicit flush
+  boundary and exact full-batch equivalence for the MSE+L2 objective.
+- [ ] Add activation checkpointing, truncated BPTT, gradient
+  centralization/noise, value clipping, and anomaly detection with
+  parameter-path diagnostics.
 - [ ] Add callback and event contracts for logging, progress, validation,
   checkpoint, early stop, learning-rate changes, and recoverable failures.
   Callback order and failure propagation are deterministic and testable.

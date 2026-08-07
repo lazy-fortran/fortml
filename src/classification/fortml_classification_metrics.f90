@@ -17,6 +17,9 @@ module fortml_classification_metrics
     public :: classification_confusion_matrix
     public :: classification_precision_recall_f1
     public :: classification_log_loss
+    public :: classification_top_k_accuracy
+    public :: classification_brier_score
+    public :: classification_binary_matthews
 
 contains
 
@@ -122,7 +125,7 @@ contains
         recall = 0.0_dp
         f1 = 0.0_dp
         if (size(precision) /= size(classes) .or. size(recall) /= size(classes) &
-                .or. size(f1) /= size(classes)) then
+            .or. size(f1) /= size(classes)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "precision/recall/F1: output shape is invalid")
             return
@@ -158,8 +161,8 @@ contains
 
         value = 0.0_dp
         if (size(probabilities, 1) /= size(labels) .or. &
-                size(probabilities, 2) /= size(classes) .or. &
-                size(labels) < 1 .or. size(classes) < 2) then
+            size(probabilities, 2) /= size(classes) .or. &
+            size(labels) < 1 .or. size(classes) < 2) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "classification log loss: input shape is invalid")
             return
@@ -200,6 +203,175 @@ contains
         value = value/denominator
         call status_set(status, FORTNUM_OK, "")
     end subroutine classification_log_loss
+
+    subroutine classification_top_k_accuracy(probabilities, labels, classes, k, &
+            value, status, sample_weight)
+        !! Fraction of rows whose true class is among the deterministic top-k.
+        real(dp), intent(in) :: probabilities(:, :)
+        integer, intent(in) :: labels(:), classes(:), k
+        real(dp), intent(out) :: value
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
+        real(dp) :: denominator, weight, target_probability
+        integer :: i, j, class_index, rank
+
+        value = 0.0_dp
+        call validate_probability_inputs(probabilities, labels, classes, status, &
+            "top-k accuracy")
+        if (status%code /= FORTNUM_OK) return
+        if (k < 1 .or. k > size(classes)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "top-k accuracy: k is outside the class range")
+            return
+        end if
+        call validate_weights(size(labels), sample_weight, denominator, status, &
+            "top-k accuracy")
+        if (status%code /= FORTNUM_OK) return
+        do i = 1, size(labels)
+            class_index = class_position(labels(i), classes)
+            if (class_index == 0) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "top-k accuracy: label is not in classes")
+                return
+            end if
+            target_probability = probabilities(i, class_index)
+            rank = 1
+            do j = 1, size(classes)
+                if (probabilities(i, j) > target_probability) rank = rank + 1
+                if (probabilities(i, j) == target_probability .and. &
+                    j < class_index) rank = rank + 1
+            end do
+            weight = 1.0_dp
+            if (present(sample_weight)) weight = sample_weight(i)
+            if (rank <= k) value = value + weight
+        end do
+        value = value/denominator
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine classification_top_k_accuracy
+
+    subroutine classification_brier_score(probabilities, labels, classes, value, &
+            status, sample_weight)
+        !! Multiclass Brier score after row normalization of positive masses.
+        real(dp), intent(in) :: probabilities(:, :)
+        integer, intent(in) :: labels(:), classes(:)
+        real(dp), intent(out) :: value
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
+        real(dp) :: denominator, row_sum, target, weight
+        integer :: i, j, class_index
+
+        value = 0.0_dp
+        call validate_probability_inputs(probabilities, labels, classes, status, &
+            "Brier score")
+        if (status%code /= FORTNUM_OK) return
+        call validate_weights(size(labels), sample_weight, denominator, status, &
+            "Brier score")
+        if (status%code /= FORTNUM_OK) return
+        do i = 1, size(labels)
+            class_index = class_position(labels(i), classes)
+            if (class_index == 0) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "Brier score: label is not in classes")
+                return
+            end if
+            row_sum = sum(probabilities(i, :))
+            weight = 1.0_dp
+            if (present(sample_weight)) weight = sample_weight(i)
+            do j = 1, size(classes)
+                target = 0.0_dp
+                if (j == class_index) target = 1.0_dp
+                value = value + weight*(probabilities(i, j)/row_sum - target)**2
+            end do
+        end do
+        value = value/denominator
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine classification_brier_score
+
+    subroutine classification_binary_matthews(labels, predictions, classes, value, &
+            status, sample_weight)
+        !! Binary Matthews correlation coefficient with optional sample weights.
+        integer, intent(in) :: labels(:), predictions(:), classes(:)
+        real(dp), intent(out) :: value
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
+        real(dp) :: denominator, tp, tn, fp, fn, weight, determinant
+        integer :: i
+
+        value = 0.0_dp
+        call validate_label_vectors(labels, predictions, status, &
+            "binary Matthews correlation")
+        if (status%code /= FORTNUM_OK) return
+        if (size(classes) /= 2) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "binary Matthews correlation: exactly two classes are required")
+            return
+        end if
+        call validate_classes(classes, status, "binary Matthews correlation")
+        if (status%code /= FORTNUM_OK) return
+        call validate_weights(size(labels), sample_weight, denominator, status, &
+            "binary Matthews correlation")
+        if (status%code /= FORTNUM_OK) return
+        tp = 0.0_dp
+        tn = 0.0_dp
+        fp = 0.0_dp
+        fn = 0.0_dp
+        do i = 1, size(labels)
+            weight = 1.0_dp
+            if (present(sample_weight)) weight = sample_weight(i)
+            if (labels(i) == classes(2) .and. predictions(i) == classes(2)) then
+                tp = tp + weight
+            else if (labels(i) == classes(1) .and. predictions(i) == classes(1)) then
+                tn = tn + weight
+            else if (labels(i) == classes(1) .and. predictions(i) == classes(2)) then
+                fp = fp + weight
+            else if (labels(i) == classes(2) .and. predictions(i) == classes(1)) then
+                fn = fn + weight
+            else
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "binary Matthews correlation: label is not in classes")
+                return
+            end if
+        end do
+        determinant = tp*tn - fp*fn
+        denominator = sqrt((tp + fp)*(tp + fn)*(tn + fp)*(tn + fn))
+        if (denominator > 0.0_dp) value = determinant/denominator
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine classification_binary_matthews
+
+    subroutine validate_probability_inputs(probabilities, labels, classes, status, &
+            context)
+        real(dp), intent(in) :: probabilities(:, :)
+        integer, intent(in) :: labels(:), classes(:)
+        type(fortnum_status_t), intent(out) :: status
+        character(*), intent(in) :: context
+        real(dp) :: row_sum
+        integer :: i
+
+        if (size(probabilities, 1) /= size(labels) .or. &
+            size(probabilities, 2) /= size(classes) .or. &
+            size(labels) < 1 .or. size(classes) < 2) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                trim(context)//": input shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(probabilities)) .or. &
+            any(probabilities < 0.0_dp)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                trim(context)//": probabilities must be finite and nonnegative")
+            return
+        end if
+        call validate_classes(classes, status, context)
+        if (status%code /= FORTNUM_OK) return
+        do i = 1, size(labels)
+            row_sum = sum(probabilities(i, :))
+            if (.not. ieee_is_finite(row_sum) .or. row_sum <= 0.0_dp) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    trim(context)//": each probability row needs positive mass")
+                return
+            end if
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine validate_probability_inputs
 
     subroutine validate_label_vectors(labels, predictions, status, context)
         integer, intent(in) :: labels(:), predictions(:)
@@ -250,7 +422,7 @@ contains
             return
         end if
         if (size(sample_weight) /= n .or. any(.not. ieee_is_finite(sample_weight)) &
-                .or. any(sample_weight < 0.0_dp)) then
+            .or. any(sample_weight < 0.0_dp)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 trim(context)//": weights must be finite and nonnegative")
             return

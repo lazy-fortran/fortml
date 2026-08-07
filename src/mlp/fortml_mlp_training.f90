@@ -39,6 +39,7 @@ module fortml_mlp_training
     type, public :: mlp_training_options_t
         integer :: max_epochs = 1000
         integer :: batch_size = 0
+        integer :: accumulation_steps = 1
         integer :: patience = 0
         integer :: shuffle_seed = 17
         logical :: shuffle = .false.
@@ -59,6 +60,8 @@ module fortml_mlp_training
     type, public :: mlp_training_state_t
         integer :: epochs = 0
         integer :: updates = 0
+        integer :: microbatches = 0
+        integer :: accumulation_steps = 1
         integer :: best_epoch = 0
         logical :: converged = .false.
         logical :: early_stopped = .false.
@@ -526,6 +529,7 @@ contains
         type(adam_t) :: optimizer
         type(mlp_batch_iterator_t) :: iterator
         real(dp), allocatable :: theta(:), best_theta(:), gradient(:)
+        real(dp), allocatable :: accumulated_gradient(:)
         real(dp), allocatable :: x_batch(:, :), target_batch(:, :)
         integer, allocatable :: batch_indices(:)
         real(dp) :: loss, l2_gradient, gradient_norm, improvement
@@ -533,6 +537,7 @@ contains
         real(dp) :: effective_rate, raw_gradient_norm
         integer :: n_samples, n_outputs, n_parameters
         integer :: batch, epoch
+        integer :: microbatch_count, accumulated_samples
         integer :: stale_epochs
         logical :: stop_now, has_batch
 
@@ -555,8 +560,10 @@ contains
         theta = model%parameters()
         allocate(best_theta, source=theta)
         allocate(gradient(n_parameters))
+        allocate(accumulated_gradient(n_parameters))
         allocate(result%loss_history(config%max_epochs))
         allocate(result%learning_rate_history(config%max_epochs))
+        result%accumulation_steps = config%accumulation_steps
         call mlp_loss_value_gradient(model, x, target, config%l2, loss, &
             gradient, l2_gradient, status)
         if (status%code /= FORTNUM_OK) then
@@ -587,6 +594,9 @@ contains
                 if (present(state)) state = result
                 return
             end if
+            accumulated_gradient = 0.0_dp
+            accumulated_samples = 0
+            microbatch_count = 0
             has_batch = .true.
             do while (has_batch)
                 call iterator%next_batch(batch_indices, has_batch, status)
@@ -599,45 +609,70 @@ contains
                 allocate(target_batch(size(batch_indices), n_outputs))
                 x_batch = x(batch_indices, :)
                 target_batch = target(batch_indices, :)
+                ! Accumulate only the data term.  Add the L2 penalty once at
+                ! the optimizer boundary so it is not counted once per
+                ! microbatch.
                 call mlp_loss_value_gradient(model, x_batch, target_batch, &
-                    config%l2, loss, gradient, l2_gradient, status)
+                    0.0_dp, loss, gradient, l2_gradient, status)
                 deallocate(x_batch, target_batch)
                 if (status%code /= FORTNUM_OK) then
                     if (present(state)) state = result
                     return
                 end if
-                raw_gradient_norm = sqrt(sum(gradient*gradient))
-                if (config%gradient_clip_norm > 0.0_dp .and. &
-                    raw_gradient_norm > config%gradient_clip_norm) then
-                    gradient = gradient*config%gradient_clip_norm/raw_gradient_norm
-                    result%gradient_clipped_updates = &
-                        result%gradient_clipped_updates + 1
+                accumulated_gradient = accumulated_gradient + &
+                    real(size(batch_indices), dp)*gradient
+                accumulated_samples = accumulated_samples + size(batch_indices)
+                microbatch_count = microbatch_count + 1
+                result%microbatches = result%microbatches + 1
+
+                ! Flush at the configured boundary or at the uneven end of an
+                ! epoch.  The latter keeps every sample in the final update.
+                if (microbatch_count >= config%accumulation_steps .or. &
+                    iterator%current_position() > n_samples) then
+                    if (microbatch_count > 0) then
+                        gradient = accumulated_gradient/ &
+                            real(accumulated_samples, dp)
+                        theta = model%parameters()
+                        gradient = gradient + config%l2*theta
+                        raw_gradient_norm = sqrt(sum(gradient*gradient))
+                        if (config%gradient_clip_norm > 0.0_dp .and. &
+                            raw_gradient_norm > config%gradient_clip_norm) then
+                            gradient = gradient*config%gradient_clip_norm/ &
+                                raw_gradient_norm
+                            result%gradient_clipped_updates = &
+                                result%gradient_clipped_updates + 1
+                        end if
+                        effective_rate = config%learning_rate
+                        if (associated(config%learning_rate_schedule)) then
+                            call config%learning_rate_schedule(epoch, &
+                                result%updates + 1, config%learning_rate, &
+                                effective_rate)
+                        end if
+                        if (.not. ieee_is_finite(effective_rate) .or. &
+                            effective_rate <= 0.0_dp) then
+                            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                                "MLP train: schedule returned an invalid learning rate")
+                            if (present(state)) state = result
+                            return
+                        end if
+                        optimizer%learning_rate = effective_rate
+                        result%last_learning_rate = effective_rate
+                        call optimizer%step(theta, gradient, status)
+                        if (status%code /= FORTNUM_OK) then
+                            if (present(state)) state = result
+                            return
+                        end if
+                        call model%set_parameters(theta, status)
+                        if (status%code /= FORTNUM_OK) then
+                            if (present(state)) state = result
+                            return
+                        end if
+                        result%updates = result%updates + 1
+                        accumulated_gradient = 0.0_dp
+                        accumulated_samples = 0
+                        microbatch_count = 0
+                    end if
                 end if
-                effective_rate = config%learning_rate
-                if (associated(config%learning_rate_schedule)) then
-                    call config%learning_rate_schedule(epoch, result%updates + 1, &
-                        config%learning_rate, effective_rate)
-                end if
-                if (.not. ieee_is_finite(effective_rate) .or. &
-                    effective_rate <= 0.0_dp) then
-                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
-                        "MLP train: schedule returned an invalid learning rate")
-                    if (present(state)) state = result
-                    return
-                end if
-                optimizer%learning_rate = effective_rate
-                result%last_learning_rate = effective_rate
-                call optimizer%step(theta, gradient, status)
-                if (status%code /= FORTNUM_OK) then
-                    if (present(state)) state = result
-                    return
-                end if
-                call model%set_parameters(theta, status)
-                if (status%code /= FORTNUM_OK) then
-                    if (present(state)) state = result
-                    return
-                end if
-                result%updates = result%updates + 1
             end do
 
             call mlp_loss_value_gradient(model, x, target, config%l2, loss, &
@@ -705,6 +740,7 @@ contains
         type(mlp_training_options_t), intent(in) :: options
 
         valid = options%max_epochs >= 1 .and. options%batch_size >= 0 .and. &
+            options%accumulation_steps >= 1 .and. &
             options%patience >= 0 .and. options%learning_rate > 0.0_dp .and. &
             options%beta1 >= 0.0_dp .and. options%beta1 < 1.0_dp .and. &
             options%beta2 >= 0.0_dp .and. options%beta2 < 1.0_dp .and. &

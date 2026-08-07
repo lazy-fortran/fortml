@@ -1,7 +1,9 @@
 program test_classification_metrics
     use fortml_classification_metrics, only: classification_accuracy, &
         classification_balanced_accuracy, classification_confusion_matrix, &
-        classification_precision_recall_f1, classification_log_loss
+        classification_precision_recall_f1, classification_log_loss, &
+        classification_top_k_accuracy, classification_brier_score, &
+        classification_binary_matthews
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_ok
     implicit none
@@ -11,6 +13,7 @@ program test_classification_metrics
     failures = 0
     call test_metric_oracles(failures)
     call test_weighted_log_loss(failures)
+    call test_extended_metrics(failures)
     call test_refusals(failures)
     if (failures > 0) then
         write (*, '(a,i0)') "FAIL classification metric cases: ", failures
@@ -90,6 +93,45 @@ contains
             "weighted accuracy oracle", failures)
     end subroutine test_weighted_log_loss
 
+    subroutine test_extended_metrics(failures)
+        integer, intent(inout) :: failures
+        type(fortnum_status_t) :: status
+        integer, parameter :: labels(4) = [0, 1, 2, 2]
+        integer, parameter :: predictions(4) = [0, 2, 1, 2]
+        integer, parameter :: classes(3) = [0, 1, 2]
+        real(dp), parameter :: probabilities(4, 3) = reshape([ &
+            0.70_dp, 0.10_dp, 0.20_dp, 0.20_dp, &
+            0.20_dp, 0.60_dp, 0.30_dp, 0.50_dp, &
+            0.10_dp, 0.30_dp, 0.50_dp, 0.30_dp], [4, 3])
+        real(dp) :: top1, top2, brier, matthews, expected_brier
+
+        call classification_top_k_accuracy(probabilities, labels, classes, 1, &
+            top1, status)
+        call check(status_ok(status), "top-1 accuracy status", failures)
+        call check(abs(top1 - 0.75_dp) < 1.0e-14_dp, &
+            "top-1 accuracy oracle", failures)
+        call classification_top_k_accuracy(probabilities, labels, classes, 2, &
+            top2, status)
+        call check(status_ok(status), "top-2 accuracy status", failures)
+        call check(abs(top2 - 1.0_dp) < 1.0e-14_dp, &
+            "top-2 accuracy oracle", failures)
+
+        expected_brier = ((0.3_dp**2 + 0.2_dp**2 + 0.1_dp**2) + &
+            (0.1_dp**2 + 0.4_dp**2 + 0.3_dp**2) + &
+            (0.2_dp**2 + 0.3_dp**2 + 0.5_dp**2) + &
+            (0.2_dp**2 + 0.5_dp**2 + 0.7_dp**2))/4.0_dp
+        call classification_brier_score(probabilities, labels, classes, brier, status)
+        call check(status_ok(status), "Brier score status", failures)
+        call check(abs(brier - expected_brier) < 1.0e-14_dp, &
+            "Brier score oracle", failures)
+
+        call classification_binary_matthews([0, 0, 1, 1], [0, 1, 1, 1], &
+            [0, 1], matthews, status)
+        call check(status_ok(status), "binary Matthews status", failures)
+        call check(abs(matthews - 0.5773502691896258_dp) < 1.0e-14_dp, &
+            "binary Matthews oracle", failures)
+    end subroutine test_extended_metrics
+
     subroutine test_refusals(failures)
         integer, intent(inout) :: failures
         type(fortnum_status_t) :: status
@@ -104,6 +146,11 @@ contains
         call classification_log_loss(reshape([0.5_dp, -0.5_dp], [1, 2]), [1], &
             [0, 1], value, status)
         call check(.not. status_ok(status), "negative probability refusal", failures)
+        call classification_top_k_accuracy(reshape([0.5_dp, 0.5_dp], [1, 2]), [1], &
+            [0, 1], 0, value, status)
+        call check(.not. status_ok(status), "invalid top-k refusal", failures)
+        call classification_binary_matthews([0, 1], [0, 1], [0, 1, 2], value, status)
+        call check(.not. status_ok(status), "nonbinary Matthews refusal", failures)
     end subroutine test_refusals
 
 end program test_classification_metrics

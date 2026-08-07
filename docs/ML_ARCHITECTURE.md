@@ -82,6 +82,14 @@ false for user procedures. This is the refusal boundary for OpenACC and native
 CUDA execution. A callback remains a host reference until a future
 `fortad`/`fortsym` lowering supplies an equivalent static kernel and oracle.
 
+`basis_pipeline_t` concatenates maps that all consume the complete input matrix,
+while `sequential_basis_pipeline_t` feeds one map's feature block to the next.
+`column_basis_pipeline_t` is the explicit feature-selection variant: each stage
+stores a validated one-based column list, gathers that submatrix, and scatters
+its reverse cotangent into the original columns. Stage parameters remain in a
+single deterministic flat vector. This fixed union is differentiable and
+auditable, but it is not yet a general DAG or device-parallel execution graph.
+
 ## MLP, VAE, and recurrent models
 
 The existing `mlp_t` flat column-major layout is the reference neural-network
@@ -94,8 +102,12 @@ fixture. The VAE uses the same MLP type for its encoder and decoder.
 Park--Miller state. It returns an unpadded final batch and never silently starts
 another epoch. `mlp_train` consumes that cursor, applies an optional per-update
 learning-rate callback and global norm clipping, and records the effective rate
-and clipping count in `mlp_training_state_t`. This is an in-memory reproducible
-training boundary, not yet a serialized or validation-aware trainer state.
+and clipping count in `mlp_training_state_t`. `accumulation_steps` makes the
+optimizer boundary explicit: microbatch data gradients are weighted by sample
+count, averaged, regularized once, then clipped and stepped. The final uneven
+group is flushed rather than dropped, and the state exposes both microbatch and
+optimizer-update counts. This is an in-memory reproducible training boundary,
+not yet a serialized or validation-aware trainer state.
 
 The VAE is a composition of two MLPs and an explicit diagonal Gaussian
 reparameterization:

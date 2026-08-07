@@ -5,7 +5,7 @@ module fortml_softmax_regression
         FORTNUM_DOMAIN_ERROR, FORTNUM_CONVERGENCE_ERROR
     use fortopt_objective, only: objective_t
     use fortopt_lbfgsb, only: lbfgsb_t, lbfgsb_options_t, lbfgsb_result_t
-    use fortml_losses, only: softmax_value
+    use fortml_losses, only: softmax_value, softmax_jvp, softmax_vjp
     implicit none
     private
 
@@ -19,13 +19,20 @@ module fortml_softmax_regression
     contains
         procedure, public :: fit => softmax_fit
         procedure, public :: decision_function => softmax_decision_function
+        procedure, public :: decision_function_jvp => softmax_decision_jvp
+        procedure, public :: decision_function_vjp => softmax_decision_vjp
         procedure, public :: predict_proba => softmax_predict_proba
+        procedure, public :: predict_proba_jvp => softmax_predict_proba_jvp
+        procedure, public :: predict_proba_vjp => softmax_predict_proba_vjp
         procedure, public :: predict => softmax_predict
         procedure, public :: coefficients => softmax_coefficients
         procedure, public :: intercept_values => softmax_intercepts
         procedure, public :: classes => softmax_classes
         procedure, public :: feature_count => softmax_feature_count
         procedure, public :: class_count => softmax_class_count
+        procedure, public :: parameter_count => softmax_parameter_count
+        procedure, public :: parameters => softmax_parameters
+        procedure, public :: set_parameters => softmax_set_parameters
         procedure, public :: fitted => softmax_fitted
     end type softmax_regression_t
 
@@ -260,9 +267,101 @@ contains
                 "softmax decision_function: shape is invalid")
             return
         end if
+        if (any(.not. ieee_is_finite(x))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "softmax decision_function: inputs must be finite")
+            return
+        end if
         scores = matmul(x, self%coefficient) + spread(self%intercept, dim=1, ncopies=size(x, 1))
         call status_set(status, FORTNUM_OK, "")
     end subroutine softmax_decision_function
+
+    subroutine softmax_decision_jvp(self, x, theta_dot, x_dot, scores, &
+            scores_dot, status)
+        class(softmax_regression_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), theta_dot(:), x_dot(:, :)
+        real(dp), intent(out) :: scores(:, :), scores_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: coefficient_dot(:, :)
+        integer :: n_features, n_classes, offset
+
+        if (.not. softmax_fitted(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "softmax decision JVP: model is not fitted")
+            return
+        end if
+        n_features = size(self%coefficient, 1)
+        n_classes = size(self%coefficient, 2)
+        if (size(x, 2) /= n_features .or. size(x_dot, 1) /= size(x, 1) .or. &
+            size(x_dot, 2) /= size(x, 2) .or. any(shape(scores) /= &
+            [size(x, 1), n_classes]) .or. any(shape(scores_dot) /= shape(scores))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "softmax decision JVP: model, tangent, or output shape is invalid")
+            return
+        end if
+        if (size(theta_dot) /= self%parameter_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "softmax decision JVP: parameter tangent shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(x_dot)) .or. &
+            any(.not. ieee_is_finite(theta_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "softmax decision JVP: tangents must be finite")
+            return
+        end if
+        call self%decision_function(x, scores, status)
+        if (status%code /= FORTNUM_OK) return
+        offset = n_features*n_classes
+        allocate(coefficient_dot(n_features, n_classes))
+        coefficient_dot = reshape(theta_dot(:offset), shape(coefficient_dot))
+        scores_dot = matmul(x_dot, self%coefficient) + matmul(x, coefficient_dot)
+        if (self%fit_intercept) then
+            scores_dot = scores_dot + spread(theta_dot(offset + 1:offset + n_classes), &
+                dim=1, ncopies=size(x, 1))
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine softmax_decision_jvp
+
+    subroutine softmax_decision_vjp(self, x, scores_bar, theta_bar, x_bar, status)
+        class(softmax_regression_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), scores_bar(:, :)
+        real(dp), intent(out) :: theta_bar(:), x_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: coefficient_bar(:, :)
+        integer :: n_features, n_classes, offset
+
+        theta_bar = 0.0_dp
+        x_bar = 0.0_dp
+        if (.not. softmax_fitted(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "softmax decision VJP: model is not fitted")
+            return
+        end if
+        n_features = size(self%coefficient, 1)
+        n_classes = size(self%coefficient, 2)
+        if (size(x, 2) /= n_features .or. size(x_bar, 1) /= size(x, 1) .or. &
+            size(x_bar, 2) /= size(x, 2) .or. any(shape(scores_bar) /= &
+            [size(x, 1), n_classes]) .or. size(theta_bar) /= self%parameter_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "softmax decision VJP: model, cotangent, or output shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(x)) .or. &
+            any(.not. ieee_is_finite(scores_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "softmax decision VJP: inputs and cotangents must be finite")
+            return
+        end if
+        offset = n_features*n_classes
+        allocate(coefficient_bar(n_features, n_classes))
+        coefficient_bar = matmul(transpose(x), scores_bar)
+        theta_bar(:offset) = reshape(coefficient_bar, [offset])
+        if (self%fit_intercept) theta_bar(offset + 1:offset + n_classes) = &
+            sum(scores_bar, dim=1)
+        x_bar = matmul(scores_bar, transpose(self%coefficient))
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine softmax_decision_vjp
 
     subroutine softmax_predict_proba(self, x, probabilities, status)
         class(softmax_regression_t), intent(in) :: self
@@ -276,6 +375,70 @@ contains
         if (status%code /= FORTNUM_OK) return
         call softmax_value(scores, probabilities, status)
     end subroutine softmax_predict_proba
+
+    subroutine softmax_predict_proba_jvp(self, x, theta_dot, x_dot, probabilities, &
+            probabilities_dot, status)
+        class(softmax_regression_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), theta_dot(:), x_dot(:, :)
+        real(dp), intent(out) :: probabilities(:, :), probabilities_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: scores(:, :), scores_dot(:, :)
+        integer :: n_classes
+
+        if (.not. softmax_fitted(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "softmax probability JVP: model is not fitted")
+            return
+        end if
+        n_classes = size(self%coefficient, 2)
+        if (size(probabilities, 1) /= size(x, 1) .or. &
+            size(probabilities, 2) /= n_classes .or. &
+            any(shape(probabilities_dot) /= shape(probabilities))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "softmax probability JVP: output shape is invalid")
+            return
+        end if
+        allocate(scores(size(x, 1), n_classes), scores_dot(size(x, 1), n_classes))
+        call self%decision_function_jvp(x, theta_dot, x_dot, scores, scores_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        call softmax_jvp(scores, scores_dot, probabilities, probabilities_dot, status)
+    end subroutine softmax_predict_proba_jvp
+
+    subroutine softmax_predict_proba_vjp(self, x, probabilities_bar, theta_bar, &
+            x_bar, status)
+        class(softmax_regression_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), probabilities_bar(:, :)
+        real(dp), intent(out) :: theta_bar(:), x_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: scores(:, :), logits_bar(:, :)
+        integer :: n_classes
+
+        theta_bar = 0.0_dp
+        x_bar = 0.0_dp
+        if (.not. softmax_fitted(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "softmax probability VJP: model is not fitted")
+            return
+        end if
+        n_classes = size(self%coefficient, 2)
+        if (size(probabilities_bar, 1) /= size(x, 1) .or. &
+            size(probabilities_bar, 2) /= n_classes) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "softmax probability VJP: cotangent shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(probabilities_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "softmax probability VJP: cotangent must be finite")
+            return
+        end if
+        allocate(scores(size(x, 1), n_classes), logits_bar(size(x, 1), n_classes))
+        call self%decision_function(x, scores, status)
+        if (status%code /= FORTNUM_OK) return
+        call softmax_vjp(scores, probabilities_bar, logits_bar, status)
+        if (status%code /= FORTNUM_OK) return
+        call self%decision_function_vjp(x, logits_bar, theta_bar, x_bar, status)
+    end subroutine softmax_predict_proba_vjp
 
     subroutine softmax_predict(self, x, labels, status)
         class(softmax_regression_t), intent(in) :: self
@@ -310,6 +473,57 @@ contains
             allocate(values(0, 0))
         end if
     end function softmax_coefficients
+
+    integer function softmax_parameter_count(self) result(count)
+        class(softmax_regression_t), intent(in) :: self
+
+        count = 0
+        if (.not. allocated(self%coefficient)) return
+        count = size(self%coefficient)
+        if (self%fit_intercept) count = count + size(self%intercept)
+    end function softmax_parameter_count
+
+    function softmax_parameters(self) result(values)
+        class(softmax_regression_t), intent(in) :: self
+        real(dp), allocatable :: values(:)
+        integer :: offset
+
+        if (.not. allocated(self%coefficient)) then
+            allocate(values(0))
+            return
+        end if
+        offset = size(self%coefficient)
+        allocate(values(self%parameter_count()))
+        values(:offset) = reshape(self%coefficient, [offset])
+        if (self%fit_intercept) values(offset + 1:) = self%intercept
+    end function softmax_parameters
+
+    subroutine softmax_set_parameters(self, values, status)
+        class(softmax_regression_t), intent(inout) :: self
+        real(dp), intent(in) :: values(:)
+        type(fortnum_status_t), intent(out) :: status
+        integer :: offset
+
+        if (.not. softmax_fitted(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "softmax set_parameters: model is not fitted")
+            return
+        end if
+        if (size(values) /= self%parameter_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "softmax set_parameters: parameter shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(values))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "softmax set_parameters: parameters must be finite")
+            return
+        end if
+        offset = size(self%coefficient)
+        self%coefficient = reshape(values(:offset), shape(self%coefficient))
+        if (self%fit_intercept) self%intercept = values(offset + 1:)
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine softmax_set_parameters
 
     function softmax_intercepts(self) result(values)
         class(softmax_regression_t), intent(in) :: self

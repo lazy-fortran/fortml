@@ -46,8 +46,8 @@ not supplied through a hidden generic interface.
 | Type | Value or prediction | JVP | VJP or gradient | HVP |
 | --- | --- | --- | --- | --- |
 | `linear_regression_t` | `predict` | Free `linear_predict_jvp` | Free `linear_predict_vjp` | No |
-| `logistic_regression_t` | Decision score and probabilities | No | Fit gradient is internal to FortOpt L-BFGS-B | No |
-| `softmax_regression_t` | Multiclass decision scores and probabilities | No | Fit gradient is internal to FortOpt L-BFGS-B | No |
+| `logistic_regression_t` | Decision score and probabilities | Parameter/input JVP, probability JVP | Parameter/input VJP, probability VJP | No |
+| `softmax_regression_t` | Multiclass decision scores and probabilities | Parameter/input JVP, probability JVP | Parameter/input VJP, probability VJP | No |
 | `basis_map_t` | `evaluate` | Parameters and inputs | Parameters and inputs | No |
 | `mlp_t` | `predict` | Parameters and inputs | Parameters and inputs | Weighted-output HVP |
 | `bnn_t` | `elbo` | ELBO | ELBO | ELBO |
@@ -56,6 +56,8 @@ not supplied through a hidden generic interface.
 | `kernel_t` | Scalar value and matrix | Parameter JVP | Parameter VJP | Parameter HVP |
 | `gp_regression_t` | Mean, variance, LML | Prediction and LML parameters | Prediction and LML parameters | Mean and LML parameters |
 | `gp_derivative_regression_t` | Mean, variance, and LML | LML parameter JVP | Analytic kernel/noise hyperparameter gradient | Directional HVP (finite difference of the analytic gradient) |
+| `gp_classification_t` | Latent and observed probabilities | Input JVP | No fitted-parameter product | No |
+| `gp_multiclass_classification_t` | Normalized observed probabilities | Input JVP | No fitted-parameter product | No |
 | `multi_output_gp_t` | Correlated mean and LML | No | No | No |
 | Approximate GP types | Mean, variance, or ELBO as listed below | No | No | No |
 
@@ -102,6 +104,17 @@ tie rule that selects the second class. `coefficients()`, `intercept_value()`,
 Three-class data, one-class data, nonfinite inputs, invalid penalties, and
 shape mismatches return a domain or convergence status.
 
+`parameter_count()`, `parameters()`, and `set_parameters(values,status)` expose
+the packed coefficient-then-intercept vector (the intercept is omitted when
+`fit_intercept=.false.`). `decision_function_jvp(x,theta_dot,x_dot,scores,
+scores_dot,status)` and `decision_function_vjp(x,scores_bar,theta_bar,x_bar,
+status)` differentiate scores with respect to both packed parameters and row
+inputs. `predict_proba_jvp` and `predict_proba_vjp` provide the corresponding
+stable probability products. Tangent and cotangent arrays must be finite and
+shape-compatible. Unfitted models, malformed packs, and nonfinite inputs are
+refused. There is intentionally no HVP until a second-order classifier
+contract is added.
+
 ### `fortml_classification_metrics`
 
 The shared metric procedures keep arbitrary integer labels and an explicit
@@ -110,7 +123,11 @@ class order: `classification_accuracy`,
 `classification_precision_recall_f1`. `classification_accuracy` accepts an
 optional nonnegative sample-weight vector. `classification_log_loss` accepts a
 row-wise probability matrix, matching integer labels and class order, and
-optional sample weights. Shape, duplicate-class, unknown-label, nonfinite,
+optional sample weights. `classification_top_k_accuracy` uses deterministic
+class-order tie breaking. `classification_brier_score` normalizes each
+positive probability row before computing the multiclass squared error, and
+`classification_binary_matthews` provides the weighted binary Matthews
+correlation coefficient. Shape, duplicate-class, unknown-label, nonfinite,
 negative-weight, and zero-weight-mass cases return a domain status.
 
 ### `fortml_losses`
@@ -140,6 +157,15 @@ the stored class label with a first-column tie rule. `coefficients`,
 `intercept_values`, `classes`, `feature_count`, `class_count`, and `fitted`
 expose the model state. At least two distinct classes are required. Sparse
 targets and multilabel weighting remain roadmap work.
+
+`parameter_count()`, `parameters()`, and `set_parameters(values,status)` use
+column-major coefficient blocks followed by the intercept block when enabled.
+`decision_function_jvp`/`decision_function_vjp` differentiate logits with
+respect to packed parameters and inputs, while `predict_proba_jvp`/
+`predict_proba_vjp` compose the stable softmax products with those affine
+products. All derivative paths validate finite tangents/cotangents and exact
+shapes, and return a domain status for unfitted or malformed calls. HVPs and
+parameter products for GP classifiers remain separate roadmap contracts.
 
 ### `fortml_preprocessing`
 
@@ -204,6 +230,16 @@ count equals the previous stage's feature count, and call `fit` before
 `transform`. Its flattened parameters follow stage order. Forward JVPs and
 reverse VJPs propagate through every stage, including the input cotangent.
 Shape mismatches, empty chains, and unfitted transforms return status errors.
+
+`column_basis_pipeline_t` provides the column-wise variant. Construct it with
+`make_column_basis_pipeline(n_inputs,status)`, then append a basis map and a
+one-based integer column list. A stage's input count must equal the list length.
+Indices must be in range and unique within that stage, while different stages
+may reuse columns. The transform gathers only the selected columns and
+concatenates stage feature blocks. Parameter packing follows stage order, JVPs
+gather input tangents, and VJPs scatter-add stage cotangents into the original
+input columns. This is a deterministic feature union, not a DAG scheduler or a
+parallel device executor. Those capabilities remain separate roadmap items.
 
 ### `fortml_validation`
 
@@ -283,7 +319,14 @@ in-memory batch boundary resumable. `mlp_learning_rate_schedule_proc` can be
 installed in `mlp_training_options_t%learning_rate_schedule`. It receives the
 epoch, one-based update number, and base rate and must return a finite positive
 rate. `gradient_clip_norm` applies global norm clipping before each Adam step.
-Zero disables clipping.
+Zero disables clipping. `accumulation_steps` combines that many consecutive
+microbatches into one sample-weighted mean gradient before an Adam step. The
+last uneven group is flushed at the epoch boundary. L2 is added once per
+optimizer update, clipping is applied after accumulation, and the state records
+`microbatches`, `updates`, and the configured accumulation count. This gives an
+exact full-batch equivalence oracle when the model and options are otherwise
+identical, while reducing optimizer-state updates for memory-constrained
+training.
 
 ### `fortml_mlp_classifier`
 

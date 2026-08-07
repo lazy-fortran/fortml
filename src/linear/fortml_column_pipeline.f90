@@ -1,0 +1,447 @@
+!> Column-selecting feature unions built from differentiable basis maps.
+module fortml_column_pipeline
+    use fortnum_kinds, only: dp
+    use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
+        FORTNUM_DOMAIN_ERROR
+    use fortml_basis, only: basis_map_t
+    implicit none
+    private
+
+    !> One basis map and the original input columns it consumes.
+    type :: column_pipeline_stage_t
+        type(basis_map_t) :: map
+        integer, allocatable :: columns(:)
+    end type column_pipeline_stage_t
+
+    !> A horizontal basis union with explicit per-stage column selection.
+    !>
+    !> Unlike `basis_pipeline_t`, each stage receives only the selected columns
+    !> from the original matrix.  Stage parameters remain packed in append
+    !> order, while input VJPs are scattered back into the full input matrix.
+    !> Column indices are one-based, strictly unique within each stage, and
+    !> are checked at append time.  Cross-stage reuse is allowed.
+    type, public :: column_basis_pipeline_t
+        private
+        integer :: n_inputs = 0
+        integer :: n_stages = 0
+        logical :: fitted = .false.
+        type(column_pipeline_stage_t), allocatable :: stages(:)
+    contains
+        procedure, public :: initialize => column_pipeline_initialize
+        procedure, public :: append => column_pipeline_append
+        procedure, public :: fit => column_pipeline_fit
+        procedure, public :: transform => column_pipeline_transform
+        procedure, public :: evaluate => column_pipeline_transform
+        procedure, public :: jvp => column_pipeline_jvp
+        procedure, public :: vjp => column_pipeline_vjp
+        procedure, public :: input_count => column_pipeline_input_count
+        procedure, public :: stage_count => column_pipeline_stage_count
+        procedure, public :: feature_count => column_pipeline_feature_count
+        procedure, public :: parameter_count => column_pipeline_parameter_count
+        procedure, public :: parameters => column_pipeline_parameters
+        procedure, public :: set_parameters => column_pipeline_set_parameters
+        procedure, public :: static_lowering_eligible => &
+            column_pipeline_static_lowering_eligible
+        procedure, public :: valid => column_pipeline_valid
+        procedure, public :: is_fitted => column_pipeline_is_fitted
+    end type column_basis_pipeline_t
+
+    public :: make_column_basis_pipeline
+
+contains
+
+    !> Construct an empty column-selecting pipeline.
+    function make_column_basis_pipeline(n_inputs, status) result(pipeline)
+        integer, intent(in) :: n_inputs
+        type(fortnum_status_t), intent(out) :: status
+        type(column_basis_pipeline_t) :: pipeline
+
+        call pipeline%initialize(n_inputs, status)
+    end function make_column_basis_pipeline
+
+    subroutine column_pipeline_initialize(self, n_inputs, status)
+        class(column_basis_pipeline_t), intent(out) :: self
+        integer, intent(in) :: n_inputs
+        type(fortnum_status_t), intent(out) :: status
+
+        if (n_inputs < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "column basis pipeline: n_inputs must be positive")
+            return
+        end if
+        self%n_inputs = n_inputs
+        self%n_stages = 0
+        self%fitted = .false.
+        allocate(self%stages(0))
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine column_pipeline_initialize
+
+    subroutine column_pipeline_append(self, stage, columns, status)
+        class(column_basis_pipeline_t), intent(inout) :: self
+        type(basis_map_t), intent(in) :: stage
+        integer, intent(in) :: columns(:)
+        type(fortnum_status_t), intent(out) :: status
+        type(column_pipeline_stage_t), allocatable :: new_stages(:)
+        integer :: old_count, i, j
+
+        if (self%n_inputs < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "column basis pipeline append: pipeline is not initialized")
+            return
+        end if
+        if (.not. allocated(self%stages)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "column basis pipeline append: pipeline is not initialized")
+            return
+        end if
+        if (.not. stage%valid()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "column basis pipeline append: stage is not initialized")
+            return
+        end if
+        if (size(columns) < 1 .or. stage%input_count() /= size(columns)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "column basis pipeline append: stage and columns do not match")
+            return
+        end if
+        do i = 1, size(columns)
+            if (columns(i) < 1 .or. columns(i) > self%n_inputs) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "column basis pipeline append: column index is out of range")
+                return
+            end if
+            do j = 1, i - 1
+                if (columns(j) == columns(i)) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "column basis pipeline append: duplicate column index")
+                    return
+                end if
+            end do
+        end do
+
+        old_count = self%n_stages
+        allocate(new_stages(old_count + 1))
+        if (old_count > 0) new_stages(1:old_count) = self%stages
+        new_stages(old_count + 1)%map = stage
+        new_stages(old_count + 1)%columns = columns
+        call move_alloc(new_stages, self%stages)
+        self%n_stages = old_count + 1
+        self%fitted = .false.
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine column_pipeline_append
+
+    subroutine column_pipeline_fit(self, x, status)
+        class(column_basis_pipeline_t), intent(inout) :: self
+        real(dp), intent(in) :: x(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. column_pipeline_valid(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "column basis pipeline fit: model is invalid")
+            return
+        end if
+        if (size(x, 1) < 1 .or. size(x, 2) /= self%n_inputs) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "column basis pipeline fit: input shape is invalid")
+            return
+        end if
+        self%fitted = .true.
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine column_pipeline_fit
+
+    subroutine column_pipeline_transform(self, x, phi, status)
+        class(column_basis_pipeline_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: phi(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: x_local(:, :)
+        integer :: i, feature_offset, n_features
+
+        if (.not. column_pipeline_valid(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "column basis pipeline transform: model is invalid")
+            return
+        end if
+        if (size(x, 1) < 1 .or. size(x, 2) /= self%n_inputs .or. &
+            size(phi, 1) /= size(x, 1) .or. &
+            size(phi, 2) /= self%feature_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "column basis pipeline transform: array shape is invalid")
+            return
+        end if
+
+        feature_offset = 0
+        do i = 1, self%n_stages
+            n_features = self%stages(i)%map%feature_count()
+            allocate(x_local(size(x, 1), size(self%stages(i)%columns)))
+            call gather_columns(x, self%stages(i)%columns, x_local)
+            call self%stages(i)%map%evaluate(x_local, &
+                phi(:, feature_offset + 1:feature_offset + n_features), status)
+            deallocate(x_local)
+            if (status%code /= FORTNUM_OK) return
+            feature_offset = feature_offset + n_features
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine column_pipeline_transform
+
+    subroutine column_pipeline_jvp(self, x, theta_dot, x_dot, phi, phi_dot, &
+            status)
+        class(column_basis_pipeline_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), theta_dot(:), x_dot(:, :)
+        real(dp), intent(out) :: phi(:, :), phi_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: x_local(:, :), x_dot_local(:, :), theta_local(:)
+        integer :: i, feature_offset, parameter_offset, n_features, n_parameters
+
+        if (.not. column_pipeline_valid(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "column basis pipeline jvp: model is invalid")
+            return
+        end if
+        if (size(x, 1) < 1 .or. size(x, 2) /= self%n_inputs .or. &
+            any(shape(x_dot) /= shape(x)) .or. &
+            size(phi, 1) /= size(x, 1) .or. &
+            size(phi, 2) /= self%feature_count() .or. &
+            any(shape(phi_dot) /= shape(phi)) .or. &
+            size(theta_dot) /= self%parameter_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "column basis pipeline jvp: array shape is invalid")
+            return
+        end if
+
+        feature_offset = 0
+        parameter_offset = 0
+        do i = 1, self%n_stages
+            n_features = self%stages(i)%map%feature_count()
+            n_parameters = self%stages(i)%map%parameter_count()
+            allocate(x_local(size(x, 1), size(self%stages(i)%columns)))
+            allocate(x_dot_local(size(x, 1), size(self%stages(i)%columns)))
+            allocate(theta_local(n_parameters))
+            call gather_columns(x, self%stages(i)%columns, x_local)
+            call gather_columns(x_dot, self%stages(i)%columns, x_dot_local)
+            if (n_parameters > 0) theta_local = theta_dot(parameter_offset + 1: &
+                parameter_offset + n_parameters)
+            call self%stages(i)%map%jvp(x_local, theta_local, x_dot_local, &
+                phi(:, feature_offset + 1:feature_offset + n_features), &
+                phi_dot(:, feature_offset + 1:feature_offset + n_features), &
+                status)
+            deallocate(x_local, x_dot_local, theta_local)
+            if (status%code /= FORTNUM_OK) return
+            feature_offset = feature_offset + n_features
+            parameter_offset = parameter_offset + n_parameters
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine column_pipeline_jvp
+
+    subroutine column_pipeline_vjp(self, x, u, theta_bar, x_bar, status)
+        class(column_basis_pipeline_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), u(:, :)
+        real(dp), intent(out) :: theta_bar(:), x_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: x_local(:, :), local_x_bar(:, :)
+        real(dp), allocatable :: local_theta_bar(:)
+        integer :: i, feature_offset, parameter_offset, n_features, n_parameters
+        integer :: j
+
+        if (.not. column_pipeline_valid(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "column basis pipeline vjp: model is invalid")
+            return
+        end if
+        if (size(x, 1) < 1 .or. size(x, 2) /= self%n_inputs .or. &
+            size(u, 1) /= size(x, 1) .or. size(u, 2) /= self%feature_count() .or. &
+            size(theta_bar) /= self%parameter_count() .or. &
+            any(shape(x_bar) /= shape(x))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "column basis pipeline vjp: array shape is invalid")
+            return
+        end if
+
+        theta_bar = 0.0_dp
+        x_bar = 0.0_dp
+        feature_offset = 0
+        parameter_offset = 0
+        do i = 1, self%n_stages
+            n_features = self%stages(i)%map%feature_count()
+            n_parameters = self%stages(i)%map%parameter_count()
+            allocate(x_local(size(x, 1), size(self%stages(i)%columns)))
+            allocate(local_x_bar(size(x, 1), size(self%stages(i)%columns)))
+            allocate(local_theta_bar(n_parameters))
+            call gather_columns(x, self%stages(i)%columns, x_local)
+            call self%stages(i)%map%vjp(x_local, &
+                u(:, feature_offset + 1:feature_offset + n_features), &
+                local_theta_bar, local_x_bar, status)
+            if (status%code /= FORTNUM_OK) then
+                deallocate(x_local, local_x_bar, local_theta_bar)
+                return
+            end if
+            if (n_parameters > 0) theta_bar(parameter_offset + 1: &
+                parameter_offset + n_parameters) = local_theta_bar
+            do j = 1, size(self%stages(i)%columns)
+                x_bar(:, self%stages(i)%columns(j)) = x_bar(:, &
+                    self%stages(i)%columns(j)) + local_x_bar(:, j)
+            end do
+            deallocate(x_local, local_x_bar, local_theta_bar)
+            feature_offset = feature_offset + n_features
+            parameter_offset = parameter_offset + n_parameters
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine column_pipeline_vjp
+
+    integer function column_pipeline_input_count(self) result(count)
+        class(column_basis_pipeline_t), intent(in) :: self
+        count = self%n_inputs
+    end function column_pipeline_input_count
+
+    integer function column_pipeline_stage_count(self) result(count)
+        class(column_basis_pipeline_t), intent(in) :: self
+        count = self%n_stages
+    end function column_pipeline_stage_count
+
+    integer function column_pipeline_feature_count(self) result(count)
+        class(column_basis_pipeline_t), intent(in) :: self
+        integer :: i
+
+        count = 0
+        if (.not. allocated(self%stages)) return
+        do i = 1, self%n_stages
+            count = count + self%stages(i)%map%feature_count()
+        end do
+    end function column_pipeline_feature_count
+
+    integer function column_pipeline_parameter_count(self) result(count)
+        class(column_basis_pipeline_t), intent(in) :: self
+        integer :: i
+
+        count = 0
+        if (.not. allocated(self%stages)) return
+        do i = 1, self%n_stages
+            count = count + self%stages(i)%map%parameter_count()
+        end do
+    end function column_pipeline_parameter_count
+
+    function column_pipeline_parameters(self) result(theta)
+        class(column_basis_pipeline_t), intent(in) :: self
+        real(dp), allocatable :: theta(:), local_theta(:)
+        integer :: i, offset, n_parameters
+
+        allocate(theta(self%parameter_count()))
+        theta = 0.0_dp
+        offset = 0
+        if (.not. allocated(self%stages)) return
+        do i = 1, self%n_stages
+            n_parameters = self%stages(i)%map%parameter_count()
+            if (n_parameters > 0) then
+                local_theta = self%stages(i)%map%parameters()
+                theta(offset + 1:offset + n_parameters) = local_theta
+            end if
+            offset = offset + n_parameters
+        end do
+    end function column_pipeline_parameters
+
+    subroutine column_pipeline_set_parameters(self, theta, status)
+        class(column_basis_pipeline_t), intent(inout) :: self
+        real(dp), intent(in) :: theta(:)
+        type(fortnum_status_t), intent(out) :: status
+        integer :: i, offset, n_parameters
+
+        if (.not. column_pipeline_valid(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "column basis pipeline set_parameters: model is invalid")
+            return
+        end if
+        if (size(theta) /= self%parameter_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "column basis pipeline set_parameters: shape is invalid")
+            return
+        end if
+        offset = 0
+        do i = 1, self%n_stages
+            n_parameters = self%stages(i)%map%parameter_count()
+            if (n_parameters > 0) then
+                call self%stages(i)%map%set_parameters(theta(offset + 1: &
+                    offset + n_parameters), status)
+                if (status%code /= FORTNUM_OK) return
+            end if
+            offset = offset + n_parameters
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine column_pipeline_set_parameters
+
+    logical function column_pipeline_static_lowering_eligible(self) result(eligible)
+        class(column_basis_pipeline_t), intent(in) :: self
+        integer :: i
+
+        eligible = column_pipeline_valid(self)
+        if (.not. eligible) return
+        do i = 1, self%n_stages
+            if (.not. self%stages(i)%map%static_lowering_eligible()) then
+                eligible = .false.
+                return
+            end if
+        end do
+    end function column_pipeline_static_lowering_eligible
+
+    logical function column_pipeline_valid(self) result(valid)
+        class(column_basis_pipeline_t), intent(in) :: self
+        integer :: i, j, k
+
+        valid = self%n_inputs > 0 .and. self%n_stages > 0 .and. &
+            allocated(self%stages)
+        if (.not. valid) return
+        if (size(self%stages) < self%n_stages) then
+            valid = .false.
+            return
+        end if
+        do i = 1, self%n_stages
+            if (.not. self%stages(i)%map%valid()) then
+                valid = .false.
+                return
+            end if
+            if (.not. allocated(self%stages(i)%columns)) then
+                valid = .false.
+                return
+            end if
+            if (size(self%stages(i)%columns) < 1 .or. &
+                self%stages(i)%map%input_count() /= &
+                size(self%stages(i)%columns)) then
+                valid = .false.
+                return
+            end if
+            do j = 1, size(self%stages(i)%columns)
+                if (self%stages(i)%columns(j) < 1 .or. &
+                    self%stages(i)%columns(j) > self%n_inputs) then
+                    valid = .false.
+                    return
+                end if
+                do k = 1, j - 1
+                    if (self%stages(i)%columns(j) == &
+                        self%stages(i)%columns(k)) then
+                        valid = .false.
+                        return
+                    end if
+                end do
+            end do
+        end do
+    end function column_pipeline_valid
+
+    logical function column_pipeline_is_fitted(self) result(fitted)
+        class(column_basis_pipeline_t), intent(in) :: self
+
+        fitted = self%fitted
+        if (.not. fitted) return
+        fitted = column_pipeline_valid(self)
+    end function column_pipeline_is_fitted
+
+    subroutine gather_columns(x, columns, selected)
+        real(dp), intent(in) :: x(:, :)
+        integer, intent(in) :: columns(:)
+        real(dp), intent(out) :: selected(:, :)
+        integer :: j
+
+        do j = 1, size(columns)
+            selected(:, j) = x(:, columns(j))
+        end do
+    end subroutine gather_columns
+
+end module fortml_column_pipeline

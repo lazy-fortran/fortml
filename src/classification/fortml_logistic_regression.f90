@@ -18,12 +18,19 @@ module fortml_logistic_regression
     contains
         procedure, public :: fit => logistic_fit
         procedure, public :: decision_function => logistic_decision_function
+        procedure, public :: decision_function_jvp => logistic_decision_jvp
+        procedure, public :: decision_function_vjp => logistic_decision_vjp
         procedure, public :: predict_proba => logistic_predict_proba
+        procedure, public :: predict_proba_jvp => logistic_predict_proba_jvp
+        procedure, public :: predict_proba_vjp => logistic_predict_proba_vjp
         procedure, public :: predict => logistic_predict
         procedure, public :: coefficients => logistic_coefficients
         procedure, public :: intercept_value => logistic_intercept_value
         procedure, public :: classes => logistic_classes
         procedure, public :: feature_count => logistic_feature_count
+        procedure, public :: parameter_count => logistic_parameter_count
+        procedure, public :: parameters => logistic_parameters
+        procedure, public :: set_parameters => logistic_set_parameters
         procedure, public :: fitted => logistic_fitted
     end type logistic_regression_t
 
@@ -278,6 +285,89 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine logistic_decision_function
 
+    subroutine logistic_decision_jvp(self, x, theta_dot, x_dot, scores, &
+            scores_dot, status)
+        class(logistic_regression_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), theta_dot(:), x_dot(:, :)
+        real(dp), intent(out) :: scores(:), scores_dot(:)
+        type(fortnum_status_t), intent(out) :: status
+        integer :: i, j, n_features
+
+        if (.not. logistic_fitted(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "logistic decision JVP: model is not fitted")
+            return
+        end if
+        n_features = size(self%coefficient)
+        if (size(x, 2) /= n_features .or. size(x_dot, 1) /= size(x, 1) .or. &
+            size(x_dot, 2) /= size(x, 2) .or. size(scores) /= size(x, 1) .or. &
+            size(scores_dot) /= size(x, 1)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "logistic decision JVP: model, tangent, or output shape is invalid")
+            return
+        end if
+        if (size(theta_dot) /= self%parameter_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "logistic decision JVP: parameter tangent shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(x_dot)) .or. &
+            any(.not. ieee_is_finite(theta_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "logistic decision JVP: tangents must be finite")
+            return
+        end if
+        call self%decision_function(x, scores, status)
+        if (status%code /= FORTNUM_OK) return
+        scores_dot = 0.0_dp
+        do j = 1, n_features
+            do i = 1, size(x, 1)
+                scores_dot(i) = scores_dot(i) + self%coefficient(j)*x_dot(i, j) + &
+                    theta_dot(j)*x(i, j)
+            end do
+        end do
+        if (self%fit_intercept) scores_dot = scores_dot + theta_dot(n_features + 1)
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine logistic_decision_jvp
+
+    subroutine logistic_decision_vjp(self, x, scores_bar, theta_bar, x_bar, status)
+        class(logistic_regression_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), scores_bar(:)
+        real(dp), intent(out) :: theta_bar(:), x_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        integer :: i, j, n_features
+
+        theta_bar = 0.0_dp
+        x_bar = 0.0_dp
+        if (.not. logistic_fitted(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "logistic decision VJP: model is not fitted")
+            return
+        end if
+        n_features = size(self%coefficient)
+        if (size(x, 2) /= n_features .or. size(x_bar, 1) /= size(x, 1) .or. &
+            size(x_bar, 2) /= size(x, 2) .or. size(scores_bar) /= size(x, 1) .or. &
+            size(theta_bar) /= self%parameter_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "logistic decision VJP: model, cotangent, or output shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(x)) .or. &
+            any(.not. ieee_is_finite(scores_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "logistic decision VJP: inputs and cotangents must be finite")
+            return
+        end if
+        do j = 1, n_features
+            do i = 1, size(x, 1)
+                theta_bar(j) = theta_bar(j) + scores_bar(i)*x(i, j)
+                x_bar(i, j) = scores_bar(i)*self%coefficient(j)
+            end do
+        end do
+        if (self%fit_intercept) theta_bar(n_features + 1) = sum(scores_bar)
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine logistic_decision_vjp
+
     subroutine logistic_predict_proba(self, x, probabilities, status)
         class(logistic_regression_t), intent(in) :: self
         real(dp), intent(in) :: x(:, :)
@@ -301,6 +391,78 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine logistic_predict_proba
+
+    subroutine logistic_predict_proba_jvp(self, x, theta_dot, x_dot, probabilities, &
+            probabilities_dot, status)
+        class(logistic_regression_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), theta_dot(:), x_dot(:, :)
+        real(dp), intent(out) :: probabilities(:, :), probabilities_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: scores(:), scores_dot(:)
+        real(dp) :: positive, positive_dot
+        integer :: i
+
+        if (.not. logistic_fitted(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "logistic probability JVP: model is not fitted")
+            return
+        end if
+        if (size(probabilities, 1) /= size(x, 1) .or. size(probabilities, 2) /= 2 &
+            .or. any(shape(probabilities_dot) /= shape(probabilities))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "logistic probability JVP: output shape is invalid")
+            return
+        end if
+        allocate(scores(size(x, 1)), scores_dot(size(x, 1)))
+        call self%decision_function_jvp(x, theta_dot, x_dot, scores, scores_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        do i = 1, size(x, 1)
+            positive = stable_sigmoid(scores(i))
+            positive_dot = positive*(1.0_dp - positive)*scores_dot(i)
+            probabilities(i, 2) = positive
+            probabilities(i, 1) = 1.0_dp - positive
+            probabilities_dot(i, 2) = positive_dot
+            probabilities_dot(i, 1) = -positive_dot
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine logistic_predict_proba_jvp
+
+    subroutine logistic_predict_proba_vjp(self, x, probabilities_bar, theta_bar, &
+            x_bar, status)
+        class(logistic_regression_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), probabilities_bar(:, :)
+        real(dp), intent(out) :: theta_bar(:), x_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: probabilities(:, :), scores_bar(:)
+        integer :: i
+
+        theta_bar = 0.0_dp
+        x_bar = 0.0_dp
+        if (.not. logistic_fitted(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "logistic probability VJP: model is not fitted")
+            return
+        end if
+        if (size(probabilities_bar, 1) /= size(x, 1) .or. &
+            size(probabilities_bar, 2) /= 2) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "logistic probability VJP: cotangent shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(probabilities_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "logistic probability VJP: cotangent must be finite")
+            return
+        end if
+        allocate(probabilities(size(x, 1), 2), scores_bar(size(x, 1)))
+        call self%predict_proba(x, probabilities, status)
+        if (status%code /= FORTNUM_OK) return
+        do i = 1, size(x, 1)
+            scores_bar(i) = (probabilities_bar(i, 2) - probabilities_bar(i, 1))* &
+                probabilities(i, 1)*probabilities(i, 2)
+        end do
+        call self%decision_function_vjp(x, scores_bar, theta_bar, x_bar, status)
+    end subroutine logistic_predict_proba_vjp
 
     subroutine logistic_predict(self, x, labels, status)
         class(logistic_regression_t), intent(in) :: self
@@ -338,6 +500,57 @@ contains
             allocate(values(0))
         end if
     end function logistic_coefficients
+
+    integer function logistic_parameter_count(self) result(count)
+        class(logistic_regression_t), intent(in) :: self
+
+        count = 0
+        if (.not. allocated(self%coefficient)) return
+        count = size(self%coefficient)
+        if (self%fit_intercept) count = count + 1
+    end function logistic_parameter_count
+
+    function logistic_parameters(self) result(values)
+        class(logistic_regression_t), intent(in) :: self
+        real(dp), allocatable :: values(:)
+        integer :: n_features
+
+        if (.not. allocated(self%coefficient)) then
+            allocate(values(0))
+            return
+        end if
+        n_features = size(self%coefficient)
+        allocate(values(self%parameter_count()))
+        values(:n_features) = self%coefficient
+        if (self%fit_intercept) values(n_features + 1) = self%intercept
+    end function logistic_parameters
+
+    subroutine logistic_set_parameters(self, values, status)
+        class(logistic_regression_t), intent(inout) :: self
+        real(dp), intent(in) :: values(:)
+        type(fortnum_status_t), intent(out) :: status
+        integer :: n_features
+
+        if (.not. logistic_fitted(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "logistic set_parameters: model is not fitted")
+            return
+        end if
+        if (size(values) /= self%parameter_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "logistic set_parameters: parameter shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(values))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "logistic set_parameters: parameters must be finite")
+            return
+        end if
+        n_features = size(self%coefficient)
+        self%coefficient = values(:n_features)
+        if (self%fit_intercept) self%intercept = values(n_features + 1)
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine logistic_set_parameters
 
     real(dp) function logistic_intercept_value(self) result(value)
         class(logistic_regression_t), intent(in) :: self
