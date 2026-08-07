@@ -107,7 +107,7 @@ end program exact_gp_example
 | Area | Public modules | Main limits |
 | --- | --- | --- |
 | Regression and features | `fortml_linear_regression`, `fortml_basis` | Dense SVD fit. Basis HVPs are not exposed. |
-| Binary classification | `fortml_logistic_regression`, `fortml_losses` | FortOpt L-BFGS-B fit, stable probabilities, arbitrary two integer labels, and shared sigmoid/softmax cross-entropy products. Sample and class weights are planned. |
+| Classification | `fortml_logistic_regression`, `fortml_softmax_regression`, `fortml_losses` | FortOpt L-BFGS-B binary and multinomial fits, stable probabilities, deterministic integer-label ordering, and shared sigmoid/softmax cross-entropy products. Sample and class weights are planned. |
 | Neural models | `fortml_mlp`, `fortml_bnn`, `fortml_vae`, `fortml_rnn` | MLPs use deterministic Xavier/He initialization; the recurrent model is one vanilla `tanh` RNN with a zero initial state |
 | Variational inference | `fortml_variational`, `fortml_sparse_gp` | `sparse_gp_t` has scalar targets and caller-supplied variational parameters |
 | Exact GPs | `fortml_kernels`, `fortml_gaussian_process`, `fortml_derivative_gaussian_process`, `fortml_multi_output_gp` | Derivative observations cover function values and first input derivatives |

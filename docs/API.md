@@ -47,6 +47,7 @@ not supplied through a hidden generic interface.
 | --- | --- | --- | --- | --- |
 | `linear_regression_t` | `predict` | Free `linear_predict_jvp` | Free `linear_predict_vjp` | No |
 | `logistic_regression_t` | Decision score and probabilities | No | Fit gradient is internal to FortOpt L-BFGS-B | No |
+| `softmax_regression_t` | Multiclass decision scores and probabilities | No | Fit gradient is internal to FortOpt L-BFGS-B | No |
 | `basis_map_t` | `evaluate` | Parameters and inputs | Parameters and inputs | No |
 | `mlp_t` | `predict` | Parameters and inputs | Parameters and inputs | Weighted-output HVP |
 | `bnn_t` | `elbo` | ELBO | ELBO | ELBO |
@@ -107,6 +108,19 @@ one-based integer class label per row and a mean reduction over rows. Both loss
 families expose JVP and VJP procedures, reject nonfinite inputs, and evaluate
 the value with a shifted log-sum-exp or softplus expression. These routines are
 the shared objective layer for neural, multiclass, GP, and boosting adapters.
+
+### `fortml_softmax_regression`
+
+`softmax_regression_t%fit(x,labels,status[,l2,fit_intercept,max_iterations,
+tolerance])` fits a multinomial softmax model with one column per sorted integer
+class label. The objective is mean softmax cross-entropy with L2 regularization
+on feature coefficients and is optimized by `fortopt_lbfgsb`.
+`decision_function` returns one logit column per class, `predict_proba` applies
+the stable row-wise softmax, and `predict` maps the largest probability back to
+the stored class label with a first-column tie rule. `coefficients`,
+`intercept_values`, `classes`, `feature_count`, `class_count`, and `fitted`
+expose the model state. At least two distinct classes are required. Sample and
+class weighting remain a roadmap item shared with the binary classifier.
 
 ### `fortml_basis`
 

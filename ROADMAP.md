@@ -185,7 +185,7 @@ The source inventory is dated 2026-08-07.
 
 | Work package | State | Implemented baseline | Package exit |
 | --- | --- | --- | --- |
-| Classification | Partial | `fortml_logistic_regression` provides binary integer-label fitting, stable probabilities, deterministic class order, and FortOpt L-BFGS-B optimization. Shared losses, metrics, multiclass models, and weighting are open. | Binary and multiclass linear, neural, GP, and boosted-tree classifiers share label, probability, weighting, and metric conventions. |
+| Classification | Partial | `fortml_logistic_regression` and `fortml_softmax_regression` provide binary and multinomial integer-label fitting, stable probabilities, deterministic class order, and FortOpt L-BFGS-B optimization. Shared metrics and weighting are open. | Binary and multiclass linear, neural, GP, and boosted-tree classifiers share label, probability, weighting, and metric conventions. |
 | Estimator contracts, pipelines, and bases | Partial | `basis_map_t`, row-oriented sample conventions, status objects, and the parameter registry are public. | Fitted transformers and estimators compose without data leakage, expose routed parameters, and run through cross-validation. |
 | Tree boosting | Missing | No tree, split finder, histogram builder, or ensemble module exists. | Regression and classification trees support deterministic histogram boosting, validation-based stopping, missing values, and model persistence. |
 | Training infrastructure | Partial | Model-specific gradients, `fortopt_adam` integration, natural-gradient seams, and seeded variational draws exist. | One trainer owns batches, optimizer state, schedules, clipping, validation, early stopping, callbacks, and resumable state for every model with a completed trainer adapter. |
@@ -196,15 +196,16 @@ The source inventory is dated 2026-08-07.
 
 ### WP1: classification
 
-- [ ] Define one public class-label contract. Classes have a deterministic order,
+- [x] Define one public class-label contract. Classes have a deterministic order,
   predicted labels use that order to break ties, and probability matrices have
   one column per class.
 - [x] Add binary logistic regression with an intercept, L2 regularization,
   `fit`, `decision_function`, `predict_proba`, and `predict`.
 - [ ] Add sample weights and class weights to binary logistic regression while
   preserving the documented reduction and class-label contract.
-- [ ] Add multinomial softmax regression with a numerically stable log-sum-exp
-  objective and the same weighting contract.
+- [x] Add multinomial softmax regression with a numerically stable log-sum-exp
+  objective. Its class-label and weighting contract still needs the shared
+  metrics and sample/class-weight extension below.
 - [ ] Add classifier adapters for `mlp_t` and variational GP classification.
   Each adapter owns its likelihood and training objective instead of treating a
   raw network or GP mean as a probability.
