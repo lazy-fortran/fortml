@@ -27,6 +27,13 @@ module fortml_mlp_training
             real(dp), intent(in) :: loss, gradient_norm
             logical, intent(out) :: stop
         end subroutine mlp_epoch_callback_proc
+
+        subroutine mlp_learning_rate_schedule_proc(epoch, update, base_rate, rate)
+            import :: dp
+            integer, intent(in) :: epoch, update
+            real(dp), intent(in) :: base_rate
+            real(dp), intent(out) :: rate
+        end subroutine mlp_learning_rate_schedule_proc
     end interface
 
     type, public :: mlp_training_options_t
@@ -43,7 +50,10 @@ module fortml_mlp_training
         real(dp) :: l2 = 0.0_dp
         real(dp) :: tolerance = 1.0e-8_dp
         real(dp) :: min_delta = 0.0_dp
+        real(dp) :: gradient_clip_norm = 0.0_dp
         procedure(mlp_epoch_callback_proc), pointer, nopass :: callback => null()
+        procedure(mlp_learning_rate_schedule_proc), pointer, nopass :: &
+            learning_rate_schedule => null()
     end type mlp_training_options_t
 
     type, public :: mlp_training_state_t
@@ -52,12 +62,42 @@ module fortml_mlp_training
         integer :: best_epoch = 0
         logical :: converged = .false.
         logical :: early_stopped = .false.
+        integer :: gradient_clipped_updates = 0
         real(dp) :: initial_loss = huge(1.0_dp)
         real(dp) :: final_loss = huge(1.0_dp)
         real(dp) :: best_loss = huge(1.0_dp)
         real(dp) :: gradient_norm = huge(1.0_dp)
+        real(dp) :: last_learning_rate = 0.0_dp
         real(dp), allocatable :: loss_history(:)
+        real(dp), allocatable :: learning_rate_history(:)
     end type mlp_training_state_t
+
+    type, public :: mlp_batch_iterator_t
+        !! Deterministic row-index batches with explicit epoch boundaries.
+        !!
+        !! `next_batch` never advances implicitly to the next epoch.  A caller
+        !! must call `reset`, which makes the RNG boundary and final-batch
+        !! behavior explicit and makes an iterator copy a resumable in-memory
+        !! cursor.  The order is one-based to match Fortran array indexing.
+        private
+        integer :: n_samples = 0
+        integer :: batch_size = 0
+        integer :: position = 1
+        integer :: epoch_number = 0
+        integer(int64) :: shuffle_state = 1_int64
+        logical :: shuffle = .false.
+        logical :: ready = .false.
+        integer, allocatable :: order(:)
+    contains
+        procedure, public :: initialize => batch_iterator_initialize
+        procedure, public :: reset => batch_iterator_reset
+        procedure, public :: next_batch => batch_iterator_next
+        procedure, public :: batch_count => batch_iterator_batch_count
+        procedure, public :: sample_count => batch_iterator_sample_count
+        procedure, public :: current_epoch => batch_iterator_epoch
+        procedure, public :: current_position => batch_iterator_position
+        procedure, public :: initialized => batch_iterator_initialized
+    end type mlp_batch_iterator_t
 
     type, public :: mlp_training_objective_t
         !! A value/gradient/HVP adapter suitable for FortOpt.
@@ -82,11 +122,128 @@ module fortml_mlp_training
     end type mlp_training_objective_t
 
     public :: mlp_epoch_callback_proc
+    public :: mlp_learning_rate_schedule_proc
     public :: mlp_loss_value_gradient
     public :: mlp_loss_hvp
     public :: mlp_train
 
 contains
+
+    subroutine batch_iterator_initialize(self, n_samples, status, batch_size, &
+            shuffle, seed)
+        class(mlp_batch_iterator_t), intent(out) :: self
+        integer, intent(in) :: n_samples
+        type(fortnum_status_t), intent(out) :: status
+        integer, intent(in), optional :: batch_size
+        logical, intent(in), optional :: shuffle
+        integer, intent(in), optional :: seed
+        integer :: requested_batch, requested_seed, first
+        logical :: requested_shuffle
+
+        requested_batch = n_samples
+        if (present(batch_size)) requested_batch = batch_size
+        requested_shuffle = .false.
+        if (present(shuffle)) requested_shuffle = shuffle
+        requested_seed = 17
+        if (present(seed)) requested_seed = seed
+        if (n_samples < 1 .or. requested_batch < 1 .or. &
+            (requested_shuffle .and. requested_seed <= 0)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP batch iterator: invalid sample, batch, or seed value")
+            return
+        end if
+
+        self%n_samples = n_samples
+        self%batch_size = min(requested_batch, n_samples)
+        self%shuffle = requested_shuffle
+        self%shuffle_state = int(requested_seed, int64)
+        self%position = n_samples + 1
+        self%epoch_number = 0
+        self%ready = .true.
+        allocate(self%order(n_samples))
+        self%order = [(first, first=1, n_samples)]
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine batch_iterator_initialize
+
+    subroutine batch_iterator_reset(self, status)
+        class(mlp_batch_iterator_t), intent(inout) :: self
+        type(fortnum_status_t), intent(out) :: status
+        integer :: first
+
+        if (.not. self%ready .or. .not. allocated(self%order)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP batch iterator: reset before initialize")
+            return
+        end if
+        if (self%epoch_number == huge(self%epoch_number)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP batch iterator: epoch counter overflow")
+            return
+        end if
+        self%epoch_number = self%epoch_number + 1
+        self%position = 1
+        self%order = [(first, first=1, self%n_samples)]
+        if (self%shuffle) call shuffle_order(self%order, self%shuffle_state)
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine batch_iterator_reset
+
+    subroutine batch_iterator_next(self, indices, has_batch, status)
+        class(mlp_batch_iterator_t), intent(inout) :: self
+        integer, allocatable, intent(out) :: indices(:)
+        logical, intent(out) :: has_batch
+        type(fortnum_status_t), intent(out) :: status
+        integer :: last
+
+        has_batch = .false.
+        if (.not. self%ready .or. .not. allocated(self%order)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP batch iterator: next_batch before initialize")
+            return
+        end if
+        if (self%position > self%n_samples) then
+            allocate(indices(0))
+            call status_set(status, FORTNUM_OK, "")
+            return
+        end if
+        last = min(self%position + self%batch_size - 1, self%n_samples)
+        allocate(indices(last - self%position + 1))
+        indices = self%order(self%position:last)
+        self%position = last + 1
+        has_batch = .true.
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine batch_iterator_next
+
+    integer function batch_iterator_batch_count(self) result(count)
+        class(mlp_batch_iterator_t), intent(in) :: self
+
+        count = 0
+        if (.not. self%ready) return
+        count = (self%n_samples + self%batch_size - 1)/self%batch_size
+    end function batch_iterator_batch_count
+
+    integer function batch_iterator_sample_count(self) result(count)
+        class(mlp_batch_iterator_t), intent(in) :: self
+
+        count = self%n_samples
+    end function batch_iterator_sample_count
+
+    integer function batch_iterator_epoch(self) result(epoch)
+        class(mlp_batch_iterator_t), intent(in) :: self
+
+        epoch = self%epoch_number
+    end function batch_iterator_epoch
+
+    integer function batch_iterator_position(self) result(position)
+        class(mlp_batch_iterator_t), intent(in) :: self
+
+        position = self%position
+    end function batch_iterator_position
+
+    logical function batch_iterator_initialized(self) result(initialized)
+        class(mlp_batch_iterator_t), intent(in) :: self
+
+        initialized = self%ready
+    end function batch_iterator_initialized
 
     subroutine mlp_loss_value_gradient(model, x, target, l2, value, gradient, &
             l2_gradient, status)
@@ -367,16 +524,17 @@ contains
         type(mlp_training_options_t) :: config
         type(mlp_training_state_t) :: result
         type(adam_t) :: optimizer
+        type(mlp_batch_iterator_t) :: iterator
         real(dp), allocatable :: theta(:), best_theta(:), gradient(:)
         real(dp), allocatable :: x_batch(:, :), target_batch(:, :)
-        integer, allocatable :: order(:)
+        integer, allocatable :: batch_indices(:)
         real(dp) :: loss, l2_gradient, gradient_norm, improvement
         real(dp) :: best_loss
+        real(dp) :: effective_rate, raw_gradient_norm
         integer :: n_samples, n_outputs, n_parameters
-        integer :: batch, first, last, epoch
+        integer :: batch, epoch
         integer :: stale_epochs
-        integer(int64) :: shuffle_state
-        logical :: stop_now
+        logical :: stop_now, has_batch
 
         if (present(options)) config = options
         if (.not. valid_options(config) .or. &
@@ -397,8 +555,8 @@ contains
         theta = model%parameters()
         allocate(best_theta, source=theta)
         allocate(gradient(n_parameters))
-        allocate(order(n_samples))
         allocate(result%loss_history(config%max_epochs))
+        allocate(result%learning_rate_history(config%max_epochs))
         call mlp_loss_value_gradient(model, x, target, config%l2, loss, &
             gradient, l2_gradient, status)
         if (status%code /= FORTNUM_OK) then
@@ -409,8 +567,6 @@ contains
         best_loss = loss
         result%best_loss = loss
         stale_epochs = 0
-        shuffle_state = int(config%shuffle_seed, int64)
-        if (shuffle_state <= 0_int64) shuffle_state = 1_int64
         call optimizer%initialize(n_parameters, status, &
             learning_rate=config%learning_rate, beta1=config%beta1, &
             beta2=config%beta2, epsilon=config%epsilon)
@@ -418,16 +574,31 @@ contains
             if (present(state)) state = result
             return
         end if
+        call iterator%initialize(n_samples, status, batch_size=batch, &
+            shuffle=config%shuffle, seed=config%shuffle_seed)
+        if (status%code /= FORTNUM_OK) then
+            if (present(state)) state = result
+            return
+        end if
 
         do epoch = 1, config%max_epochs
-            order = [(first, first=1, n_samples)]
-            if (config%shuffle) call shuffle_order(order, shuffle_state)
-            do first = 1, n_samples, batch
-                last = min(first + batch - 1, n_samples)
-                allocate(x_batch(last - first + 1, size(x, 2)))
-                allocate(target_batch(last - first + 1, n_outputs))
-                x_batch = x(order(first:last), :)
-                target_batch = target(order(first:last), :)
+            call iterator%reset(status)
+            if (status%code /= FORTNUM_OK) then
+                if (present(state)) state = result
+                return
+            end if
+            has_batch = .true.
+            do while (has_batch)
+                call iterator%next_batch(batch_indices, has_batch, status)
+                if (status%code /= FORTNUM_OK) then
+                    if (present(state)) state = result
+                    return
+                end if
+                if (.not. has_batch) exit
+                allocate(x_batch(size(batch_indices), size(x, 2)))
+                allocate(target_batch(size(batch_indices), n_outputs))
+                x_batch = x(batch_indices, :)
+                target_batch = target(batch_indices, :)
                 call mlp_loss_value_gradient(model, x_batch, target_batch, &
                     config%l2, loss, gradient, l2_gradient, status)
                 deallocate(x_batch, target_batch)
@@ -435,6 +606,27 @@ contains
                     if (present(state)) state = result
                     return
                 end if
+                raw_gradient_norm = sqrt(sum(gradient*gradient))
+                if (config%gradient_clip_norm > 0.0_dp .and. &
+                    raw_gradient_norm > config%gradient_clip_norm) then
+                    gradient = gradient*config%gradient_clip_norm/raw_gradient_norm
+                    result%gradient_clipped_updates = &
+                        result%gradient_clipped_updates + 1
+                end if
+                effective_rate = config%learning_rate
+                if (associated(config%learning_rate_schedule)) then
+                    call config%learning_rate_schedule(epoch, result%updates + 1, &
+                        config%learning_rate, effective_rate)
+                end if
+                if (.not. ieee_is_finite(effective_rate) .or. &
+                    effective_rate <= 0.0_dp) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "MLP train: schedule returned an invalid learning rate")
+                    if (present(state)) state = result
+                    return
+                end if
+                optimizer%learning_rate = effective_rate
+                result%last_learning_rate = effective_rate
                 call optimizer%step(theta, gradient, status)
                 if (status%code /= FORTNUM_OK) then
                     if (present(state)) state = result
@@ -457,6 +649,7 @@ contains
             gradient_norm = sqrt(sum(gradient*gradient))
             result%epochs = epoch
             result%loss_history(epoch) = loss
+            result%learning_rate_history(epoch) = result%last_learning_rate
             result%gradient_norm = gradient_norm
             improvement = best_loss - loss
             if (improvement > config%min_delta) then
@@ -487,6 +680,7 @@ contains
         end do
 
         call shrink_history(result%loss_history, result%epochs)
+        call shrink_history(result%learning_rate_history, result%epochs)
         if (config%restore_best .and. result%best_epoch < result%epochs) then
             theta = best_theta
             call model%set_parameters(theta, status)
@@ -515,7 +709,14 @@ contains
             options%beta1 >= 0.0_dp .and. options%beta1 < 1.0_dp .and. &
             options%beta2 >= 0.0_dp .and. options%beta2 < 1.0_dp .and. &
             options%epsilon > 0.0_dp .and. options%l2 >= 0.0_dp .and. &
-            options%tolerance >= 0.0_dp .and. options%min_delta >= 0.0_dp
+            options%tolerance >= 0.0_dp .and. options%min_delta >= 0.0_dp .and. &
+            options%gradient_clip_norm >= 0.0_dp
+        valid = valid .and. ieee_is_finite(options%learning_rate) .and. &
+            ieee_is_finite(options%beta1) .and. ieee_is_finite(options%beta2) .and. &
+            ieee_is_finite(options%epsilon) .and. ieee_is_finite(options%l2) .and. &
+            ieee_is_finite(options%tolerance) .and. &
+            ieee_is_finite(options%min_delta) .and. &
+            ieee_is_finite(options%gradient_clip_norm)
         if (options%shuffle) valid = valid .and. options%shuffle_seed > 0
     end function valid_options
 

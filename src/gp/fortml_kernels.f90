@@ -60,6 +60,8 @@ module fortml_kernels
     public :: make_user_kernel
     public :: kernel_add
     public :: kernel_multiply
+    public :: clone_kernel
+    public :: clone_kernel_into
     public :: kernel_input_derivatives
 
 contains
@@ -170,6 +172,42 @@ contains
 
         call make_composite(kernel, KERNEL_PRODUCT, left, right, status)
     end function kernel_multiply
+
+    recursive function clone_kernel(source) result(copy)
+        !! Return an independent copy of a kernel expression tree.
+        !!
+        !! Composite kernels own their children through pointers.  Intrinsic
+        !! assignment therefore aliases those children, which is surprising
+        !! for any derivative or optimizer probe that temporarily changes a
+        !! parameter.  This explicit clone preserves the tree while making
+        !! every mutable node independent.
+        type(kernel_t), intent(in) :: source
+        type(kernel_t) :: copy
+
+        call clone_kernel_into(source, copy)
+    end function clone_kernel
+
+    recursive subroutine clone_kernel_into(source, copy)
+        type(kernel_t), intent(in) :: source
+        type(kernel_t), intent(out) :: copy
+
+        copy%kind = source%kind
+        copy%input_dim = source%input_dim
+        if (allocated(source%log_parameters)) then
+            allocate(copy%log_parameters, source=source%log_parameters)
+        end if
+        if (allocated(source%formula)) then
+            allocate(copy%formula, source=source%formula)
+        end if
+        if (associated(source%left)) then
+            allocate(copy%left)
+            call clone_kernel_into(source%left, copy%left)
+        end if
+        if (associated(source%right)) then
+            allocate(copy%right)
+            call clone_kernel_into(source%right, copy%right)
+        end if
+    end subroutine clone_kernel_into
 
     recursive integer function kernel_parameter_count(self) result(count)
         class(kernel_t), intent(in) :: self

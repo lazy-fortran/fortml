@@ -89,6 +89,14 @@ layer contract. Dense layers, activations, batched products, and explicit
 backpropagation remain the reference beside the `fortad`-generated scalar
 fixture. The VAE uses the same MLP type for its encoder and decoder.
 
+`mlp_training` separates deterministic data traversal from optimizer updates.
+`mlp_batch_iterator_t` owns the one-based permutation, epoch boundary, and
+Park--Miller state. It returns an unpadded final batch and never silently starts
+another epoch. `mlp_train` consumes that cursor, applies an optional per-update
+learning-rate callback and global norm clipping, and records the effective rate
+and clipping count in `mlp_training_state_t`. This is an in-memory reproducible
+training boundary, not yet a serialized or validation-aware trainer state.
+
 The VAE is a composition of two MLPs and an explicit diagonal Gaussian
 reparameterization:
 
@@ -130,6 +138,15 @@ K_obs[i,j] = L_i^x L_j^{x'} k(x_i, x_j)
 Derivative prediction uses the same operator on the cross-covariance and never
 duplicates a solver. At coincident points, Matérn and white-noise behavior is
 an explicit status contract. Undefined higher derivatives are refused.
+
+The derivative GP packs kernel log parameters followed by log observation-noise
+variance. Its likelihood gradient contracts analytic parameter tangents of the
+supported radial and composed kernels with the usual Cholesky trace product.
+The FortOpt adapter consumes this gradient directly. The public directional
+HVP currently uses a deterministic finite difference of that analytic gradient,
+so it is not presented as a generated second-order kernel product. `fortsym`
+generated products remain the preferred route when a smaller proven expression
+is available, with FortAD and an independent dense oracle retained as checks.
 
 Exact inference uses dense Cholesky for small problems. Large problems use the
 same lazy operator boundary for tiled products, tensor/Kronecker,

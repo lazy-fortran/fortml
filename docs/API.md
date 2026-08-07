@@ -55,7 +55,7 @@ not supplied through a hidden generic interface.
 | `rnn_t` | `forward`, squared-error `loss` | No | Loss gradient by BPTT | No |
 | `kernel_t` | Scalar value and matrix | Parameter JVP | Parameter VJP | Parameter HVP |
 | `gp_regression_t` | Mean, variance, LML | Prediction and LML parameters | Prediction and LML parameters | Mean and LML parameters |
-| `gp_derivative_regression_t` | Mean and variance | No | No | No |
+| `gp_derivative_regression_t` | Mean, variance, and LML | LML parameter JVP | Analytic kernel/noise hyperparameter gradient | Directional HVP (finite difference of the analytic gradient) |
 | `multi_output_gp_t` | Correlated mean and LML | No | No | No |
 | Approximate GP types | Mean, variance, or ELBO as listed below | No | No | No |
 
@@ -205,6 +205,18 @@ count equals the previous stage's feature count, and call `fit` before
 reverse VJPs propagate through every stage, including the input cotangent.
 Shape mismatches, empty chains, and unfitted transforms return status errors.
 
+### `fortml_validation`
+
+`kfold_splitter_t` and `stratified_kfold_splitter_t` are index-only, seeded
+cross-validation iterators. Initialize with `n_samples` (or integer labels)
+and `n_splits`, then call `next_split(train_indices,test_indices,has_split,
+status)` until `has_split` is false. `reset()` replays the same sequence.
+Shuffled iterators use a local positive seed and never touch process-global RNG
+state. Test folds are balanced. Stratified folds distribute each class
+round-robin. Invalid fold counts, seeds, and pre-initialization calls return
+status errors. The splitters do not fit or store transformers, so callers must
+fit preprocessing on each training index set explicitly.
+
 ## Neural models and variational inference
 
 ### `fortml_mlp`
@@ -241,8 +253,9 @@ also provide learning-rate and Adam coefficients, L2 regularization,
 gradient tolerance, patience, best-state restoration, and an epoch callback.
 
 `mlp_training_state_t` records epoch and update counts, the best epoch and
-loss, the final loss and gradient norm, convergence flags, and a compact loss
-history. `mlp_loss_value_gradient` returns the mean-squared-error value, the
+loss, the final loss and gradient norm, convergence flags, a compact loss
+history, the effective learning rate per epoch, and the number of norm-clipped
+updates. `mlp_loss_value_gradient` returns the mean-squared-error value, the
 packed network gradient, and the analytic derivative with respect to the
 scalar L2 hyperparameter. This scalar product is the first outer
 hyperparameter-search seam for neural training. `mlp_loss_hvp` adds the exact joint Hessian-vector
@@ -259,6 +272,18 @@ packed vector appends the non-negative L2 coefficient and both the gradient and
 HVP include its mixed block. `fortopt(objective,status)` installs a context
 callback directly into `fortopt_objective`. An L-BFGS-B caller can therefore
 optimize network parameters and L2 with analytic products and explicit bounds.
+
+`mlp_batch_iterator_t` is the reusable deterministic row-index cursor used by
+`mlp_train`. Initialize it with `n_samples`, an optional `batch_size`,
+`shuffle`, and positive `seed`. Call `reset` once per epoch and
+`next_batch(indices,has_batch,status)` until `has_batch` is false. The final
+batch is returned without padding, and the cursor never advances implicitly to
+the next epoch. Its explicit position, epoch, and copied RNG state make an
+in-memory batch boundary resumable. `mlp_learning_rate_schedule_proc` can be
+installed in `mlp_training_options_t%learning_rate_schedule`. It receives the
+epoch, one-based update number, and base rate and must return a finite positive
+rate. `gradient_clip_norm` applies global norm clipping before each Adam step.
+Zero disables clipping.
 
 ### `fortml_mlp_classifier`
 
@@ -307,6 +332,16 @@ structured refusal at a discontinuity. Depth greater than one, histogram
 quantile approximation, missing-value routing, categorical features, ranking,
 and constraints are deliberately refused until their independent contracts
 land.
+
+`xgboost_multiclass_t` wraps the binary logistic estimator in a deterministic
+one-vs-rest classifier. `fit(x,labels,status[,options])` sorts arbitrary
+integer labels, fits one depth-one booster per class, and normalizes the
+positive OVR probabilities. `classes`, `class_count`, `feature_count`,
+`estimator_count`, `fitted`, `decision_function`, `predict`, and
+`predict_proba` expose the fitted state. `predict_proba_jvp` applies the exact
+quotient-rule JVP away from learned split boundaries and propagates the binary
+boundary refusal. The classifier currently inherits the binary estimator's
+depth-one, dense, finite-input scope.
 
 ### `fortml_bnn`
 
@@ -387,6 +422,10 @@ The corresponding kind constants are `KERNEL_RBF`, `KERNEL_MATERN12`,
 `KERNEL_WHITE_NOISE`, `KERNEL_SUM`, `KERNEL_PRODUCT`, and `KERNEL_USER`.
 Combine initialized kernels with `kernel_add(left,right,status)` or
 `kernel_multiply(left,right,status)`.
+`clone_kernel(kernel)` makes an independent copy of the complete expression
+tree, including composite children. Use it for temporary optimizer or
+derivative probes instead of intrinsic assignment, which aliases pointer
+children.
 
 Leaf parameters are stored as logarithms. Radial leaves have
 `[log_variance,log_lengthscale]`. Linear, constant, white-noise, and user leaves
@@ -457,9 +496,17 @@ is `[-20,20]`.
 `gp_hyperparameter_result_t` reports convergence, iteration count, final
 negative log marginal likelihood, and the final gradient norm. A nonconverged
 iteration limit or nonfinite objective returns a convergence status. The
-adapter currently targets exact fitted GPs. Derivative-observation,
-multi-output, and approximate GP training objectives remain separate roadmap
-adapters.
+adapter currently targets exact fitted GPs. Derivative-observation training is
+provided separately by `fortml_derivative_gp_training`.
+
+### `fortml_derivative_gp_training`
+
+`gp_optimize_derivative_hyperparameters(model,options,result,status)` minimizes
+the negative mixed value/first-derivative GP likelihood with FortOpt
+L-BFGS-B. It uses the derivative GP's analytic likelihood gradient and the
+same bounded log-parameter options/result type as `fortml_gp_training`. The
+optimizer does not consume the derivative GP's finite-difference HVP. That
+product is available for diagnostics and second-order callers only.
 
 ### `fortml_gp_classification`
 
@@ -494,8 +541,21 @@ respect to input `j`. Rows may be interleaved in any order and targets may have
 multiple columns.
 
 `predict(x,components,mean,variance,status)` uses the same component convention.
-`observation_count()` returns the number of fitted rows. The type does not
-expose parameter derivatives.
+`observation_count()` returns the number of fitted rows. The packed parameter
+order is the kernel log parameters followed by log observation-noise variance.
+`parameter_count`, `parameters`, and `set_parameters` expose that state.
+`log_marginal_likelihood`, `log_marginal_likelihood_jvp`,
+`hyperparameter_gradient`, and `hyperparameter_hvp` provide likelihood
+products. The gradient uses analytic parameter tangents of the supported RBF,
+Matérn 1/2, 3/2, 5/2, linear, constant, and sum/product kernels. Matérn 1/2
+still refuses coincident derivative observations. The HVP is a deterministic
+directional finite difference of that analytic gradient. It is intentionally
+listed as such until a generated second-order derivative product is added.
+
+`fortml_derivative_gp_training` provides
+`gp_optimize_derivative_hyperparameters` with the same bounded FortOpt
+L-BFGS-B options and result type as exact value GPs. Optimization consumes the
+analytic gradient. It does not silently substitute the finite-difference HVP.
 
 ### `fortml_multi_output_gp`
 
