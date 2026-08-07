@@ -2,6 +2,7 @@ program test_probability_calibration
     !! Independent analytic and finite-difference checks for calibration.
     use, intrinsic :: iso_fortran_env, only: dp => real64, error_unit
     use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_NOT_IMPLEMENTED
+    use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU, FORTML_DEVICE_CUDA
     use fortml_probability_calibration, only: &
         probability_calibrator_t, probability_calibration_options_t, &
         probability_calibration_state_t, CALIBRATION_SIGMOID, CALIBRATION_ISOTONIC
@@ -11,6 +12,7 @@ program test_probability_calibration
     type(probability_calibration_options_t) :: options
     type(probability_calibration_state_t) :: state
     type(fortnum_status_t) :: status
+    type(fortml_device_t) :: cpu, cuda
     real(dp) :: scores(8), scores_dot(8), probabilities(8, 2), probabilities_dot(8, 2)
     real(dp) :: probabilities_plus(8, 2), probabilities_minus(8, 2)
     real(dp) :: probabilities_bar(8, 2), scores_bar(8)
@@ -77,6 +79,19 @@ program test_probability_calibration
     rhs = sum(parameters_bar*parameters_dot)
     call check(status_ok(status) .and. abs(lhs-rhs) < 2.0e-7_dp, &
         "sigmoid parameter VJP adjoint identity", failures)
+    cuda%kind = FORTML_DEVICE_CUDA
+    cuda%selected = .true.
+    cuda%available = .true.
+    call sigmoid_model%predict_proba_device(cuda, scores, probabilities, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED .and. &
+        .not. sigmoid_model%device_supported(FORTML_DEVICE_CUDA), &
+        "sigmoid CUDA prediction refusal", failures)
+    call cpu%select(FORTML_DEVICE_CPU, status)
+    call sigmoid_model%predict_proba_device(cpu, scores, probabilities_plus, status)
+    call sigmoid_model%predict_proba(scores, probabilities_minus, status)
+    call check(status_ok(status) .and. maxval(abs(probabilities_plus - probabilities_minus)) < &
+        1.0e-14_dp .and. sigmoid_model%device_supported(FORTML_DEVICE_CPU), &
+        "sigmoid CPU device dispatch", failures)
 
     isotonic_scores = [-3.0_dp, -2.0_dp, -1.0_dp, 0.0_dp, 1.0_dp, 2.0_dp, 3.0_dp]
     isotonic_labels = [10, 42, 10, 42, 42, 10, 42]
