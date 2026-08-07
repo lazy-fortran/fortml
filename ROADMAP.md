@@ -137,6 +137,137 @@ release benchmark is a useful exact baseline but not XGBoost parity. The same
 rule applies to a GP kernel without likelihood constraints, batch shapes,
 train-state serialization, and derivative/hyperparameter products.
 
+## Complete parity gap register
+
+This register is the implementation index for the long-term target. A checked
+item has a public contract, an independent behavioral oracle, refusal tests,
+documentation, and a benchmark record. An unchecked item remains open even
+when a lower-level primitive already exists.
+
+### Estimators and supervised workflows
+
+- [x] Linear, logistic, softmax, one-vs-rest, GaussianNB, BernoulliNB,
+  MultinomialNB, ComplementNB, CategoricalNB, CART, MLP, binary Laplace GP,
+  one-vs-rest Laplace GP, and exact XGBoost-style squared/logistic estimators.
+- [ ] Ridge, lasso, elastic-net, Huber, quantile, Poisson, Gamma, Tweedie,
+  ordinal, multilabel, multioutput, and partial-fit estimators with the shared
+  parameter registry and sample-weight contract.
+- [ ] k-nearest-neighbor and radius-neighbor search with deterministic ties,
+  brute/KD-tree/ball-tree backends, sparse inputs, leave-one-out scoring, and
+  explicit nondifferentiable neighbor-selection boundaries.
+- [ ] Linear, kernel, one-class, and ranking SVM/SVR estimators with bounded
+  solvers, probability calibration, support-vector metadata, and input/parameter
+  products for smooth regions.
+- [ ] Calibration workflows: Platt/sigmoid, isotonic, temperature scaling,
+  reliability diagrams, class weighting, and calibration-aware cross-validation.
+- [ ] Random forests, extra trees, bagging, AdaBoost, random patches, and
+  histogram gradient boosting with staged prediction, warm starts, feature
+  importance, missing/categorical values, monotonic constraints, and permutation
+  importance.
+- [ ] XGBoost and LightGBM parity beyond exact growth: quantile sketches,
+  histogram bins, leaf-wise growth, ranking objectives, DART/GOSS/EFB,
+  categorical partitions, monotonic and interaction constraints, distributed
+  workers, early stopping, model dumps, and staged/tree-contribution APIs.
+
+### Gaussian processes and probabilistic models
+
+- [x] RBF, Matérn 1/2, 3/2, and 5/2, linear, constant, white-noise, user-formula,
+  sum, and product kernels with exact value and selected derivative products.
+- [ ] Complete kernel catalog: periodic, spectral mixture, rational quadratic,
+  polynomial, cosine, locally periodic, change-point, neural-network, graph,
+  string, and operator-valued kernels with compositional parameter metadata.
+- [ ] Likelihood catalog: Gaussian, Bernoulli, categorical, multinomial,
+  Poisson, count, heteroscedastic, censored, ordinal, Student-t, and warped
+  likelihoods with stable links, constraints, and declared derivative modes.
+- [ ] Exact GP workflow parity: batched/multitask shapes, mean functions,
+  priors, constraints, lazy solves, preconditioners, stochastic log-determinants,
+  predictive roots, fantasy updates, online updates, and serialized train state.
+- [ ] Variational and scalable inference: whitened/unwhitened SVGP, natural
+  gradients, stochastic ELBO minibatches, interdomain features, SKI/KISS-GP,
+  local experts, deep GPs, variational classification, and distributed inducing
+  points.
+- [ ] Derivative observations for every supported smooth kernel, mixed orders,
+  vector fields, Hessian observations, operator-valued outputs, analytic
+  third-order query products, and covariance products over value/derivative
+  blocks.
+- [ ] GP classification optimization over kernel and likelihood parameters,
+  multiclass likelihoods beyond one-vs-rest, calibration, Laplace evidence
+  corrections, variational classification, and exact JVP/VJP/HVP products
+  through the selected inference state.
+
+### Neural networks and training state
+
+- [x] Dense MLP, classifier, BNN, VAE, vanilla RNN, and separable Hamiltonian
+  MLP primitives with selected value/JVP/VJP/HVP products and deterministic
+  checkpointable Adam, AdamW, Adagrad, and SGD training.
+- [ ] A general module tree with explicit parameter/state buffers, named
+  submodules, cloning, freezing, tied weights, parameter groups, buffers,
+  hooks, train/eval modes, and a stable flat-registry projection.
+- [ ] Convolution, transposed convolution, pooling, normalization, dropout,
+  embeddings, attention, transformers, residual blocks, recurrent LSTM/GRU,
+  temporal convolutions, graph message passing, and neural operators.
+- [ ] Full activation and loss catalog: sigmoid, softmax, GELU, SiLU, ELU,
+  softplus, leaky/parametric ReLU, log-softmax, cross-entropy, focal,
+  multilabel BCE, Poisson, Huber, quantile, contrastive, triplet, CTC, and
+  physics residual losses, each with explicit derivative and refusal contracts.
+- [ ] Production optimizers and schedules: RMSprop, L-BFGS/L-BFGS-B, Adafactor,
+  Lion, RAdam, AMSGrad, cosine/one-cycle/warmup/plateau schedules, gradient
+  accumulation, clipping, EMA, decoupled regularization, and parameter groups.
+- [ ] Exact fixed-trajectory and implicit hypergradients through all supported
+  optimizers, schedules, batch cursors, clipping, weight decay, validation,
+  early stopping, and optimizer state. Every unsupported stochastic or device
+  path must return a typed refusal.
+- [ ] Mixed precision with master weights, loss scaling, overflow recovery,
+  deterministic reduction modes, activation checkpointing, truncated BPTT,
+  compile/fusion, distributed data/model parallelism, and resumable serialized
+  checkpoints with schema migration.
+- [ ] Physics-informed and physics-consistent neural models: PINNs, HNNs,
+  Lagrangian and symplectic networks, constrained neural ODEs, Hamiltonian
+  residuals, conservation/invariant diagnostics, Ghost Tasking workloads, and
+  manufactured-PDE training with long-horizon trajectory gates.
+
+### Differentiation, initialization, and composition
+
+- [x] Capability-specific analytic, FortAD-generated, FortSym-generated,
+  JVP, VJP, HVP, and explicit-refusal paths for the current supported models.
+- [ ] A complete derivative capability matrix over every model parameter,
+  input, basis hyperparameter, kernel hyperparameter, likelihood parameter,
+  optimizer variable, schedule variable, validation variable, and device
+  transfer counter. Products must include adjoint identities and finite-
+  difference checks where a trusted analytic oracle is unavailable.
+- [ ] Implicit differentiation through linear solves, fixed points, Laplace
+  modes, variational optima, constrained tree policies, and optimizer fixed
+  points, with FortOpt L-BFGS-B consuming the same parameter registry.
+- [ ] Basis and pipeline DAGs with named features, sparse views, missing-value
+  policies, fit/transform leakage guards, cross-validation cloning, graph
+  serialization, static device lowering, and parameter-group hypergradients.
+- [ ] Polynomial, spline, Fourier, radial, and GP bases as interchangeable
+  initializers for linear models, autoencoders, NNGP/NTK finite networks,
+  physics-consistent networks, symplectic networks, and GP posterior starts.
+- [ ] PCA, linear autoencoder, NNGP, NTK, Xavier/He, GP-posterior, and
+  physics-informed initialization benchmarks with identical seeds, residual or
+  reconstruction oracles, and convergence comparisons.
+
+### Devices, persistence, and benchmark gates
+
+- [ ] Resident CPU/CUDA/OpenACC execution for every supported estimator and
+  optimizer, including model/optimizer/batch state, true transfer accounting,
+  deterministic reductions, and matched float32/float64 behavior.
+- [ ] CUDA kernels and generated FortSym/FortAD products for all declared
+  derivative paths, with device-side JVP/VJP/HVP and no hidden host callbacks.
+- [ ] Versioned state dictionaries, compiler-independent serialization,
+  checksums, safe loading, streaming/batched inference, model cards, and
+  deployment manifests for models, pipelines, kernels, and trainer state.
+- [ ] Correctness-gated benchmark matrices against scikit-learn, XGBoost,
+  LightGBM, PyTorch, JAX, GPyTorch, GPflow, Flux, and Lux over matched data,
+  precision, initialization, stopping, device, memory, compile, transfer,
+  latency, throughput, and energy measurements.
+- [ ] Public benchmark fixtures for analytic toy problems, dense tabular data,
+  sparse/categorical inputs, wide data, long sequences, image-like tensors,
+  graph batches, derivative observations, and physics trajectories. Every
+  unavailable dependency or unsupported backend remains a parseable refusal
+  row with a reason.
+
 ## Current baseline
 
 ### Package and public contracts
