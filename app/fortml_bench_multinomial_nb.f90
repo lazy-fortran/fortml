@@ -49,7 +49,8 @@ program fortml_bench_multinomial_nb
         open (newunit=oracle_unit, file=trim(oracle_path), status="replace", &
             action="write")
         write (oracle_unit, '(a)') "quantity,row,column,value"
-        call write_oracle(oracle_unit, log_probabilities, probabilities, predicted)
+        call write_oracle(oracle_unit, log_probabilities, probabilities, &
+            log_probabilities_dot, predicted)
         close (oracle_unit)
     end if
     if (oracle_only_requested()) stop
@@ -122,9 +123,11 @@ contains
         end do
     end subroutine make_fixture
 
-    subroutine write_oracle(unit, log_probability, probability, prediction)
+    subroutine write_oracle(unit, log_probability, probability, &
+            log_probability_jvp, prediction)
         integer, intent(in) :: unit
-        real(dp), intent(in) :: log_probability(:, :), probability(:, :)
+        real(dp), intent(in) :: log_probability(:, :), probability(:, :), &
+            log_probability_jvp(:, :)
         integer, intent(in) :: prediction(:)
         integer :: i, j
 
@@ -136,6 +139,9 @@ contains
                     "log_probability,", i, ",", j, ",", log_probability(i, j)
                 write (unit, '(a,i0,a,i0,a,es26.17e3)') &
                     "probability,", i, ",", j, ",", probability(i, j)
+                write (unit, '(a,i0,a,i0,a,es26.17e3)') &
+                    "log_probability_jvp,", i, ",", j, ",", &
+                    log_probability_jvp(i, j)
             end do
         end do
     end subroutine write_oracle
