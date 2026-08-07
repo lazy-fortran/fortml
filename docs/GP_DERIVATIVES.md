@@ -22,6 +22,7 @@ the requested pair is smooth and finite. A refusal is a typed
 | Periodic, rational-quadratic, cosine | Yes | Gradient/JVP/VJP; mixed HVP refusal | Yes | mixed HVP `FORTNUM_NOT_IMPLEMENTED` |
 | Linear, constant | Yes | Yes; mixed-observation HVPs are analytic | Yes | none |
 | Polynomial | Yes when the positive polynomial base is finite | Gradient/JVP/VJP (all four logarithmic parameters); mixed HVP refusal | Yes when the positive base is finite | `FORTNUM_DOMAIN_ERROR` for a nonpositive base |
+| Spectral mixture | Yes | Gradient/JVP/VJP for packed log-weights, log-scales, and signed means; mixed HVP refusal | Yes | mixed HVP `FORTNUM_NOT_IMPLEMENTED` until fourth input/parameter products exist |
 | Sum/product composites | Yes when every child supports the requested product | Gradient/JVP/VJP for every supported child; mixed HVP analytic only for RBF/linear/constant-only trees | Yes when every child supports it | Unsupported mixed HVP child returns `FORTNUM_NOT_IMPLEMENTED` |
 | Validated user formula | Yes for formulas with defined input derivatives | Variance and formula input products where defined; mixed HVP refusal | Not implemented | `push_distance` additionally refuses at coincident points |
 | White noise | Value-only | Value-only | Not a differentiable query covariance | Any derivative observation is refused as nonsmooth |
@@ -36,8 +37,8 @@ Cholesky solve. For mixed value/first-derivative lists, the HVP is analytic for
 RBF, linear, constant, and sums/products built entirely from those leaves;
 the implementation differentiates the dense covariance, Cholesky solve, and
 each parameter covariance block in one direction. Matérn, periodic,
-rational-quadratic, cosine, polynomial, user-formula, and other leaves return
-`FORTNUM_NOT_IMPLEMENTED` for a mixed HVP until their required second
+rational-quadratic, cosine, polynomial, spectral-mixture, user-formula, and
+other leaves return `FORTNUM_NOT_IMPLEMENTED` for a mixed HVP until their required second
 input/parameter products have generated kernels and independent oracles. A
 mixed HVP never silently central-differences the likelihood gradient.
 Second-derivative observations, operator-valued outputs, sparse/variational
@@ -63,6 +64,7 @@ touching their outputs. `test_derivative_gp_device` checks both refusal and
 CPU-dispatch contracts.
 
 The independent behavior gates are `test_derivative_gp_products`,
+`test_derivative_gp_spectral_mixture`,
 `test_derivative_gp_device`, and `test_derivative_gp_capabilities`. The
 product test compares dense covariance, parameter products, query JVP/VJP,
 and adjoint identities against independent finite-difference oracles. The
@@ -76,3 +78,7 @@ The polynomial path is intentionally kept as a short closed-form expression
 generated FortSym leaf. The independent block oracle covers every packed
 parameter and the query third derivative, while the general FortSym kernel
 generation task remains tracked in the roadmap.
+The spectral-mixture derivative-GP gate independently assembles its dense
+two-dimensional value/first-derivative covariance blocks and checks packed
+parameter gradients, posterior covariance, query JVP/VJP, and the typed HVP
+refusal.

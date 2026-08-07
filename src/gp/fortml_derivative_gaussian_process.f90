@@ -9,7 +9,8 @@ module fortml_derivative_gaussian_process
     use fortml_kernels, only: kernel_t, clone_kernel_into, KERNEL_RBF, KERNEL_MATERN12, &
         KERNEL_MATERN32, KERNEL_MATERN52, KERNEL_LINEAR, KERNEL_CONSTANT, &
         KERNEL_WHITE_NOISE, KERNEL_SUM, KERNEL_PRODUCT, KERNEL_USER, &
-        KERNEL_PERIODIC, KERNEL_RATIONAL_QUADRATIC, KERNEL_COSINE, KERNEL_POLYNOMIAL
+        KERNEL_PERIODIC, KERNEL_RATIONAL_QUADRATIC, KERNEL_COSINE, KERNEL_POLYNOMIAL, &
+        KERNEL_SPECTRAL_MIXTURE
     implicit none
     private
 
@@ -2102,6 +2103,11 @@ contains
             end do
             call status_set(status, FORTNUM_OK, "")
             return
+        case (KERNEL_SPECTRAL_MIXTURE)
+            call spectral_input_parameter_jvp(kernel, x1, x2, parameter, value, &
+                gradient_x1, gradient_x2, mixed_hessian, value_dot, gradient_x1_dot, &
+                gradient_x2_dot, mixed_hessian_dot, status)
+            return
         case (KERNEL_USER)
             call kernel%input_derivatives(x1, x2, value, gradient_x1, gradient_x2, &
                 mixed_hessian, status)
@@ -2392,6 +2398,226 @@ contains
         end select
     end subroutine leaf_input_parameter_jvp
 
+    subroutine spectral_input_parameter_jvp(kernel, x1, x2, parameter, value, &
+            gradient_x1, gradient_x2, mixed_hessian, value_dot, gradient_x1_dot, &
+            gradient_x2_dot, mixed_hessian_dot, status)
+        !! Exact parameter products for spectral-mixture input derivatives.
+        !! The packed parameter layout is [log(weight), log(scale(:)), mean(:)]
+        !! for each mixture component.  All products are formed in lag space;
+        !! this keeps the x1/x2 signs explicit and avoids finite differences.
+        type(kernel_t), intent(in) :: kernel
+        real(dp), intent(in) :: x1(:), x2(:)
+        integer, intent(in) :: parameter
+        real(dp), intent(out) :: value, gradient_x1(:), gradient_x2(:)
+        real(dp), intent(out) :: mixed_hessian(:, :), value_dot
+        real(dp), intent(out) :: gradient_x1_dot(:), gradient_x2_dot(:)
+        real(dp), intent(out) :: mixed_hessian_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: tau(size(x1)), f(size(x1)), f1(size(x1)), f2(size(x1))
+        real(dp) :: fp(size(x1)), fp1(size(x1)), fp2(size(x1))
+        real(dp) :: l1(size(x1)), l2(size(x1)), e(size(x1))
+        real(dp) :: c(size(x1)), c1(size(x1)), c2(size(x1))
+        real(dp) :: lp, lp1, lp2, b, b1, cm, cm1, cm2
+        real(dp) :: product_all, product_h, product_hi, product_hij
+        real(dp) :: weight, weight_dot, a, phase, scale, mean
+        integer :: d, q, block, base, local_parameter, target_q, h, i, j
+        integer :: n_parameters
+
+        value = 0.0_dp
+        value_dot = 0.0_dp
+        gradient_x1 = 0.0_dp
+        gradient_x2 = 0.0_dp
+        mixed_hessian = 0.0_dp
+        gradient_x1_dot = 0.0_dp
+        gradient_x2_dot = 0.0_dp
+        mixed_hessian_dot = 0.0_dp
+        d = size(x1)
+        if (size(x2) /= d .or. size(gradient_x1) /= d .or. &
+                size(gradient_x2) /= d .or. size(mixed_hessian, 1) /= d .or. &
+                size(mixed_hessian, 2) /= d .or. size(gradient_x1_dot) /= d .or. &
+                size(gradient_x2_dot) /= d .or. size(mixed_hessian_dot, 1) /= d .or. &
+                size(mixed_hessian_dot, 2) /= d) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "spectral mixture parameter JVP: dimension mismatch")
+            return
+        end if
+        n_parameters = kernel%parameter_count()
+        block = 1 + 2*d
+        if (parameter < 1 .or. parameter > n_parameters .or. &
+                mod(n_parameters, block) /= 0) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "spectral mixture parameter JVP: parameter index is invalid")
+            return
+        end if
+        target_q = (parameter - 1)/block + 1
+        local_parameter = mod(parameter - 1, block) + 1
+        h = 0
+        if (local_parameter >= 2 .and. local_parameter <= d + 1) then
+            h = local_parameter - 1
+        else if (local_parameter >= d + 2) then
+            h = local_parameter - d - 1
+        end if
+        tau = x1 - x2
+        a = 2.0_dp*acos(-1.0_dp)
+        do q = 1, n_parameters/block
+            base = (q - 1)*block
+            weight = exp(kernel%log_parameters(base + 1))
+            weight_dot = 0.0_dp
+            if (q == target_q .and. local_parameter == 1) weight_dot = weight
+            f = 1.0_dp
+            f1 = 1.0_dp
+            f2 = 1.0_dp
+            fp = 0.0_dp
+            fp1 = 0.0_dp
+            fp2 = 0.0_dp
+            do i = 1, d
+                scale = exp(kernel%log_parameters(base + 1 + i))
+                mean = kernel%log_parameters(base + 1 + d + i)
+                phase = a*tau(i)*mean
+                l1(i) = -a*a*tau(i)*scale*scale
+                l2(i) = -a*a*scale*scale
+                e(i) = exp(-0.5_dp*a*a*tau(i)*tau(i)*scale*scale)
+                c(i) = cos(phase)
+                c1(i) = -a*mean*sin(phase)
+                c2(i) = -a*a*mean*mean*cos(phase)
+                f(i) = e(i)*c(i)
+                f1(i) = e(i)*(l1(i)*c(i) + c1(i))
+                f2(i) = e(i)*((l2(i) + l1(i)*l1(i))*c(i) + &
+                    2.0_dp*l1(i)*c1(i) + c2(i))
+                if (q == target_q .and. local_parameter /= 1) then
+                    if (i == h) then
+                        if (local_parameter <= d + 1) then
+                            lp = -a*a*tau(i)*tau(i)*scale*scale
+                            lp1 = -2.0_dp*a*a*tau(i)*scale*scale
+                            lp2 = -2.0_dp*a*a*scale*scale
+                            b = lp1 + lp*l1(i)
+                            b1 = lp2 + lp1*l1(i) + lp*l2(i)
+                            fp(i) = e(i)*lp*c(i)
+                            fp1(i) = e(i)*(b*c(i) + lp*c1(i))
+                            fp2(i) = e(i)*((l1(i)*b + b1)*c(i) + &
+                                (b + l1(i)*lp + lp1)*c1(i) + lp*c2(i))
+                        else
+                            cm = -a*tau(i)*sin(phase)
+                            cm1 = -a*sin(phase) - a*a*tau(i)*mean*cos(phase)
+                            cm2 = -2.0_dp*a*a*mean*cos(phase) + &
+                                a*a*a*tau(i)*mean*mean*sin(phase)
+                            fp(i) = e(i)*cm
+                            fp1(i) = e(i)*(l1(i)*cm + cm1)
+                            fp2(i) = e(i)*((l2(i) + l1(i)*l1(i))*cm + &
+                                2.0_dp*l1(i)*cm1 + cm2)
+                        end if
+                    end if
+                end if
+            end do
+            product_all = product(f)
+            value = value + weight*product_all
+            if (q == target_q) then
+                if (local_parameter == 1) then
+                    value_dot = value_dot + weight_dot*product_all
+                else
+                    product_h = spectral_product_except_one(f, h)
+                    value_dot = value_dot + weight*fp(h)*product_h
+                end if
+            end if
+            do i = 1, d
+                product_h = spectral_product_except_one(f, i)
+                gradient_x1(i) = gradient_x1(i) + weight*f1(i)*product_h
+                gradient_x2(i) = gradient_x2(i) - weight*f1(i)*product_h
+                if (q == target_q) then
+                    if (local_parameter == 1) then
+                        gradient_x1_dot(i) = gradient_x1_dot(i) + weight_dot*f1(i)*product_h
+                    else if (i == h) then
+                        gradient_x1_dot(i) = gradient_x1_dot(i) + weight*fp1(i)*product_h
+                    else
+                        product_hi = spectral_product_except_two(f, i, h)
+                        gradient_x1_dot(i) = gradient_x1_dot(i) + &
+                            weight*f1(i)*fp(h)*product_hi
+                    end if
+                    gradient_x2_dot(i) = -gradient_x1_dot(i)
+                end if
+                do j = 1, d
+                    if (i == j) then
+                        mixed_hessian(i, j) = mixed_hessian(i, j) - weight*f2(i)*product_h
+                    else
+                        product_hi = spectral_product_except_two(f, i, j)
+                        mixed_hessian(i, j) = mixed_hessian(i, j) - &
+                            weight*f1(i)*f1(j)*product_hi
+                    end if
+                    if (q == target_q) then
+                        if (local_parameter == 1) then
+                            if (i == j) then
+                                mixed_hessian_dot(i, j) = mixed_hessian_dot(i, j) - &
+                                    weight_dot*f2(i)*product_h
+                            else
+                                mixed_hessian_dot(i, j) = mixed_hessian_dot(i, j) - &
+                                    weight_dot*f1(i)*f1(j)*product_hi
+                            end if
+                        else if (i == j) then
+                            if (i == h) then
+                                mixed_hessian_dot(i, j) = mixed_hessian_dot(i, j) - &
+                                    weight*fp2(i)*product_h
+                            else
+                                product_hi = spectral_product_except_two(f, i, h)
+                                mixed_hessian_dot(i, j) = mixed_hessian_dot(i, j) - &
+                                    weight*f2(i)*fp(h)*product_hi
+                            end if
+                        else if (i == h) then
+                            mixed_hessian_dot(i, j) = mixed_hessian_dot(i, j) - &
+                                weight*fp1(i)*f1(j)*product_hi
+                        else if (j == h) then
+                            product_hi = spectral_product_except_two(f, i, h)
+                            mixed_hessian_dot(i, j) = mixed_hessian_dot(i, j) - &
+                                weight*f1(i)*fp1(j)*product_hi
+                        else
+                            product_hij = spectral_product_except_three(f, i, j, h)
+                            mixed_hessian_dot(i, j) = mixed_hessian_dot(i, j) - &
+                                weight*fp(h)*f1(i)*f1(j)*product_hij
+                        end if
+                    end if
+                end do
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine spectral_input_parameter_jvp
+
+    pure function spectral_product_except_one(values, skip) result(product_value)
+        real(dp), intent(in) :: values(:)
+        integer, intent(in) :: skip
+        real(dp) :: product_value
+        integer :: i
+
+        product_value = 1.0_dp
+        do i = 1, size(values)
+            if (i /= skip) product_value = product_value*values(i)
+        end do
+    end function spectral_product_except_one
+
+    pure function spectral_product_except_two(values, skip1, skip2) result(product_value)
+        real(dp), intent(in) :: values(:)
+        integer, intent(in) :: skip1, skip2
+        real(dp) :: product_value
+        integer :: i
+
+        product_value = 1.0_dp
+        do i = 1, size(values)
+            if (i /= skip1 .and. i /= skip2) product_value = product_value*values(i)
+        end do
+    end function spectral_product_except_two
+
+    pure function spectral_product_except_three(values, skip1, skip2, skip3) result(product_value)
+        real(dp), intent(in) :: values(:)
+        integer, intent(in) :: skip1, skip2, skip3
+        real(dp) :: product_value
+        integer :: i
+
+        product_value = 1.0_dp
+        do i = 1, size(values)
+            if (i /= skip1 .and. i /= skip2 .and. i /= skip3) then
+                product_value = product_value*values(i)
+            end if
+        end do
+    end function spectral_product_except_three
+
     recursive subroutine kernel_input_third_direction(kernel, x1, x2, direction1, &
             direction2, value, gradient_x1, gradient_x2, mixed_hessian, value_dot, &
             gradient_x1_dot, gradient_x2_dot, mixed_hessian_dot, status)
@@ -2469,10 +2695,133 @@ contains
             call status_set(status, FORTNUM_OK, "")
             return
         end if
+        if (kernel%kind == KERNEL_SPECTRAL_MIXTURE) then
+            call spectral_input_third_direction(kernel, x1, x2, direction1, direction2, &
+                value, gradient_x1, gradient_x2, mixed_hessian, value_dot, &
+                gradient_x1_dot, gradient_x2_dot, mixed_hessian_dot, status)
+            return
+        end if
         call smooth_leaf_input_third_direction(kernel, x1, x2, direction1, direction2, &
             value, gradient_x1, gradient_x2, mixed_hessian, value_dot, gradient_x1_dot, &
             gradient_x2_dot, mixed_hessian_dot, status)
     end subroutine kernel_input_third_direction
+
+    subroutine spectral_input_third_direction(kernel, x1, x2, direction1, direction2, &
+            value, gradient_x1, gradient_x2, mixed_hessian, value_dot, gradient_x1_dot, &
+            gradient_x2_dot, mixed_hessian_dot, status)
+        !! Exact contraction of the third input derivative with a query
+        !! direction for a spectral-mixture leaf.  Since the kernel depends on
+        !! tau=x1-x2, the contraction direction is direction1-direction2.
+        type(kernel_t), intent(in) :: kernel
+        real(dp), intent(in) :: x1(:), x2(:), direction1(:), direction2(:)
+        real(dp), intent(out) :: value, gradient_x1(:), gradient_x2(:)
+        real(dp), intent(out) :: mixed_hessian(:, :), value_dot
+        real(dp), intent(out) :: gradient_x1_dot(:), gradient_x2_dot(:)
+        real(dp), intent(out) :: mixed_hessian_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: tau(size(x1)), delta(size(x1))
+        real(dp) :: f(size(x1)), f1(size(x1)), f2(size(x1)), f3(size(x1))
+        real(dp) :: l1(size(x1)), l2(size(x1)), e(size(x1))
+        real(dp) :: c(size(x1)), c1(size(x1)), c2(size(x1)), c3(size(x1))
+        real(dp) :: e1, e2, e3, product_all, product_i, product_ij, product_ijk
+        real(dp) :: second, third, weight, a, phase, scale, mean
+        integer :: d, q, block, base, i, j, k
+
+        value = 0.0_dp
+        value_dot = 0.0_dp
+        gradient_x1 = 0.0_dp
+        gradient_x2 = 0.0_dp
+        mixed_hessian = 0.0_dp
+        gradient_x1_dot = 0.0_dp
+        gradient_x2_dot = 0.0_dp
+        mixed_hessian_dot = 0.0_dp
+        d = size(x1)
+        if (size(x2) /= d .or. size(direction1) /= d .or. size(direction2) /= d .or. &
+                size(gradient_x1) /= d .or. size(gradient_x2) /= d .or. &
+                size(mixed_hessian, 1) /= d .or. size(mixed_hessian, 2) /= d .or. &
+                size(gradient_x1_dot) /= d .or. size(gradient_x2_dot) /= d .or. &
+                size(mixed_hessian_dot, 1) /= d .or. size(mixed_hessian_dot, 2) /= d) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "spectral mixture third input derivative: dimension mismatch")
+            return
+        end if
+        block = 1 + 2*d
+        if (kernel%parameter_count() < block .or. &
+                mod(kernel%parameter_count(), block) /= 0) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "spectral mixture third input derivative: invalid parameter layout")
+            return
+        end if
+        tau = x1 - x2
+        delta = direction1 - direction2
+        a = 2.0_dp*acos(-1.0_dp)
+        do q = 1, kernel%parameter_count()/block
+            base = (q - 1)*block
+            weight = exp(kernel%log_parameters(base + 1))
+            f = 1.0_dp
+            f1 = 1.0_dp
+            f2 = 1.0_dp
+            f3 = 1.0_dp
+            do i = 1, d
+                scale = exp(kernel%log_parameters(base + 1 + i))
+                mean = kernel%log_parameters(base + 1 + d + i)
+                phase = a*tau(i)*mean
+                l1(i) = -a*a*tau(i)*scale*scale
+                l2(i) = -a*a*scale*scale
+                e(i) = exp(-0.5_dp*a*a*tau(i)*tau(i)*scale*scale)
+                c(i) = cos(phase)
+                c1(i) = -a*mean*sin(phase)
+                c2(i) = -a*a*mean*mean*cos(phase)
+                c3(i) = a*a*a*mean*mean*mean*sin(phase)
+                e1 = e(i)*l1(i)
+                e2 = e(i)*(l2(i) + l1(i)*l1(i))
+                e3 = e(i)*(3.0_dp*l1(i)*l2(i) + l1(i)*l1(i)*l1(i))
+                f(i) = e(i)*c(i)
+                f1(i) = e(i)*(l1(i)*c(i) + c1(i))
+                f2(i) = e2*c(i) + 2.0_dp*e1*c1(i) + e(i)*c2(i)
+                f3(i) = e3*c(i) + 3.0_dp*e2*c1(i) + 3.0_dp*e1*c2(i) + e(i)*c3(i)
+            end do
+            product_all = product(f)
+            value = value + weight*product_all
+            do i = 1, d
+                product_i = spectral_product_except_one(f, i)
+                gradient_x1(i) = gradient_x1(i) + weight*f1(i)*product_i
+                gradient_x2(i) = gradient_x2(i) - weight*f1(i)*product_i
+                value_dot = value_dot + weight*f1(i)*product_i*delta(i)
+                do j = 1, d
+                    if (i == j) then
+                        second = f2(i)*product_i
+                    else
+                        product_ij = spectral_product_except_two(f, i, j)
+                        second = f1(i)*f1(j)*product_ij
+                    end if
+                    mixed_hessian(i, j) = mixed_hessian(i, j) - weight*second
+                    gradient_x1_dot(i) = gradient_x1_dot(i) + weight*second*delta(j)
+                    do k = 1, d
+                        if (i == j .and. j == k) then
+                            third = f3(i)*product_i
+                        else if (i == j) then
+                            product_ij = spectral_product_except_two(f, i, k)
+                            third = f2(i)*f1(k)*product_ij
+                        else if (i == k) then
+                            product_ij = spectral_product_except_two(f, i, j)
+                            third = f2(i)*f1(j)*product_ij
+                        else if (j == k) then
+                            product_ij = spectral_product_except_two(f, i, j)
+                            third = f1(i)*f2(j)*product_ij
+                        else
+                            product_ijk = spectral_product_except_three(f, i, j, k)
+                            third = f1(i)*f1(j)*f1(k)*product_ijk
+                        end if
+                        mixed_hessian_dot(i, j) = mixed_hessian_dot(i, j) - &
+                            weight*third*delta(k)
+                    end do
+                end do
+            end do
+        end do
+        gradient_x2_dot = -gradient_x1_dot
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine spectral_input_third_direction
 
     subroutine smooth_leaf_input_third_direction(kernel, x1, x2, direction1, direction2, &
             value, gradient_x1, gradient_x2, mixed_hessian, value_dot, gradient_x1_dot, &

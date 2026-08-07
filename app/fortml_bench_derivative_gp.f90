@@ -3,7 +3,8 @@ program fortml_bench_derivative_gp
     use, intrinsic :: iso_fortran_env, only: dp => real64, int64
     use fortml_derivative_gaussian_process, only: gp_derivative_regression_t
     use fortml_kernels, only: kernel_t, make_periodic_kernel, &
-        make_rational_quadratic_kernel, make_cosine_kernel, make_polynomial_kernel
+        make_rational_quadratic_kernel, make_cosine_kernel, make_polynomial_kernel, &
+        make_spectral_mixture_kernel
     use fortnum_status, only: fortnum_status_t, status_ok
     implicit none
 
@@ -14,7 +15,8 @@ program fortml_bench_derivative_gp
     real(dp) :: covariance(q, q), covariance_dot(q, q), covariance_bar(q, q)
     real(dp), allocatable :: parameter_direction(:), parameter_bar(:)
     integer :: components(n), query_components(q), i, j
-    type(kernel_t) :: periodic, rational_quadratic, cosine, polynomial
+    type(kernel_t) :: periodic, rational_quadratic, cosine, polynomial, spectral_mixture
+    real(dp) :: spectral_weights(2), spectral_means(2, 2), spectral_scales(2, 2)
     type(fortnum_status_t) :: status
     integer(int64) :: begin_clock, end_clock, rate
 
@@ -46,6 +48,12 @@ program fortml_bench_derivative_gp
     if (.not. status_ok(status)) error stop "cosine constructor failed"
     polynomial = make_polynomial_kernel(d, 1.3_dp, 0.4_dp, 1.5_dp, 2.2_dp, status)
     if (.not. status_ok(status)) error stop "polynomial constructor failed"
+    spectral_weights = [1.15_dp, 0.63_dp]
+    spectral_means = reshape([0.21_dp, -0.37_dp, 0.48_dp, 0.16_dp], shape(spectral_means))
+    spectral_scales = reshape([0.31_dp, 0.57_dp, 0.22_dp, 0.44_dp], shape(spectral_scales))
+    spectral_mixture = make_spectral_mixture_kernel(d, 2, spectral_weights, &
+        spectral_means, spectral_scales, status)
+    if (.not. status_ok(status)) error stop "spectral mixture constructor failed"
     call benchmark(periodic, "periodic", status)
     if (.not. status_ok(status)) error stop "periodic derivative GP benchmark failed"
     call benchmark(rational_quadratic, "rational_quadratic", status)
@@ -54,6 +62,8 @@ program fortml_bench_derivative_gp
     if (.not. status_ok(status)) error stop "cosine derivative GP benchmark failed"
     call benchmark(polynomial, "polynomial", status)
     if (.not. status_ok(status)) error stop "polynomial derivative GP benchmark failed"
+    call benchmark(spectral_mixture, "spectral_mixture", status)
+    if (.not. status_ok(status)) error stop "spectral mixture derivative GP benchmark failed"
 
 contains
 
