@@ -68,17 +68,17 @@ can reject an incompatible estimator before consuming a fold.
 The companion repositories are optional consumers of FortML model and
 probability objects; FortML does not import either package. At the pinned
 2026-08-08 revisions (FortBO
-`b5b17f674a4e07c86d949131b0964a10b7ebb06c`, FortMC
+`3d3bf950e671357e3b584bebce07e7cdb75d5ac8`, FortMC
 `4dde0ccdc37b4c331126605406b08e1f3bda4f59`), their public modules contain
-versioned contracts and selected acquisition foundations, but not samplers or
-full candidate-search algorithms:
+versioned contracts, selected acquisition/candidate-search foundations, and a
+FortML GP adapter, but not samplers or full candidate-search algorithms:
 
 | Companion | Current public protocol | Not yet supplied by the companion boundary |
 | --- | --- | --- |
 | FortMC `fortmc` | `fortmc_log_density_t%value(position,status)` and `%gradient(position,gradient,status)`, plus version constants and a default divergence threshold | Samplers, chain state, transforms, packed parameter registries, HVPs, checkpoints, diagnostics, and device execution |
-| FortBO `fortbo` | Versioned `fortbo_posterior_t` with capability-gated moments, covariance, joint/reparameterized samples, predictive log density, moment gradients/Hessians; `fortbo_history_t` gradient-observation/checkpoint state; `fortbo_space_t` normalized continuous/integer/categorical/mixed/conditional spaces with differentiable masks; analytic EI/PI/UCB/log-EI; marginal Monte-Carlo EI/PI with CRN, antithetic draws, and pathwise gradients | Batch acquisitions, knowledge/entropy/noisy EI, candidate search/trust-region policies, FortML surrogate adapters, and device execution |
+| FortBO `fortbo` | Versioned `fortbo_posterior_t` with capability-gated moments, covariance, joint/reparameterized samples, predictive log density, moment gradients/Hessians; `fortbo_history_t` gradient-observation/checkpoint state; `fortbo_space_t` normalized continuous/integer/categorical/mixed/conditional spaces with differentiable masks; analytic EI/PI/UCB/log-EI; marginal Monte-Carlo EI/PI with CRN, antithetic draws, and pathwise gradients; Sobol TuRBO candidates and Thompson selection; `fortbo_fit_from_history` value-only/derivative-GP adapters | Batch/knowledge/entropy/noisy acquisitions, DTuRBO, wider sparse/variational/multi-output adapters, and device execution |
 
-FortML does not yet ship adapters to these contracts. Do not claim HMC/NUTS, Bayesian-optimization,
+FortML does not yet ship FortMC samplers or a direct FortML-side BO policy; FortBO now ships the tested GP adapter described above. Do not claim HMC/NUTS, Bayesian-optimization,
 or GPU parity for a FortML model until the corresponding companion adapter has
 an independent behavioral oracle, explicit refusal behavior, and a benchmark
 record.
@@ -178,6 +178,7 @@ repeated resident-batch evidence.
 | `mlp_chain_objective_t` | MSE+L2 scalar objective over a sequential MLP tree | Packed all-stage/L2 JVP | Packed all-stage/L2 gradient and scalar VJP | Exact all-stage/L2 HVP |
 | `mlp_hypergradient_objective_t` | Validation MSE after fixed full-batch GD trajectory | Outer `[log(learning_rate),log(l2)]` JVP | Exact trajectory value gradient and scalar VJP | Reverse trajectory products; inner MLP HVP |
 | `mlp_adamw_full_hypergradient_objective_t` | Validation MSE after fixed full-batch AdamW trajectory | Packed `[log(learning_rate),log(l2),log(weight_decay),logit(beta1),logit(beta2)]` JVP | Exact trajectory value gradient and scalar VJP | Forward state sensitivities through moments, bias correction, and decoupled decay |
+| `mlp_adam_hypergradient_objective_t` | Validation MSE after fixed full-batch coupled-L2 Adam trajectory | Packed `[log(learning_rate),log(l2),logit(beta1),logit(beta2)]` JVP | Exact trajectory value gradient and scalar VJP | Forward state sensitivities through coupled loss, moments, and bias correction |
 | `mlp_rmsprop_hypergradient_objective_t` | Validation MSE after fixed full-batch RMSprop trajectory | Packed `[log(learning_rate),log(l2),decay,log(epsilon),momentum]` JVP | Exact trajectory value gradient and scalar VJP | Forward state sensitivities; inner MLP HVP |
 | `mlp_adagrad_hypergradient_objective_t` | Validation MSE after fixed full-batch Adagrad trajectory | Packed `[log(learning_rate),log(l2),log(epsilon)]` JVP | Exact trajectory value gradient and scalar VJP | Forward accumulated-square sensitivities; inner MLP HVP |
 | `mlp_schedule_hypergradient_objective_t` | Validation MSE after a typed scheduled full-batch trajectory | Packed `[log(base_rate),log(l2),logit(min_fraction),logit(decay_factor)]` JVP | Exact schedule/trajectory value gradient and scalar VJP | Inner MLP HVP; outer hyper-HVP is not approximated |
@@ -196,7 +197,7 @@ repeated resident-batch evidence.
 | `gp_derivative_regression_t` | Mean, variance, and LML | Prediction and LML parameter JVP | Prediction parameter VJP and analytic LML hyperparameter gradient | Directional HVP (finite difference of the analytic gradient) |
 | `gp_classification_t` | Latent and observed probabilities | Input JVP | Input VJP and Laplace-mode kernel hyperparameter gradient | No |
 | `gp_multiclass_classification_t` | Latent one-vs-rest margins and normalized observed probabilities | Input JVP for margins and probabilities | Input VJP for margins and probabilities; packed one-vs-rest Laplace-mode kernel hyperparameter gradient | No |
-| `multi_output_gp_t` | Correlated mean and LML | No | No | No |
+| `multi_output_gp_t` | Correlated mean and LML | Packed kernel/log-noise/output-major W/independent JVP; query-input JVP | Fitted posterior-mean parameter VJP and query-input VJP | No |
 | Approximate GP types | Mean, variance, or ELBO as listed below | No | No | No |
 
 `xgboost_t%save_text(path,status)` and `load_text(path,status)` provide the
@@ -1914,6 +1915,23 @@ directional JVP, the scalar adjoint, optimizer convergence, and typed
 non-Adagrad/CUDA refusals. Mini-batch, schedules, clipping, and CUDA-resident
 Adagrad state remain explicit follow-up contracts.
 
+### `fortml_mlp_adam_hypergradient`
+
+`mlp_adam_hypergradient_objective_t` differentiates a fixed full-batch Adam
+trajectory with *coupled* L2 regularization. Its packed vector is
+`[log(learning_rate),log(l2),logit(beta1),logit(beta2)]`; the logits preserve
+the open `(0,1)` moment domain while the outer optimizer explores bounded
+coordinates. The regularized loss gradient enters both moment recurrences,
+which distinguishes this API from the decoupled shrinkage in AdamW. The
+parameter, first-moment, second-moment, and bias-correction state tangents use
+the analytic MLP HVP. `value_gradient`, `jvp`, scalar `vjp`, and
+`mlp_optimize_adam_hyperparameters` are exact CPU products and a direct FortOpt
+L-BFGS-B adapter. The independent `test_mlp_adam_hypergradient` fixture checks
+central differences for all four coordinates, a directional JVP, the scalar
+adjoint, optimizer use, and the typed CUDA refusal. Mini-batch, schedules,
+stochastic state, and resident GPU Adam products remain explicit follow-up
+contracts.
+
 ### `fortml_mlp_schedule_hypergradient`
 
 `mlp_schedule_hypergradient_objective_t` differentiates a fixed full-batch MLP
@@ -2859,7 +2877,16 @@ arrays use `(sample,output)` order.
 `joint_covariance(inputs,matrix,status)` returns `B` Kronecker `K` in
 output-major vector order. `log_marginal_likelihood(targets,value,status)`
 expects the same targets used for the fitted factorization. This type exposes
-posterior mean but no posterior variance or parameter products.
+posterior mean plus `parameter_count()`/`parameters()` in the packed order
+`[kernel parameters, log(noise variance), output-major W, independent]`.
+`predict_input_jvp`/`predict_input_vjp` provide fixed-fit query products;
+`predict_parameter_jvp`/`predict_parameter_vjp` differentiate both the
+cross-covariance and the Cholesky solve. The independent
+`test_multi_output_gp_products` and `fortml-bench` lane check finite differences,
+adjoints, and the typed CUDA refusals. See
+[docs/MULTI_OUTPUT_GP_PRODUCTS.md](MULTI_OUTPUT_GP_PRODUCTS.md). Posterior
+variance, parameter HVPs, and resident CUDA covariance/derivative kernels remain
+open.
 
 ## Approximate Gaussian processes
 
