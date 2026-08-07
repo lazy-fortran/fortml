@@ -8,7 +8,46 @@ query to the host implementation, and they leave the output and device
 transfer counters unchanged. This is a typed capability boundary, not a
 claim of GPU support.
 
-## Planned no-autodiff kernel
+## Resident no-autodiff kernel
+
+A first native CUDA lowering is now available as a small C ABI in
+`src/classification/fortml_cuda_forest.{h,cu}`. It is deliberately
+prediction-only: fitting, split selection, class metadata, and every
+derivative product remain on the CPU. The plan uploads the flattened model
+once and never invokes the CPU tree implementation on a CUDA request.
+
+The ABI uses zero-based C indices and explicit storage conventions:
+
+| argument | shape/layout | meaning |
+| --- | --- | --- |
+| `tree_offset` | `n_trees + 1`, half-open | global node range for each tree |
+| `node_feature` | `n_nodes` | zero-based feature; `-1` marks a leaf |
+| `node_left`, `node_right` | `n_nodes` | children within the owning tree |
+| `node_threshold` | `n_nodes` | strict-left split threshold |
+| `node_probability` | `n_nodes*n_classes`, node-major | empirical leaf probabilities |
+| `class_label` | `n_classes` | output labels in sorted class order |
+
+Queries and probability outputs retain the Fortran column-major convention
+(`feature*n_query+query` and `class*n_query+query`). One CUDA thread routes
+one query through every tree, accumulates the leaf probabilities, and applies
+the stable first-maximum class rule for label prediction. Model arrays remain
+resident across repeated calls; only a query batch and its requested result
+cross the host/device boundary. Non-finite inputs and malformed tree ranges
+are rejected before allocation.
+
+`test/run_cuda_forest_plan.sh` compiles the native kernel when `nvcc` and a
+CUDA device are present. `test/test_cuda_forest_plan.cu` computes a separate
+CPU tree-walk oracle, checks strict-threshold boundaries, labels and
+probabilities, and repeats prediction on a second batch. Machines without a
+CUDA compiler/device report `skipped` rather than turning a CPU execution into
+GPU evidence.
+
+The higher-level Fortran `random_forest_cuda_plan_t` still returns its typed
+`FORTNUM_NOT_IMPLEMENTED` boundary: exposing private CART node storage and
+binding this generic C ABI to that plan is a separate integration step. This
+keeps the current Fortran API honest and prevents an implicit host fallback.
+
+## Planned Fortran integration
 
 The first tree GPU product should be a resident, prediction-only plan. Model
 fitting, split selection, class metadata construction, and all derivative
