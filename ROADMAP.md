@@ -1149,9 +1149,11 @@ trials remain visible in the result schema.
 - [ ] Add activation checkpointing, truncated BPTT, gradient
   centralization/noise, value clipping, and anomaly detection with
   parameter-path diagnostics.
-- [ ] Add callback and event contracts for logging, progress, validation,
-  checkpoint, early stop, learning-rate changes, and recoverable failures.
-  Callback order and failure propagation are deterministic and testable.
+- [x] Add a typed MLP event contract for train begin, optimizer update,
+  validation, epoch end, checkpoint, and train end. Events carry counters,
+  losses, gradient norm, effective learning rate, and a stop/status channel;
+  callback order and failure propagation are deterministic and independently
+  tested. Distributed callback coordination remains open.
 - [ ] Add data-loader workers or asynchronous prefetch only when the ownership
   and RNG contract is explicit. Worker count must not silently change the
   sampled batches for a deterministic run.
