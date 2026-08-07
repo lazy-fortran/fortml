@@ -1,9 +1,11 @@
 module fortml_gaussian_process
+    use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
         FORTNUM_DOMAIN_ERROR, FORTNUM_CONVERGENCE_ERROR
     use fortnum_cholesky, only: cholesky_factorization_t
     use fortml_kernels, only: kernel_t
+    use fortml_gp_mean, only: gp_mean_t, make_zero_mean
     implicit none
     private
 
@@ -17,6 +19,8 @@ module fortml_gaussian_process
         real(dp), allocatable :: alpha(:, :)
         real(dp) :: log_noise_variance = log(1.0e-6_dp)
         real(dp) :: jitter = 1.0e-10_dp
+        type(gp_mean_t) :: mean
+        real(dp), allocatable :: mean_coefficients(:)
         integer :: n_samples = 0
         integer :: n_features = 0
         integer :: n_outputs = 0
@@ -25,6 +29,8 @@ module fortml_gaussian_process
         procedure, public :: parameter_count => gp_parameter_count
         procedure, public :: parameters => gp_parameters
         procedure, public :: set_parameters => gp_set_parameters
+        procedure, public :: mean_parameter_count => gp_mean_parameter_count
+        procedure, public :: mean_parameters => gp_mean_parameters
         procedure, public :: predict => gp_predict
         procedure, public :: predict_jvp => gp_predict_jvp
         procedure, public :: predict_vjp => gp_predict_vjp
@@ -46,13 +52,16 @@ module fortml_gaussian_process
 
 contains
 
-    subroutine gp_fit(self, x, y, kernel, noise_variance, status, jitter)
+    subroutine gp_fit(self, x, y, kernel, noise_variance, status, jitter, mean)
         class(gp_regression_t), intent(out) :: self
         real(dp), intent(in) :: x(:, :), y(:, :)
         type(kernel_t), intent(in) :: kernel
         real(dp), intent(in) :: noise_variance
         type(fortnum_status_t), intent(out) :: status
         real(dp), intent(in), optional :: jitter
+        type(gp_mean_t), intent(in), optional :: mean
+        type(gp_mean_t) :: zero_mean
+        integer :: mean_count, output_index, base_count
 
         if (size(x, 1) < 1 .or. size(x, 2) < 1 .or. size(y, 1) /= size(x, 1) .or. &
             size(y, 2) < 1 .or. noise_variance <= 0.0_dp) then
@@ -82,24 +91,47 @@ contains
                 "GP fit: jitter must be nonnegative")
             return
         end if
+        if (present(mean)) then
+            call mean%validate(size(x, 2), status)
+            if (status%code /= FORTNUM_OK) return
+            self%mean = mean
+        else
+            zero_mean = make_zero_mean(size(x, 2), status)
+            if (status%code /= FORTNUM_OK) return
+            self%mean = zero_mean
+        end if
+        base_count = self%mean%parameter_count()
+        if (allocated(self%mean_coefficients)) deallocate(self%mean_coefficients)
+        allocate(self%mean_coefficients(base_count*self%n_outputs))
+        if (base_count > 0) then
+            do output_index = 1, self%n_outputs
+                self%mean_coefficients( &
+                    (output_index - 1)*base_count + 1: &
+                    output_index*base_count) = self%mean%parameters
+            end do
+        end if
         call gp_refactor(self, status)
     end subroutine gp_fit
 
     integer function gp_parameter_count(self) result(count)
         class(gp_regression_t), intent(in) :: self
 
-        count = self%kernel%parameter_count() + 1
+        count = self%kernel%parameter_count() + 1 + &
+            self%mean%parameter_count()*self%n_outputs
     end function gp_parameter_count
 
     function gp_parameters(self) result(parameters)
         class(gp_regression_t), intent(in) :: self
         real(dp), allocatable :: parameters(:)
         integer :: kernel_count
+        integer :: mean_count
 
         kernel_count = self%kernel%parameter_count()
-        allocate(parameters(kernel_count + 1))
+        mean_count = self%mean%parameter_count()*self%n_outputs
+        allocate(parameters(kernel_count + 1 + mean_count))
         if (kernel_count > 0) parameters(:kernel_count) = self%kernel%parameters()
         parameters(kernel_count + 1) = self%log_noise_variance
+        if (mean_count > 0) parameters(kernel_count + 2:) = self%mean_coefficients
     end function gp_parameters
 
     subroutine gp_set_parameters(self, parameters, status)
@@ -107,6 +139,7 @@ contains
         real(dp), intent(in) :: parameters(:)
         type(fortnum_status_t), intent(out) :: status
         integer :: kernel_count
+        integer :: mean_count
 
         if (.not. gp_fitted(self)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -118,12 +151,33 @@ contains
                 "GP set_parameters: parameter shape is invalid")
             return
         end if
+        if (any(.not. ieee_is_finite(parameters))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP set_parameters: parameters must be finite")
+            return
+        end if
         kernel_count = self%kernel%parameter_count()
         call self%kernel%set_parameters(parameters(:kernel_count), status)
         if (status%code /= FORTNUM_OK) return
         self%log_noise_variance = parameters(kernel_count + 1)
+        mean_count = self%mean%parameter_count()*self%n_outputs
+        if (mean_count > 0) self%mean_coefficients = parameters(kernel_count + 2:)
         call gp_refactor(self, status)
     end subroutine gp_set_parameters
+
+    integer function gp_mean_parameter_count(self) result(count)
+        class(gp_regression_t), intent(in) :: self
+
+        count = self%mean%parameter_count()*self%n_outputs
+    end function gp_mean_parameter_count
+
+    function gp_mean_parameters(self) result(parameters)
+        class(gp_regression_t), intent(in) :: self
+        real(dp), allocatable :: parameters(:)
+
+        allocate(parameters(self%mean_parameter_count()))
+        if (size(parameters) > 0) parameters = self%mean_coefficients
+    end function gp_mean_parameters
 
     subroutine gp_predict(self, x, mean, variance, status)
         class(gp_regression_t), intent(in) :: self
@@ -131,6 +185,7 @@ contains
         real(dp), intent(out) :: mean(:, :), variance(:)
         type(fortnum_status_t), intent(out) :: status
         real(dp), allocatable :: cross(:, :), prior(:, :), work(:, :)
+        real(dp), allocatable :: mean_query(:, :)
         integer :: i
 
         call check_prediction_shapes(self, x, mean, variance, status)
@@ -138,11 +193,14 @@ contains
         allocate(cross(self%n_samples, size(x, 1)))
         allocate(prior(size(x, 1), size(x, 1)))
         allocate(work, mold=cross)
+        allocate(mean_query(size(x, 1), self%n_outputs))
+        call gp_mean_values(self, x, mean_query, status)
+        if (status%code /= FORTNUM_OK) return
         call self%kernel%matrix(self%x_train, x, cross, status)
         if (status%code /= FORTNUM_OK) return
         call self%kernel%matrix(x, x, prior, status)
         if (status%code /= FORTNUM_OK) return
-        mean = matmul(transpose(cross), self%alpha)
+        mean = mean_query + matmul(transpose(cross), self%alpha)
         work = cross
         call self%factorization%solve(work, status)
         if (status%code /= FORTNUM_OK) return
@@ -170,8 +228,10 @@ contains
         real(dp), allocatable :: train_dot(:, :), train_matrix_dot(:, :)
         real(dp), allocatable :: alpha_dot(:, :), work(:, :)
         real(dp), allocatable :: work_dot(:, :)
+        real(dp), allocatable :: mean_train(:, :), mean_train_dot(:, :)
+        real(dp), allocatable :: mean_query(:, :), mean_query_dot(:, :)
         real(dp) :: noise_dot
-        integer :: i, kernel_count
+        integer :: i, kernel_count, mean_count
 
         call check_prediction_shapes(self, x, mean, variance, status)
         if (status%code /= FORTNUM_OK) return
@@ -187,6 +247,7 @@ contains
         end if
 
         kernel_count = self%kernel%parameter_count()
+        mean_count = self%mean_parameter_count()
         allocate(cross(self%n_samples, size(x, 1)))
         allocate(cross_dot, mold=cross)
         allocate(prior(size(x, 1), size(x, 1)))
@@ -196,6 +257,23 @@ contains
         allocate(alpha_dot, mold=self%alpha)
         allocate(work, mold=cross)
         allocate(work_dot, mold=cross)
+        allocate(mean_train_dot(self%n_samples, self%n_outputs))
+        allocate(mean_train, mold=mean_train_dot)
+        allocate(mean_query(size(x, 1), self%n_outputs))
+        allocate(mean_query_dot, mold=mean_query)
+        if (mean_count > 0) then
+            call gp_mean_values_jvp(self, self%x_train, direction(kernel_count + 2:), &
+                mean_train, mean_train_dot, status)
+            if (status%code /= FORTNUM_OK) return
+            call gp_mean_values_jvp(self, x, direction(kernel_count + 2:), &
+                mean_query, mean_query_dot, status)
+            if (status%code /= FORTNUM_OK) return
+        else
+            mean_train = 0.0_dp
+            mean_train_dot = 0.0_dp
+            mean_query = 0.0_dp
+            mean_query_dot = 0.0_dp
+        end if
         call self%kernel%matrix_jvp(self%x_train, x, direction(:kernel_count), &
             cross, cross_dot, status)
         if (status%code /= FORTNUM_OK) return
@@ -206,11 +284,11 @@ contains
         do i = 1, self%n_samples
             train_matrix_dot(i, i) = train_matrix_dot(i, i) + noise_dot
         end do
-        alpha_dot = -matmul(train_matrix_dot, self%alpha)
+        alpha_dot = -matmul(train_matrix_dot, self%alpha) - mean_train_dot
         call self%factorization%solve(alpha_dot, status)
         if (status%code /= FORTNUM_OK) return
-        mean = matmul(transpose(cross), self%alpha)
-        mean_dot = matmul(transpose(cross_dot), self%alpha) + &
+        mean = mean_query + matmul(transpose(cross), self%alpha)
+        mean_dot = mean_query_dot + matmul(transpose(cross_dot), self%alpha) + &
             matmul(transpose(cross), alpha_dot)
         call self%kernel%matrix_jvp(x, x, direction(:kernel_count), prior, prior_dot, status)
         if (status%code /= FORTNUM_OK) return
@@ -234,7 +312,8 @@ contains
         real(dp), allocatable :: cross(:, :), work(:, :), cross_bar(:, :)
         real(dp), allocatable :: train_bar(:, :), prior_bar(:, :), alpha_bar(:, :)
         real(dp), allocatable :: lambda(:, :), local_bar(:)
-        integer :: i, kernel_count
+        real(dp), allocatable :: mean_train_basis(:, :), mean_query_basis(:, :)
+        integer :: i, kernel_count, mean_count, output_index, first, last
 
         call check_prediction_shapes(self, x, mean_bar, variance_bar, status)
         if (status%code /= FORTNUM_OK) return
@@ -245,6 +324,7 @@ contains
         end if
 
         kernel_count = self%kernel%parameter_count()
+        mean_count = self%mean_parameter_count()
         allocate(cross(self%n_samples, size(x, 1)))
         allocate(work, mold=cross)
         allocate(cross_bar, mold=cross)
@@ -253,6 +333,14 @@ contains
         allocate(alpha_bar, mold=self%alpha)
         allocate(lambda, mold=self%alpha)
         allocate(local_bar(kernel_count))
+        if (mean_count > 0) then
+            allocate(mean_train_basis(self%n_samples, self%mean%parameter_count()))
+            allocate(mean_query_basis(size(x, 1), self%mean%parameter_count()))
+            call self%mean%basis(self%x_train, mean_train_basis, status)
+            if (status%code /= FORTNUM_OK) return
+            call self%mean%basis(x, mean_query_basis, status)
+            if (status%code /= FORTNUM_OK) return
+        end if
         call self%kernel%matrix(self%x_train, x, cross, status)
         if (status%code /= FORTNUM_OK) return
         work = cross
@@ -287,6 +375,15 @@ contains
         parameter_bar(:kernel_count) = parameter_bar(:kernel_count) + local_bar
         parameter_bar(kernel_count + 1) = exp(self%log_noise_variance)* &
             sum(diagonal(train_bar))
+        if (mean_count > 0) then
+            do output_index = 1, self%n_outputs
+                first = kernel_count + 1 + (output_index - 1)*self%mean%parameter_count() + 1
+                last = first + self%mean%parameter_count() - 1
+                parameter_bar(first:last) = matmul(transpose(mean_query_basis), &
+                    mean_bar(:, output_index)) - matmul(transpose(mean_train_basis), &
+                    lambda(:, output_index))
+            end do
+        end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine gp_predict_vjp
 
@@ -302,7 +399,8 @@ contains
         real(dp), allocatable :: cross_bar(:, :), cross_bar_dot(:, :)
         real(dp), allocatable :: train_bar(:, :), train_bar_dot(:, :)
         real(dp), allocatable :: local_bar(:), local_bar_dot(:)
-        integer :: i, kernel_count
+        real(dp), allocatable :: mean_train(:, :), mean_train_dot(:, :), mean_train_basis(:, :)
+        integer :: i, kernel_count, mean_count, output_index, first, last
         real(dp) :: noise_dot, trace_train_bar, trace_train_bar_dot
 
         if (.not. gp_fitted(self)) then
@@ -324,6 +422,7 @@ contains
         end if
 
         kernel_count = self%kernel%parameter_count()
+        mean_count = self%mean_parameter_count()
         allocate(cross(self%n_samples, size(x, 1)))
         allocate(cross_dot, mold=cross)
         allocate(train_matrix(self%n_samples, self%n_samples))
@@ -338,6 +437,16 @@ contains
         allocate(train_bar, mold=train_matrix)
         allocate(train_bar_dot, mold=train_matrix)
         allocate(local_bar(kernel_count), local_bar_dot(kernel_count))
+        if (mean_count > 0) then
+            allocate(mean_train_dot(self%n_samples, self%n_outputs))
+            allocate(mean_train, mold=mean_train_dot)
+            allocate(mean_train_basis(self%n_samples, self%mean%parameter_count()))
+            call gp_mean_values_jvp(self, self%x_train, direction(kernel_count + 2:), &
+                mean_train, mean_train_dot, status)
+            if (status%code /= FORTNUM_OK) return
+            call self%mean%basis(self%x_train, mean_train_basis, status)
+            if (status%code /= FORTNUM_OK) return
+        end if
 
         call self%kernel%matrix_jvp(self%x_train, x, direction(:kernel_count), &
             cross, cross_dot, status)
@@ -351,7 +460,11 @@ contains
             train_matrix_dot(i, i) = train_matrix_dot(i, i) + noise_dot
         end do
 
-        alpha_dot = -matmul(train_matrix_dot, self%alpha)
+        if (mean_count > 0) then
+            alpha_dot = -matmul(train_matrix_dot, self%alpha) - mean_train_dot
+        else
+            alpha_dot = -matmul(train_matrix_dot, self%alpha)
+        end if
         call self%factorization%solve(alpha_dot, status)
         if (status%code /= FORTNUM_OK) return
 
@@ -402,6 +515,14 @@ contains
         end do
         parameter_hvp(kernel_count + 1) = exp(self%log_noise_variance)* &
             (direction(kernel_count + 1)*trace_train_bar + trace_train_bar_dot)
+        if (mean_count > 0) then
+            do output_index = 1, self%n_outputs
+                first = kernel_count + 1 + (output_index - 1)*self%mean%parameter_count() + 1
+                last = first + self%mean%parameter_count() - 1
+                parameter_hvp(first:last) = -matmul(transpose(mean_train_basis), &
+                    lambda_dot(:, output_index))
+            end do
+        end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine gp_predict_hvp
 
@@ -410,6 +531,7 @@ contains
         real(dp), intent(out) :: value
         type(fortnum_status_t), intent(out) :: status
         real(dp) :: logdet
+        real(dp), allocatable :: residual(:, :)
 
         value = 0.0_dp
         if (.not. gp_fitted(self)) then
@@ -419,7 +541,11 @@ contains
         end if
         call self%factorization%log_determinant(logdet, status)
         if (status%code /= FORTNUM_OK) return
-        value = -0.5_dp*sum(self%y_train*self%alpha) - &
+        allocate(residual, source=self%y_train)
+        call gp_mean_values(self, self%x_train, residual, status)
+        if (status%code /= FORTNUM_OK) return
+        residual = self%y_train - residual
+        value = -0.5_dp*sum(residual*self%alpha) - &
             0.5_dp*real(self%n_outputs, dp)*logdet - &
             0.5_dp*real(self%n_samples*self%n_outputs, dp)*LOG_TWO_PI
         call status_set(status, FORTNUM_OK, "")
@@ -430,7 +556,7 @@ contains
         real(dp), intent(out) :: gradient(:)
         type(fortnum_status_t), intent(out) :: status
         real(dp), allocatable :: identity(:, :), inverse(:, :), matrix_bar(:, :)
-        integer :: i, kernel_count
+        integer :: i, kernel_count, mean_count, output_index, first, last
 
         if (.not. gp_fitted(self)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -460,6 +586,21 @@ contains
         if (status%code /= FORTNUM_OK) return
         gradient(kernel_count + 1) = exp(self%log_noise_variance)* &
             sum(diagonal(matrix_bar))
+        mean_count = self%mean%parameter_count()
+        if (mean_count > 0) then
+            block
+                real(dp), allocatable :: basis(:, :)
+                allocate(basis(self%n_samples, mean_count))
+                call self%mean%basis(self%x_train, basis, status)
+                if (status%code /= FORTNUM_OK) return
+                do output_index = 1, self%n_outputs
+                    first = kernel_count + 1 + (output_index - 1)*mean_count + 1
+                    last = first + mean_count - 1
+                    gradient(first:last) = matmul(transpose(basis), &
+                        self%alpha(:, output_index))
+                end do
+            end block
+        end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine gp_hyperparameter_gradient
 
@@ -474,7 +615,8 @@ contains
         real(dp), allocatable :: matrix_bar(:, :), matrix_bar_dot(:, :)
         real(dp), allocatable :: local_bar(:), local_bar_dot(:)
         real(dp) :: noise_dot, trace_matrix_bar, trace_matrix_bar_dot
-        integer :: i, kernel_count
+        integer :: i, kernel_count, mean_count, output_index, first, last
+        real(dp), allocatable :: mean_train(:, :), mean_train_dot(:, :), mean_train_basis(:, :)
 
         if (.not. gp_fitted(self)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -489,6 +631,7 @@ contains
         end if
 
         kernel_count = self%kernel%parameter_count()
+        mean_count = self%mean%parameter_count()
         allocate(covariance(self%n_samples, self%n_samples))
         allocate(covariance_dot, mold=covariance)
         allocate(alpha_dot, mold=self%alpha)
@@ -498,6 +641,16 @@ contains
         allocate(matrix_bar, mold=covariance)
         allocate(matrix_bar_dot, mold=covariance)
         allocate(local_bar(kernel_count), local_bar_dot(kernel_count))
+        if (mean_count > 0) then
+            allocate(mean_train_dot(self%n_samples, self%n_outputs))
+            allocate(mean_train, mold=mean_train_dot)
+            allocate(mean_train_basis(self%n_samples, mean_count))
+            call gp_mean_values_jvp(self, self%x_train, direction(kernel_count + 2:), &
+                mean_train, mean_train_dot, status)
+            if (status%code /= FORTNUM_OK) return
+            call self%mean%basis(self%x_train, mean_train_basis, status)
+            if (status%code /= FORTNUM_OK) return
+        end if
 
         call self%kernel%matrix_jvp(self%x_train, self%x_train, &
             direction(:kernel_count), covariance, covariance_dot, status)
@@ -507,7 +660,11 @@ contains
             covariance_dot(i, i) = covariance_dot(i, i) + noise_dot
         end do
 
-        alpha_dot = -matmul(covariance_dot, self%alpha)
+        if (mean_count > 0) then
+            alpha_dot = -matmul(covariance_dot, self%alpha) - mean_train_dot
+        else
+            alpha_dot = -matmul(covariance_dot, self%alpha)
+        end if
         call self%factorization%solve(alpha_dot, status)
         if (status%code /= FORTNUM_OK) return
 
@@ -546,6 +703,14 @@ contains
         parameter_hvp(kernel_count + 1) = exp(self%log_noise_variance)* &
             (direction(kernel_count + 1)*trace_matrix_bar + &
             trace_matrix_bar_dot)
+        if (mean_count > 0) then
+            do output_index = 1, self%n_outputs
+                first = kernel_count + 1 + (output_index - 1)*mean_count + 1
+                last = first + mean_count - 1
+                parameter_hvp(first:last) = matmul(transpose(mean_train_basis), &
+                    alpha_dot(:, output_index))
+            end do
+        end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine gp_hyperparameter_hvp
 
@@ -571,7 +736,7 @@ contains
     subroutine gp_refactor(self, status)
         class(gp_regression_t), intent(inout) :: self
         type(fortnum_status_t), intent(out) :: status
-        real(dp), allocatable :: covariance(:, :)
+        real(dp), allocatable :: covariance(:, :), mean_train(:, :)
         real(dp) :: noise_variance
         integer :: i
 
@@ -581,6 +746,9 @@ contains
             return
         end if
         allocate(covariance(self%n_samples, self%n_samples))
+        allocate(mean_train(self%n_samples, self%n_outputs))
+        call gp_mean_values(self, self%x_train, mean_train, status)
+        if (status%code /= FORTNUM_OK) return
         call self%kernel%matrix(self%x_train, self%x_train, covariance, status)
         if (status%code /= FORTNUM_OK) return
         noise_variance = exp(self%log_noise_variance)
@@ -591,8 +759,78 @@ contains
         if (status%code /= FORTNUM_OK) return
         if (allocated(self%alpha)) deallocate(self%alpha)
         allocate(self%alpha, source=self%y_train)
+        self%alpha = self%alpha - mean_train
         call self%factorization%solve(self%alpha, status)
     end subroutine gp_refactor
+
+    subroutine gp_mean_values(self, x, values, status)
+        class(gp_regression_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: values(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: basis(:, :)
+        integer :: p, output_index, first, last
+
+        p = self%mean%parameter_count()
+        if (any(shape(values) /= [size(x, 1), self%n_outputs])) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP mean values: output shape is invalid")
+            return
+        end if
+        values = 0.0_dp
+        if (p == 0) then
+            call status_set(status, FORTNUM_OK, "")
+            return
+        end if
+        allocate(basis(size(x, 1), p))
+        call self%mean%basis(x, basis, status)
+        if (status%code /= FORTNUM_OK) return
+        do output_index = 1, self%n_outputs
+            first = (output_index - 1)*p + 1
+            last = first + p - 1
+            values(:, output_index) = matmul(basis, self%mean_coefficients(first:last))
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_mean_values
+
+    subroutine gp_mean_values_jvp(self, x, direction, values, values_dot, status)
+        class(gp_regression_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), direction(:)
+        real(dp), intent(out) :: values(:, :), values_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: basis(:, :)
+        integer :: p, output_index, first, last
+
+        p = self%mean%parameter_count()
+        if (size(direction) /= p*self%n_outputs .or. &
+            any(shape(values) /= [size(x, 1), self%n_outputs]) .or. &
+            any(shape(values_dot) /= shape(values))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP mean JVP: direction or output shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(direction))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP mean JVP: direction must be finite")
+            return
+        end if
+        values = 0.0_dp
+        values_dot = 0.0_dp
+        if (p == 0) then
+            call status_set(status, FORTNUM_OK, "")
+            return
+        end if
+        allocate(basis(size(x, 1), p))
+        call self%mean%basis(x, basis, status)
+        if (status%code /= FORTNUM_OK) return
+        do output_index = 1, self%n_outputs
+            first = (output_index - 1)*p + 1
+            last = first + p - 1
+            values(:, output_index) = matmul(basis, self%mean_coefficients(first:last))
+            values_dot(:, output_index) = matmul(basis, direction(first:last))
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_mean_values_jvp
 
     subroutine check_prediction_shapes(self, x, mean, variance, status)
         class(gp_regression_t), intent(in) :: self

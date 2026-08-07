@@ -2012,10 +2012,25 @@ OPCODE_EXP=-9  OPCODE_DIVIDE_CONST=-10
 
 ### `fortml_gaussian_process`
 
-`gp_regression_t%fit(x,y,kernel,noise_variance,status[,jitter])` fits one or
+`gp_regression_t%fit(x,y,kernel,noise_variance,status[,jitter,mean])` fits one or
 more output columns with a shared kernel and independent output values. The
 packed model parameter vector is the recursive kernel vector followed by
-`log_noise_variance`. `set_parameters` refactorizes the fitted covariance.
+`log_noise_variance`. An optional `gp_mean_t` template from
+`fortml_gp_mean` adds a trainable constant or linear trend for every output;
+its coefficients are packed in output-column order after the noise parameter.
+The default is the zero mean. `set_parameters` refactorizes the fitted
+covariance and updates the mean residual state.
+
+`make_zero_mean`, `make_constant_mean`, and `make_linear_mean` validate the
+feature dimension and finite template coefficients. A constant mean has one
+intercept; a linear mean has an intercept followed by one slope per feature.
+`model%mean_parameter_count()` and `model%mean_parameters()` expose the
+expanded per-output block, while the ordinary `parameters()` method retains
+the existing kernel/noise prefix. Mean coefficients participate in
+`hyperparameter_gradient`, `hyperparameter_hvp`, prediction JVP/VJP/HVP, and
+the FortOpt GP hyperparameter objective, so finite-difference tuning does not
+silently omit the trend. The adapter is a dense CPU exact-GP path; resident
+CUDA covariance and factorization remain an explicit refusal boundary.
 
 `predict(x,mean,variance,status)` returns one mean column per training output
 and one shared latent variance vector. Parameter product methods keep query
