@@ -1241,7 +1241,7 @@ state phases are reported separately.
 - [x] Add derivative-GP parameter packing, likelihood/JVP/HVP entry points, and
   a bounded FortOpt adapter for mixed value/first-derivative observations.
   The likelihood gradient uses analytic parameter tangents for the supported
-  RBF, Matérn, periodic, rational-quadratic, linear, constant, and composed
+  RBF, Matérn, periodic, rational-quadratic, cosine, linear, constant, and composed
   kernels and is checked against
   an independently assembled dense oracle. The public HVP is currently a
   deterministic directional finite difference of that gradient. Generated
