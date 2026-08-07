@@ -129,6 +129,7 @@ repeated resident-batch evidence.
 | `linear_autoencoder_t` | Tied centered linear encode/decode/reconstruct, initialized from PCA | Input JVP for encode and reconstruction | No parameter VJP (weights are fixed PCA state) | No |
 | `logistic_regression_t` | Decision score and probabilities | Parameter/input JVP, probability JVP | Parameter/input VJP, probability VJP | No |
 | `linear_svm_classifier_t` | Signed decision score and labels | Parameter/input JVP away from fit-time boundaries | Parameter/input VJP; hinge objective value/gradient | No |
+| `one_class_svm_t` | RBF nu-SVM signed anomaly score and ±1 labels | Fixed-state continuous-input JVP | Fixed-state continuous-input VJP | No |
 | `softmax_regression_t` | Multiclass decision scores and probabilities | Parameter/input JVP, probability JVP | Parameter/input VJP, probability VJP | No |
 | `softmax_training_objective_t` | Weighted multiclass cross-entropy + feature L2 (or positive log-L2) | Packed parameter/hyperparameter JVP | Packed parameter/hyperparameter VJP and gradient | Exact joint parameter/hyperparameter HVP |
 | `gaussian_naive_bayes_t` | Log probabilities and probabilities | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
@@ -458,6 +459,27 @@ weights, unsupported losses, and non-binary labels return a domain status.
 surfaces separately. CUDA requests are intentionally typed
 `FORTNUM_NOT_IMPLEMENTED` until a resident linear-SVM kernel is linked; no
 host fallback is performed.
+
+### `fortml_one_class_svm`
+
+`one_class_svm_t%fit(x,status[,nu,gamma,max_iterations,tolerance])` fits a
+dense RBF one-class SVM. The implementation solves the standard capped-simplex
+dual with `0 <= alpha_i <= 1/(nu*n)` and `sum(alpha)=1` using a deterministic
+projected-gradient iteration. `nu` must lie in `(0,1]`; `gamma` is a positive
+RBF coefficient and defaults to `1/n_features`. The fitted offset is selected
+from the free-support-vector KKT interval (or its deterministic midpoint when
+all support weights are at a bound).
+
+`decision_function(x,scores,status)` returns `sum_i alpha_i*K(x,x_i)-offset`.
+`predict(x,labels,status)` maps nonnegative scores to `+1` and negative scores
+to `-1`. `support_weights()`, `offset()`, `gamma()`, `nu()`,
+`support_vector_count()`, `feature_count()`, `sample_count()`,
+`iterations()`, and `fitted()` expose the state. Fixed-state RBF
+`decision_function_jvp`/`decision_function_vjp` (also `jvp`/`vjp`) differentiate
+continuous query inputs exactly. Fit-time active-set and hyperparameter
+derivatives are not claimed. CPU dispatch is complete; CUDA score and label
+requests return `FORTNUM_NOT_IMPLEMENTED` until a resident RBF reduction is
+linked, with no hidden host fallback.
 
 ### `fortml_linear_svr`
 
