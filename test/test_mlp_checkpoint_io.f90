@@ -1,6 +1,5 @@
 program test_mlp_checkpoint_io
     !! Behavioral oracle for portable, versioned MLP checkpoint persistence.
-    use, intrinsic :: iso_fortran_env, only: int64
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_ok
     use fortml_mlp, only: mlp_t, MLP_LINEAR
