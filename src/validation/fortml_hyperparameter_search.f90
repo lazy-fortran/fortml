@@ -26,6 +26,8 @@ module fortml_hyperparameter_search
         real(dp) :: best_value = huge(1.0_dp)
         integer(int64) :: evaluations = 0_int64
         integer :: method = 0
+        integer :: start_count = 0
+        integer :: successful_starts = 0
         logical :: converged = .false.
     end type hyperparameter_search_result_t
 
@@ -40,6 +42,7 @@ module fortml_hyperparameter_search
 
     public :: hyperparameter_grid_search
     public :: hyperparameter_lbfgsb_search
+    public :: hyperparameter_lbfgsb_multistart_search
     public :: hyperparameter_random_search
     public :: hyperparameter_search_device_supported
 
@@ -223,6 +226,79 @@ contains
         result%converged = optimizer_result%state%converged
         call status_set(status, FORTNUM_OK, "")
     end subroutine hyperparameter_lbfgsb_search
+
+    subroutine hyperparameter_lbfgsb_multistart_search(objective, lower, upper, &
+            starts, seed, result, status, options, device)
+        !! Run deterministic bounded L-BFGS-B from seeded starts.
+        !!
+        !! Every start is generated in the closed box and is passed through
+        !! the same value/gradient callback as the single-start entry point.
+        !! The result keeps the best converged run, sums objective
+        !! evaluations, and exposes start accounting so a failed or
+        !! non-converged run cannot be mistaken for a successful search.
+        type(objective_t), intent(in) :: objective
+        real(dp), intent(in) :: lower(:), upper(:)
+        integer, intent(in) :: starts
+        integer(int64), intent(in) :: seed
+        type(hyperparameter_search_result_t), intent(out) :: result
+        type(fortnum_status_t), intent(out) :: status
+        type(hyperparameter_search_options_t), intent(in), optional :: options
+        type(fortml_device_t), intent(in), optional :: device
+
+        type(hyperparameter_search_options_t) :: settings
+        type(rng_t) :: generator
+        type(hyperparameter_search_result_t) :: local_result
+        real(dp), allocatable :: initial(:)
+        real(dp) :: uniform
+        integer :: i, j
+
+        result = hyperparameter_search_result_t()
+        result%method = HYPERPARAMETER_SEARCH_LBFGSB
+        result%start_count = starts
+        settings = hyperparameter_search_options_t()
+        if (present(options)) settings = options
+        call validate_search_inputs(objective, lower, upper, status, device)
+        if (status%code /= FORTNUM_OK) return
+        if (starts < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "hyperparameter multistart: starts must be positive")
+            return
+        end if
+        if (settings%max_evaluations < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "hyperparameter multistart: max_evaluations must be positive")
+            return
+        end if
+        allocate(initial(size(lower)))
+        call rng_seed(generator, seed, status)
+        if (status%code /= FORTNUM_OK) return
+        do i = 1, starts
+            do j = 1, size(lower)
+                call rng_uniform(generator, uniform)
+                initial(j) = lower(j) + (upper(j) - lower(j))*uniform
+            end do
+            call hyperparameter_lbfgsb_search(objective, initial, lower, upper, &
+                local_result, status, settings, device)
+            if (status%code /= FORTNUM_OK) return
+            result%evaluations = result%evaluations + local_result%evaluations
+            if (local_result%converged) then
+                result%successful_starts = result%successful_starts + 1
+                if (result%successful_starts == 1 .or. &
+                    local_result%best_value < result%best_value) then
+                    result%best_value = local_result%best_value
+                    if (allocated(result%best_parameters)) deallocate(result%best_parameters)
+                    allocate(result%best_parameters, source=local_result%best_parameters)
+                end if
+            end if
+        end do
+        if (result%successful_starts < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "hyperparameter multistart: no start converged")
+            return
+        end if
+        result%converged = .true.
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine hyperparameter_lbfgsb_multistart_search
 
     logical function hyperparameter_search_device_supported(device_kind) result(supported)
         integer, intent(in) :: device_kind

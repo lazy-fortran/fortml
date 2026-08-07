@@ -7,11 +7,13 @@ program test_hyperparameter_search
     use fortml_device, only: fortml_device_t, FORTML_DEVICE_CUDA
     use fortml_hyperparameter_search, only: &
         hyperparameter_search_result_t, hyperparameter_grid_search, &
-        hyperparameter_lbfgsb_search, hyperparameter_random_search
+        hyperparameter_lbfgsb_search, hyperparameter_lbfgsb_multistart_search, &
+        hyperparameter_random_search
     implicit none
 
     type(objective_t) :: objective
     type(hyperparameter_search_result_t) :: grid_result, optimizer_result, random_result
+    type(hyperparameter_search_result_t) :: multistart_result
     type(fortnum_status_t) :: status
     type(fortml_device_t) :: cuda
     real(dp) :: lower(2), upper(2), initial(2)
@@ -52,6 +54,18 @@ program test_hyperparameter_search
         maxval(abs(optimizer_result%best_parameters - random_result%best_parameters)) < &
         1.0e-14_dp .and. abs(optimizer_result%best_value - random_result%best_value) < &
         1.0e-14_dp, "seeded random search is reproducible", failures)
+
+    call hyperparameter_lbfgsb_multistart_search(objective, lower, upper, 5, &
+        20260807_int64, multistart_result, status)
+    call check(status_ok(status) .and. multistart_result%converged .and. &
+        multistart_result%start_count == 5 .and. &
+        multistart_result%successful_starts == 5 .and. &
+        maxval(abs(multistart_result%best_parameters - [2.0_dp, -1.0_dp])) < &
+        2.0e-7_dp .and. multistart_result%best_value < 1.0e-12_dp, &
+        "seeded multistart L-BFGS-B reaches the shared minimum", failures)
+    call hyperparameter_lbfgsb_multistart_search(objective, lower, upper, 0, &
+        1_int64, multistart_result, status)
+    call check(.not. status_ok(status), "zero multistart refusal", failures)
 
     cuda%kind = FORTML_DEVICE_CUDA
     cuda%selected = .true.

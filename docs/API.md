@@ -73,9 +73,10 @@ not supplied through a hidden generic interface.
 | `qda_classifier_t` | Class-specific Gaussian log probabilities, probabilities, and labels | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
 | `multilabel_logistic_classifier_t` | Independent positive probabilities for an indicator matrix | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
 | `ordinal_logistic_classifier_t` | Ordered cumulative-logit probabilities and labels | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
-| `basis_map_t` | `evaluate` | Parameters and inputs | Parameters and inputs | No |
+| `basis_map_t` | `evaluate` | Parameters and inputs | Parameters and inputs | Analytic for polynomial/Fourier/radial/spline; callback maps refuse |
 | `one_hot_encoder_t` | Dense one-hot `transform` | Refused: integer categories have no canonical tangent space | Refused: integer categories have no canonical cotangent space | No |
 | `mlp_t` | `predict` | Parameters and inputs | Parameters and inputs | Weighted-output HVP |
+| `mlp_classifier_t` | Logits, probabilities, and labels | Parameter/input JVP, probability JVP | Parameter/input VJP, probability VJP | No |
 | `mlp_chain_t` | Sequential composition of named MLP stages | Packed all-stage parameters and inputs | Packed all-stage parameters and inputs | Differentiated reverse chain rule for parameters and inputs |
 | `mlp_training_objective_t` | MSE+L2 scalar objective | Packed network/L2 JVP | Packed network/L2 gradient and scalar VJP | Joint network/L2 HVP |
 | `mlp_chain_objective_t` | MSE+L2 scalar objective over a sequential MLP tree | Packed all-stage/L2 JVP | Packed all-stage/L2 gradient and scalar VJP | Exact all-stage/L2 HVP |
@@ -88,6 +89,7 @@ not supplied through a hidden generic interface.
 | `rnn_t` | `forward`, squared-error `loss` | No | Loss gradient by BPTT | No |
 | `kernel_t` | Scalar value and matrix | Parameter JVP | Parameter VJP | Parameter HVP |
 | `xgboost_t` | Squared/logistic/Poisson/Huber/quantile margins and predictions | Fixed-tree input JVP away from split boundaries | Fixed-tree input VJP away from split boundaries | No |
+| `random_forest_classifier_t` | Bootstrap-ensemble probabilities and labels | Refused: split routing is discrete | Refused: split routing is discrete | No |
 | `gp_regression_t` | Mean, variance, LML | Prediction and LML parameters | Prediction and LML parameters | Mean and LML parameters |
 | `gp_derivative_regression_t` | Mean, variance, and LML | Prediction and LML parameter JVP | Prediction parameter VJP and analytic LML hyperparameter gradient | Directional HVP (finite difference of the analytic gradient) |
 | `gp_classification_t` | Latent and observed probabilities | Input JVP | Input VJP and Laplace-mode kernel hyperparameter gradient | No |
@@ -860,10 +862,15 @@ input derivative is required.  This boundary is covered by
 | `map%initialize_callback(...)` | Caller-defined | Caller-defined flat vector |
 
 The public operations are `feature_count`, `parameter_count`, `parameters`,
-`set_parameters`, `evaluate`, `jvp`, `vjp`, and
+`set_parameters`, `evaluate`, `jvp`, `vjp`, `hvp`, and
 `static_lowering_eligible`. For `jvp`, supply both `theta_dot(:)` and
 `x_dot(:,:)`. For `vjp`, the output cotangent has the evaluated feature shape.
-The intercept column has no active parameter.
+`hvp(x,u,theta_dot,x_dot,theta_hvp,x_hvp,status)` differentiates the VJP of
+the scalar contraction `sum(u*evaluate(x))` in the joint parameter/input
+direction. Polynomial, Fourier, radial, and spline maps use analytic
+second-order products (with the spline span held fixed); callback maps return
+`FORTNUM_NOT_IMPLEMENTED` because their first-order callback ABI does not
+declare second derivatives. The intercept column has no active parameter.
 
 `BASIS_POLYNOMIAL`, `BASIS_FOURIER`, `BASIS_RADIAL`, `BASIS_SPLINE`, and
 `BASIS_CALLBACK` are the public family codes used by extension and test code.
@@ -887,7 +894,7 @@ stage feature blocks in append order, so polynomial, Fourier, radial, spline,
 and callback maps can be composed without an implicit parameter remapping.
 
 `parameters` and `set_parameters` flatten the stage parameter blocks in the
-same order. `jvp` and `vjp` return exact products over both stage parameters
+same order. `jvp`, `vjp`, and `hvp` return exact products over both stage parameters
 and inputs. `stage_count`, `feature_count`, `parameter_count`, `valid`,
 `is_fitted`, and `static_lowering_eligible` expose shape and backend
 capabilities. Pass an optional unique `name` to `append`; unnamed stages use
@@ -903,8 +910,9 @@ are not inferred from this horizontal union.
 `sequential_basis_pipeline_t` provides that explicit sequential contract.
 Construct it with `make_sequential_basis_pipeline`, append a stage whose input
 count equals the previous stage's feature count, and call `fit` before
-`transform`. Its flattened parameters follow stage order. Forward JVPs and
-reverse VJPs propagate through every stage, including the input cotangent. The
+`transform`. Its flattened parameters follow stage order. Forward JVPs,
+reverse VJPs, and HVPs propagate through every stage, including the input
+cotangent. The
 same optional unique stage names, feature/parameter names, and one-based stage
 offsets are available; feature names refer to the final output block. Shape
 mismatches, duplicate names, empty chains, and unfitted transforms return
@@ -916,7 +924,7 @@ one-based integer column list. A stage's input count must equal the list length.
 Indices must be in range and unique within that stage, while different stages
 may reuse columns. The transform gathers only the selected columns and
 concatenates stage feature blocks. Parameter packing follows stage order, JVPs
-gather input tangents, and VJPs scatter-add stage cotangents into the original
+and HVPs gather input tangents, and VJPs scatter-add stage cotangents into the original
 input columns. Optional unique stage names and the same stable feature and
 parameter metadata are available; `stage_columns` returns a defensive copy of
 the selected input indices. This is a deterministic feature union, not a DAG
@@ -962,6 +970,13 @@ before any allocation or evaluation.
 
 `hyperparameter_lbfgsb_search(objective,initial,lower,upper,result,status[,
 options,device])` routes the same objective directly to FortOpt L-BFGS-B.
+`hyperparameter_lbfgsb_multistart_search(objective,lower,upper,starts,seed,
+result,status[,options,device])` draws deterministic bounded initial points
+from the supplied seed, runs the same bounded FortOpt solve from each point,
+retains the best converged state, sums objective evaluations, and reports
+`start_count` and `successful_starts`. A nonpositive start count or a run with
+no converged start is a typed domain error; no finite-difference objective is
+introduced.
 `hyperparameter_random_search(objective,lower,upper,samples,seed,result,status[,
 options,device])` draws a deterministic bounded candidate stream from the
 caller-provided seed. It evaluates the complete value/gradient product for
@@ -1305,6 +1320,15 @@ optional sample-weight vector uses the same positive-mass reduction. Binary,
 multilabel, and GP likelihood classifier adapters remain roadmap work;
 `ordinal_logistic_classifier_t` is the separate cumulative-logit contract.
 
+`decision_function_jvp`/`decision_function_vjp` provide exact fixed-state
+products with respect to packed network parameters and continuous inputs.
+`predict_proba_jvp`/`predict_proba_vjp` compose those products with the stable
+softmax. The device methods `decision_function_device`,
+`predict_proba_device`, and `predict_device` execute on a selected CPU context;
+selected CUDA contexts return `FORTNUM_NOT_IMPLEMENTED` until a resident MLP
+classifier kernel is linked. The derivative tests cover central differences,
+the VJP/JVP duality identity, and the explicit device refusal.
+
 ### `fortml_tree`
 
 `decision_stump_t%fit(x,y,status[,min_samples_leaf])` exhaustively selects the
@@ -1345,6 +1369,26 @@ fit and query paths reject nonfinite values. Positive finite sample weights,
 depth up to 12, and count-based `min_samples_leaf` are supported. Missing-value
 routing, input derivatives, histogram growth, and differentiable split
 selection remain unsupported.
+
+### `fortml_random_forest_classifier`
+
+`random_forest_classifier_t%fit(x,labels,status[,n_trees,max_depth,
+min_samples_leaf,criterion,seed])` builds a deterministic bootstrap ensemble
+of depth-limited CART classification trees. The seeded bootstrap stream keeps
+every global class represented, so each tree's probability columns are aligned
+before averaging. `criterion` accepts `CART_CRITERION_GINI` or
+`CART_CRITERION_ENTROPY`; `RANDOM_FOREST_MAX_TREES` bounds the ensemble size.
+`predict_proba` averages the aligned leaf probabilities and `predict` maps the
+first maximum back to the sorted integer `classes`. Accessors expose the class,
+feature, tree, depth, criterion, seed, and fitted metadata.
+
+Tree routing is piecewise constant, so this estimator intentionally exposes no
+derivative products. `device_supported`, `predict_proba_device`, and
+`predict_device` execute on a selected CPU context and return
+`FORTNUM_NOT_IMPLEMENTED` for CUDA until a resident ensemble kernel exists;
+there is no hidden host fallback. Independent tests cover separated clusters,
+probability-simplex alignment, seeded determinism, invalid options, and the
+CUDA refusal.
 
 ### `fortml_discriminant_analysis`
 
