@@ -526,6 +526,9 @@ contains
         !! enabled, an explicit Park--Miller stream seeded by `shuffle_seed`
         !! drives Fisher--Yates permutations; no process-global RNG state is
         !! touched.  Callback execution occurs once per completed epoch.
+        !! Optional validation arrays are evaluated at `validation_interval`;
+        !! patience and best-state restoration then monitor that held-out
+        !! objective without using validation rows for updates.
         class(mlp_t), intent(inout) :: model
         real(dp), intent(in) :: x(:, :), target(:, :)
         type(fortnum_status_t), intent(out) :: status

@@ -165,7 +165,9 @@ contains
         type(fortnum_status_t) :: status
         real(dp) :: x(1, 1), target(1, 1), validation_x(1, 1)
         real(dp) :: validation_target(1, 1), theta(2)
-        real(dp) :: expected_loss(5)
+        real(dp) :: expected_loss(5), q, q_history(5), first_moment, second_moment, gradient
+        real(dp) :: bias1, bias2, prediction
+        integer :: i, best_epoch_expected
 
         x = 1.0_dp
         target = 3.0_dp
@@ -181,8 +183,22 @@ contains
         call mlp_train(model, x, target, status, options, state, &
             validation_x, validation_target)
         theta = model%parameters()
-        expected_loss = 0.5_dp*([0.2_dp, 0.4_dp, 0.6_dp, 0.8_dp, 1.0_dp] - &
-            0.5_dp)**2
+        q = 0.0_dp
+        first_moment = 0.0_dp
+        second_moment = 0.0_dp
+        do i = 1, 5
+            prediction = 2.0_dp*q
+            gradient = prediction - 3.0_dp
+            first_moment = 0.9_dp*first_moment + 0.1_dp*gradient
+            second_moment = 0.999_dp*second_moment + 0.001_dp*gradient**2
+            bias1 = 1.0_dp - 0.9_dp**i
+            bias2 = 1.0_dp - 0.999_dp**i
+            q = q - 0.1_dp*(first_moment/bias1)/ &
+                (sqrt(second_moment/bias2) + 1.0e-8_dp)
+            q_history(i) = q
+            expected_loss(i) = 0.5_dp*(2.0_dp*q - 0.5_dp)**2
+        end do
+        best_epoch_expected = minloc(expected_loss, dim=1)
         call check(status_ok(status), "validation trainer status", failures)
         call check(size(state%validation_loss_history) == 5, &
             "validation history length", failures)
@@ -191,16 +207,19 @@ contains
                 expected_loss)) < 2.0e-8_dp, &
                 "validation loss independent affine oracle", failures)
         end if
-        call check(state%best_epoch == 2 .and. &
-            state%best_validation_epoch == 2 .and. &
-            abs(state%best_validation_loss - 0.005_dp) < 2.0e-8_dp, &
+        call check(state%best_epoch == best_epoch_expected .and. &
+            state%best_validation_epoch == best_epoch_expected .and. &
+            abs(state%best_validation_loss - expected_loss(best_epoch_expected)) < &
+            2.0e-8_dp, &
             "validation best-epoch selection", failures)
-        call check(maxval(abs(theta - [0.2_dp, 0.2_dp])) < 2.0e-8_dp .and. &
+        call check(maxval(abs(theta - [q_history(best_epoch_expected), &
+            q_history(best_epoch_expected)])) < 2.0e-8_dp .and. &
             abs(state%final_validation_loss - state%best_validation_loss) < &
             2.0e-8_dp, "restore-best validation checkpoint", failures)
 
         options%validation_interval = 0
-        call mlp_train(model, x, target, status, validation_x=validation_x, &
+        call mlp_train(model, x, target, status, options=options, &
+            validation_x=validation_x, &
             validation_target=validation_target)
         call check(.not. status_ok(status), &
             "invalid validation interval refusal", failures)
