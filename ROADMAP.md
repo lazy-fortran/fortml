@@ -123,9 +123,9 @@ multiclass, weighted, probabilistic, derivative, or GPU coverage.
 
 | Family | Required variants | Current FortML baseline | Missing production gates |
 | --- | --- | --- | --- |
-| Classification | binary, multinomial/softmax, OVR, OVO, Naive Bayes, tree, neural, Laplace GP, variational GP, calibrated, multilabel, ordinal | binary/softmax/OVR/OVO, five Naive Bayes variants, CART, MLP, binary/OVR Laplace GP, exact and histogram boosted trees | calibration, multilabel/ordinal, variational/coupled GP likelihoods, resident GPU training, shared preprocessing/search |
+| Classification | binary, multinomial/softmax, OVR, OVO, Naive Bayes, tree, neural, Laplace GP, variational GP, calibrated, multilabel, ordinal | binary/softmax/OVR/OVO, five Naive Bayes variants, CART, MLP, binary/OVR Laplace GP, Platt sigmoid and weighted PAVA isotonic calibration, exact and histogram boosted trees | multilabel/ordinal, variational/coupled GP likelihoods, resident GPU training, shared preprocessing/search |
 | Regression | OLS, weighted/ridge/lasso/elastic-net, robust, quantile, GLM, multi-output, partial-fit | dense OLS, weighted ridge, weighted elastic-net/lasso, multi-output fixed-fit products | Huber/quantile/Poisson/Gamma/Tweedie, positive/Bayesian/ARD, partial-fit, complete hyperparameter products |
-| Ensembles | CART, random/extra forests, bagging, AdaBoost, histogram boosting, XGBoost/LightGBM ranking/categorical/DART | weighted CART, squared boosting, exact and bounded histogram second-order XGBoost-style binary/OVR | forests/bagging, ranking/categorical/constraints/DART/GOSS/EFB, distributed and resident GPU histograms |
+| Ensembles | CART, random/extra forests, bagging, AdaBoost, histogram boosting, XGBoost/LightGBM ranking/categorical/DART | weighted CART, squared boosting, exact and bounded histogram second-order XGBoost-style binary/OVR, and exact/histogram per-feature monotonic constraints | forests/bagging, ranking/categorical/interaction constraints, DART/GOSS/EFB, distributed and resident GPU histograms |
 | Gaussian processes | exact, derivative observations, multitask, sparse/variational, SKI/lazy, local experts, classification | exact and derivative GPs, sparse/local/SKI/structured operators, binary/OVR Laplace classification | full likelihood/kernel catalog, batch/multitask/variational classification, implicit derivatives, resident GPU solves |
 | Neural and physics models | MLP, CNN, RNN/GRU/LSTM, attention, autoencoder/VAE, BNN, HNN/LNN/symplectic/PINN | MLP/MLP classifier, BNN, VAE, vanilla RNN, Hamiltonian MLP, selected optimizer hypergradients | module tree, recurrent/attention/convolution families, full products, GP/linear initialization, physics residual and long-horizon GPU gates |
 
@@ -136,14 +136,14 @@ multiclass, weighted, probabilistic, derivative, or GPU coverage.
 | Linear regression and generalized linear models | Linear regression, weighted ridge, and weighted elastic-net/lasso coordinate descent are implemented. Logistic and softmax support sample and positive sorted-class weights | Robust, quantile, Poisson/Gamma/Tweedie, multinomial, calibrated and regularized classifiers with shared solver and derivative contracts |
 | Feature transforms and basis maps | Polynomial, Fourier, radial, B-spline, callback bases, standard/min-max scalers, integer categorical one-hot encoding, horizontal/sequential basis pipelines, and a fitted basis-to-linear estimator are implemented | Sparse/categorical feature views, feature names, DAG pipelines, leakage-safe cross-validation, differentiable basis hyperparameters |
 | Nearest-neighbor and margin methods | Dense exact kNN classifier | KD-tree or ball-tree search, radius neighbors, sparse inputs, linear/kernel SVM and SVR, calibrated probabilities, and differentiable soft-neighbor policies |
-| Trees and ensembles | Partial | Deterministic finite-only regression stumps, weighted depth-limited CART regression and classification, squared-loss stump boosting, and exact/histogram depth-limited second-order squared/logistic boosting are implemented. XGBoost-style trees support weighted quantile cuts, bounded histograms, explicit NaN rejection, learned default directions, and forced-left/right routing; forests, ranking, monotonic and interaction constraints remain planned |
+| Trees and ensembles | Partial | Deterministic finite-only regression stumps, weighted depth-limited CART regression and classification, squared-loss stump boosting, and exact/histogram depth-limited second-order squared/logistic boosting are implemented. XGBoost-style trees support weighted quantile cuts, bounded histograms, explicit NaN rejection, learned default directions, forced-left/right routing, and per-feature monotonic constraints with recursive leaf bounds; forests, ranking, categorical, and interaction constraints remain planned |
 | Clustering and unsupervised learning | Centered dense `pca_t` is implemented with deterministic SVD signs, rank selection, whitening, reconstruction, variance metadata, and fixed-state input products | Incremental/randomized/sparse/kernel PCA, ICA, NMF, k-means/minibatch k-means, Gaussian mixtures/EM, density and graph clustering, manifold methods, outlier detection, matrix factorization, and density metrics |
 | Neural networks | MLP/BNN/VAE/RNN primitives, a separable Hamiltonian MLP, selected products, deterministic MLP Adam/AdamW/Adagrad/RMSprop/SGD training, a bounded full-batch MLP L-BFGS-B path, and an in-memory resumable optimizer checkpoint exist | A production module/parameter tree, all common activations and losses, convolution/attention/sequence/graph extensions, mixed precision, distributed training, compile/fusion, and serialized/distributed trainers |
 | Gaussian processes | Exact, derivative, sparse, structured and local variants are partial-to-implemented. Exact fitted GPs and binary/shared-kernel one-vs-rest Laplace classifiers have bounded FortOpt L-BFGS-B adapters | GPyTorch/GPflow-style kernels, likelihoods, multitask/batch shapes, exact/variational/lazy inference, derivative operators, constraints, calibration, coupled multiclass GP classification, evidence-corrected and likelihood-parameter training |
 | Derivatives | Exact GP and selected neural/kernel products exist | Value/JVP/VJP/HVP and implicit/hypergradients for every declared parameter/input path, including preprocessing, likelihood, optimizer/search variables, and device kernels |
 | Model selection and metrics | Benchmark-specific checks exist | Shared metrics, splitters, cross-validation, calibration, grid/random/Bayesian/differentiable search, nested validation, and leakage/refusal checks |
 | Persistence and serving | Missing public contract | Versioned state dictionaries, safe model/trainer serialization, compiler-independent metadata, streaming inference, batching, and reproducible deployment manifests |
-| GPU and scale-out | Operator-specific OpenACC/CUDA paths; kNN has a resident native-CUDA plan and direct RMSprop/AdamW state has resident CUDA C plans. Elastic-net, OVO, Laplace-GP, and typed schedules now expose explicit CPU/CUDA capability and typed CUDA refusals; complete RMSprop training, staged XGBoost, and GP-classification-training release rows remain CPU-only | Complete resident CPU/CUDA/OpenACC training and inference for supported estimators, mixed precision, multi-GPU/MPI sharding, transfer accounting, and deterministic reductions |
+| GPU and scale-out | Operator-specific OpenACC/CUDA paths; kNN has a resident native-CUDA plan and direct RMSprop/AdamW state has resident CUDA C plans. Elastic-net, OVO, Laplace-GP (binary and OVR multiclass), probability calibration, XGBoost (binary and OVR multiclass), and typed schedules now expose explicit CPU/CUDA capability and typed CUDA refusals; complete RMSprop training, staged XGBoost, and GP-classification-training release rows remain CPU-only | Complete resident CPU/CUDA/OpenACC training and inference for supported estimators, mixed precision, multi-GPU/MPI sharding, transfer accounting, and deterministic reductions |
 | Performance evidence | Several model/GP lanes exist | Matched correctness-gated comparisons with scikit-learn, XGBoost/LightGBM, PyTorch/JAX, GPyTorch/GPflow, and published hardware/toolchain provenance |
 
 ### Parity inventory and release gates
@@ -160,9 +160,9 @@ derivatives, refusal behavior, and an independent benchmark oracle all exist.
 | scikit-learn neighbors/margins | Dense exact `fortml_knn_classifier` with deterministic ties and explicit discrete-derivative refusal | Radius search, KD/ball trees, sparse inputs, linear/kernel SVM/SVR, one-class SVM, and smooth input/parameter products |
 | scikit-learn trees/ensembles | Stumps, weighted CART, squared boosting, exact and histogram XGBoost-style second-order binary/multiclass lanes | Random/extra forests, bagging, AdaBoost, leaf-wise growth, categorical/ranking/monotonic/interaction constraints, staged and warm-start APIs |
 | scikit-learn unsupervised | Basis maps, centered dense PCA, validation splitters, variational primitives | Incremental/randomized/sparse/kernel PCA, ICA/NMF/TruncatedSVD, k-means/GMM/density/manifold/outlier methods, sparse/categorical preprocessing, model persistence |
-| PyTorch/JAX neural core | Dense MLP, classifier, BNN, VAE, RNN, Hamiltonian MLP; Adam, AdamW, Adagrad, RMSprop, and SGD momentum/Nesterov; exact fixed full-batch SGD learning-rate/L2, AdamW learning-rate/L2/weight-decay including beta logits, and RMSprop learning-rate/L2/decay/epsilon/momentum trajectory hypergradients | Optimizer-trajectory schedules and stochastic/device hypergradients, complete loss/activation/module tree, convolution/attention/sequence/graph models, AMP, compile/fusion, distributed and device-resident train state |
+| PyTorch/JAX neural core | Dense MLP, classifier, BNN, VAE, RNN, Hamiltonian MLP; Adam, AdamW, Adagrad, RMSprop, and SGD momentum/Nesterov; exact fixed full-batch SGD learning-rate/L2, AdamW learning-rate/L2/weight-decay including beta logits, RMSprop learning-rate/L2/decay/epsilon/momentum, and typed schedule trajectory hypergradients | Stochastic/device optimizer hypergradients, complete loss/activation/module tree, convolution/attention/sequence/graph models, AMP, compile/fusion, distributed and device-resident train state |
 | GPyTorch/GPflow | Exact, derivative-observation, sparse/local/SKI/structured GP primitives; Laplace binary/OVR GP classification | Kernel/likelihood/constraint/batch-shape parity, variational categorical/count likelihoods, multitask, operator-valued derivatives, implicit hypergradients, serialization and resident GPU training |
-| XGBoost/LightGBM | Exact and bounded-histogram depth-limited squared/logistic Newton trees, weighted binary/OVR multiclass staged predictions, margins, and gain/weight/cover diagnostics with explicit NaN policies (`error`, learned, forced-left/right) | Categorical/quantile/ranking objectives, DART, monotonic/interaction constraints, and distributed training |
+| XGBoost/LightGBM | Exact and bounded-histogram depth-limited squared/logistic Newton trees, weighted binary/OVR multiclass staged predictions, margins, gain/weight/cover diagnostics, and per-feature monotonic constraints with explicit NaN policies (`error`, learned, forced-left/right) | Categorical/quantile/ranking objectives, DART, interaction constraints, and distributed training |
 | Differentiability and search | Capability-specific JVP/VJP/HVP products, FortOpt L-BFGS-B for selected objectives, and exact fixed-trajectory MLP hypergradients for SGD, AdamW (including beta logits), and RMSprop | Complete derivative matrix for every declared parameter/input/hyperparameter, stochastic/device optimizer hypergradients, implicit differentiation, and refusal rather than hidden finite differences |
 | Device and performance | OpenACC/native CUDA operator lanes plus explicit device control-plane contract; kNN and direct RMSprop state have correctness-gated native-CUDA oracles, while complete RMSprop training, staged boosting, and GP-classification training still report CPU-only benchmark rows | Resident model/optimizer/batch state for every supported estimator, CPU parity, transfer/memory accounting, mixed precision, and matched PyTorch/JAX/GPyTorch/XGBoost evidence |
 
@@ -215,7 +215,7 @@ when a lower-level primitive already exists.
   input JVP/VJP products with split-boundary refusals.
 - [ ] XGBoost and LightGBM parity beyond exact growth: quantile sketches,
   histogram bins, leaf-wise growth, ranking objectives, DART/GOSS/EFB,
-  categorical partitions, monotonic and interaction constraints, distributed
+  categorical partitions, interaction constraints, distributed
   workers, early stopping, model dumps, and staged/tree-contribution APIs.
 
 ### Gaussian processes and probabilistic models
@@ -518,14 +518,14 @@ The source inventory is dated 2026-08-07.
 
 | Work package | State | Implemented baseline | Package exit |
 | --- | --- | --- | --- |
-| Classification | Partial | `fortml_logistic_regression` and `fortml_softmax_regression` provide binary and multinomial integer-label fitting with sample-weighted reductions, `fortml_ovr_logistic_classifier` adds deterministic one-vs-rest binary logistic fits with normalized probabilities and parameter products, `fortml_ovo_logistic_classifier` adds deterministic one-vs-one pairwise-vote probabilities and input/parameter products, `fortml_gaussian_naive_bayes` adds weighted Gaussian class moments and input/parameter probability products, `fortml_bernoulli_naive_bayes` adds weighted relaxed-[0,1] Bernoulli features, positive smoothing, packed state, and input/parameter probability products, `fortml_multinomial_naive_bayes` adds weighted relaxed nonnegative counts, token-mass smoothing, packed state, and input/parameter probability products, `fortml_complement_naive_bayes` adds weighted complement distributions, optional weight normalization, packed state, and input/parameter probability products, `fortml_knn_classifier` adds deterministic dense uniform or inverse-distance neighbors with explicit discrete derivative refusals, `fortml_logistic_training` adds an exact weighted logistic objective with parameter/L2 gradients and HVPs plus bounded FortOpt L-BFGS-B, `fortml_cart_classifier` adds deterministic weighted Gini/entropy trees and leaf probabilities, `fortml_mlp_classifier` adds deterministic multiclass logits training with Adam and sample/class weights, `fortml_gp_classification` adds binary Laplace logistic/probit inference plus an exact mode-envelope kernel gradient and query-feature JVP/VJP products, `fortml_gp_multiclass_classification` adds packed one-vs-rest envelope gradients, latent margins, and query-feature JVP/VJP products, and shared metrics cover accuracy, top-k, balanced accuracy, confusion, precision/recall/F1, Brier, binary Matthews, weighted accuracy, log loss, and expected/maximum calibration error. | Binary and multiclass linear, tree, neural, GP, and boosted-tree classifiers share label, probability, weighting, and metric conventions. |
+| Classification | Partial | `fortml_logistic_regression` and `fortml_softmax_regression` provide binary and multinomial integer-label fitting with sample-weighted reductions, `fortml_ovr_logistic_classifier` adds deterministic one-vs-rest binary logistic fits with normalized probabilities and parameter products, `fortml_ovo_logistic_classifier` adds deterministic one-vs-one pairwise-vote probabilities and input/parameter products, `fortml_gaussian_naive_bayes` adds weighted Gaussian class moments and input/parameter probability products, `fortml_bernoulli_naive_bayes` adds weighted relaxed-[0,1] Bernoulli features, positive smoothing, packed state, and input/parameter probability products, `fortml_multinomial_naive_bayes` adds weighted relaxed nonnegative counts, token-mass smoothing, packed state, and input/parameter probability products, `fortml_complement_naive_bayes` adds weighted complement distributions, optional weight normalization, packed state, and input/parameter probability products, `fortml_probability_calibration` adds Platt sigmoid and weighted PAVA isotonic calibration with score/parameter products and active-set refusals, `fortml_knn_classifier` adds deterministic dense uniform or inverse-distance neighbors with explicit discrete derivative refusals, `fortml_logistic_training` adds an exact weighted logistic objective with parameter/L2 gradients and HVPs plus bounded FortOpt L-BFGS-B, `fortml_cart_classifier` adds deterministic weighted Gini/entropy trees and leaf probabilities, `fortml_mlp_classifier` adds deterministic multiclass logits training with Adam and sample/class weights, `fortml_gp_classification` adds binary Laplace logistic/probit inference plus an exact mode-envelope kernel gradient and query-feature JVP/VJP products, `fortml_gp_multiclass_classification` adds packed one-vs-rest envelope gradients, latent margins, and query-feature JVP/VJP products, and shared metrics cover accuracy, top-k, balanced accuracy, confusion, precision/recall/F1, Brier, binary Matthews, weighted accuracy, log loss, and expected/maximum calibration error. | Binary and multiclass linear, tree, neural, GP, and boosted-tree classifiers share label, probability, weighting, metric, and calibration conventions. |
 | Estimator contracts, pipelines, and bases | Partial | `basis_map_t`, horizontal and sequential basis pipelines, fitted standard/min-max scalers with input JVPs, `basis_linear_regression_t`, weighted multi-output `ridge_regression_t` and `elastic_net_regression_t`, row-oriented sample conventions, status objects, and the parameter registry are public. | Fitted transformers and estimators compose without data leakage, expose routed parameters, and run through cross-validation. |
 | Tree boosting | Partial | `decision_stump_t`, weighted depth-limited `cart_regressor_t` and `cart_classifier_t`, squared-loss `gradient_boosting_regressor_t`, `xgboost_t`, and `xgboost_multiclass_t` provide deterministic exhaustive and bounded-histogram split products. The CART lanes have weighted squared-error or Gini/entropy criteria, depth and leaf constraints, fixed feature/threshold tie ordering, piecewise input JVP/refusal for regression, and finite-only probability/prediction paths for classification. The XGBoost-style lane has exact and weighted-histogram squared/logistic gradients, Hessians, regularized gains, recursive Newton leaves, tree-depth/node diagnostics, binary and one-vs-rest multiclass probabilities, staged predictions/margins, and gain/weight/cover feature importance. | Regression and classification trees support validation-based stopping, categorical/ranking objectives, monotonic/interaction constraints, deeper growth, and model persistence. |
 | Training infrastructure | Partial | Model-specific gradients, exact MSE+L2 neural HVPs including the L2 mixed hyperparameter block, `mlp_training_objective_t` scalar JVP/VJP products (including the optional optimized L2 coordinate), differentiable Huber/quantile loss products, `fortopt_adam` and FortOpt SGD momentum/Nesterov integration, AdamW with decoupled decay, Adagrad with an explicit accumulated-square state, RMSprop with centered/uncentered statistics and optional momentum, deterministic seeded batch cursors, per-update learning-rate callbacks, norm clipping, sample-weighted gradient accumulation, validation/early stopping, resumable optimizer state, versioned portable MLP checkpoint files, fixed-trajectory SGD/AdamW/RMSprop hypergradients, natural-gradient seams, and seeded variational draws exist. | One trainer owns batches, optimizer state, schedules, clipping, validation, early stopping, callbacks, and resumable state for every model with a completed trainer adapter; stochastic and device-resident optimizer hypergradients remain open. |
 | GP derivatives and hyperparameters | Partial | Exact GP likelihood and prediction products include parameter gradients and HVPs. Mixed value and first-derivative observations can be fitted and predicted. | Exact, derivative, multi-output, sparse, and matrix-free GP families expose documented trainable parameters, scalar objectives, parameter gradients, and train-state adapters. |
-| GPU and device execution | Partial | Kernel, structured, and sparse operator products have selected OpenACC or CUDA paths, including resident CG for kernel operators. The kNN classifier has a resident native-CUDA training-set plan with a direct kernel oracle; no-autodiff RMSprop and AdamW state recurrences have resident CUDA C plans with independent recurrence tests. `fortml_device` gives callers an explicit CPU/CUDA selector, runtime capability probe, backend identity, residency ownership metadata, transfer counters, and typed refusal when a CUDA object is not linked. The sibling benchmark harness records independent-NumPy CUDA gates for the resident micro-kernels. | Supported training and prediction workflows keep model, optimizer, and batch state resident on a selected device and have CPU parity tests. |
+| GPU and device execution | Partial | Kernel, structured, and sparse operator products have selected OpenACC or CUDA paths, including resident CG for kernel operators. The kNN classifier has a resident native-CUDA training-set plan with a direct kernel oracle; no-autodiff RMSprop and AdamW state recurrences have resident CUDA C plans with independent recurrence tests. Elastic-net, OVO, binary/OVR-multiclass GP classification, probability calibration, binary/OVR-multiclass XGBoost, and typed schedule trajectories expose CPU dispatch plus explicit CUDA refusal until resident kernels are linked. `fortml_device` gives callers an explicit CPU/CUDA selector, runtime capability probe, backend identity, residency ownership metadata, transfer counters, and typed refusal when a CUDA object is not linked. The sibling benchmark harness records independent-NumPy CUDA gates for the resident micro-kernels. | Supported training and prediction workflows keep model, optimizer, and batch state resident on a selected device and have CPU parity tests. |
 | Serialization and distributed execution | Partial | `fortml_mlp_checkpoint` provides a versioned compiler-independent formatted-text representation with schema magic/version, exact optimizer/iterator/history state, validated temporary loading, and malformed/truncated/extra-record refusals. Other model/pipeline files and distributed execution remain open. | Versioned model and trainer files round-trip across supported compilers, and MPI training or inference agrees with a one-rank oracle. |
-| Benchmark coverage | Partial | Correctness-gated model and GP applications feed release harnesses in `../fortml-bench`; current release lanes include Bernoulli/Multinomial/ComplementNB, integer one-hot encoding, weighted ridge and elastic-net derivative products, OVR/OVO classification, MLP SGD/Nesterov/AdamW, typed schedules, five-parameter AdamW beta-logit and fixed-trajectory MLP hypergradients, differentiable imputation, basis/pipeline, exact/approximate GP, analytic GP likelihood products, exact and weighted-histogram boosting workloads, and resident CUDA device-contract gates. | Every completed parity package has a pinned external oracle, release timings, memory measurements, provenance, raw data, and a maintained report. |
+| Benchmark coverage | Partial | Correctness-gated model and GP applications feed release harnesses in `../fortml-bench`; current release lanes include Bernoulli/Multinomial/ComplementNB, integer one-hot encoding, weighted ridge and elastic-net derivative products, OVR/OVO classification, sigmoid/isotonic probability calibration, MLP SGD/Nesterov/AdamW, typed schedules, five-parameter AdamW beta-logit and fixed-trajectory MLP hypergradients, differentiable imputation, basis/pipeline, exact/approximate GP, analytic GP likelihood products, exact and weighted-histogram boosting workloads, exact/histogram monotonic-constraint query grids, and resident CUDA device-contract gates. | Every completed parity package has a pinned external oracle, release timings, memory measurements, provenance, raw data, and a maintained report. |
 
 ### WP1: classification
 
@@ -614,9 +614,16 @@ The source inventory is dated 2026-08-07.
 - [x] Add deterministic multiclass expected and maximum calibration error
   metrics with row normalization, first-maximum tie handling, equal-width
   bins, optional sample weights, and explicit empty-bin and confidence-one
-  semantics. Sigmoid and isotonic calibrator estimators remain open.
-- [ ] Add probability calibration by sigmoid and isotonic fits after the base
-  classifier API is stable.
+  semantics. The standalone sigmoid and isotonic calibrator estimators below
+  provide fitted probability maps; multiclass coupling remains a separate
+  contract.
+- [x] Add probability calibration by Platt sigmoid and weighted PAVA isotonic
+  fits. `probability_calibrator_t` validates arbitrary integer classes and
+  weights, exposes smooth sigmoid score/parameter JVP/VJP products and
+  linearly interpolated isotonic score products away from knots, and refuses
+  active-set knot/PAVA-parameter derivatives explicitly. CPU complete-array
+  behavior is benchmarked; selected CUDA contexts return a typed refusal until
+  a resident calibration kernel is linked.
 
 Acceptance: hand-computed separable and nonseparable fixtures cover labels,
 weights, ties, probabilities, multilabel thresholds, and ordinal cut points.
@@ -734,8 +741,9 @@ hyperparameter block. A deliberate train/validation leakage fixture must fail.
   are implemented. Explicit NaN policies reject, learn, or force a default
   branch per split; infinities remain refused and NaN queries have zero local
   input JVP. Fixed-tree input VJP products now mirror the zero-away-from-split
-  contract and refusal boundary. Histograms and constraint policies remain
-  open.
+  contract and refusal boundary. Per-feature monotonic constraints (`-1/0/+1`)
+  propagate recursive leaf bounds through exact and histogram trees, with
+  independent query-grid oracles and a typed CUDA refusal contract.
 - [x] Add deterministic one-vs-rest `xgboost_multiclass_t` classification over
   the binary logistic lane. Sorted integer labels, normalized probabilities,
   argmax prediction, decision margins, quotient-rule probability JVP/VJP
@@ -761,6 +769,12 @@ hyperparameter block. A deliberate train/validation leakage fixture must fail.
   histograms for the XGBoost binary/regression and one-vs-rest lanes. Store
   missing values in an explicit bin and learn a default branch at every split;
   exact-tree and histogram-tree methods remain separately selectable.
+- [x] Add per-feature XGBoost monotonic constraints. Validate one constraint
+  per input feature, reject values outside `{-1,0,+1}`, propagate shared leaf
+  bounds through constrained split branches, expose fitted constraints, and
+  test exact and weighted-histogram monotonicity on independent query grids.
+  `predict_device` returns a typed CUDA refusal until a resident tree kernel is
+  linked; no CPU fallback is counted as GPU execution.
 - [ ] Add gradient-boosted regression for squared, absolute, and Huber losses.
 - [ ] Add binary and multiclass gradient-boosted classification with stable
   logistic and softmax objectives.
@@ -958,8 +972,17 @@ trials remain visible in the result schema.
   validates update/rate domains and returns analytic products with respect to
   the base rate, minimum-rate fraction, and decay factor. Independent formula
   and central-difference oracles cover transitions, terminal clamping, and
-  malformed schedules; schedule-trajectory hypergradients remain a separate
-  stateful optimizer contract.
+  malformed schedules. The separate scheduled trajectory adapter now exposes
+  exact fixed full-batch JVP/VJP products over base rate, L2, minimum fraction,
+  and decay logits and a FortOpt L-BFGS-B integration; its CPU/CUDA boundary is
+  independently benchmarked and CUDA is an explicit refusal until a resident
+  MLP trajectory kernel is linked.
+- [x] Add `mlp_schedule_hypergradient_objective_t` for exact differentiable
+  schedule/optimizer trajectories. The packed log/logit layout has independent
+  finite-difference and scalar-adjoint tests, a complete-array release app and
+  NumPy benchmark, and explicit second-order hyper-HVP scope (third network
+  derivatives are not approximated). L-BFGS-B consumes the same reverse
+  products; unsupported device trajectories return typed refusal.
 - [x] Add sample-weighted MLP gradient accumulation. `accumulation_steps`
   flushes a configurable number of consecutive microbatches into one Adam
   update, adds L2 exactly once, clips only the accumulated gradient, and flushes
@@ -1172,7 +1195,11 @@ state phases are reported separately.
 - [x] Add one-vs-rest multiclass GP classification as a deterministic wrapper
   over the binary Laplace contract, with sorted labels, latent margins,
   normalized positive probabilities, and chained query-feature JVP/VJP
-  products. Variational categorical likelihoods remain open.
+  products. Add explicit `predict_proba_device`/`predict_device` dispatch and
+  `device_supported` capability metadata: CPU dispatch is exact and selected
+  CUDA contexts return `FORTNUM_NOT_IMPLEMENTED` until independent per-class
+  covariance/Laplace state is resident. Variational categorical likelihoods
+  remain open.
 - [x] Add bounded FortOpt L-BFGS-B adapters for binary and shared-kernel
   one-vs-rest GP classification. Each trial refits the Laplace mode and uses
   the analytic envelope gradient; invalid bounds, failed mode solves, and
@@ -1394,6 +1421,11 @@ peak memory, and batch-size scaling with the same correctness gate as training.
   records are [`results/KNN.md`](../fortml-bench/results/KNN.md),
   [`results/RMSPROP.md`](../fortml-bench/results/RMSPROP.md), and
   [`results/XGBOOST.md`](../fortml-bench/results/XGBOOST.md).
+- [x] Add exact and weighted-histogram XGBoost monotonic-constraint benchmark
+  rows. The independent NumPy harness parses complete query vectors, checks
+  adjacent monotonicity, and records CPU fit/predict timings plus explicit
+  CUDA resident-kernel refusals in
+  [`results/XGBOOST_MONOTONIC_CONSTRAINTS.md`](../fortml-bench/results/XGBOOST_MONOTONIC_CONSTRAINTS.md).
 - [x] Add the fixed full-batch RMSprop hypergradient release app and
   correctness-gated NumPy central-difference lane. The packed five-component
   product, centered branch, and explicit CPU/CUDA capability rows are recorded

@@ -73,6 +73,7 @@ not supplied through a hidden generic interface.
 | `mlp_hypergradient_objective_t` | Validation MSE after fixed full-batch GD trajectory | Outer `[log(learning_rate),log(l2)]` JVP | Exact trajectory value gradient and scalar VJP | Reverse trajectory products; inner MLP HVP |
 | `mlp_adamw_full_hypergradient_objective_t` | Validation MSE after fixed full-batch AdamW trajectory | Packed `[log(learning_rate),log(l2),log(weight_decay),logit(beta1),logit(beta2)]` JVP | Exact trajectory value gradient and scalar VJP | Forward state sensitivities through moments, bias correction, and decoupled decay |
 | `mlp_rmsprop_hypergradient_objective_t` | Validation MSE after fixed full-batch RMSprop trajectory | Packed `[log(learning_rate),log(l2),decay,log(epsilon),momentum]` JVP | Exact trajectory value gradient and scalar VJP | Forward state sensitivities; inner MLP HVP |
+| `mlp_schedule_hypergradient_objective_t` | Validation MSE after a typed scheduled full-batch trajectory | Packed `[log(base_rate),log(l2),logit(min_fraction),logit(decay_factor)]` JVP | Exact schedule/trajectory value gradient and scalar VJP | Inner MLP HVP; outer hyper-HVP is not approximated |
 | `bnn_t` | `elbo` | ELBO | ELBO | ELBO |
 | `vae_t` | `elbo`, `reconstruct` | No | ELBO gradient | No |
 | `rnn_t` | `forward`, squared-error `loss` | No | Loss gradient by BPTT | No |
@@ -372,6 +373,33 @@ deterministic first-maximum predictions, equal-width bins, and optional
 sample weights. Empty bins do not contribute, and confidence one belongs to
 the final bin. Shape, duplicate-class, unknown-label, nonfinite, negative-
 weight, invalid-bin, and zero-weight-mass cases return a domain status.
+
+### `fortml_probability_calibration`
+
+`probability_calibrator_t%fit(scores,labels,status[,options,sample_weight,state])`
+fits a binary probability map from scalar decision scores and arbitrary integer
+labels.  `probability_calibration_options_t%method` selects
+`CALIBRATION_SIGMOID` (Platt scaling) or `CALIBRATION_ISOTONIC` (weighted
+pool-adjacent-violators).  Labels are retained in ascending order and
+`predict_proba` returns columns `[1-p,p]` in that class order.  Both methods
+validate finite scores, nonnegative weights, positive total mass, and positive
+mass for each class.  The sigmoid fit uses a stable damped Newton solve for
+the two parameters `[slope,intercept]` with optional L2 regularization;
+`state` reports the objective and convergence.  Isotonic fits store weighted
+score knots and linearly interpolate between them, with constant extrapolation
+outside the fitted range.
+
+`predict_proba_jvp` and `predict_proba_vjp` provide exact score products for
+sigmoid calibration and for isotonic interpolation away from knots.
+`predict_proba_parameter_jvp` and `_vjp` expose the two sigmoid parameter
+products.  Isotonic products through fitted PAVA parameters, and score products
+at a knot where the active interpolation segment is ambiguous, return
+`FORTNUM_NOT_IMPLEMENTED` rather than differentiating through an active-set
+change.  `parameters`, `parameter_count`, `classes`, `method`, and `fitted`
+expose deterministic state.  `predict` uses the second class only when its
+probability is strictly greater, preserving first-class ties.  The explicit
+device contract supports selected CPU contexts; CUDA returns
+`FORTNUM_NOT_IMPLEMENTED` until a resident calibration kernel is linked.
 
 ### `fortml_regression_metrics`
 
@@ -889,6 +917,30 @@ variable, and changing it requires a new objective adapter. Mini-batch,
 schedules, clipping, and CUDA-resident RMSprop state remain typed follow-up
 contracts until their state and reproducibility derivatives are implemented.
 
+### `fortml_mlp_schedule_hypergradient`
+
+`mlp_schedule_hypergradient_objective_t` differentiates a fixed full-batch MLP
+trajectory using one of the stateless typed schedules from
+`fortml_mlp_schedules`. `mlp_schedule_hypergradient_options_t%schedule` fixes
+the schedule kind and integer warm-up/total-update shape. The packed outer
+vector is `[log(base_rate), log(l2), logit(min_rate_fraction),
+logit(decay_factor)]`; unused schedule fields have exact zero derivatives.
+`value_gradient`, `jvp`, and scalar `vjp` reverse or push through every update
+with the analytic MLP HVP. `mlp_optimize_schedule_hyperparameters` feeds the
+same reverse product to FortOpt L-BFGS-B under explicit log/logit bounds.
+The `hvp` entry point is present as a capability boundary and returns
+`FORTNUM_NOT_IMPLEMENTED` until third network derivatives are available;
+finite-difference hyper-HVPs are not hidden behind the API.
+
+The independent `test_mlp_schedule_hypergradient` fixture checks all packed
+components with central differences, a directional JVP, the scalar adjoint,
+the FortOpt context callback, and the L-BFGS-B smoke solve. CUDA trajectory
+requests return `FORTNUM_NOT_IMPLEMENTED` until a resident MLP trajectory
+kernel exists; the benchmark therefore records an explicit capability refusal.
+An outer hyper-HVP is not exposed: exact computation would require third
+derivatives of the nonlinear network, and no finite-difference substitute is
+hidden behind the API. See [`docs/MLP_SCHEDULE_HYPERGRADIENT.md`](MLP_SCHEDULE_HYPERGRADIENT.md).
+
 ### `fortml_mlp_classifier`
 
 `mlp_classifier_t%fit(x,labels,status[,hidden_layer_sizes,options,state,class_weight])`
@@ -968,6 +1020,13 @@ regularized gain. `predict_margin`, `predict`, `predict_proba`,
 `decision_function`, `split_gain`, `leaf_weights`, `tree_node_count`, and
 `tree_depth` expose diagnostics.
 `tree_method()` and `max_bin_count()` expose the fitted execution policy.
+Set the optional allocatable `xgboost_options_t%monotone_constraints(:)` to
+one entry per feature, using `-1`, `0`, or `+1` for decreasing,
+unconstrained, or increasing predictions. Fit validates the vector and
+propagates per-node leaf bounds through exact and histogram recursion;
+`monotone_constraint(feature)` reports the fitted value. The fit remains a
+piecewise/discrete operation, so the existing split-boundary derivative
+refusal still applies.
 `predict_jvp` is zero away from learned split boundaries and returns a
 structured refusal at a discontinuity. `max_depth` grows each exact tree
 recursively, with deterministic feature/threshold tie ordering and
@@ -984,6 +1043,13 @@ refusal. `missing_policy()` and `accepts_missing()` report the fitted policy.
 `predict_vjp(x,output_bar,x_bar,status)` is the matching reverse product: it
 returns a zero feature cotangent away from split boundaries and refuses the
 same discontinuities, nonfinite cotangents, and malformed shapes.
+
+`predict_device(device,x,y,status)` is the explicit device-control-plane
+entry point for vector predictions. CPU dispatch uses the validated host path.
+The current release has no resident CUDA tree or histogram kernel, so a
+selected CUDA device returns `FORTNUM_NOT_IMPLEMENTED` and never falls back
+to host execution. `device_supported(FORTML_DEVICE_CPU/FORTML_DEVICE_CUDA)`
+reports this capability boundary.
 
 `predict_staged` returns cumulative predictions after every fitted tree. For
 regression, `predict_staged_margin` returns the same cumulative margins; for
@@ -1009,6 +1075,12 @@ invalid policy are always refused.
 `predict_proba_vjp` applies the corresponding reverse product and propagates
 the same split-boundary refusal; the fitted tree structure and OVR
 normalization are held fixed.
+
+The multiclass wrapper forwards `monotone_constraint(feature)` from its
+one-vs-rest estimators and exposes `predict_proba_device` and
+`predict_device`. CPU dispatch is equivalent to the ordinary methods. CUDA
+returns `FORTNUM_NOT_IMPLEMENTED` until resident binary-tree kernels and OVR
+normalization are linked; `device_supported` reports this explicitly.
 
 `predict_proba_staged` and `decision_function_staged` expose the normalized
 one-vs-rest probabilities and summed margins after each boosting stage.
@@ -1222,6 +1294,14 @@ remains a separate contract. The wrapper inherits the selected logistic or probi
 kernel/refusal behavior. It is a coupling policy rather than a multinomial
 likelihood, so variational categorical likelihoods and shared multiclass
 hyperparameter training remain separate work.
+
+`predict_proba_device` and `predict_device` dispatch exactly to the reference
+path for a selected CPU context.  A selected CUDA context returns
+`FORTNUM_NOT_IMPLEMENTED`: the independent per-class covariance and Laplace
+states are not resident on CUDA yet, and no hidden host fallback or unaccounted
+transfer is allowed.  `device_supported(FORTML_DEVICE_CPU)` is true only for
+a fitted wrapper; CUDA is always reported unsupported until a resident
+multiclass Laplace kernel is linked.
 
 The same module exposes a backend-independent likelihood primitive,
 `gp_classification_log_likelihood_value(eta,likelihood,value,status)`, for a

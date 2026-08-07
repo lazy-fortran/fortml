@@ -89,7 +89,8 @@ Device execution has three separately measured layers:
    transfer counters, and peak memory.
 
 An operation with no resident plan reports a typed device refusal. The current
-elastic-net, OVO, Laplace-GP, GP-likelihood, and typed-schedule APIs follow
+elastic-net, OVO, binary/OVR-multiclass Laplace-GP, GP-likelihood,
+probability-calibration, XGBoost, and typed-schedule APIs follow
 this rule. Fixed no-autodiff reductions may use CUDA kernels when FortSym or a
 hand-derived oracle proves the same semantics. Autodiff-bearing paths retain
 FortAD/FortSym reference products until their device graph is complete.
@@ -202,6 +203,17 @@ from zero and returns the hidden history. The squared-error loss has an explicit
 reverse BPTT gradient. GRU and LSTM cells, caller-supplied initial state,
 stacked recurrent layers, checkpointing, and long-lag tests remain design
 targets.
+
+Binary probability calibration is a post-estimator composition boundary.  The
+`probability_calibrator_t` stores either a smooth two-parameter Platt map or a
+weighted pool-adjacent-violators map over scalar decision scores.  The former
+has analytic score and parameter products and can therefore be included in a
+FortOpt objective; the latter linearly interpolates between fitted knots and
+returns a typed refusal at active-set boundaries rather than differentiating
+through a changing PAVA partition.  Both maps preserve arbitrary integer
+class order and `[1-p,p]` probability columns.  CPU prediction is complete;
+CUDA remains an explicit capability refusal until calibration state and
+interpolation are resident in a native kernel.
 
 ## GP and derivative observations
 

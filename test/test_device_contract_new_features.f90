@@ -14,6 +14,8 @@ program test_device_contract_new_features
         make_mlp_schedule_cosine_decay
     use fortml_gp_classification, only: gp_classification_t, &
         gp_classification_likelihood_device_supported
+    use fortml_gp_multiclass_classification, only: &
+        gp_multiclass_classification_t
     use fortml_xgboost, only: xgboost_t
     implicit none
 
@@ -22,9 +24,12 @@ program test_device_contract_new_features
     type(elastic_net_regression_t) :: elastic_net
     type(ovo_logistic_classifier_t) :: ovo
     type(gp_classification_t) :: gp
+    type(gp_multiclass_classification_t) :: gp_multiclass
     type(xgboost_t) :: xgb
     real(real64) :: x(2, 1), y(2, 1), mean(2), variance(2), probabilities(2, 2)
     real(real64) :: xgb_prediction(2), xgb_matrix(2, 1)
+    real(real64) :: gp_multiclass_probabilities(2, 2)
+    integer :: gp_multiclass_labels(2)
     real(real64) :: schedule_rate
     integer :: labels(2), failures
 
@@ -84,6 +89,15 @@ program test_device_contract_new_features
         "XGBoost CUDA matrix refusal", failures)
     call check(.not. xgb%device_supported(FORTML_DEVICE_CUDA), &
         "XGBoost CUDA capability refusal", failures)
+
+    call gp_multiclass%predict_proba_device(cuda, x, gp_multiclass_probabilities, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
+        "GP multiclass CUDA probability refusal", failures)
+    call gp_multiclass%predict_device(cuda, x, gp_multiclass_labels, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
+        "GP multiclass CUDA label refusal", failures)
+    call check(.not. gp_multiclass%device_supported(FORTML_DEVICE_CUDA), &
+        "GP multiclass CUDA capability refusal", failures)
     call check(gp_classification_likelihood_device_supported(FORTML_DEVICE_CPU), &
         "GP likelihood CPU capability", failures)
     call check(.not. gp_classification_likelihood_device_supported(FORTML_DEVICE_CUDA), &
