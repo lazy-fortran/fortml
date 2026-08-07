@@ -10,13 +10,13 @@ module fortml_xgboost
     integer, parameter, public :: XGB_OBJECTIVE_SQUARED = 1
     integer, parameter, public :: XGB_OBJECTIVE_LOGISTIC = 2
 
-    !> Options for the bounded exact-split XGBoost-style estimator.
+    !> Options for the deterministic exact-split XGBoost-style estimator.
     !>
-    !> The current implementation deliberately grows depth-one trees.  It
-    !> already uses the full second-order leaf and split formulas (including
-    !> L1/L2 regularisation, gamma, min-child-Hessian and shrinkage), so a
-    !> histogram/deeper-tree backend can be added without changing objective
-    !> or prediction contracts.
+    !> Numeric splits are enumerated exhaustively.  Trees may grow to
+    !> `max_depth` and use the full second-order leaf and split formulas,
+    !> including L1/L2 regularisation, gamma, min-child-Hessian and shrinkage.
+    !> Histogram construction, missing-value policies, and GPU training are
+    !> separate backends and are not implied by this exact CPU path.
     type, public :: xgboost_options_t
         integer :: n_estimators = 50
         integer :: max_depth = 1
@@ -30,6 +30,9 @@ module fortml_xgboost
     end type xgboost_options_t
 
     type :: xgb_tree_t
+        ! Legacy root fields are retained as cheap diagnostics for the public
+        ! split-gain/leaf-weight accessors.  The complete tree is represented
+        ! by the node arrays below.
         integer :: feature_index = 0
         integer :: left_count = 0
         integer :: right_count = 0
@@ -38,9 +41,14 @@ module fortml_xgboost
         real(dp) :: right_weight = 0.0_dp
         real(dp) :: split_gain = 0.0_dp
         logical :: has_split = .false.
+        integer :: n_nodes = 0
+        integer :: depth = 0
+        integer, allocatable :: feature(:), left_child(:), right_child(:)
+        real(dp), allocatable :: node_threshold(:), weight(:), node_gain(:)
+        logical, allocatable :: leaf(:)
     end type xgb_tree_t
 
-    !> Exact depth-one second-order boosting for squared and binary logistic
+    !> Exact-split second-order boosting for squared and binary logistic
     !> objectives.  Fit is discrete; predictions are deterministic and the
     !> objective's Hessians are aggregated exactly for every candidate split.
     type, public :: xgboost_t
@@ -68,6 +76,8 @@ module fortml_xgboost
         procedure, public :: decision_function => xgb_decision_function
         procedure, public :: split_gain => xgb_split_gain
         procedure, public :: leaf_weights => xgb_leaf_weights
+        procedure, public :: tree_node_count => xgb_tree_node_count
+        procedure, public :: tree_depth => xgb_tree_depth
         procedure, public :: feature_count => xgb_feature_count
         procedure, public :: estimator_count => xgb_estimator_count
         procedure, public :: base_margin => xgb_base_margin
@@ -101,7 +111,8 @@ contains
         n_features = size(x, 2)
         rate = settings%learning_rate
         if (n_samples < 2 .or. n_features < 1 .or. size(y) /= n_samples .or. &
-            settings%n_estimators < 1 .or. settings%max_depth /= 1 .or. &
+            settings%n_estimators < 1 .or. settings%max_depth < 1 .or. &
+            settings%max_depth > n_samples .or. &
             settings%min_samples_leaf < 1 .or. &
             2*settings%min_samples_leaf > n_samples .or. &
             .not. ieee_is_finite(rate) .or. rate <= 0.0_dp .or. rate > 1.0_dp .or. &
@@ -304,7 +315,7 @@ contains
         real(dp), intent(in) :: x(:, :), x_dot(:, :)
         real(dp), intent(out) :: y(:), y_dot(:)
         type(fortnum_status_t), intent(out) :: status
-        integer :: i, j
+        integer :: i, j, node
 
         if (.not. self%initialized .or. size(x, 2) /= self%n_inputs .or. &
             any(shape(x_dot) /= shape(x)) .or. size(y) /= size(x, 1) .or. &
@@ -314,14 +325,16 @@ contains
             return
         end if
         do j = 1, self%n_estimators
-            if (.not. self%estimators(j)%has_split) cycle
-            do i = 1, size(x, 1)
-                if (x(i, self%estimators(j)%feature_index) == &
-                        self%estimators(j)%threshold) then
-                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
-                        "xgboost predict_jvp: derivative is undefined on split")
-                    return
-                end if
+            do node = 1, self%estimators(j)%n_nodes
+                if (self%estimators(j)%leaf(node)) cycle
+                do i = 1, size(x, 1)
+                    if (x(i, self%estimators(j)%feature(node)) == &
+                        self%estimators(j)%node_threshold(node)) then
+                        call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                            "xgboost predict_jvp: derivative is undefined on split")
+                        return
+                    end if
+                end do
             end do
         end do
         call xgb_predict_vector(self, x, y, status)
@@ -355,16 +368,57 @@ contains
         real(dp), intent(out) :: weights(:)
         type(fortnum_status_t), intent(out) :: status
 
-        if (.not. allocated(self%estimators) .or. size(weights) /= 2 .or. &
-            tree_index < 1 .or. tree_index > size(self%estimators)) then
+        if (.not. allocated(self%estimators)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
-                "xgboost leaf_weights: tree index or output shape is invalid")
+                "xgboost leaf_weights: model is not initialized")
             return
         end if
-        weights = [self%estimators(tree_index)%left_weight, &
-            self%estimators(tree_index)%right_weight]
+        if (size(weights) /= 2) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost leaf_weights: output shape is invalid")
+            return
+        end if
+        if (tree_index < 1 .or. tree_index > size(self%estimators)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost leaf_weights: tree index is invalid")
+            return
+        end if
+        if (self%estimators(tree_index)%n_nodes < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost leaf_weights: tree is not initialized")
+            return
+        end if
+        if (self%estimators(tree_index)%has_split) then
+            weights = [self%estimators(tree_index)%weight( &
+                self%estimators(tree_index)%left_child(1)), &
+                self%estimators(tree_index)%weight( &
+                self%estimators(tree_index)%right_child(1))]
+        else
+            weights = [self%estimators(tree_index)%weight(1), &
+                self%estimators(tree_index)%weight(1)]
+        end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine xgb_leaf_weights
+
+    integer function xgb_tree_node_count(self, tree_index) result(count)
+        class(xgboost_t), intent(in) :: self
+        integer, intent(in) :: tree_index
+
+        count = 0
+        if (.not. allocated(self%estimators)) return
+        if (tree_index < 1 .or. tree_index > size(self%estimators)) return
+        count = self%estimators(tree_index)%n_nodes
+    end function xgb_tree_node_count
+
+    integer function xgb_tree_depth(self, tree_index) result(depth)
+        class(xgboost_t), intent(in) :: self
+        integer, intent(in) :: tree_index
+
+        depth = 0
+        if (.not. allocated(self%estimators)) return
+        if (tree_index < 1 .or. tree_index > size(self%estimators)) return
+        depth = self%estimators(tree_index)%depth
+    end function xgb_tree_depth
 
     integer function xgb_feature_count(self) result(count)
         class(xgboost_t), intent(in) :: self
@@ -442,13 +496,8 @@ contains
         type(xgboost_options_t), intent(in) :: options
         type(xgb_tree_t), intent(out) :: tree
         type(fortnum_status_t), intent(out) :: status
-        integer, allocatable :: order(:)
-        integer :: n_samples, n_features, feature, k, i
-        integer :: best_feature, best_left_count, best_right_count
-        real(dp) :: total_gradient, total_hessian, left_gradient, left_hessian
-        real(dp) :: right_gradient, right_hessian, candidate_gain, best_gain
-        real(dp) :: candidate_threshold, best_threshold
-        real(dp) :: best_left_weight, best_right_weight, value
+        integer, allocatable :: sample_index(:)
+        integer :: n_samples, n_features, max_nodes, next_node, root, i
 
         n_samples = size(x, 1)
         n_features = size(x, 2)
@@ -457,33 +506,106 @@ contains
                 "xgboost tree: derivative array shape is invalid")
             return
         end if
-        total_gradient = sum(gradient)
-        total_hessian = sum(hessian)
+        if (n_samples < 1 .or. n_features < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost tree: at least one sample and feature are required")
+            return
+        end if
+
+        ! A binary tree containing n leaves has at most 2*n-1 nodes.  This
+        ! bound avoids integer exponentiation and is also a hard memory bound
+        ! independent of a user-supplied depth.
+        max_nodes = 2*n_samples - 1
+        allocate(tree%feature(max_nodes), tree%left_child(max_nodes), &
+            tree%right_child(max_nodes), tree%node_threshold(max_nodes), &
+            tree%weight(max_nodes), tree%node_gain(max_nodes), &
+            tree%leaf(max_nodes))
+        tree%feature = 0
+        tree%left_child = 0
+        tree%right_child = 0
+        tree%node_threshold = 0.0_dp
+        tree%weight = 0.0_dp
+        tree%node_gain = 0.0_dp
+        tree%leaf = .true.
+        allocate(sample_index(n_samples))
+        do i = 1, n_samples
+            sample_index(i) = i
+        end do
+        next_node = 0
+        tree%depth = 0
+        call build_tree_node(x, gradient, hessian, options, sample_index, 0, &
+            tree, next_node, root, status)
+        if (status%code /= FORTNUM_OK) return
+        tree%n_nodes = next_node
+        tree%feature_index = tree%feature(root)
+        tree%split_gain = tree%node_gain(root)
+        tree%has_split = .not. tree%leaf(root)
+        if (tree%has_split) tree%threshold = tree%node_threshold(root)
+        tree%left_weight = tree%weight(root)
+        tree%right_weight = tree%weight(root)
+        if (tree%has_split) then
+            tree%left_weight = tree%weight(tree%left_child(root))
+            tree%right_weight = tree%weight(tree%right_child(root))
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine build_tree
+
+    recursive subroutine build_tree_node(x, gradient, hessian, options, &
+            sample_index, depth, tree, next_node, node_id, status)
+        real(dp), intent(in) :: x(:, :), gradient(:), hessian(:)
+        type(xgboost_options_t), intent(in) :: options
+        integer, intent(in) :: sample_index(:), depth
+        type(xgb_tree_t), intent(inout) :: tree
+        integer, intent(inout) :: next_node
+        integer, intent(out) :: node_id
+        type(fortnum_status_t), intent(out) :: status
+        integer, allocatable :: order(:), left_index(:), right_index(:)
+        real(dp), allocatable :: feature_values(:)
+        integer :: n_local, n_features, feature, k, i, left_count
+        integer :: best_feature, left_node, right_node
+        real(dp) :: total_gradient, total_hessian, left_gradient, left_hessian
+        real(dp) :: right_gradient, right_hessian, candidate_gain, best_gain
+        real(dp) :: best_threshold, candidate_threshold, value
+
+        n_local = size(sample_index)
+        n_features = size(x, 2)
+        next_node = next_node + 1
+        node_id = next_node
+        tree%depth = max(tree%depth, depth)
+        total_gradient = sum(gradient(sample_index))
+        total_hessian = sum(hessian(sample_index))
         value = regularized_leaf_weight(total_gradient, total_hessian, options)
-        tree%left_weight = value
-        tree%right_weight = value
-        tree%split_gain = 0.0_dp
-        tree%has_split = .false.
+        tree%weight(node_id) = value
+        tree%node_gain(node_id) = 0.0_dp
+        tree%leaf(node_id) = .true.
+
+        ! No split is possible at the depth limit or when both children would
+        ! violate the minimum leaf size.  Returning a regularized leaf here is
+        ! exactly the XGBoost Newton-leaf contract.
+        if (depth >= options%max_depth .or. &
+            n_local < 2*options%min_samples_leaf) then
+            call status_set(status, FORTNUM_OK, "")
+            return
+        end if
+
+        allocate(order(n_local), feature_values(n_local))
         best_gain = 0.0_dp
         best_feature = 0
         best_threshold = 0.0_dp
-        best_left_weight = value
-        best_right_weight = value
-        best_left_count = n_samples
-        best_right_count = 0
-        allocate(order(n_samples))
-
         do feature = 1, n_features
-            call sort_feature_indices(x(:, feature), order)
+            do i = 1, n_local
+                feature_values(i) = x(sample_index(i), feature)
+            end do
+            call sort_feature_indices(feature_values, order)
             left_gradient = 0.0_dp
             left_hessian = 0.0_dp
-            do k = 1, n_samples - 1
+            do k = 1, n_local - 1
                 i = order(k)
-                left_gradient = left_gradient + gradient(i)
-                left_hessian = left_hessian + hessian(i)
+                left_gradient = left_gradient + gradient(sample_index(i))
+                left_hessian = left_hessian + hessian(sample_index(i))
                 if (k < options%min_samples_leaf .or. &
-                    n_samples - k < options%min_samples_leaf) cycle
-                if (x(order(k), feature) >= x(order(k + 1), feature)) cycle
+                    n_local - k < options%min_samples_leaf) cycle
+                if (feature_values(order(k)) >= feature_values(order(k + 1))) cycle
                 right_gradient = total_gradient - left_gradient
                 right_hessian = total_hessian - left_hessian
                 if (left_hessian < options%min_child_weight .or. &
@@ -495,57 +617,89 @@ contains
                 if (candidate_gain > best_gain) then
                     best_gain = candidate_gain
                     best_feature = feature
-                    best_threshold = 0.5_dp*(x(order(k), feature) + &
-                        x(order(k + 1), feature))
-                    best_left_weight = regularized_leaf_weight(left_gradient, &
-                        left_hessian, options)
-                    best_right_weight = regularized_leaf_weight(right_gradient, &
-                        right_hessian, options)
-                    best_left_count = k
-                    best_right_count = n_samples - k
+                    best_threshold = 0.5_dp*(feature_values(order(k)) + &
+                        feature_values(order(k + 1)))
                 end if
             end do
         end do
 
-        if (best_feature > 0) then
-            tree%feature_index = best_feature
-            tree%threshold = best_threshold
-            tree%left_weight = best_left_weight
-            tree%right_weight = best_right_weight
-            tree%split_gain = best_gain
-            tree%left_count = best_left_count
-            tree%right_count = best_right_count
-            tree%has_split = .true.
-        else
-            tree%left_count = best_left_count
-            tree%right_count = best_right_count
+        if (best_feature == 0) then
+            call status_set(status, FORTNUM_OK, "")
+            return
         end if
+
+        left_count = 0
+        do i = 1, n_local
+            if (x(sample_index(i), best_feature) < best_threshold) then
+                left_count = left_count + 1
+            end if
+        end do
+        if (left_count < options%min_samples_leaf .or. &
+            n_local - left_count < options%min_samples_leaf) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost tree: split construction violated leaf constraint")
+            return
+        end if
+        allocate(left_index(left_count), right_index(n_local - left_count))
+        left_count = 0
+        k = 0
+        do i = 1, n_local
+            if (x(sample_index(i), best_feature) < best_threshold) then
+                left_count = left_count + 1
+                left_index(left_count) = sample_index(i)
+            else
+                k = k + 1
+                right_index(k) = sample_index(i)
+            end if
+        end do
+        tree%leaf(node_id) = .false.
+        tree%feature(node_id) = best_feature
+        tree%node_threshold(node_id) = best_threshold
+        tree%node_gain(node_id) = best_gain
+        call build_tree_node(x, gradient, hessian, options, left_index, depth + 1, &
+            tree, next_node, left_node, status)
+        if (status%code /= FORTNUM_OK) return
+        call build_tree_node(x, gradient, hessian, options, right_index, depth + 1, &
+            tree, next_node, right_node, status)
+        if (status%code /= FORTNUM_OK) return
+        tree%left_child(node_id) = left_node
+        tree%right_child(node_id) = right_node
         call status_set(status, FORTNUM_OK, "")
-    end subroutine build_tree
+    end subroutine build_tree_node
 
     subroutine tree_predict(tree, x, values, status)
         type(xgb_tree_t), intent(in) :: tree
         real(dp), intent(in) :: x(:, :)
         real(dp), intent(out) :: values(:)
         type(fortnum_status_t), intent(out) :: status
-        integer :: i
+        integer :: i, node
 
         if (size(values) /= size(x, 1)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "xgboost tree prediction: output shape is invalid")
             return
         end if
-        if (.not. tree%has_split) then
-            values = tree%left_weight
-        else
-            do i = 1, size(x, 1)
-                if (x(i, tree%feature_index) < tree%threshold) then
-                    values(i) = tree%left_weight
+        if (tree%n_nodes < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost tree prediction: tree is not initialized")
+            return
+        end if
+        if (.not. allocated(tree%leaf)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost tree prediction: tree is not initialized")
+            return
+        end if
+        do i = 1, size(x, 1)
+            node = 1
+            do while (.not. tree%leaf(node))
+                if (x(i, tree%feature(node)) < tree%node_threshold(node)) then
+                    node = tree%left_child(node)
                 else
-                    values(i) = tree%right_weight
+                    node = tree%right_child(node)
                 end if
             end do
-        end if
+            values(i) = tree%weight(node)
+        end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine tree_predict
 

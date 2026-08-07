@@ -9,6 +9,7 @@ program test_xgboost
 
     failures = 0
     call test_squared_second_order_oracle(failures)
+    call test_deeper_tree_oracle(failures)
     call test_logistic_second_order_oracle(failures)
     call test_regularisation_and_determinism(failures)
     call test_refusals(failures)
@@ -19,6 +20,52 @@ program test_xgboost
     write (*, '(a)') "PASS"
 
 contains
+
+    subroutine test_deeper_tree_oracle(failures)
+        integer, intent(inout) :: failures
+        type(xgboost_t) :: model
+        type(xgboost_options_t) :: options
+        type(fortnum_status_t) :: status
+        real(dp) :: x(8, 2), y(8), prediction(8), x_dot(8, 2), prediction_dot(8)
+        real(dp) :: boundary(1, 2), boundary_dot(1, 2), boundary_value(1)
+        real(dp) :: boundary_value_dot(1), expected(8)
+
+        ! Feature one separates the two groups.  Feature two then separates
+        ! each group, so a depth-two exact tree has a seven-node independent
+        ! oracle and reproduces the four constant leaves exactly.
+        x(:, 1) = [0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 1.0_dp, 1.0_dp, 1.0_dp, 1.0_dp]
+        x(:, 2) = [0.0_dp, 1.0_dp, 2.0_dp, 3.0_dp, 0.0_dp, 1.0_dp, 2.0_dp, 3.0_dp]
+        y = [0.0_dp, 0.0_dp, 4.0_dp, 4.0_dp, 10.0_dp, 10.0_dp, 14.0_dp, 14.0_dp]
+        options%n_estimators = 1
+        options%max_depth = 2
+        options%learning_rate = 1.0_dp
+        options%l2 = 0.0_dp
+        options%min_child_weight = 0.0_dp
+        call model%fit_regression(x, y, status, options)
+        call model%predict(x, prediction, status)
+        x_dot = 0.0_dp
+        x_dot(:, 1) = 0.25_dp
+        call model%predict_jvp(x, x_dot, prediction, prediction_dot, status)
+        expected = y
+        if (.not. status_ok(status) .or. .not. model%fitted() .or. &
+            model%tree_node_count(1) /= 7 .or. model%tree_depth(1) /= 2 .or. &
+            maxval(abs(prediction - expected)) > 2.0e-13_dp .or. &
+            maxval(abs(prediction_dot)) > 2.0e-14_dp) then
+            write (error_unit, '(a,es12.4)') &
+                "FAIL [xgb depth two] recursive tree oracle ", &
+                maxval(abs(prediction - expected))
+            failures = failures + 1
+        end if
+        boundary = reshape([0.0_dp, 1.5_dp], shape(boundary))
+        boundary_dot = reshape([0.0_dp, 1.0_dp], shape(boundary_dot))
+        call model%predict_jvp(boundary, boundary_dot, boundary_value, &
+            boundary_value_dot, status)
+        if (status%code /= FORTNUM_DOMAIN_ERROR) then
+            write (error_unit, '(a)') &
+                "FAIL [xgb depth two] internal split derivative refusal"
+            failures = failures + 1
+        end if
+    end subroutine test_deeper_tree_oracle
 
     subroutine test_squared_second_order_oracle(failures)
         integer, intent(inout) :: failures
@@ -99,8 +146,8 @@ contains
             maxval(abs(weights - [-2.0_dp, 2.0_dp])) > 2.0e-12_dp .or. &
             maxval(abs(margin - [-1.0_dp, -1.0_dp, 1.0_dp, 1.0_dp])) > 2.0e-12_dp .or. &
             maxval(abs(probabilities - [0.2689414213699951_dp, &
-                0.2689414213699951_dp, 0.7310585786300049_dp, &
-                0.7310585786300049_dp])) > 2.0e-12_dp .or. &
+            0.2689414213699951_dp, 0.7310585786300049_dp, &
+            0.7310585786300049_dp])) > 2.0e-12_dp .or. &
             maxval(abs(probability_matrix(:, 2) - probabilities)) > 2.0e-14_dp .or. &
             final_loss >= initial_loss) then
             write (error_unit, '(a,es12.4)') &
@@ -132,7 +179,7 @@ contains
         call repeat%predict(x, repeated, status)
         if (.not. status_ok(status) .or. maxval(abs(first - repeated)) > 0.0_dp .or. &
             maxval(abs(second - sum(y)/real(size(y), dp))) >= &
-                maxval(abs(first - sum(y)/real(size(y), dp)))) then
+            maxval(abs(first - sum(y)/real(size(y), dp)))) then
             write (error_unit, '(a)') &
                 "FAIL [xgb policy] deterministic fit or L2 shrinkage"
             failures = failures + 1
@@ -155,10 +202,10 @@ contains
             failures = failures + 1
         end if
         options = xgboost_options_t()
-        options%max_depth = 2
+        options%max_depth = 0
         call model%fit(x, y, status, options)
         if (status%code /= FORTNUM_DOMAIN_ERROR) then
-            write (error_unit, '(a)') "FAIL [xgb refusal] unsupported depth"
+            write (error_unit, '(a)') "FAIL [xgb refusal] invalid depth"
             failures = failures + 1
         end if
         call model%fit_regression(x, y, status)

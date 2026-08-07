@@ -13,10 +13,11 @@ module fortml_mlp_training
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
-        FORTNUM_DOMAIN_ERROR
+        FORTNUM_DOMAIN_ERROR, FORTNUM_CONVERGENCE_ERROR
     use fortml_mlp, only: mlp_t
     use fortopt_objective, only: objective_t
     use fortopt_adam, only: adam_t
+    use fortopt_lbfgsb, only: lbfgsb_t, lbfgsb_options_t, lbfgsb_result_t
     implicit none
     private
 
@@ -141,11 +142,46 @@ module fortml_mlp_training
         procedure, public :: fortopt => mlp_objective_fortopt
     end type mlp_training_objective_t
 
+    type, public :: mlp_lbfgsb_options_t
+        !! Bounds and convergence controls for deterministic MLP L-BFGS-B.
+        !!
+        !! The network parameter block is always optimized.  When
+        !! `optimize_l2` is true, one additional bounded parameter is appended
+        !! to that block and the analytic L2 derivative is optimized together
+        !! with the weights.  Bounds are deliberately explicit: silently
+        !! clipping a model parameter outside the caller's intended domain is
+        !! a common source of irreproducible training.
+        integer :: memory = 10
+        integer :: max_iterations = 100
+        integer :: max_line_search = 40
+        real(dp) :: gradient_tolerance = 1.0e-8_dp
+        real(dp) :: step_tolerance = 1.0e-12_dp
+        real(dp) :: objective_tolerance = 1.0e-12_dp
+        real(dp) :: lower_bound = -20.0_dp
+        real(dp) :: upper_bound = 20.0_dp
+        real(dp) :: l2 = 0.0_dp
+        real(dp) :: l2_lower_bound = 0.0_dp
+        real(dp) :: l2_upper_bound = 20.0_dp
+        logical :: optimize_l2 = .false.
+    end type mlp_lbfgsb_options_t
+
+    type, public :: mlp_lbfgsb_result_t
+        !! Objective and optimizer diagnostics returned by
+        !! `mlp_optimize_lbfgsb`.
+        logical :: converged = .false.
+        integer :: iterations = 0
+        integer :: line_search_evaluations = 0
+        real(dp) :: objective = huge(1.0_dp)
+        real(dp) :: gradient_norm = huge(1.0_dp)
+        real(dp) :: l2 = 0.0_dp
+    end type mlp_lbfgsb_result_t
+
     public :: mlp_epoch_callback_proc
     public :: mlp_learning_rate_schedule_proc
     public :: mlp_loss_value_gradient
     public :: mlp_loss_hvp
     public :: mlp_train
+    public :: mlp_optimize_lbfgsb
 
 contains
 
@@ -582,6 +618,93 @@ contains
         end select
     end subroutine mlp_objective_context_callback
 
+    subroutine mlp_optimize_lbfgsb(model, x, target, options, result, status)
+        !! Optimize an MLP MSE+L2 objective with FortOpt L-BFGS-B.
+        !!
+        !! This is a full-batch objective adapter, intended for deterministic
+        !! parameter fitting and outer hyperparameter experiments.  The
+        !! network weights and biases are differentiated analytically through
+        !! the MLP VJP; with `optimize_l2`, the scalar L2 block uses the exact
+        !! derivative returned by `mlp_loss_value_gradient`.  Bounds are
+        !! applied by FortOpt's projected L-BFGS-B implementation and are
+        !! never implemented by a finite-difference or clipping wrapper.
+        class(mlp_t), target, intent(inout) :: model
+        real(dp), intent(in) :: x(:, :), target(:, :)
+        type(mlp_lbfgsb_options_t), intent(in) :: options
+        type(mlp_lbfgsb_result_t), intent(out) :: result
+        type(fortnum_status_t), intent(out) :: status
+        type(mlp_training_objective_t), target :: adapter
+        type(objective_t) :: objective
+        type(lbfgsb_t) :: optimizer
+        type(lbfgsb_options_t) :: optimizer_options
+        type(lbfgsb_result_t) :: optimizer_result
+        real(dp), allocatable :: parameters(:), lower(:), upper(:), gradient(:)
+        integer :: n_model, n_parameters
+
+        result = mlp_lbfgsb_result_t()
+        if (.not. valid_lbfgsb_options(options) .or. &
+            .not. valid_data(model, x, target)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP L-BFGS-B: model, data, or options are invalid")
+            return
+        end if
+
+        n_model = model%parameter_count()
+        if (n_model < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP L-BFGS-B: model has no parameters")
+            return
+        end if
+        call adapter%initialize(model, x, target, options%l2, status, &
+            optimize_l2=options%optimize_l2)
+        if (status%code /= FORTNUM_OK) return
+        n_parameters = adapter%parameter_count()
+        parameters = adapter%parameters()
+        allocate(lower(n_parameters), upper(n_parameters), gradient(n_parameters))
+        lower(:n_model) = options%lower_bound
+        upper(:n_model) = options%upper_bound
+        if (options%optimize_l2) then
+            lower(n_model + 1) = options%l2_lower_bound
+            upper(n_model + 1) = options%l2_upper_bound
+        end if
+
+        call adapter%fortopt(objective, status)
+        if (status%code /= FORTNUM_OK) return
+        optimizer_options%memory = options%memory
+        optimizer_options%max_iterations = options%max_iterations
+        optimizer_options%max_line_search = options%max_line_search
+        optimizer_options%gradient_tolerance = options%gradient_tolerance
+        optimizer_options%step_tolerance = options%step_tolerance
+        optimizer_options%objective_tolerance = options%objective_tolerance
+        call optimizer%minimize(objective, parameters, lower, upper, &
+            optimizer_options, optimizer_result, status)
+        if (status%code /= FORTNUM_OK) return
+
+        call model%set_parameters(parameters(:n_model), status)
+        if (status%code /= FORTNUM_OK) return
+        call adapter%value_gradient(parameters, result%objective, gradient, status)
+        if (status%code /= FORTNUM_OK) return
+        result%converged = optimizer_result%state%converged
+        result%iterations = optimizer_result%state%iteration
+        result%line_search_evaluations = optimizer_result%line_search_evaluations
+        result%gradient_norm = sqrt(sum(gradient*gradient))
+        result%l2 = options%l2
+        if (options%optimize_l2) result%l2 = parameters(n_model + 1)
+        if (.not. ieee_is_finite(result%objective) .or. &
+            .not. ieee_is_finite(result%gradient_norm) .or. &
+            .not. ieee_is_finite(result%l2)) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "MLP L-BFGS-B: result is not finite")
+            return
+        end if
+        if (.not. result%converged) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "MLP L-BFGS-B: iteration limit reached")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine mlp_optimize_lbfgsb
+
     subroutine mlp_train(model, x, target, status, options, state, &
             validation_x, validation_target)
         !! Train `model` with deterministic Adam updates.
@@ -897,6 +1020,30 @@ contains
             ieee_is_finite(options%gradient_clip_norm)
         if (options%shuffle) valid = valid .and. options%shuffle_seed > 0
     end function valid_options
+
+    logical function valid_lbfgsb_options(options) result(valid)
+        type(mlp_lbfgsb_options_t), intent(in) :: options
+
+        valid = options%memory >= 1 .and. options%max_iterations >= 1 .and. &
+            options%max_line_search >= 1 .and. options%lower_bound <= &
+            options%upper_bound .and. options%l2_lower_bound <= &
+            options%l2_upper_bound .and. options%l2 >= 0.0_dp .and. &
+            options%l2_lower_bound >= 0.0_dp
+        valid = valid .and. ieee_is_finite(options%gradient_tolerance) .and. &
+            ieee_is_finite(options%step_tolerance) .and. &
+            ieee_is_finite(options%objective_tolerance) .and. &
+            ieee_is_finite(options%lower_bound) .and. &
+            ieee_is_finite(options%upper_bound) .and. &
+            ieee_is_finite(options%l2) .and. &
+            ieee_is_finite(options%l2_lower_bound) .and. &
+            ieee_is_finite(options%l2_upper_bound) .and. &
+            options%gradient_tolerance >= 0.0_dp .and. &
+            options%step_tolerance >= 0.0_dp .and. &
+            options%objective_tolerance >= 0.0_dp
+        if (options%optimize_l2) valid = valid .and. &
+            options%l2 >= options%l2_lower_bound .and. &
+            options%l2 <= options%l2_upper_bound
+    end function valid_lbfgsb_options
 
     logical function valid_data(model, x, target) result(valid)
         class(mlp_t), intent(in) :: model

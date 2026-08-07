@@ -11,8 +11,9 @@ module fortml_xgboost_multiclass
 
     !> Deterministic one-vs-rest multiclass XGBoost-style classifier.
     !>
-    !> Each class owns a depth-one second-order logistic booster.  Positive
-    !> class probabilities are normalized across the one-vs-rest models, so
+    !> Each class owns a deterministic depth-limited second-order logistic
+    !> booster.  Positive class probabilities are normalized across the
+    !> one-vs-rest models, so
     !> arbitrary integer labels and a proper multiclass probability contract
     !> are available without changing the binary estimator.
     type, public :: xgboost_multiclass_t

@@ -116,6 +116,23 @@ shape-compatible. Unfitted models, malformed packs, and nonfinite inputs are
 refused. There is intentionally no HVP until a second-order classifier
 contract is added.
 
+### `fortml_ovr_logistic_classifier`
+
+`ovr_logistic_classifier_t` fits one binary `logistic_regression_t` per sorted
+integer class. `fit(x,labels,status[,l2,fit_intercept,max_iterations,tolerance,
+sample_weight,class_weight])` applies optional sample and sorted-class weights
+to every one-vs-rest objective. `predict_proba` normalizes the positive binary
+probabilities row-wise, `predict` uses a deterministic first-column tie rule,
+and `decision_function` returns the unnormalized binary logits. `classes`,
+`class_count`, `feature_count`, `parameter_count`, `parameters`,
+`set_parameters`, and `fitted` expose the packed state.
+
+`predict_proba_jvp` and `predict_proba_vjp` differentiate through the input
+rows. `predict_proba_parameter_jvp` and `predict_proba_parameter_vjp` provide
+the corresponding products for the packed binary-model parameters. The
+quotient-rule normalization is included in every product, and finite,
+unfitted, shape, and zero-support cases return status errors.
+
 ### `fortml_classification_metrics`
 
 The shared metric procedures keep arbitrary integer labels and an explicit
@@ -188,6 +205,27 @@ respect to packed parameters and inputs, while `predict_proba_jvp`/
 products. All derivative paths validate finite tangents/cotangents and exact
 shapes, and return a domain status for unfitted or malformed calls. HVPs and
 parameter products for GP classifiers remain separate roadmap contracts.
+
+### `fortml_ovr_logistic_classifier`
+
+`ovr_logistic_classifier_t%fit(x,labels,status[,l2,fit_intercept,
+max_iterations,tolerance,sample_weight,class_weight])` fits one independent
+binary logistic estimator per sorted integer class. `sample_weight` is shared
+across the binary fits. `class_weight` has one positive finite entry per
+sorted multiclass label and scales the corresponding rows. `decision_function`
+returns one binary score column per class. `predict_proba` takes the positive
+probability from each binary model and normalizes rows to a deterministic
+multiclass simplex. `predict` uses the first class on probability ties.
+
+`classes`, `class_count`, `feature_count`, `parameter_count`, `parameters`,
+`set_parameters`, and `fitted` expose model metadata and the concatenated
+coefficient/intercept blocks. `predict_proba_jvp` and `predict_proba_vjp`
+differentiate with respect to inputs. The separate
+`predict_proba_parameter_jvp` and `predict_proba_parameter_vjp` methods expose
+the packed fitted-parameter products. All normalized products include the
+quotient rule. Tangents and cotangents must be finite and shape-compatible.
+Hyperparameter derivatives through the discrete optimizer fit remain a
+separate trainer contract.
 
 ### `fortml_preprocessing`
 
@@ -262,6 +300,21 @@ concatenates stage feature blocks. Parameter packing follows stage order, JVPs
 gather input tangents, and VJPs scatter-add stage cotangents into the original
 input columns. This is a deterministic feature union, not a DAG scheduler or a
 parallel device executor. Those capabilities remain separate roadmap items.
+
+### `fortml_basis_linear_regression`
+
+`basis_linear_regression_t` composes a fitted `basis_pipeline_t` with a
+multi-output `linear_regression_t`. `fit(pipeline,x,y,status[,ridge,
+fit_intercept])` fits the linear coefficients on the transformed features and
+retains the pipeline parameter layout. `transform` and `predict` expose the
+two stages without hiding their feature shape.
+
+`parameters` packs all basis parameters first and the column-major regression
+coefficients second. `predict_jvp` and `predict_vjp` chain exact basis and
+linear products with respect to both packed parameters and input rows.
+`set_parameters` updates the same packed state. Empty pipelines, unfitted
+models, nonfinite data, malformed packs, and shape mismatches return status
+errors.
 
 ### `fortml_validation`
 
@@ -361,6 +414,16 @@ HVP include its mixed block. `fortopt(objective,status)` installs a context
 callback directly into `fortopt_objective`. An L-BFGS-B caller can therefore
 optimize network parameters and L2 with analytic products and explicit bounds.
 
+For a complete bounded fit, `mlp_optimize_lbfgsb(model,x,target,options,result,status)`
+owns that adapter and the FortOpt `lbfgsb_t` lifecycle. The
+`mlp_lbfgsb_options_t` bounds the packed network block and, when
+`optimize_l2=.true.`, appends a bounded L2 hyperparameter to the same vector.
+The result reports convergence, iterations, line-search evaluations, objective,
+gradient norm, and the final L2 value. This is a deterministic full-batch
+optimizer path. Mini-batch Adam remains the appropriate stochastic trainer.
+The optimizer consumes the analytic value/gradient path above, so no
+finite-difference hyperparameter approximation is introduced.
+
 `mlp_batch_iterator_t` is the reusable deterministic row-index cursor used by
 `mlp_train`. Initialize it with `n_samples`, an optional `batch_size`,
 `shuffle`, and positive `seed`. Call `reset` once per epoch and
@@ -442,28 +505,30 @@ selection remain unsupported.
 
 ### `fortml_xgboost`
 
-`xgboost_t` is the exact depth-one second-order boosting foundation. Use
+`xgboost_t` is a deterministic exact-split second-order boosting estimator. Use
 `fit_regression` for a squared objective or `fit_binary` for a logistic
 objective. `xgboost_options_t` controls estimator count, learning rate,
 minimum leaf size, L1/L2 leaf regularization, split gamma, and minimum child
 Hessian. Candidate splits aggregate exact gradients and Hessians and use the
 regularized gain. `predict_margin`, `predict`, `predict_proba`,
-`decision_function`, `split_gain`, and `leaf_weights` expose diagnostics.
+`decision_function`, `split_gain`, `leaf_weights`, `tree_node_count`, and
+`tree_depth` expose diagnostics.
 `predict_jvp` is zero away from learned split boundaries and returns a
-structured refusal at a discontinuity. Depth greater than one, histogram
-quantile approximation, missing-value routing, categorical features, ranking,
-and constraints are deliberately refused until their independent contracts
-land.
+structured refusal at a discontinuity. `max_depth` grows each exact tree
+recursively, with deterministic feature/threshold tie ordering and
+regularized Newton leaves at every node. Histogram quantile approximation,
+missing-value routing, categorical features, ranking, and constraints are
+deliberately refused until their independent contracts land.
 
 `xgboost_multiclass_t` wraps the binary logistic estimator in a deterministic
 one-vs-rest classifier. `fit(x,labels,status[,options])` sorts arbitrary
-integer labels, fits one depth-one booster per class, and normalizes the
+integer labels, fits one depth-limited booster per class, and normalizes the
 positive OVR probabilities. `classes`, `class_count`, `feature_count`,
 `estimator_count`, `fitted`, `decision_function`, `predict`, and
 `predict_proba` expose the fitted state. `predict_proba_jvp` applies the exact
 quotient-rule JVP away from learned split boundaries and propagates the binary
-boundary refusal. The classifier currently inherits the binary estimator's
-depth-one, dense, finite-input scope.
+boundary refusal. The classifier inherits the binary estimator's dense,
+finite-input scope.
 
 ### `fortml_bnn`
 
