@@ -9,7 +9,7 @@ and implementation limits in [`docs/DESIGN.md`](docs/DESIGN.md) and
 
 | Compiler | Command | Result |
 | --- | --- | --- |
-| GNU Fortran | `fo` | Static and lint checks passed. Build and 30 of 30 tests passed. See [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
+| GNU Fortran | `fo` | Static and lint checks passed. The checked-in snapshot has 30 of 30 tests; the fresh 2026-08-07 run passed all 43 tests. See [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
 | NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed. Build and 30 of 30 tests passed. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
@@ -1037,6 +1037,12 @@ The maintained reports and their raw artifacts are in `../fortml-bench/results`:
   `gp_features.csv` and `gp_features.png`.
 - [`CLASSIFICATION.md`](../fortml-bench/results/CLASSIFICATION.md), backed by
   `classification_workloads.csv` with FortML and scikit-learn provenance.
+- [`CLASSIFICATION_EXTENSIONS.md`](../fortml-bench/results/CLASSIFICATION_EXTENSIONS.md),
+  backed by `classification_extensions.csv` for binary and one-vs-rest Laplace
+  GP classification and fitted preprocessing.
+- [`CLASSIFICATION_MODELS.md`](../fortml-bench/results/CLASSIFICATION_MODELS.md),
+  backed by `classification_models.csv` for multinomial softmax and multiclass
+  neural classifiers.
 - Corrected GRBCM evidence in `scalable_gp_grbcm_corrected.csv` and
   `scalable_gp_grbcm_corrected_train_seconds.png`.
 - Current partition and dimension evidence in `scalable_gp_clustered.csv` and
