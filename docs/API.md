@@ -145,7 +145,7 @@ resident-batch evidence.
 | `vae_t` | `elbo`, `reconstruct` | No | ELBO gradient | No |
 | `rnn_t` | `forward`, squared-error `loss` | No | Loss gradient by BPTT | No |
 | `kernel_t` | Scalar value and matrix | Parameter JVP | Parameter VJP | Parameter HVP |
-| `xgboost_t` | Squared/squared-log (RMSLE)/logistic/Poisson/Huber/quantile margins, predictions, and additive tree contributions | Fixed-tree input JVP away from split boundaries | Fixed-tree input VJP away from split boundaries | No |
+| `xgboost_t` | Squared/squared-log (RMSLE)/logistic/Poisson/Huber/quantile/rank:pairwise margins, predictions, and additive tree contributions | Fixed-tree input JVP away from split boundaries | Fixed-tree input VJP away from split boundaries | No |
 | `random_forest_classifier_t` | Bootstrap-ensemble probabilities and labels | Refused: split routing is discrete | Refused: split routing is discrete | No |
 | `extra_trees_classifier_t` | Randomized-threshold ensemble probabilities and labels | Refused: split routing is discrete | Refused: split routing is discrete | No |
 | `gp_regression_t` | Mean, variance, LML | Prediction and LML parameters | Prediction and LML parameters | Mean and LML parameters |
@@ -194,6 +194,17 @@ outer hyperparameter search. The core is CPU objective execution; a device
 adapter must supply a resident objective or return `FORTNUM_NOT_IMPLEMENTED`.
 Mini-batching, validation streams, and stochastic data-loader state belong to
 the owning objective/trainer adapter and are never silently emulated here.
+
+`trainer_t%save_checkpoint(path,status)` writes a versioned,
+compiler-independent formatted-text snapshot containing optimizer options,
+parameters, EMA values, objective/history state, bounds, and the complete
+SGD/Adam/AdamW/Adagrad/RMSprop recurrence. `load_checkpoint(path,status)` is
+transactional: it requires an initialized destination with the same packed
+dimension, validates schema/order/counts/finite values, and refuses truncated,
+unknown, extra, or incompatible records without changing the destination.
+Procedure callbacks and objective closures remain process-local and must be
+attached by the caller; L-BFGS-B has no resumable streaming state in this
+trainer format.
 
 `mlp_t%parameter_layout()` exposes the same packed vector as a deterministic
 named parameter tree. Each dense layer contributes `layer_n.weight` followed by
@@ -1345,6 +1356,22 @@ The implementation refuses nonfinite states, malformed layer shapes, and
 nonfinite directions. General nonseparable Hamiltonians, learned Poisson
 structures, and implicit integrators remain separate research contracts.
 
+### `fortml_physics_objective`
+
+`physics_constraint_t` is the explicit residual seam for PINN, physics-informed
+GP, and conservation adapters. `initialize` binds a positive weight, a
+parameter/residual shape, and caller-owned residual, JVP, and VJP callbacks.
+Its normalized weighted squared residual exposes `value`, `value_gradient`,
+scalar `jvp`, and scalar `vjp`; `hvp` returns
+`FORTNUM_NOT_IMPLEMENTED` until a residual-HVP callback is part of the
+contract. `physics_objective_t` composes four named slots—`data`,
+`residual`, `boundary`, and `conservation`—and sums their value/gradient and
+first-order products. `as_objective` adapts the value/gradient path to
+FortOpt. Callbacks own coordinate/time layouts, units, and device residency;
+there is no hidden finite-difference or host/GPU fallback. See
+[`docs/PHYSICS_MODELS.md`](PHYSICS_MODELS.md) and the independent
+`test_physics_objective` affine-residual oracle.
+
 ### `fortml_mlp_training`
 
 `mlp_train(model,x,target,status,options,state[,validation_x,validation_target,checkpoint])`
@@ -1678,6 +1705,15 @@ returns the weighted BCE plus L2 value and packed gradient for a fitted model;
 `loss_hvp` returns its exact packed-parameter Hessian-vector product, including
 the nonlinear MLP term and the L2 contribution.
 
+`mlp_binary_training_objective_t` packages the same weighted BCE for the
+model-agnostic FortOpt seam. Its packed parameter block can optionally append
+the non-negative L2 coefficient; `value_gradient`, scalar `jvp`/`vjp`, and the
+joint parameter/L2 `hvp` are analytic. `mlp_binary_optimize_lbfgsb` provides a
+bounded full-batch L-BFGS-B path with explicit network and optional L2 bounds,
+sample/class weights, and optimizer diagnostics. Every evaluation updates the
+fitted model, so a generic `trainer_t` and the direct optimizer use the same
+objective products.
+
 `decision_function_jvp`/`decision_function_vjp` and
 `predict_proba_jvp`/`predict_proba_vjp` are exact products with respect to both
 packed parameters and continuous input rows. The device methods dispatch to a
@@ -1843,9 +1879,11 @@ are linked; there is no hidden host fallback.
 objective, `fit_poisson` for nonnegative count targets with a log link,
 `fit_huber` for robust Huber regression, or `fit_quantile` for pinball
 regression. Use `fit_squared_log` for XGBoost's `reg:squaredlogerror`
-(RMSLE) objective. The generic `fit` accepts `objective="squared"`,
+(RMSLE) objective, or `fit_ranking` for the `rank:pairwise` objective.
+The generic `fit` accepts `objective="squared"`,
 `"squaredlog"`/`"reg:squaredlogerror"`/`"rmsle"`, `"logistic"`,
-`"poisson"`, `"huber"`/`"pseudohuber"`, or `"quantile"`/`"pinball"`.
+`"poisson"`, `"huber"`/`"pseudohuber"`, `"quantile"`/`"pinball"`, or
+`"rank:pairwise"`.
 All fit methods accept an optional positive `sample_weight(:)`;
 weights affect the base score and every gradient/Hessian reduction. The
 `xgboost_options_t` fields `tree_method="exact"` (the default) and
@@ -1878,8 +1916,8 @@ refusal still applies.
 structured refusal at a discontinuity. `max_depth` grows each exact tree
 recursively, with deterministic feature/threshold tie ordering and
 regularized Newton leaves at every node. Histogram quantile approximation,
-categorical features, ranking, and interaction constraints remain separate
-policies. The
+categorical features, and interaction constraints remain separate policies.
+The
 `missing_policy` option is `error` by default and rejects IEEE NaNs. `learn`
 evaluates both default directions for every finite threshold and stores the
 strictly best direction (left wins exact ties); `left` and `right` force a
@@ -1903,6 +1941,17 @@ ensemble to the best round. `best_iteration()`, `best_validation_loss()`, and
 must be supplied together and are shape-, weight-, target-, and NaN-checked.
 This is deterministic validation-based stopping. Warm-start continuation and
 serialized tree state remain separate contracts.
+
+`fit_ranking(x,relevance,group,status[,options,sample_weight,...])` selects
+the `rank:pairwise` objective. Rows with the same positive integer query ID
+form a group; only unequal-relevance pairs contribute the stable logistic loss,
+gradient, and positive Hessian, and pair weights use the smaller endpoint
+weight. Groups are isolated from one another, validation ranking data carries
+its own group IDs, and a query set without an unequal pair is refused. The
+public `xgb_pairwise_loss` and `xgb_pairwise_derivatives` procedures provide
+independent objective products for FortOpt or custom trainers. Ranking margins
+have no probability link, use a zero initial base margin, and retain the
+existing piecewise tree split/refusal and typed CUDA boundaries.
 
 Set `subsample` to a positive fraction no greater than one to draw a
 without-replacement training-row subset independently for each boosting
@@ -2425,12 +2474,32 @@ analytic `KL(q(u)||N(0,K_uu))`. `elbo_gradient` gives the analytic gradient of
 that same packed objective, including the variance reparameterization and KL
 terms. `elbo_jvp` is the matching forward directional product; finite
 differences of `elbo` therefore provide a direct independent oracle. `scale`
-scales only the likelihood term for minibatch callers. `elbo_device` dispatches
-CPU exactly and returns `FORTNUM_NOT_IMPLEMENTED` for CUDA until an inducing
-solve, likelihood evaluation, and reduction are resident; it never stages a
-hidden host fallback. Kernel and inducing-point derivatives, natural-gradient
-updates, multiclass coupling, and resident GPU inference remain separate
-roadmap work.
+scales only the likelihood term for minibatch callers. `predict_latent` returns
+the posterior latent mean and variance, while `predict_proba` applies the
+logistic variance correction or analytic probit Gaussian integral and returns
+columns `[negative,positive]`. Their parameter-JVP variants differentiate the
+packed variational mean/log-Cholesky vector. `elbo_device` and prediction
+device dispatch execute CPU exactly and return `FORTNUM_NOT_IMPLEMENTED` for
+CUDA until the inducing solve, likelihood evaluation, and reduction are
+resident; they never stage a hidden host fallback. Kernel and inducing-point
+products, natural-gradient updates, and resident GPU inference remain
+separate roadmap work.
+
+### `fortml_gp_variational_multiclass_classification`
+
+`gp_variational_multiclass_classification_t` is a bounded one-vs-rest wrapper
+around independent Bernoulli variational GPs. `initialize(inducing_points,
+classes,kernel,n_mc_samples,seed,status[,likelihood,jitter])` sorts and
+validates unique integer classes, creates one seeded model per class, and
+packs their mean/log-Cholesky vectors in sorted-class order. `elbo`,
+`elbo_gradient`, and `elbo_jvp` sum the independent binary objectives;
+`predict_latent` returns per-class margins/variances and `predict_proba`
+normalizes positive margins to a simplex. `predict_proba_parameter_jvp`
+provides the exact packed-parameter tangent, and `predict` uses first-max
+ties in sorted class order. CPU dispatch is exact; CUDA ELBO and prediction
+requests return a typed refusal until a resident OVR graph is linked. Coupled
+categorical likelihoods, natural gradients, and kernel/inducing
+hyperparameter products remain open.
 
 ### `fortml_sparse_prior_gp`
 

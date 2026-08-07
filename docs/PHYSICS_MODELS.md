@@ -29,6 +29,16 @@ an implicit integrator. `linear_autoencoder_t` is likewise only the exact
 tied, centered PCA reconstruction seam. It is not a nonlinear or physics
 autoencoder initializer.
 
+`fortml_physics_objective` now provides the first composable residual seam:
+`physics_constraint_t` owns a positive reduction weight and caller-supplied
+residual/JVP/VJP callbacks, while `physics_objective_t` sums named data,
+residual, boundary, and conservation slots and adapts value/gradient to
+FortOpt. The affine independent oracle is
+[`test_physics_objective.f90`](../test/test_physics_objective.f90). HVPs are a
+typed `FORTNUM_NOT_IMPLEMENTED` boundary until residual second products are
+declared; coordinate/time metadata, collocation samplers, PINN/GP adapters,
+and symplectic terms remain future work.
+
 ## Research contracts
 
 The next APIs should compose with the existing parameter registry and objective
