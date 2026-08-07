@@ -12,6 +12,7 @@ program test_gaussian_naive_bayes
     real(dp) :: log_probabilities(3, 3), log_plus(3, 3), log_minus(3, 3)
     real(dp) :: log_dot(3, 3), log_bar(3, 3), x_bar(3, 2)
     real(dp) :: probabilities_one(1, 3)
+    real(dp) :: nan_query(3, 2), nan_value
     real(dp) :: parameter_log_dot(3, 3), parameter_bar(15)
     real(dp) :: expected_prior(3), expected_mean(2, 3), expected_variance(2, 3)
     real(dp) :: weighted_counts(3), prior(3), theta_dot(15), theta(15)
@@ -118,6 +119,17 @@ program test_gaussian_naive_bayes
     call model%predict_proba(reshape([0.0_dp, 0.0_dp], [1, 2]), &
         probabilities_one, status)
     call check(status_ok(status), "valid packed parameter update", failures)
+    nan_value = ieee_value(0.0_dp, ieee_quiet_nan)
+    nan_query = query
+    nan_query(1, 1) = nan_value
+    call model%predict_log_proba(nan_query, log_probabilities, status)
+    call check(status%code == FORTNUM_DOMAIN_ERROR, &
+        "nonfinite prediction-input refusal", failures)
+    theta = model%parameters()
+    theta(7) = 0.0_dp
+    call model%set_parameters(theta, status)
+    call check(status%code == FORTNUM_DOMAIN_ERROR, &
+        "nonpositive packed variance refusal", failures)
 
     call unfitted%predict_proba(query, log_probabilities, status)
     call check(status%code == FORTNUM_DOMAIN_ERROR, "unfitted prediction refusal", failures)
