@@ -49,6 +49,11 @@ module fortml_kernels
     !! Squared-exponential kernel with one positive length scale per feature.
     !! Parameters are packed as [log_variance, log_lengthscale(:)].
     integer, parameter, public :: KERNEL_RBF_ARD = 15
+    !! GPyTorch-style spectral mixture kernel.  Parameters are packed per
+    !! mixture as [log_weight, log_scale(:), mean(:)].  Scales and weights
+    !! use logarithmic unconstrained coordinates while frequencies (means)
+    !! remain signed physical coordinates.
+    integer, parameter, public :: KERNEL_SPECTRAL_MIXTURE = 16
 
     type, public :: kernel_t
         integer :: kind = 0
@@ -72,6 +77,7 @@ module fortml_kernels
 
     public :: make_rbf_kernel
     public :: make_rbf_ard_kernel
+    public :: make_spectral_mixture_kernel
     public :: make_ard_rbf_kernel
     public :: make_matern12_kernel
     public :: make_matern32_kernel
@@ -138,6 +144,48 @@ contains
 
         kernel = make_rbf_ard_kernel(input_dim, variance, lengthscales, status)
     end function make_ard_rbf_kernel
+
+    function make_spectral_mixture_kernel(input_dim, num_mixtures, weights, means, &
+            scales, status) result(kernel)
+        !! Construct a stationary spectral-mixture kernel.
+        !!
+        !! For lag ``tau`` the q-th component is
+        !! ``w_q prod_d exp(-2*pi^2*tau_d^2*v_qd)*cos(2*pi*tau_d*mu_qd)``.
+        !! ``weights`` and ``scales`` are positive physical values and are
+        !! packed as logarithms; ``means`` are signed frequencies.  This is
+        !! the same parameterization used by GPyTorch's
+        !! ``SpectralMixtureKernel`` and composes with the ordinary sum and
+        !! product kernel trees.
+        integer, intent(in) :: input_dim, num_mixtures
+        real(dp), intent(in) :: weights(:), means(:, :), scales(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        type(kernel_t) :: kernel
+        integer :: q, feature, base, block
+
+        if (input_dim < 1 .or. num_mixtures < 1 .or. size(weights) /= num_mixtures .or. &
+            size(means, 1) /= num_mixtures .or. size(means, 2) /= input_dim .or. &
+            size(scales, 1) /= num_mixtures .or. size(scales, 2) /= input_dim .or. &
+            any(weights <= 0.0_dp) .or. any(scales <= 0.0_dp) .or. &
+            any(.not. ieee_is_finite(weights)) .or. any(.not. ieee_is_finite(means)) .or. &
+            any(.not. ieee_is_finite(scales))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "spectral mixture constructor: dimensions and scales must be valid")
+            return
+        end if
+        kernel%kind = KERNEL_SPECTRAL_MIXTURE
+        kernel%input_dim = input_dim
+        block = 1 + 2*input_dim
+        allocate(kernel%log_parameters(num_mixtures*block))
+        do q = 1, num_mixtures
+            base = (q - 1)*block
+            kernel%log_parameters(base + 1) = log(weights(q))
+            do feature = 1, input_dim
+                kernel%log_parameters(base + 1 + feature) = log(scales(q, feature))
+                kernel%log_parameters(base + 1 + input_dim + feature) = means(q, feature)
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end function make_spectral_mixture_kernel
 
     function make_matern12_kernel(input_dim, variance, lengthscale, status) result(kernel)
         integer, intent(in) :: input_dim
@@ -331,6 +379,8 @@ contains
         select case (self%kind)
         case (KERNEL_RBF_ARD)
             count = self%input_dim + 1
+        case (KERNEL_SPECTRAL_MIXTURE)
+            count = size(self%log_parameters)
         case (KERNEL_RBF, KERNEL_MATERN12, KERNEL_MATERN32, KERNEL_MATERN52, &
                 KERNEL_COSINE)
             count = 2
@@ -420,6 +470,8 @@ contains
             value = self%left%value(x1, x2)*self%right%value(x1, x2)
         case (KERNEL_RBF_ARD)
             value = ard_rbf_value(self, x1, x2)
+        case (KERNEL_SPECTRAL_MIXTURE)
+            value = spectral_value(self, x1, x2)
         case default
             variance = exp(self%log_parameters(1))
             if (self%kind == KERNEL_RBF .or. self%kind == KERNEL_MATERN12 .or. &
@@ -631,6 +683,10 @@ contains
             return
         case (KERNEL_RBF_ARD)
             call ard_rbf_parameter_hvp(self, x1, x2, matrix_bar, direction, &
+                parameter_bar, parameter_bar_dot, offset, status)
+            return
+        case (KERNEL_SPECTRAL_MIXTURE)
+            call spectral_parameter_hvp(self, x1, x2, matrix_bar, direction, &
                 parameter_bar, parameter_bar_dot, offset, status)
             return
         case default
@@ -1365,6 +1421,8 @@ contains
             end if
         case (KERNEL_RBF_ARD)
             call ard_rbf_matrix(self, x1, x2, matrix)
+        case (KERNEL_SPECTRAL_MIXTURE)
+            call spectral_matrix(self, x1, x2, matrix)
         case default
             variance = exp(self%log_parameters(1))
             if (self%kind == KERNEL_RBF .or. self%kind == KERNEL_MATERN12 .or. &
@@ -1485,6 +1543,9 @@ contains
             call status_set(status, FORTNUM_OK, "")
         case (KERNEL_RBF_ARD)
             call ard_rbf_input_derivatives(self, x1, x2, value, gradient_x1, &
+                gradient_x2, mixed_hessian, status)
+        case (KERNEL_SPECTRAL_MIXTURE)
+            call spectral_input_derivatives(self, x1, x2, value, gradient_x1, &
                 gradient_x2, mixed_hessian, status)
         case (KERNEL_RBF)
             variance = exp(self%log_parameters(1))
@@ -1796,6 +1857,8 @@ contains
             end if
         case (KERNEL_RBF_ARD)
             call ard_rbf_matrix_jvp(self, x1, x2, direction, matrix, matrix_dot)
+        case (KERNEL_SPECTRAL_MIXTURE)
+            call spectral_matrix_jvp(self, x1, x2, direction, matrix, matrix_dot)
         case default
             variance = exp(self%log_parameters(1))
             log_variance_dot = direction(1)
@@ -1900,6 +1963,8 @@ contains
                 matrix_bar*right_matrix, parameter_bar, offset)
             call kernel_parameter_vjp_impl(self%right, x1, x2, &
                 matrix_bar*left_matrix, parameter_bar, offset + left_count)
+        case (KERNEL_SPECTRAL_MIXTURE)
+            call spectral_parameter_vjp(self, x1, x2, matrix_bar, parameter_bar, offset)
         case default
             variance = exp(self%log_parameters(1))
             if (self%kind == KERNEL_RBF .or. self%kind == KERNEL_MATERN12 .or. &
@@ -2257,6 +2322,12 @@ contains
             valid = allocated(self%log_parameters)
             if (.not. valid) return
             valid = size(self%log_parameters) == self%input_dim + 1
+        case (KERNEL_SPECTRAL_MIXTURE)
+            valid = allocated(self%log_parameters)
+            if (.not. valid) return
+            valid = size(self%log_parameters) >= 1 + 2*self%input_dim
+            if (.not. valid) return
+            valid = mod(size(self%log_parameters), 1 + 2*self%input_dim) == 0
         case (KERNEL_RBF, KERNEL_MATERN12, KERNEL_MATERN32, KERNEL_MATERN52, &
                 KERNEL_COSINE)
             valid = allocated(self%log_parameters)
@@ -2294,6 +2365,316 @@ contains
             valid = .false.
         end select
     end function kernel_valid
+
+    real(dp) function spectral_value(self, x1, x2) result(value)
+        class(kernel_t), intent(in) :: self
+        real(dp), intent(in) :: x1(:), x2(:)
+        real(dp) :: tau(self%input_dim), weight, product_value
+        real(dp) :: scales(self%input_dim), means(self%input_dim)
+        real(dp) :: factors(self%input_dim), factors_dot(self%input_dim)
+        real(dp) :: factors_second(self%input_dim), means_derivative(self%input_dim)
+        integer :: q
+
+        value = 0.0_dp
+        tau = x1 - x2
+        do q = 1, size(self%log_parameters)/(1 + 2*self%input_dim)
+            call spectral_component_factors(self, q, tau, weight, scales, means, &
+                factors, factors_dot, factors_second, means_derivative)
+            product_value = product(factors)
+            value = value + weight*product_value
+        end do
+    end function spectral_value
+
+    subroutine spectral_matrix(self, x1, x2, matrix)
+        class(kernel_t), intent(in) :: self
+        real(dp), intent(in) :: x1(:, :), x2(:, :)
+        real(dp), intent(out) :: matrix(:, :)
+        integer :: i, j
+
+        do j = 1, size(x2, 1)
+            do i = 1, size(x1, 1)
+                matrix(i, j) = spectral_value(self, x1(i, :), x2(j, :))
+            end do
+        end do
+    end subroutine spectral_matrix
+
+    subroutine spectral_matrix_jvp(self, x1, x2, direction, matrix, matrix_dot)
+        class(kernel_t), intent(in) :: self
+        real(dp), intent(in) :: x1(:, :), x2(:, :), direction(:)
+        real(dp), intent(out) :: matrix(:, :), matrix_dot(:, :)
+        integer :: i, j, q, d, base, block
+        real(dp) :: tau(self%input_dim), weight, product_value, product_dot
+        real(dp) :: scales(self%input_dim), means(self%input_dim)
+        real(dp) :: factors(self%input_dim), factors_dot(self%input_dim)
+        real(dp) :: factors_second(self%input_dim), means_derivative(self%input_dim)
+        real(dp) :: exponent_direction, mean_direction, av, c_mu
+        real(dp) :: two_pi, scale_log_direction, mean_dot
+
+        block = 1 + 2*self%input_dim
+        two_pi = 2.0_dp*acos(-1.0_dp)
+        do j = 1, size(x2, 1)
+            do i = 1, size(x1, 1)
+                tau = x1(i, :) - x2(j, :)
+                matrix(i, j) = 0.0_dp
+                matrix_dot(i, j) = 0.0_dp
+                do q = 1, size(self%log_parameters)/block
+                    base = (q - 1)*block + 1
+                    call spectral_component_factors(self, q, tau, weight, scales, means, &
+                        factors, factors_dot, factors_second, means_derivative)
+                    product_value = product(factors)
+                    product_dot = 0.0_dp
+                    do d = 1, self%input_dim
+                        scale_log_direction = direction(base + d)
+                        mean_direction = direction(base + self%input_dim + d)
+                        av = -0.5_dp*two_pi*two_pi*tau(d)*tau(d)*scales(d)
+                        c_mu = -two_pi*tau(d)*sin(two_pi*tau(d)*means(d))
+                        mean_dot = exp(-0.5_dp*two_pi*two_pi*tau(d)*tau(d)*scales(d))* &
+                            (av*scale_log_direction*cos(two_pi*tau(d)*means(d)) + &
+                            c_mu*mean_direction)
+                        factors_dot(d) = mean_dot
+                        product_dot = product_dot + mean_dot* &
+                            spectral_product_except(factors, d)
+                    end do
+                    matrix(i, j) = matrix(i, j) + weight*product_value
+                    matrix_dot(i, j) = matrix_dot(i, j) + weight*( &
+                        direction(base)*product_value + product_dot)
+                end do
+            end do
+        end do
+    end subroutine spectral_matrix_jvp
+
+    subroutine spectral_input_derivatives(self, x1, x2, value, gradient_x1, &
+            gradient_x2, mixed_hessian, status)
+        class(kernel_t), intent(in) :: self
+        real(dp), intent(in) :: x1(:), x2(:)
+        real(dp), intent(out) :: value, gradient_x1(:), gradient_x2(:)
+        real(dp), intent(out) :: mixed_hessian(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        integer :: q, i, j
+        real(dp) :: tau(self%input_dim), weight, product_value
+        real(dp) :: scales(self%input_dim), means(self%input_dim)
+        real(dp) :: factors(self%input_dim), factors_dot(self%input_dim)
+        real(dp) :: factors_second(self%input_dim), means_derivative(self%input_dim)
+        real(dp) :: product_except, second_tau
+
+        value = 0.0_dp
+        gradient_x1 = 0.0_dp
+        gradient_x2 = 0.0_dp
+        mixed_hessian = 0.0_dp
+        tau = x1 - x2
+        do q = 1, size(self%log_parameters)/(1 + 2*self%input_dim)
+            call spectral_component_factors(self, q, tau, weight, scales, means, &
+                factors, factors_dot, factors_second, means_derivative)
+            product_value = product(factors)
+            value = value + weight*product_value
+            do i = 1, self%input_dim
+                product_except = spectral_product_except(factors, i)
+                gradient_x1(i) = gradient_x1(i) + weight*factors_dot(i)*product_except
+                gradient_x2(i) = gradient_x2(i) - weight*factors_dot(i)*product_except
+                do j = 1, self%input_dim
+                    if (i == j) then
+                        second_tau = factors_second(i)*product_except
+                    else
+                        second_tau = factors_dot(i)*factors_dot(j)* &
+                            spectral_product_except_two(factors, i, j)
+                    end if
+                    mixed_hessian(i, j) = mixed_hessian(i, j) - weight*second_tau
+                end do
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine spectral_input_derivatives
+
+    subroutine spectral_parameter_vjp(self, x1, x2, matrix_bar, parameter_bar, offset)
+        class(kernel_t), intent(in) :: self
+        real(dp), intent(in) :: x1(:, :), x2(:, :), matrix_bar(:, :)
+        real(dp), intent(inout) :: parameter_bar(:)
+        integer, intent(in) :: offset
+        integer :: i, j, q, d, base, block
+        real(dp) :: tau(self%input_dim), weight, product_value, mean_product
+        real(dp) :: scales(self%input_dim), means(self%input_dim)
+        real(dp) :: factors(self%input_dim), factors_dot(self%input_dim)
+        real(dp) :: factors_second(self%input_dim), means_derivative(self%input_dim)
+        real(dp) :: av
+
+        block = 1 + 2*self%input_dim
+        do j = 1, size(x2, 1)
+            do i = 1, size(x1, 1)
+                tau = x1(i, :) - x2(j, :)
+                do q = 1, size(self%log_parameters)/block
+                    base = offset + (q - 1)*block
+                    call spectral_component_factors(self, q, tau, weight, scales, means, &
+                        factors, factors_dot, factors_second, means_derivative)
+                    product_value = product(factors)
+                    parameter_bar(base) = parameter_bar(base) + matrix_bar(i, j)* &
+                        weight*product_value
+                    do d = 1, self%input_dim
+                        av = -2.0_dp*acos(-1.0_dp)**2*tau(d)*tau(d)*scales(d)
+                        parameter_bar(base + d) = parameter_bar(base + d) + matrix_bar(i, j)* &
+                            weight*product_value*av
+                        mean_product = means_derivative(d)*spectral_product_except(factors, d)
+                        parameter_bar(base + self%input_dim + d) = &
+                            parameter_bar(base + self%input_dim + d) + matrix_bar(i, j)* &
+                            weight*mean_product
+                    end do
+                end do
+            end do
+        end do
+    end subroutine spectral_parameter_vjp
+
+    subroutine spectral_parameter_hvp(self, x1, x2, matrix_bar, direction, &
+            parameter_bar, parameter_bar_dot, offset, status)
+        class(kernel_t), intent(in) :: self
+        real(dp), intent(in) :: x1(:, :), x2(:, :), matrix_bar(:, :), direction(:)
+        real(dp), intent(inout) :: parameter_bar(:), parameter_bar_dot(:)
+        integer, intent(in) :: offset
+        type(fortnum_status_t), intent(out) :: status
+        integer :: i, j, q, k, block, base
+        real(dp) :: tau(self%input_dim), component, component_dot
+        real(dp) :: gradients(1 + 2*self%input_dim), gradients_dot(1 + 2*self%input_dim)
+
+        block = 1 + 2*self%input_dim
+        do j = 1, size(x2, 1)
+            do i = 1, size(x1, 1)
+                tau = x1(i, :) - x2(j, :)
+                do q = 1, size(self%log_parameters)/block
+                    base = offset + (q - 1)*block
+                    call spectral_component_hvp(self, q, tau, direction, base, component, &
+                        component_dot, gradients, gradients_dot)
+                    do k = 1, block
+                        parameter_bar(base + k - 1) = parameter_bar(base + k - 1) + &
+                            matrix_bar(i, j)*gradients(k)
+                        parameter_bar_dot(base + k - 1) = parameter_bar_dot(base + k - 1) + &
+                            matrix_bar(i, j)*gradients_dot(k)
+                    end do
+                end do
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine spectral_parameter_hvp
+
+    subroutine spectral_component_hvp(self, q, tau, direction, base, component, &
+            component_dot, gradients, gradients_dot)
+        class(kernel_t), intent(in) :: self
+        integer, intent(in) :: q, base
+        real(dp), intent(in) :: tau(:), direction(:)
+        real(dp), intent(out) :: component, component_dot
+        real(dp), intent(out) :: gradients(:), gradients_dot(:)
+        integer :: d, e, block
+        real(dp) :: weight, product_value, product_dot, av, av_dot, dlw
+        real(dp) :: scales(self%input_dim), means(self%input_dim)
+        real(dp) :: factors(self%input_dim), factors_tau(self%input_dim)
+        real(dp) :: factors_second(self%input_dim), means_derivative(self%input_dim)
+        real(dp) :: factors_parameter_dot(self%input_dim)
+        real(dp) :: mean_second(self%input_dim), mean_product, mean_product_dot
+        real(dp) :: scale_direction, mean_direction, two_pi
+
+        block = 1 + 2*self%input_dim
+        two_pi = 2.0_dp*acos(-1.0_dp)
+        call spectral_component_factors(self, q, tau, weight, scales, means, factors, &
+            factors_tau, factors_second, means_derivative)
+        product_value = product(factors)
+        product_dot = 0.0_dp
+        do d = 1, self%input_dim
+            scale_direction = direction(base + d)
+            mean_direction = direction(base + self%input_dim + d)
+            av = -0.5_dp*two_pi*two_pi*tau(d)*tau(d)*scales(d)
+            factors_parameter_dot(d) = exp(-0.5_dp*two_pi*two_pi*tau(d)*tau(d)*scales(d))* &
+                (av*scale_direction*cos(two_pi*tau(d)*means(d)) + &
+                means_derivative(d)/exp(-0.5_dp*two_pi*two_pi*tau(d)*tau(d)*scales(d))* &
+                mean_direction)
+            product_dot = product_dot + factors_parameter_dot(d)* &
+                spectral_product_except(factors, d)
+        end do
+        dlw = direction(base)
+        component = weight*product_value
+        component_dot = weight*(dlw*product_value + product_dot)
+        gradients = 0.0_dp
+        gradients_dot = 0.0_dp
+        gradients(1) = component
+        gradients_dot(1) = component_dot
+        do d = 1, self%input_dim
+            scale_direction = direction(base + d)
+            av = -0.5_dp*two_pi*two_pi*tau(d)*tau(d)*scales(d)
+            av_dot = av*scale_direction
+            gradients(1 + d) = component*av
+            gradients_dot(1 + d) = component_dot*av + component*av_dot
+            mean_product = means_derivative(d)*spectral_product_except(factors, d)
+            mean_second(d) = -two_pi*two_pi*tau(d)*tau(d)* &
+                cos(two_pi*tau(d)*means(d))* &
+                exp(-0.5_dp*two_pi*two_pi*tau(d)*tau(d)*scales(d))
+            mean_product_dot = (mean_second(d)*direction(base + self%input_dim + d) + &
+                exp(-0.5_dp*two_pi*two_pi*tau(d)*tau(d)*scales(d))*av* &
+                scale_direction*(-two_pi*tau(d)*sin(two_pi*tau(d)*means(d))))* &
+                spectral_product_except(factors, d)
+            do e = 1, self%input_dim
+                if (e /= d) then
+                    mean_product_dot = mean_product_dot + means_derivative(d)* &
+                        factors_parameter_dot(e)*spectral_product_except_two(factors, d, e)
+                end if
+            end do
+            gradients(1 + self%input_dim + d) = weight*mean_product
+            gradients_dot(1 + self%input_dim + d) = weight*(dlw*mean_product + &
+                mean_product_dot)
+        end do
+    end subroutine spectral_component_hvp
+
+    subroutine spectral_component_factors(self, q, tau, weight, scales, means, factors, &
+            factors_tau, factors_second, means_derivative)
+        class(kernel_t), intent(in) :: self
+        integer, intent(in) :: q
+        real(dp), intent(in) :: tau(:)
+        real(dp), intent(out) :: weight, scales(:), means(:), factors(:), factors_tau(:)
+        real(dp), intent(out) :: factors_second(:), means_derivative(:)
+        integer :: d, base
+        real(dp) :: two_pi, argument, exponential, cosine_value, sine_value
+        real(dp) :: exp_tau, exp_second, cosine_tau, cosine_second
+
+        two_pi = 2.0_dp*acos(-1.0_dp)
+        base = (q - 1)*(1 + 2*self%input_dim)
+        weight = exp(self%log_parameters(base + 1))
+        do d = 1, self%input_dim
+            scales(d) = exp(self%log_parameters(base + 1 + d))
+            means(d) = self%log_parameters(base + 1 + self%input_dim + d)
+            argument = two_pi*tau(d)*means(d)
+            exponential = exp(-0.5_dp*two_pi*two_pi*tau(d)*tau(d)*scales(d))
+            cosine_value = cos(argument)
+            sine_value = sin(argument)
+            exp_tau = -two_pi*two_pi*tau(d)*scales(d)*exponential
+            exp_second = exponential*( &
+                -two_pi*two_pi*scales(d) + &
+                two_pi**4*tau(d)*tau(d)*scales(d)*scales(d))
+            cosine_tau = -two_pi*means(d)*sine_value
+            cosine_second = -two_pi*two_pi*means(d)*means(d)*cosine_value
+            factors(d) = exponential*cosine_value
+            factors_tau(d) = exp_tau*cosine_value + exponential*cosine_tau
+            factors_second(d) = exp_second*cosine_value + 2.0_dp*exp_tau*cosine_tau + &
+                exponential*cosine_second
+            means_derivative(d) = exponential*(-two_pi*tau(d)*sine_value)
+        end do
+    end subroutine spectral_component_factors
+
+    real(dp) function spectral_product_except(values, skip) result(product_value)
+        real(dp), intent(in) :: values(:)
+        integer, intent(in) :: skip
+        integer :: i
+
+        product_value = 1.0_dp
+        do i = 1, size(values)
+            if (i /= skip) product_value = product_value*values(i)
+        end do
+    end function spectral_product_except
+
+    real(dp) function spectral_product_except_two(values, skip_one, skip_two) result(product_value)
+        real(dp), intent(in) :: values(:)
+        integer, intent(in) :: skip_one, skip_two
+        integer :: i
+
+        product_value = 1.0_dp
+        do i = 1, size(values)
+            if (i /= skip_one .and. i /= skip_two) product_value = product_value*values(i)
+        end do
+    end function spectral_product_except_two
 
     logical function same_row(x1, i, x2, j) result(same)
         real(dp), intent(in) :: x1(:, :), x2(:, :)

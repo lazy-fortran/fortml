@@ -2413,14 +2413,15 @@ make_periodic_kernel(input_dim, variance, lengthscale, period, status)
 make_rational_quadratic_kernel(input_dim, variance, lengthscale, alpha, status)
 make_cosine_kernel(input_dim, variance, lengthscale, status)
 make_polynomial_kernel(input_dim, variance, scale, offset, degree, status)
+make_spectral_mixture_kernel(input_dim, num_mixtures, weights, means, scales, status)
 make_user_kernel(input_dim, variance, formula, status)
 ```
 
 The corresponding kind constants are `KERNEL_RBF`, `KERNEL_RBF_ARD`, `KERNEL_MATERN12`,
 `KERNEL_MATERN32`, `KERNEL_MATERN52`, `KERNEL_LINEAR`, `KERNEL_CONSTANT`,
 `KERNEL_WHITE_NOISE`, `KERNEL_PERIODIC`, `KERNEL_RATIONAL_QUADRATIC`,
-`KERNEL_COSINE`, `KERNEL_POLYNOMIAL`, `KERNEL_SUM`, `KERNEL_PRODUCT`, and
-`KERNEL_USER`.
+`KERNEL_COSINE`, `KERNEL_POLYNOMIAL`, `KERNEL_SPECTRAL_MIXTURE`,
+`KERNEL_SUM`, `KERNEL_PRODUCT`, and `KERNEL_USER`.
 Combine initialized kernels with `kernel_add(left,right,status)` or
 `kernel_multiply(left,right,status)`.
 `clone_kernel(kernel)` makes an independent copy of the complete expression
@@ -2449,6 +2450,14 @@ user leaves have `[log_variance]`. Cosine leaves use
 `[log_variance,log_scale,log_offset,log_degree]` and require
 `offset + scale*dot(x1,x2) > 0` for input derivatives. Composite vectors
 concatenate the complete left vector and then the complete right vector.
+
+Spectral-mixture leaves use `make_spectral_mixture_kernel` with positive
+`weights` and `scales` plus signed `means`, each shaped by mixture and feature.
+Their packed block is `[log_weight,log_scale(:),mean(:)]` per mixture. Dense
+values, input derivatives, parameter JVP/VJP/HVP products, and exact-GP
+likelihood integration are analytic; resident CUDA execution is an explicit
+typed refusal until a resident spectral-mixture kernel is linked. See
+`docs/GP_SPECTRAL_MIXTURE.md` for the formula and independent oracle.
 
 `kernel_t` exposes `parameter_count`, `parameters`, `set_parameters`, `value`,
 `matrix`, `matrix_jvp`, `parameter_vjp`, `parameter_hvp`, and

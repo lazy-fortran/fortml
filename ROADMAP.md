@@ -595,7 +595,15 @@ when a lower-level primitive already exists.
   products. The new cosine and polynomial leaves have independent
   finite-difference and adjoint tests; their dense device ABI remains a typed
   refusal until resident kernels are linked.
-- [ ] Complete kernel catalog: spectral mixture, locally
+- [x] Add a GPyTorch-compatible spectral-mixture kernel with positive
+  log-weight/log-scale coordinates and signed frequency means. The packed
+  per-mixture metadata is `[log_weight,log_scale(:),mean(:)]`; dense values,
+  input gradients/mixed Hessians, parameter JVP/VJP/HVP products, composition,
+  and exact-GP fit/predict integration are analytic and independently checked
+  by `test_gp_spectral_mixture_kernel`. CUDA remains an explicit typed refusal
+  until a resident spectral-mixture kernel is linked; see
+  `docs/GP_SPECTRAL_MIXTURE.md`.
+- [ ] Complete kernel catalog: locally
   periodic, change-point, neural-network, graph,
   string, and operator-valued kernels with compositional parameter metadata.
 - [ ] Likelihood catalog: Gaussian, Bernoulli, categorical, multinomial,
