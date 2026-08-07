@@ -1912,10 +1912,11 @@ peak memory, and batch-size scaling with the same correctness gate as training.
   correctness-gated NumPy central-difference lane. The packed five-component
   product, centered branch, and explicit CPU/CUDA capability rows are recorded
   in [`results/RMSPROP_HYPERGRADIENT.md`](../fortml-bench/results/RMSPROP_HYPERGRADIENT.md).
-- [x] Add resident CUDA device-contract gates for kNN prediction and the
-  no-autodiff RMSprop state recurrence. Independent NumPy fixtures, concise
-  pass/skipped/failed CSV rows, and hardware/revision provenance are recorded
-  in [`results/DEVICE_CONTRACTS.md`](../fortml-bench/results/DEVICE_CONTRACTS.md);
+- [x] Add resident CUDA device-contract gates for kNN prediction, the
+  no-autodiff RMSprop state recurrence, and dense-affine value/JVP across all
+  eight MLP activations. Independent NumPy fixtures, concise pass/skipped/failed
+  CSV rows, and hardware/revision provenance are recorded in
+  [`results/DEVICE_CONTRACTS.md`](../fortml-bench/results/DEVICE_CONTRACTS.md);
   resident timing and end-to-end model GPU parity remain open.
 - [x] Add the transfer-inclusive native CUDA weighted-MSE reduction with an
   independent scalar oracle, an unavailable stub, and a real-toolchain gate.
