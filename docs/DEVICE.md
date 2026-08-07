@@ -155,9 +155,11 @@ boundaries without requiring a CUDA driver.
 The same rule covers `basis_map_t%hvp` and the horizontal, column-selecting,
 and sequential pipeline HVP methods: the analytic CPU products are tested by
 finite-difference-of-VJP oracles, but no CUDA derivative kernel is claimed.
-Random-forest prediction is a fixed, piecewise tree route and is a candidate
-for a no-autodiff native CUDA kernel; until that plan has a resident-state
-oracle, CUDA requests remain typed refusals rather than OpenACC host fallbacks.
+Random-forest prediction is a fixed, piecewise tree route. Its
+`random_forest_cuda_plan_t` now exposes ABI version 1 and shape/device metadata
+as a no-autodiff native-CUDA planning boundary; create and prediction still
+return typed refusals until a resident-state kernel and oracle are linked.
+CUDA requests therefore remain refusals rather than OpenACC host fallbacks.
 
 The mixed value/first-derivative GP has the same explicit boundary. Its
 `gp_derivative_regression_t%predict_device` method dispatches selected CPU

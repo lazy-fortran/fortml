@@ -1436,9 +1436,11 @@ derivative products. `device_supported`, `predict_proba_device`, and
 `FORTNUM_NOT_IMPLEMENTED` for CUDA until a resident ensemble kernel exists;
 there is no hidden host fallback. Independent tests cover separated clusters,
 probability-simplex alignment, seeded determinism, invalid options, and the
-CUDA refusal. The proposed no-autodiff flattening and resident-kernel ABI is
-recorded in [`CUDA_TREE_PLAN.md`](CUDA_TREE_PLAN.md); until that ABI is linked,
-the sibling benchmark's CUDA row remains an explicit unavailable result.
+CUDA refusal. `random_forest_cuda_plan_t` exposes ABI version 1 and records
+the fitted shape/device metadata without allocating or copying host trees;
+its create/predict/destroy methods remain typed refusals until the native
+no-autodiff kernel is linked. The sibling benchmark records both prediction
+and plan-creation rows as explicit unavailable results.
 
 ### `fortml_extra_trees_classifier`
 

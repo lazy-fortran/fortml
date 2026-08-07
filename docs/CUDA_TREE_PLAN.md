@@ -43,5 +43,10 @@ run as GPU evidence.
 The current contract is covered by
 `test/test_random_forest_classifier.f90`: selected CUDA contexts receive a
 typed refusal, output sentinels are preserved, and no transfer or residency
-metadata is recorded. The sibling benchmark records this as an unavailable
-CUDA row until the resident plan is linked.
+metadata is recorded. `random_forest_cuda_plan_t` exposes ABI version `1`,
+records the fitted forest's feature/class/tree counts and selected device
+index, and keeps `create`, `predict[_proba]`, and `destroy` lifecycle methods
+typed even while the native plan is unavailable. Plan creation records shape
+metadata but returns `FORTNUM_NOT_IMPLEMENTED`; it never allocates or copies
+host trees. The sibling benchmark records both prediction and plan creation
+as unavailable CUDA rows until the resident plan is linked.
