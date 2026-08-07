@@ -9,7 +9,7 @@ and implementation limits in [`docs/DESIGN.md`](docs/DESIGN.md) and
 
 | Compiler | Command | Result |
 | --- | --- | --- |
-| GNU Fortran | `fo` | Static, build, test, and lint checks passed. The fresh 2026-08-07 run passed all 144 tests (316 modules; 762 build units). See [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
+| GNU Fortran | `fo` | Static, build, test, and lint checks passed. The fresh 2026-08-07 run passed all 144 tests (316 modules; 763 build units). See [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
 | NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded compiler lane. The checked-in NVIDIA log predates the latest 144-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
@@ -26,11 +26,11 @@ slices, binary MLP loss products, trainable exact-GP mean products, ARD GP
  variational-GP objective, positive temperature calibration, and the
  transform-aware hyperparameter registry and differentiable basis-pipeline
  training objective. The independent CUDA gate additionally covers the resident
-dense-affine value/JVP/VJP path. The build emits GNU
-array-temporary warnings in existing GP benchmark call boundaries, variational-
-GP batch conversions, and the new basis-pipeline objective's shape conversions.
-They are non-fatal and
-isolated to array construction; lint and all behavioral tests pass. NVIDIA
+dense-affine value/JVP/VJP path. The build emits non-fatal GNU
+array-temporary warnings in FortFront query/generator calls, existing GP
+benchmark boundaries, variational-GP batch conversions, and basis-pipeline
+shape conversions. They are isolated to array construction; lint and all
+behavioral tests pass. NVIDIA
 compiler coverage remains an
 explicit older-build result.
 
