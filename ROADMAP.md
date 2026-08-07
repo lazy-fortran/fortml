@@ -1133,7 +1133,7 @@ CUDA refusal until private CART storage is safely bound to the C ABI.
   classes and one positive softmax temperature. The weighted NLL fit, stable
   probabilities, first-class tie policy, logit/temperature JVP/VJP products,
   and explicit CUDA refusal are independently covered by
-  `test_multiclass_probability_calibration` and the grouped calibration
+  `test_multiclass_probability_calibration` and the multiclass calibration
   benchmark lane. Multiclass Platt and isotonic maps remain typed
   `FORTNUM_NOT_IMPLEMENTED` policies rather than independent binary fits.
 
@@ -2661,6 +2661,9 @@ The maintained reports and their raw artifacts are in `../fortml-bench/results`:
 - [`PHYSICS_OBJECTIVE.md`](../fortml-bench/results/PHYSICS_OBJECTIVE.md), backed
   by `physics_objective.csv` for composable residual products, exact nonlinear
   reverse-over-forward HVPs, provider refusals, and the callback CUDA boundary.
+- [`PINN.md`](../fortml-bench/results/PINN.md), backed by `pinn.csv` for the
+  manufactured four-slot PINN adapter, exact nonlinear HVP, bounded L-BFGS-B
+  fit, and typed CUDA refusal.
 - [`GROUP_KFOLD.md`](../fortml-bench/results/GROUP_KFOLD.md), backed by
   `group_kfold.csv` for deterministic group isolation, balanced fold indices,
   and the CPU-only index-splitter contract.
