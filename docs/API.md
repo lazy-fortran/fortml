@@ -2741,8 +2741,8 @@ direction,mean,mean_dot,variance,variance_dot,status)` and
 `predict_input_vjp(x,components,mean_bar,variance_bar,x_bar,status)` provide
 query-input products while holding model parameters and training inputs fixed.
 The query products use exact third-input products for RBF, Matérn 3/2, Matérn
-5/2, periodic, rational-quadratic, cosine, linear, constant, polynomial, and
-sum/product kernels when the polynomial base is positive.
+5/2, periodic, rational-quadratic, cosine, linear, constant, polynomial,
+spectral-mixture, and sum/product kernels when the polynomial base is positive.
 The smooth leaf and composition rules are propagated directly through the
 value, first-gradient, and mixed-Hessian covariance blocks; no finite-
 difference fallback is used. Matérn 1/2 remains restricted to noncoincident
@@ -2775,7 +2775,8 @@ selected CPU contexts dispatch exactly, while selected CUDA contexts return
 The scalar VJP accepts an objective cotangent and returns the packed pullback.
 The gradient uses analytic parameter tangents of the supported RBF,
 Matérn 1/2, 3/2, 5/2, periodic, rational-quadratic, cosine, linear, constant,
-polynomial, validated user-formula, and sum/product kernels. Matérn 1/2 still refuses
+polynomial, spectral-mixture, validated user-formula, and sum/product kernels.
+Matérn 1/2 still refuses
 coincident derivative
 observations, as do user formulas containing `push_distance` at coincidence.
 
@@ -2791,8 +2792,12 @@ Value-only covariances and their variance-parameter products remain defined at
 coincidence. The refusal applies only when an input derivative is requested.
 For mixed value/first-derivative observations, `hyperparameter_hvp` is analytic
 for RBF, linear, constant, and sums/products built solely from those leaves.
-It returns `FORTNUM_NOT_IMPLEMENTED` for other leaves until their second
-input/parameter products are generated and independently checked; it never
+Spectral-mixture value/first-derivative parameter gradients and query products
+are analytic, while its mixed parameter HVP remains a typed
+`FORTNUM_NOT_IMPLEMENTED` refusal until fourth input/parameter products are
+generated and independently checked. Other leaves likewise return
+`FORTNUM_NOT_IMPLEMENTED` until their second input/parameter products are
+generated; the implementation never
 silently finite-differences the likelihood gradient. The RBF parameter JVP/VJP path uses the checked FortSym-generated
 natural-leaf value and first derivatives (FortSym `f71a1aa`, 15 IR nodes, 7
 compound operations). The Matérn 1/2 HVP now uses a FortSym-generated leaf

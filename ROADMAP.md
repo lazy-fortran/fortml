@@ -315,14 +315,13 @@ FortNum + FortAD + FortSym + FortOpt
 FortML must not depend on FortMC or FortBO. The current FortMC boundary accepts
 only a position-valued `value` and a position-gradient `gradient`; packed
 parameter registries, transforms, HVPs, samplers, and chain state remain in its
-roadmap. The current FortBO boundary accepts posterior `sample` and
-`mean_variance` products; covariance, input derivatives, acquisitions, and
-candidate-search state remain in its roadmap. The planned FortML adapters will
-extend these minimal boundaries with the richer log-density and posterior
-products (including moments, joint or reparameterized samples, covariance, and
-input derivatives) once the companion contracts land. This keeps HMC/NUTS and
-BO usable for GP and neural models without adding sampler or acquisition state
-to every estimator.
+roadmap. FortBO now exposes a capability-gated posterior protocol, durable
+gradient-aware history, and normalized continuous/integer/categorical/mixed/
+conditional search spaces; acquisitions, trust regions, candidate-search
+state, and FortML surrogate adapters remain in its roadmap. Planned adapters
+will map FortML posterior moments, covariance, samples, and derivative
+products into those contracts without adding sampler or acquisition state to
+every estimator.
 
 All three repositories use MIT licensing. FortAD is the default source of
 general derivatives. FortSym is preferred for compact fixed transition,
@@ -345,8 +344,10 @@ acquisition work packages:
 The companion repositories were checked on 2026-08-08 at FortMC
 `4dde0ccdc37b4c331126605406b08e1f3bda4f59` and FortBO
 `e272c27db4a840aabffe7ae0c3e5c5e9ec9a6154`, both on their `main` branches. The
-FortBO pin now includes normalized continuous/integer/categorical/mixed/conditional
-search spaces and a differentiable-coordinate mask; refresh these pins when
+FortBO pin now includes a versioned capability-gated posterior contract,
+gradient-aware observation history/checkpointing, normalized continuous/integer/
+categorical/mixed/conditional search spaces, and a differentiable-coordinate
+mask; refresh these pins when
 their protocol or device contracts change.
 
 Both pinned companion revisions also clarify that FortSym is a generation-time
@@ -1957,6 +1958,13 @@ state phases are reported separately.
   and adjoint oracle in `test_derivative_gp_products`. The products are CPU
   reference paths with no finite-difference fallback; CUDA remains an explicit
   refusal until the resident covariance graph is linked.
+- [x] Extend derivative-observation covariance, hyperparameter-gradient, and
+  query-input JVP/VJP products to the GPyTorch-compatible spectral-mixture
+  kernel. The independent dense oracle in
+  `test_derivative_gp_spectral_mixture` covers value/first-derivative blocks,
+  posterior covariance, packed parameter gradients, and query adjoints;
+  mixed parameter HVPs remain a typed `FORTNUM_NOT_IMPLEMENTED` refusal until
+  fourth input/parameter products are generated.
 - [ ] Extend derivative observations to second derivatives only for kernels with
   the required smoothness, with explicit refusal at singular coincident cases.
 - [ ] Add scalar objectives and parameter gradients for multi-output, sparse
