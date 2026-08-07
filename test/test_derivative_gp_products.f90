@@ -49,6 +49,15 @@ contains
         end if
 
         theta = model%parameters()
+        call kernel%set_parameters([log(2.1_dp), log(0.55_dp)], status)
+        if (.not. status_ok(status) .or. maxval(abs(theta(:2) - &
+            [log(1.4_dp), log(0.75_dp)])) > 1.0e-14_dp) then
+            write (error_unit, '(a)') &
+                "FAIL [derivative GP] fit did not own its kernel tree"
+            failures = failures + 1
+        end if
+
+        theta = model%parameters()
         call model%log_marginal_likelihood(value, status)
         expected = oracle_lml(theta, x, [0, 1, 0], y, 0.07_dp, 1.0e-10_dp)
         if (.not. status_ok(status) .or. abs(value - expected) > 2.0e-11_dp) then

@@ -76,7 +76,7 @@ contains
             return
         end if
 
-        self%kernel = kernel
+        call clone_kernel_into(kernel, self%kernel)
         allocate(self%x_train, source=x)
         allocate(self%y_train, source=y)
         allocate(self%components, source=components)
