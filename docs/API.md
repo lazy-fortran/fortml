@@ -552,6 +552,24 @@ reduction leaves the weighted sum unnormalised. The weighted-MSE products are
 the implementation used by `mlp_loss_value_gradient` and `mlp_loss_hvp`, so
 standalone checks and MLP objectives share one reduction and derivative oracle.
 
+`mae_loss_value` implements weighted mean/sum mean-absolute error with the
+same optional row-weight and reduction contract. `mae_loss_jvp` and
+`mae_loss_vjp` differentiate predictions with the signed residual derivative;
+both return a domain refusal when any residual is exactly zero, where MAE has
+no unique derivative. `mean_absolute_error_loss_*` are generic aliases for
+the same procedures.
+
+`focal_binary_cross_entropy_with_logits_value` and its JVP/VJP products use a
+stable logits formulation with positive-class weight `alpha` in `[0,1]` and
+focusing exponent `gamma >= 0`. Binary targets recover the standard
+`alpha_t (1-p_t)**gamma BCE` objective; relaxed targets in `[0,1]` are also
+accepted. Optional row weights and `LOSS_REDUCTION_MEAN`/
+`LOSS_REDUCTION_SUM` follow the weighted-MSE semantics. The equivalent
+`binary_focal_cross_entropy_with_logits_*` names are generic aliases. Invalid
+parameters, nonfinite data, malformed weights, and zero-support reductions
+return typed domain statuses. No CUDA loss kernel is linked; device requests
+remain an explicit unavailable capability rather than a host fallback.
+
 ### `fortml_softmax_regression`
 
 `softmax_regression_t%fit(x,labels,status[,l2,fit_intercept,max_iterations,
@@ -1671,8 +1689,9 @@ covariance graph is linked. No hidden host fallback is used.
 `log_marginal_likelihood`, `log_marginal_likelihood_jvp`,
 `hyperparameter_gradient`, and `hyperparameter_hvp` provide likelihood
 products. The gradient uses analytic parameter tangents of the supported RBF,
-Matérn 1/2, 3/2, 5/2, periodic, rational-quadratic, linear, constant, validated user-formula, and
-sum/product kernels. Matérn 1/2 still refuses coincident derivative
+Matérn 1/2, 3/2, 5/2, periodic, rational-quadratic, linear, constant,
+validated user-formula, and sum/product kernels. Matérn 1/2 still refuses
+coincident derivative
 observations, as do user formulas containing `push_distance` at coincidence.
 
 `predict_device(device,x,components,mean,variance,status)` is the explicit
