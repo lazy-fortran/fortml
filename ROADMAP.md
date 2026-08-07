@@ -669,10 +669,17 @@ when a lower-level primitive already exists.
 - [ ] Production optimizers and schedules: L-BFGS/L-BFGS-B, Adafactor,
   Lion, RAdam, AMSGrad, cosine/one-cycle/warmup/plateau schedules, gradient
   accumulation, clipping, EMA, decoupled regularization, and parameter groups.
+  The deterministic mini-batch SGD trajectory objective now records a private
+  batch cursor (including seeded epoch shuffles), exposes exact learning-rate
+  and L2 hypergradients through validation MSE, and is consumable by FortOpt
+  L-BFGS-B. General stochastic-loader, clipping, validation-policy, and
+  resident-device products remain open.
 - [ ] Exact fixed-trajectory and implicit hypergradients through all supported
   optimizers, schedules, batch cursors, clipping, weight decay, validation,
-  early stopping, and optimizer state. Every unsupported stochastic or device
-  path must return a typed refusal.
+  early stopping, and optimizer state. Fixed full-batch SGD/AdamW/Adagrad/
+  RMSprop and deterministic mini-batch SGD now have analytic trajectory
+  products. Every unsupported stochastic or device path must return a typed
+  refusal.
 - [ ] Mixed precision with master weights, loss scaling, overflow recovery,
   deterministic reduction modes, activation checkpointing, truncated BPTT,
   compile/fusion, distributed data/model parallelism, and resumable serialized

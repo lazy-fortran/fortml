@@ -9,7 +9,7 @@ program fortml_bench_sparse_scaler
     integer, parameter :: nrow = 4, ncol = 3, nnz = 5
     integer, parameter :: repetitions = 20000
     integer :: rows(nnz), columns(nnz), i, ios, unit
-    real(dp) :: values(nnz), tangent_values(nnz)
+    real(dp) :: values(nnz)
     real(dp) :: seconds, sink
     integer(int64) :: started, finished, rate
     character(512) :: oracle_path
@@ -20,13 +20,12 @@ program fortml_bench_sparse_scaler
     rows = [1, 3, 4, 2, 4]
     columns = [1, 1, 2, 2, 3]
     values = [2.0_dp, 4.0_dp, 3.0_dp, 1.0_dp, -2.0_dp]
-    tangent_values = 2.0_dp*values
     call csc_from_triplet(nrow, ncol, rows, columns, values, input, status)
     if (status%code /= FORTSPARSE_OK) error stop "sparse scaler benchmark input failed"
     call scaler%fit(input, status, with_mean=.false., with_std=.true.)
     if (status%code /= FORTSPARSE_OK) error stop "sparse scaler benchmark fit failed"
     tangent = input
-    tangent%val = tangent_values
+    tangent%val = 2.0_dp*input%val
 
     call system_clock(count_rate=rate)
     call system_clock(started)
