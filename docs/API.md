@@ -66,6 +66,7 @@ not supplied through a hidden generic interface.
 | `basis_map_t` | `evaluate` | Parameters and inputs | Parameters and inputs | No |
 | `one_hot_encoder_t` | Dense one-hot `transform` | Refused: integer categories have no canonical tangent space | Refused: integer categories have no canonical cotangent space | No |
 | `mlp_t` | `predict` | Parameters and inputs | Parameters and inputs | Weighted-output HVP |
+| `mlp_hypergradient_objective_t` | Validation MSE after fixed full-batch GD trajectory | Outer `[log(learning_rate),log(l2)]` JVP | Exact trajectory value gradient and scalar VJP | Reverse trajectory products; inner MLP HVP |
 | `bnn_t` | `elbo` | ELBO | ELBO | ELBO |
 | `vae_t` | `elbo`, `reconstruct` | No | ELBO gradient | No |
 | `rnn_t` | `forward`, squared-error `loss` | No | Loss gradient by BPTT | No |
@@ -649,6 +650,23 @@ optimizer update, clipping is applied after accumulation, and the state records
 exact full-batch equivalence oracle when the model and options are otherwise
 identical, while reducing optimizer-state updates for memory-constrained
 training.
+
+### `fortml_mlp_hypergradient`
+
+`mlp_hypergradient_objective_t` provides an exact, deliberately bounded outer
+objective for a fixed full-batch gradient-descent trajectory. The packed outer
+vector is `[log(learning_rate), log(l2)]`; the model parameters at
+`initialize` are the fixed inner starting state. Every evaluation applies the
+configured number of updates and returns unregularized validation MSE.
+`value_gradient` and `vjp` reverse the stored trajectory, while `jvp` pushes a
+tangent through each update using the analytic MLP HVP. The
+`mlp_optimize_hyperparameters` adapter sends these products directly to
+FortOpt L-BFGS-B in log space. Adam, momentum/Nesterov, mini-batch or schedule
+trajectories, and CUDA-resident state return `FORTNUM_NOT_IMPLEMENTED` until
+their state and reproducibility contracts have matching derivative products;
+they are never approximated by hidden finite differences. See
+[`docs/MLP_HYPERGRADIENT.md`](MLP_HYPERGRADIENT.md) for the complete layout and
+example.
 
 ### `fortml_mlp_classifier`
 
