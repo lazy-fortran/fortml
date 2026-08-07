@@ -13,6 +13,11 @@ and implementation limits in [`docs/DESIGN.md`](docs/DESIGN.md) and
 | NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed. Build and 30 of 30 tests passed. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
+The checked-in compiler logs above are the 2026-08-06 30-test verification
+snapshot. A fresh GNU Fortran `fo` run on 2026-08-07 passed static analysis,
+the build, all 37 tests, and lint in 5.1 seconds. The fresh run includes
+implementation work whose compiler logs have not yet replaced that snapshot.
+
 Behavioral oracles include dense or analytic references, finite differences,
 adjoint identities, convergence checks, and seeded known-answer cases.
 Repository-state checks do not count.
