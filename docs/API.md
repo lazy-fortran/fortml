@@ -613,6 +613,15 @@ build links an unavailable stub, so the routine returns
 `FORTNUM_NOT_IMPLEMENTED` without changing the output when no native CUDA
 object is linked. `fortml_cuda_mse_available()` exposes the runtime probe.
 
+The companion C ABI in `src/validation/fortml_cuda_mse_plan.h` provides a
+resident no-autodiff plan: `fortml_cuda_mse_plan_create` uploads the immutable
+target, prediction, and optional row-weight arrays once;
+`fortml_cuda_mse_plan_execute` repeats the CUDA reduction without re-uploading
+those inputs; and `fortml_cuda_mse_plan_destroy` releases the device buffers.
+The independent `test/run_cuda_mse_plan.sh` gate executes five reductions and
+compares each scalar with a host oracle. It is a concrete resident primitive,
+not an end-to-end estimator GPU claim.
+
 ### `fortml_losses`
 
 The loss facade provides stable matrix-valued `sigmoid_value`, `softmax_value`,
