@@ -103,7 +103,7 @@ contains
         type(mlp_binary_classifier_state_t) :: head_state
         integer, allocatable :: labels(:)
         integer :: j, n_labels
-        real(dp) :: loss_sum, norm_sum
+        real(dp) :: initial_sum, final_sum, best_sum, norm_sum
 
         if (present(options)) config = options
         if (.not. valid_options(config)) then
@@ -146,7 +146,9 @@ contains
 
         binary_options = to_binary_options(config)
         allocate(self%heads(n_labels), labels(size(x, 1)))
-        loss_sum = 0.0_dp
+        initial_sum = 0.0_dp
+        final_sum = 0.0_dp
+        best_sum = 0.0_dp
         norm_sum = 0.0_dp
         if (present(state)) state = mlp_multilabel_classifier_state_t()
         do j = 1, n_labels
@@ -165,20 +167,23 @@ contains
                     state=head_state)
             end if
             if (.not. status_ok(status)) return
-            loss_sum = loss_sum + head_state%final_loss
+            initial_sum = initial_sum + head_state%initial_loss
+            final_sum = final_sum + head_state%final_loss
+            best_sum = best_sum + head_state%best_loss
             norm_sum = norm_sum + head_state%gradient_norm**2
             if (present(state)) then
                 state%epochs = max(state%epochs, head_state%epochs)
                 state%updates = state%updates + head_state%updates
                 state%best_epoch = max(state%best_epoch, head_state%best_epoch)
-                state%converged = state%converged .or. head_state%converged
+                if (j == 1) state%converged = head_state%converged
+                if (j > 1) state%converged = state%converged .and. head_state%converged
                 state%early_stopped = state%early_stopped .or. head_state%early_stopped
             end if
         end do
         if (present(state)) then
-            state%initial_loss = loss_sum / real(n_labels, dp)
-            state%final_loss = state%initial_loss
-            state%best_loss = state%final_loss
+            state%initial_loss = initial_sum / real(n_labels, dp)
+            state%final_loss = final_sum / real(n_labels, dp)
+            state%best_loss = best_sum / real(n_labels, dp)
             state%gradient_norm = sqrt(norm_sum)
         end if
         call status_set(status, FORTNUM_OK, "")
