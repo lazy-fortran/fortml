@@ -14,7 +14,7 @@ module fortml_mlp_adam_hypergradient
     !! returns `FORTNUM_NOT_IMPLEMENTED` until such a state contract exists.
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     use fortnum_kinds, only: dp
-    use fortnum_status, only: fortnum_status_t, status_set, status_ok, FORTNUM_OK, &
+    use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
         FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED, FORTNUM_CONVERGENCE_ERROR
     use fortml_device, only: FORTML_DEVICE_CPU
     use fortml_mlp, only: mlp_t

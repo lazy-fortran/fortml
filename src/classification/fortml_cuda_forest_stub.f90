@@ -11,7 +11,7 @@ function fortml_cuda_forest_plan_create( &
         node_probability, class_label, n_trees, n_nodes, n_inputs, n_classes, &
         device_index, handle) bind(C, &
         name="fortml_cuda_forest_plan_create") result(value)
-    use, intrinsic :: iso_c_binding, only: c_double, c_int, c_ptr, c_null_ptr
+    use, intrinsic :: iso_c_binding, only: c_int, c_ptr, c_null_ptr
     implicit none
     type(c_ptr), value :: tree_offset, node_feature, node_left, node_right
     type(c_ptr), value :: node_threshold, node_probability, class_label

@@ -1,6 +1,5 @@
 program test_nll_losses
     !! Independent finite-difference and adjoint oracles for neural NLLs.
-    use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     use, intrinsic :: iso_fortran_env, only: error_unit
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_ok

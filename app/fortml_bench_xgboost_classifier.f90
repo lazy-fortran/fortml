@@ -7,8 +7,7 @@ program fortml_bench_xgboost_classifier
     use, intrinsic :: iso_fortran_env, only: dp => real64, int64
     use fortml_xgboost, only: xgboost_options_t
     use fortml_xgboost_classifier, only: xgboost_classifier_t
-    use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU, &
-        FORTML_DEVICE_CUDA
+    use fortml_device, only: fortml_device_t, FORTML_DEVICE_CUDA
     use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_NOT_IMPLEMENTED
     implicit none
 
