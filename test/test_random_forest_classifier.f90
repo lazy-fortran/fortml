@@ -5,10 +5,12 @@ program test_random_forest_classifier
         FORTNUM_NOT_IMPLEMENTED
     use fortml_device, only: fortml_device_t, FORTML_DEVICE_CUDA
     use fortml_random_forest_classifier, only: random_forest_classifier_t, &
-        RANDOM_FOREST_MAX_TREES
+        random_forest_cuda_plan_t, RANDOM_FOREST_MAX_TREES, &
+        RANDOM_FOREST_CUDA_PLAN_ABI_VERSION
     implicit none
 
     type(random_forest_classifier_t) :: model, repeat_model, other_model
+    type(random_forest_cuda_plan_t) :: cuda_plan
     type(fortnum_status_t) :: status
     type(fortml_device_t) :: cuda
     real(real64) :: x(12, 2), query(3, 2), probabilities(3, 3), &
@@ -68,6 +70,12 @@ program test_random_forest_classifier
     call check(status%code == FORTNUM_DOMAIN_ERROR, &
         "nonpositive seed refusal", failures)
 
+    ! Re-establish a fitted model after the invalid-fit checks.  The fit API
+    ! intentionally uses INTENT(OUT), so a refused fit clears prior state.
+    call model%fit(x, labels, status, n_trees=17, max_depth=2, seed=123)
+    call check(status_ok(status) .and. model%fitted(), &
+        "refit before device contract", failures)
+
     cuda%kind = FORTML_DEVICE_CUDA
     cuda%selected = .true.
     cuda%available = .true.
@@ -87,6 +95,29 @@ program test_random_forest_classifier
         "CUDA label refusal preserves the output buffer", failures)
     call check(.not. model%device_supported(FORTML_DEVICE_CUDA), &
         "CUDA capability refusal", failures)
+
+    call cuda_plan%create(model, cuda, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED .and. &
+        cuda_plan%abi() == RANDOM_FOREST_CUDA_PLAN_ABI_VERSION .and. &
+        cuda_plan%feature_count() == model%feature_count() .and. &
+        cuda_plan%class_count() == model%class_count() .and. &
+        cuda_plan%tree_count() == model%tree_count() .and. &
+        cuda_plan%device() == cuda%device_index .and. .not. cuda_plan%fitted(), &
+        "typed CUDA plan records model shape before refusal", failures)
+    cuda_probabilities = -19.0_real64
+    cuda_predictions = -23
+    call cuda_plan%predict_proba(query, cuda_probabilities, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED .and. &
+        all(cuda_probabilities == -19.0_real64), &
+        "typed CUDA probability plan preserves output on refusal", failures)
+    call cuda_plan%predict(query, cuda_predictions, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED .and. &
+        all(cuda_predictions == -23), &
+        "typed CUDA label plan preserves output on refusal", failures)
+    call cuda_plan%destroy(status)
+    call check(status_ok(status) .and. cuda_plan%abi() == &
+        RANDOM_FOREST_CUDA_PLAN_ABI_VERSION .and. .not. cuda_plan%fitted(), &
+        "typed CUDA plan destroy", failures)
 
     if (failures > 0) then
         write (error_unit, '(a,i0)') "FAIL random forest classifier cases: ", failures

@@ -21,6 +21,7 @@ module fortml_random_forest_classifier
 
     integer, parameter, public :: RANDOM_FOREST_MAX_TREES = 256
     integer, parameter, public :: RANDOM_FOREST_DEFAULT_SEED = 5489
+    integer, parameter, public :: RANDOM_FOREST_CUDA_PLAN_ABI_VERSION = 1
 
     type, public :: random_forest_classifier_t
         private
@@ -53,6 +54,34 @@ module fortml_random_forest_classifier
         procedure, public :: device_supported => &
             random_forest_classifier_device_supported
     end type random_forest_classifier_t
+
+    !> Typed contract for a future resident CUDA forest.
+    !>
+    !> The plan deliberately does not expose host tree arrays or silently copy
+    !> them during prediction.  Until a generated/native ensemble kernel is
+    !> linked, create returns FORTNUM_NOT_IMPLEMENTED after recording the
+    !> immutable model/device shape.  Keeping this shape as a public ABI makes
+    !> the eventual CUDA lowering explicit without weakening the CPU oracle.
+    type, public :: random_forest_cuda_plan_t
+        private
+        integer :: abi_version = RANDOM_FOREST_CUDA_PLAN_ABI_VERSION
+        integer :: n_inputs = 0
+        integer :: n_classes = 0
+        integer :: n_trees = 0
+        integer :: device_index = -1
+        logical :: initialized = .false.
+    contains
+        procedure, public :: create => random_forest_cuda_plan_create
+        procedure, public :: destroy => random_forest_cuda_plan_destroy
+        procedure, public :: predict_proba => random_forest_cuda_plan_predict_proba
+        procedure, public :: predict => random_forest_cuda_plan_predict
+        procedure, public :: abi => random_forest_cuda_plan_abi
+        procedure, public :: feature_count => random_forest_cuda_plan_feature_count
+        procedure, public :: class_count => random_forest_cuda_plan_class_count
+        procedure, public :: tree_count => random_forest_cuda_plan_tree_count
+        procedure, public :: device => random_forest_cuda_plan_device
+        procedure, public :: fitted => random_forest_cuda_plan_fitted
+    end type random_forest_cuda_plan_t
 
     public :: random_forest_classifier_fit
     public :: random_forest_classifier_predict_proba
@@ -318,6 +347,112 @@ contains
             supported = .false.
         end select
     end function random_forest_classifier_device_supported
+
+    subroutine random_forest_cuda_plan_create(self, model, device, status)
+        class(random_forest_cuda_plan_t), intent(out) :: self
+        class(random_forest_classifier_t), intent(in) :: model
+        type(fortml_device_t), intent(in) :: device
+        type(fortnum_status_t), intent(out) :: status
+
+        self%abi_version = RANDOM_FOREST_CUDA_PLAN_ABI_VERSION
+        self%n_inputs = 0
+        self%n_classes = 0
+        self%n_trees = 0
+        self%device_index = -1
+        self%initialized = .false.
+        if (.not. model%fitted()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "random forest CUDA plan: a fitted model is required")
+            return
+        end if
+        if (.not. device%selected .or. .not. device%available .or. &
+                device%kind /= FORTML_DEVICE_CUDA) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "random forest CUDA plan: a selected CUDA device is required")
+            return
+        end if
+        self%n_inputs = model%feature_count()
+        self%n_classes = model%class_count()
+        self%n_trees = model%tree_count()
+        self%device_index = device%device_index
+        call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+            "random forest CUDA plan: resident ensemble kernel is not linked")
+    end subroutine random_forest_cuda_plan_create
+
+    subroutine random_forest_cuda_plan_destroy(self, status)
+        class(random_forest_cuda_plan_t), intent(inout) :: self
+        type(fortnum_status_t), intent(out) :: status
+
+        self%abi_version = RANDOM_FOREST_CUDA_PLAN_ABI_VERSION
+        self%n_inputs = 0
+        self%n_classes = 0
+        self%n_trees = 0
+        self%device_index = -1
+        self%initialized = .false.
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine random_forest_cuda_plan_destroy
+
+    subroutine random_forest_cuda_plan_predict_proba(self, x, probabilities, status)
+        class(random_forest_cuda_plan_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(inout) :: probabilities(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        ! `probabilities` is intentionally INOUT: a refused device operation
+        ! must not make callers lose a valid sentinel or previous result.
+        if (.not. self%initialized) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "random forest CUDA plan: no resident ensemble is available")
+            return
+        end if
+        call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+            "random forest CUDA plan: prediction kernel is not linked")
+    end subroutine random_forest_cuda_plan_predict_proba
+
+    subroutine random_forest_cuda_plan_predict(self, x, labels, status)
+        class(random_forest_cuda_plan_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        integer, intent(inout) :: labels(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. self%initialized) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "random forest CUDA plan: no resident ensemble is available")
+            return
+        end if
+        call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+            "random forest CUDA plan: label kernel is not linked")
+    end subroutine random_forest_cuda_plan_predict
+
+    integer function random_forest_cuda_plan_abi(self) result(version)
+        class(random_forest_cuda_plan_t), intent(in) :: self
+        version = self%abi_version
+    end function random_forest_cuda_plan_abi
+
+    integer function random_forest_cuda_plan_feature_count(self) result(count)
+        class(random_forest_cuda_plan_t), intent(in) :: self
+        count = self%n_inputs
+    end function random_forest_cuda_plan_feature_count
+
+    integer function random_forest_cuda_plan_class_count(self) result(count)
+        class(random_forest_cuda_plan_t), intent(in) :: self
+        count = self%n_classes
+    end function random_forest_cuda_plan_class_count
+
+    integer function random_forest_cuda_plan_tree_count(self) result(count)
+        class(random_forest_cuda_plan_t), intent(in) :: self
+        count = self%n_trees
+    end function random_forest_cuda_plan_tree_count
+
+    integer function random_forest_cuda_plan_device(self) result(device_index)
+        class(random_forest_cuda_plan_t), intent(in) :: self
+        device_index = self%device_index
+    end function random_forest_cuda_plan_device
+
+    logical function random_forest_cuda_plan_fitted(self) result(fitted)
+        class(random_forest_cuda_plan_t), intent(in) :: self
+        fitted = self%initialized
+    end function random_forest_cuda_plan_fitted
 
     subroutine bootstrap_indices(labels, classes, state, indices)
         integer, intent(in) :: labels(:), classes(:)
