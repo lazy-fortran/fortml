@@ -1,6 +1,7 @@
 program test_basis_linear_regression
     use, intrinsic :: iso_fortran_env, only: dp => real64, error_unit
-    use fortml_basis, only: basis_map_t, make_fourier_basis
+    use fortml_basis, only: basis_map_t, make_fourier_basis, &
+        make_polynomial_basis
     use fortml_pipeline, only: basis_pipeline_t, make_basis_pipeline
     use fortml_basis_linear_regression, only: basis_linear_regression_t
     use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_DOMAIN_ERROR
@@ -10,6 +11,7 @@ program test_basis_linear_regression
 
     failures = 0
     call test_fit_and_products(failures)
+    call test_polynomial_fit_and_lowering(failures)
     call test_refusals(failures)
     if (failures /= 0) then
         write (error_unit, '(i0,a)') failures, &
@@ -90,6 +92,39 @@ contains
             failures = failures + 1
         end if
     end subroutine test_fit_and_products
+
+    subroutine test_polynomial_fit_and_lowering(failures)
+        integer, intent(inout) :: failures
+        integer, parameter :: n_samples = 9
+        real(dp) :: x(n_samples, 1), y(n_samples, 1), prediction(n_samples, 1)
+        real(dp) :: features(n_samples, 2)
+        type(basis_map_t) :: polynomial
+        type(basis_pipeline_t) :: pipeline
+        type(basis_linear_regression_t) :: model
+        type(fortnum_status_t) :: status
+        integer :: i
+
+        do i = 1, n_samples
+            x(i, 1) = -1.2_dp + 0.3_dp*real(i - 1, dp)
+            y(i, 1) = 1.5_dp - 0.7_dp*x(i, 1) + 0.25_dp*x(i, 1)**2
+        end do
+        polynomial = make_polynomial_basis(1, 2, status)
+        pipeline = make_basis_pipeline(1, status)
+        call pipeline%append(polynomial, status, name="powers")
+        call model%fit(pipeline, x, y, status, fit_intercept=.true.)
+        call model%predict(x, prediction, status)
+        call model%transform(x, features, status)
+        if (.not. status_ok(status) .or. .not. model%is_fitted() .or. &
+            model%feature_count() /= 2 .or. model%parameter_count() /= 3 .or. &
+            .not. model%static_lowering_eligible() .or. &
+            maxval(abs(features(:, 1) - x(:, 1))) > 1.0e-14_dp .or. &
+            maxval(abs(features(:, 2) - x(:, 1)**2)) > 1.0e-14_dp .or. &
+            maxval(abs(prediction - y)) > 1.0e-11_dp) then
+            write (error_unit, '(a)') &
+                "FAIL [basis linear] polynomial fit/lowering oracle"
+            failures = failures + 1
+        end if
+    end subroutine test_polynomial_fit_and_lowering
 
     subroutine test_refusals(failures)
         integer, intent(inout) :: failures

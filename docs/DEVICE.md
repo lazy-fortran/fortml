@@ -168,6 +168,12 @@ boundaries without requiring a CUDA driver.
 The same rule covers `basis_map_t%hvp` and the horizontal, column-selecting,
 and sequential pipeline HVP methods: the analytic CPU products are tested by
 finite-difference-of-VJP oracles, but no CUDA derivative kernel is claimed.
+`basis_linear_regression_t%static_lowering_eligible()` reports only whether
+its fitted feature pipeline can be statically lowered (and is false for
+callback stages); it does not claim a resident GPU solve or prediction path.
+Until a resident linear-regression kernel exists, accelerator requests for
+the composed estimator remain an explicit device refusal rather than a hidden
+host fallback.
 Random-forest prediction is a fixed, piecewise tree route. Its
 `random_forest_cuda_plan_t` now exposes ABI version 1 and shape/device metadata
 as a no-autodiff native-CUDA planning boundary; create and prediction still

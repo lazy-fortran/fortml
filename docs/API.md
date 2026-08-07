@@ -1024,6 +1024,14 @@ linear products with respect to both packed parameters and input rows.
 models, nonfinite data, malformed packs, and shape mismatches return status
 errors.
 
+`static_lowering_eligible()` reports whether the fitted feature pipeline is
+made only of statically lowerable basis maps. This is a transform capability
+indicator, not an end-to-end GPU guarantee: the current basis-linear estimator
+has no resident CUDA solve or prediction kernel, and callers must keep the
+host path (or receive a typed device refusal) until one is linked. Callback
+maps therefore make the result false instead of introducing a hidden host
+callback in an accelerator path.
+
 ### `fortml_validation`
 
 `kfold_splitter_t` and `stratified_kfold_splitter_t` are index-only, seeded

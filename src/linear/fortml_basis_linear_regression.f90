@@ -33,6 +33,8 @@ module fortml_basis_linear_regression
         procedure, public :: parameter_count => basis_linear_parameter_count
         procedure, public :: parameters => basis_linear_parameters
         procedure, public :: set_parameters => basis_linear_set_parameters
+        procedure, public :: static_lowering_eligible => &
+            basis_linear_static_lowering_eligible
         procedure, public :: is_fitted => basis_linear_is_fitted
     end type basis_linear_regression_t
 
@@ -256,5 +258,18 @@ contains
         class(basis_linear_regression_t), intent(in) :: self
         fitted = self%fitted .and. allocated(self%regressor%coef)
     end function basis_linear_is_fitted
+
+    logical function basis_linear_static_lowering_eligible(self) result(eligible)
+        !! Report whether the fitted feature transform is statically lowerable.
+        !!
+        !! This is deliberately a transform capability, not an end-to-end GPU
+        !! claim: the dense regression solve and prediction still execute on
+        !! the host until a resident linear-regression kernel is linked.  A
+        !! callback stage therefore makes the result false rather than hiding a
+        !! host callback behind an accelerator dispatch.
+        class(basis_linear_regression_t), intent(in) :: self
+
+        eligible = self%fitted .and. self%pipeline%static_lowering_eligible()
+    end function basis_linear_static_lowering_eligible
 
 end module fortml_basis_linear_regression
