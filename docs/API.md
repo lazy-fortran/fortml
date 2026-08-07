@@ -62,6 +62,7 @@ not supplied through a hidden generic interface.
 | `glm_regression_t` | Weighted positive-response Poisson/Gamma log-link `predict` | Packed-parameter and continuous-input JVP | Packed-parameter and continuous-input VJP; value/gradient objective | No |
 | `pca_t` | Centered projection and reconstruction | Input JVP for a fixed fitted state | Input VJP for a fixed fitted state | Fit-time SVD derivatives are not exposed |
 | `logistic_regression_t` | Decision score and probabilities | Parameter/input JVP, probability JVP | Parameter/input VJP, probability VJP | No |
+| `linear_svm_classifier_t` | Signed decision score and labels | Parameter/input JVP away from fit-time boundaries | Parameter/input VJP; hinge objective value/gradient | No |
 | `softmax_regression_t` | Multiclass decision scores and probabilities | Parameter/input JVP, probability JVP | Parameter/input VJP, probability VJP | No |
 | `gaussian_naive_bayes_t` | Log probabilities and probabilities | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
 | `bernoulli_naive_bayes_t` | Log probabilities and probabilities | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
@@ -263,6 +264,46 @@ stable probability products. Tangent and cotangent arrays must be finite and
 shape-compatible. Unfitted models, malformed packs, and nonfinite inputs are
 refused. There is intentionally no HVP until a second-order classifier
 contract is added.
+
+### `fortml_linear_svm_classifier`
+
+`linear_svm_classifier_t%fit(x,labels,status[,l2,fit_intercept,loss,
+max_iterations,tolerance,sample_weight])` fits a weighted dense primal linear
+support-vector classifier through FortOpt L-BFGS-B. Labels may be any two
+distinct integers; `classes()` stores them in ascending order and encodes them
+as `-1` and `+1` for the margin objective. The default
+`SVM_LOSS_SQUARED_HINGE` objective is the weighted mean of
+`max(0,1-y*score)**2` plus feature-only L2 regularization. The ordinary
+`SVM_LOSS_HINGE` loss is also available. Intercepts are not regularized.
+
+`decision_function(x,scores,status)` returns the signed affine margin and
+`predict(x,labels,status)` maps nonnegative scores to the second stored class
+(the deterministic zero-margin tie rule). `coefficients()`, `intercept()`,
+`regularization()`, `loss()`, `fit_intercept()`, `classes()`,
+`feature_count()`, `parameter_count()`, `parameters()`, `set_parameters()`,
+and `fitted()` expose the packed model state. The packed order is feature
+coefficients followed by the intercept when enabled.
+
+`decision_function_jvp(x,theta_dot,x_dot,scores,scores_dot,status)` and
+`decision_function_vjp(x,scores_bar,theta_bar,x_bar,status)` (also available
+as `jvp` and `vjp`) are exact products of the fixed fitted affine map. They
+differentiate continuously with respect to both packed parameters and
+continuous input rows; the discrete fit, label encoding, and hard prediction
+are not differentiated. `objective_value_gradient(x,labels,theta,value,
+gradient,status[,l2,fit_intercept,loss,sample_weight,l2_gradient])` exposes the
+weighted hinge objective and feature-L2 gradient for FortOpt search. It returns
+the exact `l2_gradient = 0.5*||theta_features||**2` when requested. An exact
+ordinary-hinge margin (`y*score == 1`) is a split derivative and returns
+`FORTNUM_NOT_IMPLEMENTED`; squared hinge has a continuous first derivative but
+its second derivative changes at that boundary. Nonfinite data, malformed
+weights, unsupported losses, and non-binary labels return a domain status.
+
+`device_supported(FORTML_DEVICE_CPU)` is true for a fitted model.
+`decision_function_device(device,x,scores,status)` and
+`predict_device(device,x,labels,status)` dispatch the score and hard-label
+surfaces separately. CUDA requests are intentionally typed
+`FORTNUM_NOT_IMPLEMENTED` until a resident linear-SVM kernel is linked; no
+host fallback is performed.
 
 ### `fortml_logistic_training`
 
