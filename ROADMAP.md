@@ -127,11 +127,13 @@ only listed as gaps:
   with one log length scale per input feature. Scalar, matrix, input-derivative,
   parameter-product, and exact-GP likelihood paths share the same packed
   parameter contract. The independent kernel/GP oracle is
-  `test_gp_ard_kernel`; resident CUDA remains a typed refusal.
+  `test_gp_ard_kernel`; resident CUDA remains a typed refusal. The release
+  evidence is `results/GP_ARD.md` in `fortml-bench`.
 - XGBoost models now have versioned `FORTML_XGBOOST_TEXT` save/load with strict
   schema, finite-value, topology, EOF, and unknown-record validation. Round-trip
   prediction, staged margins, missing routing, and validation diagnostics are
   covered by `test_xgboost_serialization`; distributed model state remains open.
+  The release evidence is `results/XGBOOST_SERIALIZATION.md` in `fortml-bench`.
 
 The FortBO and FortMC companion pins were rechecked against their `main`
 branches on this date: FortBO `0141e22` and FortMC `4dde0cc`. Their roadmaps
