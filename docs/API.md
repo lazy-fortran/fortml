@@ -391,6 +391,12 @@ one-based integer class label per row and a mean reduction over rows. Both loss
 families expose JVP and VJP procedures, reject nonfinite inputs, and evaluate
 the value with a shifted log-sum-exp or softplus expression. These routines are
 the shared objective layer for neural, multiclass, GP, and boosting adapters.
+`huber_loss_value`/`huber_loss_jvp`/`huber_loss_vjp` add a mean robust
+regression loss with a positive finite transition `delta`; its first derivative
+is continuous at the transition. `quantile_loss_value` and its products
+implement mean pinball loss for `0 < quantile < 1`; JVP/VJP calls refuse a zero
+residual because that loss is nondifferentiable there. Both families treat
+targets as constants and differentiate predictions only.
 
 ### `fortml_softmax_regression`
 
@@ -919,6 +925,9 @@ IEEE NaNs while infinities remain domain errors. The learned branch is used
 consistently by prediction and JVP; a NaN query has zero local input JVP, while
 a finite query exactly on a split still returns the structured boundary
 refusal. `missing_policy()` and `accepts_missing()` report the fitted policy.
+`predict_vjp(x,output_bar,x_bar,status)` is the matching reverse product: it
+returns a zero feature cotangent away from split boundaries and refuses the
+same discontinuities, nonfinite cotangents, and malformed shapes.
 
 `predict_staged` returns cumulative predictions after every fitted tree. For
 regression, `predict_staged_margin` returns the same cumulative margins; for
@@ -940,6 +949,9 @@ finite-input scope unless its options select `missing_policy="learn"`,
 `"left"`, or `"right"`; the selected default branch is retained independently
 in every one-vs-rest tree and is used for NaN prediction. Infinities and an
 invalid policy are always refused.
+`predict_proba_vjp` applies the corresponding reverse product and propagates
+the same split-boundary refusal; the fitted tree structure and OVR
+normalization are held fixed.
 
 `predict_proba_staged` and `decision_function_staged` expose the normalized
 one-vs-rest probabilities and summed margins after each boosting stage.
