@@ -301,6 +301,21 @@ hvp(x, output_bar, dtheta, dx, theta_hvp, x_hvp, status)
 
 `backprop` is an alias for `vjp`. ReLU uses derivative zero at the kink.
 
+### `fortml_hamiltonian_mlp`
+
+`hamiltonian_mlp_t%initialize(n_coordinates,potential_layers,kinetic_layers,
+status[,hidden_activation,initialization_seed])` builds a separable Hamiltonian
+`H(q,p)=V(q)+T(p)` from two scalar MLPs. `energy` and `energy_gradient` expose
+the scalar energy and canonical gradient, while `vector_field` returns
+`(dH/dp,-dH/dq)` in the row-oriented state layout `[q,p]`. Packed parameters
+place the potential network before the kinetic network. `energy_jvp` and
+`energy_vjp` differentiate with respect to both state and packed parameters.
+`vector_field_jvp` supplies the corresponding mixed product. `leapfrog` is an
+explicit velocity-Verlet split map and is symplectic for the separable model.
+The implementation refuses nonfinite states, malformed layer shapes, and
+nonfinite directions. General nonseparable Hamiltonians, learned Poisson
+structures, and implicit integrators remain separate research contracts.
+
 ### `fortml_mlp_training`
 
 `mlp_train(model,x,target,status,options,state[,validation_x,validation_target])`
@@ -410,8 +425,20 @@ threshold order, and strict-improvement ties are fixed. `max_depth` defaults to
 weights, prediction inputs, and JVP tangents. `predict` traverses the fitted
 tree, while `predict_jvp` returns zero within leaves and refuses a query on a
 split boundary. `node_count`, `depth`, `input_count`, and `is_initialized`
-expose structural diagnostics. Missing-value routing, classification criteria,
-histogram growth, and differentiable split selection remain unsupported.
+expose structural diagnostics. Missing-value routing, histogram growth, and
+differentiable split selection remain unsupported for this regression tree.
+
+`cart_classifier_t%fit(x,labels,status[,max_depth,min_samples_leaf,
+sample_weight,criterion])` builds a deterministic numeric classification tree.
+`criterion` is `CART_CRITERION_GINI` (the default) or
+`CART_CRITERION_ENTROPY`. Each node searches weighted impurity over ascending
+feature and threshold order, accepts only strict improvements, and stores
+weighted class frequencies. `predict_proba` returns the leaf probabilities and
+`predict` maps their first maximum back to sorted integer `classes`. The dense
+fit and query paths reject nonfinite values. Positive finite sample weights,
+depth up to 12, and count-based `min_samples_leaf` are supported. Missing-value
+routing, input derivatives, histogram growth, and differentiable split
+selection remain unsupported.
 
 ### `fortml_xgboost`
 
@@ -650,8 +677,14 @@ order is the kernel log parameters followed by log observation-noise variance.
 `predict_jvp(x,components,direction,mean,mean_dot,variance,variance_dot,status)`
 returns the prediction and its parameter JVP. `predict_vjp(x,components,
 mean_bar,variance_bar,parameter_bar,status)` is the corresponding reverse
-product over packed kernel/noise parameters. Query inputs are held fixed by
-these products. Input-query JVP/VJP and joint posterior covariance remain open.
+product over packed kernel/noise parameters. `predict_input_jvp(x,components,
+direction,mean,mean_dot,variance,variance_dot,status)` and
+`predict_input_vjp(x,components,mean_bar,variance_bar,x_bar,status)` provide
+query-input products while holding model parameters and training inputs fixed.
+The query products use a deterministic central finite difference of the
+existing covariance contract because derivative-observation queries can need
+third-order mixed input derivatives. An analytic third-order kernel contract
+remains open. Joint posterior covariance remains open.
 `log_marginal_likelihood`, `log_marginal_likelihood_jvp`,
 `hyperparameter_gradient`, and `hyperparameter_hvp` provide likelihood
 products. The gradient uses analytic parameter tangents of the supported RBF,

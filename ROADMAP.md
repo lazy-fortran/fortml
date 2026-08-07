@@ -9,14 +9,15 @@ and implementation limits in [`docs/DESIGN.md`](docs/DESIGN.md) and
 
 | Compiler | Command | Result |
 | --- | --- | --- |
-| GNU Fortran | `fo` | Static and lint checks passed. The checked-in snapshot has 30 of 30 tests. The fresh 2026-08-07 run passed all 49 tests. See [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
-| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed. Build and 30 of 30 tests passed. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
+| GNU Fortran | `fo` | Static, build, and lint checks passed. The fresh 2026-08-07 run passed all 55 tests. See [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
+| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded compiler lane. The checked-in NVIDIA log predates the latest 55-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
-The checked-in compiler logs above are the 2026-08-06 30-test verification
-snapshot. A fresh GNU Fortran `fo` run on 2026-08-07 passed static analysis,
-the build, all 49 tests, and lint in 3.3 seconds. The fresh run includes
-implementation work whose compiler logs have not yet replaced that snapshot.
+The checked-in compiler logs above are older compiler snapshots. A fresh GNU
+Fortran `fo` run on 2026-08-07 passed static analysis, the build, all 55 tests,
+and lint. The fresh run includes implementation work whose compiler logs have
+not yet replaced those snapshots. NVIDIA compiler coverage therefore remains
+an explicit older-build result.
 
 Behavioral oracles include dense or analytic references, finite differences,
 adjoint identities, convergence checks, and seeded known-answer cases.
@@ -99,9 +100,9 @@ documentation, refusal behavior, and benchmark evidence are all present.
 | Linear regression and generalized linear models | Linear regression is implemented. Logistic and softmax support sample and positive sorted-class weights | OLS, weighted/ridge/lasso/elastic-net, robust, quantile, Poisson/Gamma/Tweedie, multinomial, calibrated and regularized classifiers with shared solver and derivative contracts |
 | Feature transforms and basis maps | Polynomial, Fourier, radial, B-spline, callback bases, standard/min-max scalers, and horizontal/sequential basis pipelines are implemented | Sparse/categorical features, feature names, DAG pipelines, leakage-safe cross-validation, differentiable basis hyperparameters |
 | Nearest-neighbor and margin methods | Missing | kNN/KD-tree or ball-tree search, kernel/radius neighbors, linear/kernel SVM and SVR, calibrated probabilities, deterministic tie and missing-value policies |
-| Trees and ensembles | Partial | Deterministic finite-only exhaustive-split regression stumps, squared-loss stump boosting, and exact depth-one second-order squared/logistic boosting are implemented. CART, forests, histograms, deeper XGBoost/LightGBM growth, ranking, monotonic and interaction constraints remain planned |
+| Trees and ensembles | Partial | Deterministic finite-only regression stumps, weighted depth-limited CART regression and classification, squared-loss stump boosting, and exact depth-one second-order squared/logistic boosting are implemented. Forests, histograms, deeper XGBoost/LightGBM growth, ranking, monotonic and interaction constraints remain planned |
 | Clustering and unsupervised learning | Missing | k-means/minibatch k-means, Gaussian mixtures/EM, density and graph clustering, manifold methods, outlier detection, decomposition, matrix factorization, and density metrics |
-| Neural networks | MLP/BNN/VAE/RNN primitives, selected products, and a deterministic MLP Adam trainer exist | A production module/parameter tree, all common activations and losses, convolution/attention/sequence/graph extensions, mixed precision, distributed training, compile/fusion, and resumable trainers |
+| Neural networks | MLP/BNN/VAE/RNN primitives, a separable Hamiltonian MLP, selected products, and a deterministic MLP Adam trainer exist | A production module/parameter tree, all common activations and losses, convolution/attention/sequence/graph extensions, mixed precision, distributed training, compile/fusion, and resumable trainers |
 | Gaussian processes | Exact, derivative, sparse, structured and local variants are partial-to-implemented. Exact fitted GPs have a bounded FortOpt L-BFGS-B adapter, and binary plus one-vs-rest multiclass Laplace logistic/probit GP classification is implemented | GPyTorch/GPflow-style kernels, likelihoods, multitask/batch shapes, exact/variational/lazy inference, derivative operators, constraints, calibration, multiclass GP classification, and trainable hyperparameters |
 | Derivatives | Exact GP and selected neural/kernel products exist | Value/JVP/VJP/HVP and implicit/hypergradients for every declared parameter/input path, including preprocessing, likelihood, optimizer/search variables, and device kernels |
 | Model selection and metrics | Benchmark-specific checks exist | Shared metrics, splitters, cross-validation, calibration, grid/random/Bayesian/differentiable search, nested validation, and leakage/refusal checks |
@@ -255,9 +256,9 @@ The source inventory is dated 2026-08-07.
 
 | Work package | State | Implemented baseline | Package exit |
 | --- | --- | --- | --- |
-| Classification | Partial | `fortml_logistic_regression` and `fortml_softmax_regression` provide binary and multinomial integer-label fitting with sample-weighted reductions, `fortml_mlp_classifier` adds deterministic multiclass logits training with Adam, `fortml_gp_classification` adds binary Laplace logistic/probit inference, `fortml_gp_multiclass_classification` adds one-vs-rest multiclass GP probabilities, and shared metrics cover accuracy, top-k, balanced accuracy, confusion, precision/recall/F1, Brier, binary Matthews, weighted accuracy, log loss, and expected/maximum calibration error. | Binary and multiclass linear, neural, GP, and boosted-tree classifiers share label, probability, weighting, and metric conventions. |
+| Classification | Partial | `fortml_logistic_regression` and `fortml_softmax_regression` provide binary and multinomial integer-label fitting with sample-weighted reductions, `fortml_cart_classifier` adds deterministic weighted Gini/entropy trees and leaf probabilities, `fortml_mlp_classifier` adds deterministic multiclass logits training with Adam, `fortml_gp_classification` adds binary Laplace logistic/probit inference, `fortml_gp_multiclass_classification` adds one-vs-rest multiclass GP probabilities, and shared metrics cover accuracy, top-k, balanced accuracy, confusion, precision/recall/F1, Brier, binary Matthews, weighted accuracy, log loss, and expected/maximum calibration error. | Binary and multiclass linear, tree, neural, GP, and boosted-tree classifiers share label, probability, weighting, and metric conventions. |
 | Estimator contracts, pipelines, and bases | Partial | `basis_map_t`, horizontal and sequential basis pipelines, fitted standard/min-max scalers with input JVPs, row-oriented sample conventions, status objects, and the parameter registry are public. | Fitted transformers and estimators compose without data leakage, expose routed parameters, and run through cross-validation. |
-| Tree boosting | Partial | `decision_stump_t`, weighted depth-limited `cart_regressor_t`, squared-loss `gradient_boosting_regressor_t`, `xgboost_t`, and `xgboost_multiclass_t` provide deterministic exhaustive split products. The CART regression lane has weighted squared-error criteria, depth and leaf constraints, fixed feature/threshold tie ordering, and piecewise input JVP/refusal behavior. The XGBoost-style lane has exact depth-one squared/logistic gradients, Hessians, regularized gains, Newton leaves, diagnostics, binary probabilities, and one-vs-rest multiclass probabilities. | Regression and classification trees support deterministic histogram boosting, validation-based stopping, missing values, deeper growth, and model persistence. |
+| Tree boosting | Partial | `decision_stump_t`, weighted depth-limited `cart_regressor_t` and `cart_classifier_t`, squared-loss `gradient_boosting_regressor_t`, `xgboost_t`, and `xgboost_multiclass_t` provide deterministic exhaustive split products. The CART lanes have weighted squared-error or Gini/entropy criteria, depth and leaf constraints, fixed feature/threshold tie ordering, piecewise input JVP/refusal for regression, and finite-only probability/prediction paths for classification. The XGBoost-style lane has exact depth-one squared/logistic gradients, Hessians, regularized gains, Newton leaves, diagnostics, binary probabilities, and one-vs-rest multiclass probabilities. | Regression and classification trees support deterministic histogram boosting, validation-based stopping, missing values, deeper growth, and model persistence. |
 | Training infrastructure | Partial | Model-specific gradients, exact MSE+L2 neural HVPs including the L2 mixed hyperparameter block, `fortopt_adam` integration, deterministic seeded batch cursors, per-update learning-rate callbacks, norm clipping, sample-weighted gradient accumulation, natural-gradient seams, and seeded variational draws exist. | One trainer owns batches, optimizer state, schedules, clipping, validation, early stopping, callbacks, and resumable state for every model with a completed trainer adapter. |
 | GP derivatives and hyperparameters | Partial | Exact GP likelihood and prediction products include parameter gradients and HVPs. Mixed value and first-derivative observations can be fitted and predicted. | Exact, derivative, multi-output, sparse, and matrix-free GP families expose documented trainable parameters, scalar objectives, parameter gradients, and train-state adapters. |
 | GPU and device execution | Partial | Kernel, structured, and sparse operator products have selected OpenACC or CUDA paths, including resident CG for kernel operators. | Supported training and prediction workflows keep model, optimizer, and batch state resident on a selected device and have CPU parity tests. |
@@ -296,8 +297,11 @@ The source inventory is dated 2026-08-07.
   shapes.
 - [ ] Add ordinal classification and ranking losses as separate contracts.
   do not reinterpret nominal softmax probabilities as ordered outcomes.
-- [ ] Add tree and boosted-tree classifier adapters once WP3 establishes the
-  shared class, missing-value, monotonic-constraint, and probability contract.
+- [x] Add the deterministic finite-only `cart_classifier_t` adapter with
+  sorted integer classes, weighted Gini/entropy probabilities, and explicit
+  depth, leaf-size, tie, and nonfinite-input contracts.
+- [ ] Add shared tree and boosted-tree classifier adapters for missing-value,
+  monotonic-constraint, and probability-policy variants.
 - [x] Add a binary Laplace GP classifier with Bernoulli logistic and probit
   likelihoods, Newton convergence state, predictive latent moments, observed
   probabilities, and input JVPs over the supported kernel derivative contract.
@@ -429,9 +433,11 @@ hyperparameter block. A deliberate train/validation leakage fixture must fail.
   squared-error splits, `max_depth` and `min_samples_leaf` constraints, fixed
   feature/threshold tie ordering, finite-only/refusal behavior, and independent
   prediction/JVP oracles.
-- [ ] Add deterministic CART classification with weighted Gini and entropy
-  criteria, class probabilities, depth and leaf constraints, and the same tie
-  rule.
+- [x] Add deterministic CART classification with weighted Gini and entropy
+  criteria, sorted integer classes, class probabilities, finite-only/refusal
+  behavior, depth and leaf constraints, and the same feature/threshold tie
+  rule. Independent pure-leaf, weighted-frequency, criterion, tie-order, and
+  refusal oracles cover the public `fortml_cart_classifier` contract.
 - [ ] Add weighted quantile binning and per-feature histograms. Store missing
   values in a dedicated bin and learn a default branch at every split.
 - [ ] Add gradient-boosted regression for squared, absolute, and Huber losses.
@@ -717,8 +723,12 @@ state phases are reported separately.
   noise parameters for each observation type.
 - [x] Add parameter JVP and VJP products for derivative-observation GP
   prediction means and variances, with independent dense finite-difference and
-  reverse-product oracles over value/first-derivative query components. Query
-  input products and joint posterior covariance remain open.
+  reverse-product oracles over value/first-derivative query components.
+- [x] Add deterministic finite-difference query-input JVP and VJP products for
+  derivative-observation GP means and variances, with independent directional
+  and adjoint finite-difference oracles. The products hold parameters and
+  training inputs fixed. An analytic third-order kernel contract and joint
+  posterior covariance remain open.
 - [ ] Add joint posterior covariance for value and derivative queries, plus
   cross-covariances between requested components.
 - [ ] Extend derivative observations to second derivatives only for kernels with
@@ -888,10 +898,11 @@ peak memory, and batch-size scaling with the same correctness gate as training.
   matched multinomial/neural classifier lane in `../fortml-bench`.
 - [x] Record release timings, peak RSS, build provenance, external Python
   comparisons, raw CSV files, and plots through `../fortml-bench`.
-- [x] Add the MLP-training, basis-pipeline, decision-stump, and residual-stump
-  boosting lane with independent NumPy oracles, contextual scikit-learn rows,
-  and explicit PyTorch/JAX/XGBoost availability or refusal rows. The release
-  record is [`results/FEATURES.md`](../fortml-bench/results/FEATURES.md).
+- [x] Add the MLP-training, basis-pipeline, decision-stump, depth-limited CART
+  regression, core regression-metrics, and residual-stump boosting lanes with
+  independent NumPy oracles, contextual scikit-learn rows, and explicit
+  PyTorch/JAX/XGBoost availability or refusal rows. The release record is
+  [`results/FEATURES.md`](../fortml-bench/results/FEATURES.md).
 - [x] Add the exact depth-one XGBoost-style squared/logistic lane and the
   fitted-scaler plus binary and one-vs-rest multiclass Laplace GP
   logistic/probit lanes with independent NumPy oracles. The release records are
@@ -955,11 +966,21 @@ The literature establishes several complementary directions:
   [PIML review](https://arxiv.org/abs/2201.05624) surveys physics-guided,
   physics-informed, and physics-encoded architectures and the different ways
   equations and domain knowledge enter a model.
-- [Physics consistency of infinite neural networks](https://ml4physicalsciences.github.io/2023/files/NeurIPS_ML4PS_2023_9.pdf)
+- [A connection between probability, physics and neural networks](https://arxiv.org/abs/2209.12737)
   by Sascha Ranftl connects kernels satisfying linear differential constraints
   to the infinite-width neural-network limit. Its finite-width construction is
   an approximation to the limiting GP, so FortML will test seeded ensembles
   against that covariance instead of claiming an exact initializer.
+- [Symplectic Gaussian Process Regression of Hamiltonian Flow Maps](https://arxiv.org/abs/2009.05569)
+  by Katharina Rath, Christopher Albert, Bernd Bischl, and Udo von Toussaint
+  provides the project-specific symplectic-GP reference. Product and sum
+  kernels correspond to implicit and explicit symplectic-Euler constructions,
+  which gives FortML a concrete covariance and long-horizon oracle.
+- [Boundary constrained Gaussian processes for robust physics-informed machine learning](https://www.jmlr.org/papers/v25/23-1508.html)
+  provides exact Dirichlet, Neumann, Robin, and mixed boundary-condition GP
+  priors for linear PDEs. [Physics-informed Kernel Learning](https://www.jmlr.org/papers/v26/24-1536.html)
+  gives a recent Fourier-approximated kernel-regression alternative to a PINN.
+  Both are candidates for a native operator-kernel lane.
 - A forthcoming TU Graz DocDay abstract by Johanna Moser describes the
   [Ghosttasking and Monge-GP direction](https://www.tugraz.at/sites/dsp/docdays/past-docdays/september-2026)
   for physics-informed GPs for linear differential equations, including
@@ -973,6 +994,16 @@ The literature establishes several complementary directions:
   provide complementary structure-preserving architectures.
 - [Direct Poisson neural networks](https://arxiv.org/abs/2305.05540) extend the
   target beyond nondegenerate canonical symplectic systems to Poisson systems.
+- [Deep Neural Networks as Gaussian Processes](https://arxiv.org/abs/1711.00165)
+  and the [Neural Tangent Kernel](https://arxiv.org/abs/1806.07572) separate
+  prior-function covariance from the linearized training kernel. They motivate
+  distinct NNGP and NTK initializers and benchmarks rather than treating a
+  finite MLP as exactly equivalent to one GP.
+- [Neural networks and principal component analysis](https://doi.org/10.1016/0893-6080(89)90014-2)
+  proves the linear autoencoder/PCA optimum and its saddle structure. FortML's
+  PCA initializer should therefore be a deterministic linear optimum with
+  explicit centering, rank, whitening, and sign conventions, not a random
+  pretraining shortcut.
 
 The project-specific symplectic-GP and Hamiltonian/ANN benchmark results from
 the FortML authors and Katharina Rath are a required pinned reference set. The
@@ -1007,8 +1038,14 @@ refresh both checkouts before deciding that a product is unavailable.
 
 #### WP9b: Hamiltonian, Lagrangian, and symplectic networks
 
-- [ ] Add `hamiltonian_mlp_t` with scalar H(q,p), canonical J, symplectic
-  gradient, optional learned skew structure matrix, and parameter/input
+- [x] Add the separable `hamiltonian_mlp_t` prototype with scalar `V(q)` and
+  `T(p)` MLPs, packed energy/state JVP and VJP products, canonical vector-field
+  products, and an explicit leapfrog map. Independent finite-difference,
+  adjoint, reversibility, and symplectic-form oracles cover the contract.
+  General nonseparable Hamiltonians, learned Poisson structures, and implicit
+  integrators remain open.
+- [ ] Extend the Hamiltonian MLP to a general nonseparable scalar H(q,p),
+  canonical J, optional learned skew structure matrix, and parameter/input
   products. Promote that matrix to a Poisson structure only after skew
   symmetry and the Jacobi identity have independent tests.
 - [ ] Add `lagrangian_mlp_t` with Euler-Lagrange residuals, mass-matrix checks,

@@ -17,6 +17,7 @@ program test_derivative_gp_products
     call test_matern_parameter_products(failures)
     call test_product_parameter_products(failures)
     call test_prediction_products(failures)
+    call test_query_input_products(failures)
     call test_parameter_guards(failures)
     if (failures /= 0) then
         write (error_unit, '(i0,a)') failures, &
@@ -255,6 +256,81 @@ contains
         end if
     end subroutine test_prediction_products
 
+    subroutine test_query_input_products(failures)
+        integer, intent(inout) :: failures
+        type(gp_derivative_regression_t) :: model
+        type(kernel_t) :: kernel
+        type(fortnum_status_t) :: status
+        real(dp) :: x(3, 1), y(3, 1), x_test(2, 1), direction(2, 1)
+        real(dp) :: mean(2, 1), mean_dot(2, 1), variance(2), variance_dot(2)
+        real(dp) :: mean_plus(2, 1), mean_minus(2, 1), variance_plus(2), variance_minus(2)
+        real(dp) :: mean_bar(2, 1), variance_bar(2), x_bar(2, 1), fd_bar(2, 1)
+        real(dp) :: objective_plus, objective_minus, adjoint_left, adjoint_right, h
+        integer :: components(3), test_components(2), i
+
+        x(:, 1) = [0.0_dp, 0.45_dp, 1.05_dp]
+        y(:, 1) = [1.2_dp, -0.3_dp, 0.8_dp]
+        components = [0, 1, 0]
+        x_test(:, 1) = [0.25_dp, 0.8_dp]
+        test_components = [1, 0]
+        direction(:, 1) = [0.07_dp, -0.11_dp]
+        kernel = make_rbf_kernel(1, 1.4_dp, 0.75_dp, status)
+        call model%fit(x, components, y, kernel, 0.07_dp, status, jitter=1.0e-10_dp)
+        if (.not. status_ok(status)) then
+            write (error_unit, '(a)') "FAIL [derivative GP query products] fit"
+            failures = failures + 1
+            return
+        end if
+
+        call model%predict_input_jvp(x_test, test_components, direction, mean, mean_dot, &
+            variance, variance_dot, status)
+        h = 2.0e-6_dp
+        call oracle_predict(model%parameters(), x, components, y, x_test + h*direction, &
+            test_components, 0.07_dp, 1.0e-10_dp, mean_plus, variance_plus)
+        call oracle_predict(model%parameters(), x, components, y, x_test - h*direction, &
+            test_components, 0.07_dp, 1.0e-10_dp, mean_minus, variance_minus)
+        if (.not. status_ok(status) .or. maxval(abs(mean_dot - (mean_plus - mean_minus)/ &
+            (2.0_dp*h))) > 3.0e-6_dp .or. maxval(abs(variance_dot - &
+            (variance_plus - variance_minus)/(2.0_dp*h))) > 3.0e-6_dp) then
+            write (error_unit, '(a,2es12.4)') &
+                "FAIL [derivative GP query_input_jvp] finite difference ", &
+                maxval(abs(mean_dot - (mean_plus - mean_minus)/(2.0_dp*h))), &
+                maxval(abs(variance_dot - (variance_plus - variance_minus)/(2.0_dp*h)))
+            failures = failures + 1
+        end if
+
+        mean_bar(:, 1) = [0.35_dp, -0.2_dp]
+        variance_bar = [0.25_dp, -0.15_dp]
+        call model%predict_input_vjp(x_test, test_components, mean_bar, variance_bar, &
+            x_bar, status)
+        do i = 1, size(x_test, 1)
+            fd_bar(i, 1) = 0.0_dp
+            call oracle_predict(model%parameters(), x, components, y, &
+                x_test + h*unit_matrix_column(2, 1, i), test_components, 0.07_dp, &
+                1.0e-10_dp, mean_plus, variance_plus)
+            objective_plus = sum(mean_bar*mean_plus) + sum(variance_bar*variance_plus)
+            call oracle_predict(model%parameters(), x, components, y, &
+                x_test - h*unit_matrix_column(2, 1, i), test_components, 0.07_dp, &
+                1.0e-10_dp, mean_minus, variance_minus)
+            objective_minus = sum(mean_bar*mean_minus) + sum(variance_bar*variance_minus)
+            fd_bar(i, 1) = (objective_plus - objective_minus)/(2.0_dp*h)
+        end do
+        if (.not. status_ok(status) .or. maxval(abs(x_bar - fd_bar)) > 5.0e-6_dp) then
+            write (error_unit, '(a,es12.4)') &
+                "FAIL [derivative GP query_input_vjp] finite difference ", &
+                maxval(abs(x_bar - fd_bar))
+            failures = failures + 1
+        end if
+        adjoint_left = sum(mean_bar*mean_dot) + sum(variance_bar*variance_dot)
+        adjoint_right = sum(x_bar*direction)
+        if (.not. status_ok(status) .or. abs(adjoint_left - adjoint_right) > 2.0e-7_dp) then
+            write (error_unit, '(a,es12.4)') &
+                "FAIL [derivative GP query products] adjoint identity ", &
+                abs(adjoint_left - adjoint_right)
+            failures = failures + 1
+        end if
+    end subroutine test_query_input_products
+
     subroutine test_parameter_guards(failures)
         integer, intent(inout) :: failures
         type(gp_derivative_regression_t) :: model
@@ -464,5 +540,13 @@ contains
         vector = 0.0_dp
         vector(position) = 1.0_dp
     end function unit_vector
+
+    function unit_matrix_column(n, m, position) result(matrix)
+        integer, intent(in) :: n, m, position
+        real(dp) :: matrix(n, m)
+
+        matrix = 0.0_dp
+        matrix(position, 1) = 1.0_dp
+    end function unit_matrix_column
 
 end program test_derivative_gp_products
