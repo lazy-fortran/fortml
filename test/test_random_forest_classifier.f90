@@ -12,8 +12,9 @@ program test_random_forest_classifier
     type(fortnum_status_t) :: status
     type(fortml_device_t) :: cuda
     real(real64) :: x(12, 2), query(3, 2), probabilities(3, 3), &
-        repeat_probabilities(3, 3), other_probabilities(3, 3)
-    integer :: labels(12), predictions(3), failures
+        repeat_probabilities(3, 3), other_probabilities(3, 3), &
+        cuda_probabilities(3, 3)
+    integer :: labels(12), predictions(3), cuda_predictions(3), failures
 
     x = reshape([ &
         -3.0_real64, -2.8_real64, -3.2_real64, -2.9_real64, &
@@ -70,12 +71,20 @@ program test_random_forest_classifier
     cuda%kind = FORTML_DEVICE_CUDA
     cuda%selected = .true.
     cuda%available = .true.
-    call model%predict_proba_device(cuda, query, probabilities, status)
+    cuda_probabilities = -37.0_real64
+    cuda_predictions = -91
+    call model%predict_proba_device(cuda, query, cuda_probabilities, status)
     call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
         "CUDA probability refusal", failures)
-    call model%predict_device(cuda, query, predictions, status)
+    call check(all(cuda_probabilities == -37.0_real64) .and. &
+        .not. cuda%resident .and. cuda%host_to_device_transfers == 0 .and. &
+        cuda%device_to_host_transfers == 0, &
+        "CUDA probability refusal has no hidden host fallback", failures)
+    call model%predict_device(cuda, query, cuda_predictions, status)
     call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
         "CUDA label refusal", failures)
+    call check(all(cuda_predictions == -91), &
+        "CUDA label refusal preserves the output buffer", failures)
     call check(.not. model%device_supported(FORTML_DEVICE_CUDA), &
         "CUDA capability refusal", failures)
 
