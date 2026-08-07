@@ -476,9 +476,12 @@ contains
                     if (.not. best%valid .or. better_split(candidate, best)) then
                         call clear_split(best)
                         best = candidate
+                        call clear_split(candidate)
                     else
                         call clear_split(candidate)
                     end if
+                else
+                    call clear_split(candidate)
                 end if
             end do
             if (.not. best%valid) exit
