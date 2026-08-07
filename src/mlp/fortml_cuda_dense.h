@@ -2,12 +2,12 @@
 #define FORTML_CUDA_DENSE_H
 
 /*
- * Resident, prediction-only CUDA dense-affine ABI.
+ * Resident, no-autodiff CUDA dense-affine ABI.
  *
- * This is deliberately a no-autodiff inference primitive.  The plan owns the
- * weight and bias arrays on one selected device.  Creation and every
- * prediction call are explicit host/device transfer boundaries; there is no
- * host fallback.  All indices use zero-based C conventions.
+ * This is deliberately a no-autodiff affine value/derivative primitive.  The
+ * plan owns the weight and bias arrays on one selected device.  Creation and
+ * every value or product call are explicit host/device transfer boundaries;
+ * there is no host fallback.  All indices use zero-based C conventions.
  *
  * `weights` is output-major (output*n_inputs + input), `query_x` is
  * feature-major (input*n_query + query), and `outputs` is output-major
