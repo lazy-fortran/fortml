@@ -15,6 +15,7 @@ program test_xgboost_multiclass
     call test_probability_and_labels(failures)
     call test_staged_and_importance(failures)
     call test_probability_jvp(failures)
+    call test_probability_vjp(failures)
     call test_missing_value_routing(failures)
     call test_refusals(failures)
     if (failures > 0) then
@@ -190,6 +191,49 @@ contains
         call check(maxval(abs(sum(probabilities_dot, dim=2))) < 3.0e-10_dp, &
             "probability JVP preserves normalization", failures)
     end subroutine test_probability_jvp
+
+    subroutine test_probability_vjp(failures)
+        integer, intent(inout) :: failures
+        type(xgboost_multiclass_t) :: model
+        type(xgboost_options_t) :: options
+        type(fortnum_status_t) :: status
+        real(dp) :: x(9, 1), query(3, 1), query_dot(3, 1)
+        real(dp) :: probabilities(3, 3), probabilities_dot(3, 3)
+        real(dp) :: probabilities_bar(3, 3), x_bar(3, 1)
+        real(dp) :: boundary(1, 1), boundary_bar(1, 3), boundary_x_bar(1, 1)
+        real(dp), parameter :: candidate(8) = [-3.5_dp, -2.5_dp, -1.5_dp, -0.5_dp, &
+            0.5_dp, 1.5_dp, 2.5_dp, 3.5_dp]
+        logical :: refused
+        integer :: labels(9), k
+
+        x(:, 1) = [-4.0_dp, -3.0_dp, -2.0_dp, -1.0_dp, 0.0_dp, 1.0_dp, &
+            2.0_dp, 3.0_dp, 4.0_dp]
+        labels = [-8, -8, -8, 2, 2, 2, 11, 11, 11]
+        query(:, 1) = [-2.3_dp, 0.1_dp, 2.4_dp]
+        query_dot(:, 1) = [0.17_dp, -0.13_dp, 0.23_dp]
+        options%n_estimators = 4
+        options%learning_rate = 0.4_dp
+        options%l2 = 1.0_dp
+        options%min_child_weight = 0.0_dp
+        call model%fit(x, labels, status, options)
+        probabilities_bar = reshape([0.2_dp, -0.3_dp, 0.4_dp, -0.1_dp, &
+            0.5_dp, -0.6_dp, 0.7_dp, -0.8_dp, 0.9_dp], shape(probabilities_bar))
+        call model%predict_proba_jvp(query, query_dot, probabilities, &
+            probabilities_dot, status)
+        call model%predict_proba_vjp(query, probabilities_bar, x_bar, status)
+        call check(status_ok(status) .and. maxval(abs(probabilities_dot)) < 1.0e-14_dp .and. &
+            maxval(abs(x_bar)) < 1.0e-14_dp .and. &
+            abs(sum(probabilities_bar*probabilities_dot) - sum(x_bar*query_dot)) < &
+            1.0e-14_dp, "piecewise probability VJP dot-product oracle", failures)
+        boundary_bar = 1.0_dp
+        refused = .false.
+        do k = 1, size(candidate)
+            boundary(1, 1) = candidate(k)
+            call model%predict_proba_vjp(boundary, boundary_bar, boundary_x_bar, status)
+            if (.not. status_ok(status)) refused = .true.
+        end do
+        call check(refused, "multiclass split-boundary VJP refusal", failures)
+    end subroutine test_probability_vjp
 
     subroutine test_refusals(failures)
         integer, intent(inout) :: failures

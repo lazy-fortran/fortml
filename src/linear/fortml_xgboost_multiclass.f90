@@ -30,6 +30,7 @@ module fortml_xgboost_multiclass
         procedure, public :: decision_function_staged => &
             xgb_multiclass_decision_function_staged
         procedure, public :: predict_proba_jvp => xgb_multiclass_predict_proba_jvp
+        procedure, public :: predict_proba_vjp => xgb_multiclass_predict_proba_vjp
         procedure, public :: decision_function => xgb_multiclass_decision_function
         procedure, public :: predict => xgb_multiclass_predict
         procedure, public :: feature_importance => &
@@ -300,6 +301,34 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine xgb_multiclass_predict_proba_jvp
+
+    !> Reverse-mode product of normalized one-vs-rest probabilities with
+    !> respect to query features.  It is zero away from tree split surfaces;
+    !> the binary estimators provide the shared boundary refusal.
+    subroutine xgb_multiclass_predict_proba_vjp(self, x, probabilities_bar, &
+            x_bar, status)
+        class(xgboost_multiclass_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), probabilities_bar(:, :)
+        real(dp), intent(out) :: x_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        integer :: i
+
+        x_bar = 0.0_dp
+        if (.not. valid_query(self, x) .or. &
+            any(shape(probabilities_bar) /= [size(x, 1), self%class_count()]) .or. &
+            any(shape(x_bar) /= shape(x)) .or. &
+            any(.not. ieee_is_finite(probabilities_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "XGBoost multiclass probability VJP: model, cotangent, or output shape is invalid")
+            return
+        end if
+        do i = 1, self%class_count()
+            call self%one_vs_rest(i)%predict_vjp(x, probabilities_bar(:, i), &
+                x_bar, status)
+            if (status%code /= FORTNUM_OK) return
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine xgb_multiclass_predict_proba_vjp
 
     subroutine xgb_multiclass_decision_function(self, x, margins, status)
         class(xgboost_multiclass_t), intent(in) :: self

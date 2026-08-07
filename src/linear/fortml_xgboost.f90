@@ -87,6 +87,7 @@ module fortml_xgboost
         procedure, public :: predict_proba_staged => xgb_predict_proba_staged
         procedure, public :: predict_proba => xgb_predict_proba
         procedure, public :: decision_function => xgb_decision_function
+        procedure, public :: predict_vjp => xgb_predict_vjp
         procedure, public :: split_gain => xgb_split_gain
         procedure, public :: leaf_weights => xgb_leaf_weights
         procedure, public :: feature_importance => xgb_feature_importance
@@ -507,6 +508,47 @@ contains
 
         call xgb_predict_margin_vector(self, x, margin, status)
     end subroutine xgb_decision_function
+
+    !> Reverse-mode product of the fitted predictor with respect to query
+    !> features.  A fitted tree is piecewise constant, so the product is zero
+    !> away from learned split surfaces.  A query exactly on any threshold is
+    !> rejected because the classical derivative is undefined there.
+    subroutine xgb_predict_vjp(self, x, output_bar, x_bar, status)
+        class(xgboost_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), output_bar(:)
+        real(dp), intent(out) :: x_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        integer :: i, j, node
+
+        x_bar = 0.0_dp
+        if (.not. self%initialized .or. size(x, 2) /= self%n_inputs .or. &
+            size(output_bar) /= size(x, 1) .or. any(shape(x_bar) /= shape(x))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost predict_vjp: model, cotangent, or output shape is invalid")
+            return
+        end if
+        if (.not. valid_query_values(self%missing_code, x) .or. &
+            any(.not. ieee_is_finite(output_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost predict_vjp: input or cotangent has unsupported values")
+            return
+        end if
+        do j = 1, self%n_estimators
+            do node = 1, self%estimators(j)%n_nodes
+                if (self%estimators(j)%leaf(node)) cycle
+                do i = 1, size(x, 1)
+                    if (.not. ieee_is_nan(x(i, self%estimators(j)%feature(node))) .and. &
+                        x(i, self%estimators(j)%feature(node)) == &
+                        self%estimators(j)%node_threshold(node)) then
+                        call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                            "xgboost predict_vjp: derivative is undefined on split")
+                        return
+                    end if
+                end do
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine xgb_predict_vjp
 
     real(dp) function xgb_split_gain(self, tree_index) result(gain)
         class(xgboost_t), intent(in) :: self

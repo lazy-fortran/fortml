@@ -302,6 +302,8 @@ contains
         type(xgboost_options_t) :: options
         type(fortnum_status_t) :: status
         real(dp) :: x(3, 1), y(3), prediction(3), probabilities(3, 2)
+        real(dp) :: output_bar(3), x_bar(3, 1), x_dot(3, 1), prediction_dot(3)
+        real(dp) :: boundary(1, 1), boundary_bar(1), boundary_x_bar(1, 1)
 
         x(:, 1) = [0.0_dp, 1.0_dp, 2.0_dp]
         y = [0.0_dp, 1.0_dp, 2.0_dp]
@@ -327,6 +329,23 @@ contains
         call model%predict(x, prediction, status)
         if (status%code /= FORTNUM_OK) then
             write (error_unit, '(a)') "FAIL [xgb refusal] valid model poisoned"
+            failures = failures + 1
+        end if
+        x_dot(:, 1) = [0.1_dp, -0.2_dp, 0.3_dp]
+        output_bar = [0.7_dp, -0.4_dp, 0.2_dp]
+        call model%predict_jvp(x, x_dot, prediction, prediction_dot, status)
+        call model%predict_vjp(x, output_bar, x_bar, status)
+        if (status%code /= FORTNUM_OK .or. maxval(abs(prediction_dot)) > 1.0e-14_dp .or. &
+            maxval(abs(x_bar)) > 1.0e-14_dp .or. &
+            abs(dot_product(output_bar, prediction_dot) - sum(x_bar*x_dot)) > 1.0e-14_dp) then
+            write (error_unit, '(a)') "FAIL [xgb derivative] piecewise VJP oracle"
+            failures = failures + 1
+        end if
+        boundary(1, 1) = 0.5_dp
+        boundary_bar(1) = 1.0_dp
+        call model%predict_vjp(boundary, boundary_bar, boundary_x_bar, status)
+        if (status%code /= FORTNUM_DOMAIN_ERROR) then
+            write (error_unit, '(a)') "FAIL [xgb derivative] split-boundary VJP refusal"
             failures = failures + 1
         end if
     end subroutine test_refusals
