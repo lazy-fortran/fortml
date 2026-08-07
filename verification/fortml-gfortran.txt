@@ -1,12 +1,14 @@
 Verification date: 2026-08-07
-FortML revision: e7b13a6dd791e76daa0d8c9a3091eef1686ec1fe
-FortAD dependency: clean origin/main d94afe2100a438ba1bb7085b0ac547d89ca26cba
-Command: fo (clean FortAD-main verification worktree under /mnt/storage)
-Static: OK (329 modules, 329 changed, 329 affected)
-First build: OK (767 units)
-Second build: OK (700 units)
-Tests: OK (152/152)
+FortML revision: e4df8c5a8db6a1bd6aa4759ad83cb23610c0c451
+FortAD dependency: origin/main b931cdc0d49a2ccada43754cafff6937d1cf9b7a
+Command: fo (clean FortML verification worktree under /mnt/storage)
+Static: OK (336 modules, 336 changed, 336 affected)
+First build: OK (771 units)
+Second build: OK (702 units)
+Tests: OK (155/155)
 Lint: OK
 Result: All stages passed
 Warnings: existing non-fatal GNU -Warray-temporaries in XGBoost benchmark
 applications and generated Matérn/RBF product applications.
+Note: the FortAD dependency checkout had unrelated uncommitted edits during
+this run; the recorded origin/main pin permits a clean replay.
