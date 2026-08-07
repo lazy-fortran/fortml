@@ -19,7 +19,7 @@ program test_gp_variational_multiclass_classification
     real(dp) :: gradient(15), direction(15), reference(15)
     real(dp) :: probabilities(6, 3), probabilities_dot(6, 3)
     real(dp) :: probabilities_plus(6, 3), probabilities_minus(6, 3)
-    real(dp), allocatable :: lambda(:), shifted(:), classes(:)
+    real(dp), allocatable :: lambda(:), shifted(:)
     integer :: labels(6), requested_classes(3), sorted_classes(3), predicted(6)
     integer :: binary_labels(6), failures, i, j
     real(dp) :: expected_sum, binary_value
