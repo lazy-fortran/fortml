@@ -9,8 +9,8 @@ and implementation limits in [`docs/DESIGN.md`](docs/DESIGN.md) and
 
 | Compiler | Command | Result |
 | --- | --- | --- |
-| GNU Fortran | `fo` | Static, build, test, and lint checks passed. The fresh 2026-08-07 run passed all 129 tests (289 modules; 750 build units). See [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
-| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded compiler lane. The checked-in NVIDIA log predates the latest 128-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
+| GNU Fortran | `fo` | Static, build, test, and lint checks passed. The fresh 2026-08-07 run passed all 130 tests (292 modules; 752 build units). See [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
+| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded compiler lane. The checked-in NVIDIA log predates the latest 130-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
 The checked-in GNU compiler log is the fresh 2026-08-07 run. It includes the
@@ -18,8 +18,10 @@ kernel-catalog, weighted LDA/QDA, robust XGBoost, neural NLL, random-forest,
 Extra-Trees, grouped MLP HVP and L-BFGS-B, basis/pipeline HVP, cosine
 derivative-GP, multilabel/ROC-AUC/PR-AUC/F-beta ranking, derivative-GP
 capability refusals, resident-MSE and dense-affine CUDA contracts, resident
-forest plan boundary, and PCA-initialized linear autoencoder slices. The build
-emits three GNU array-temporary warnings in the grouped-MLP benchmark app;
+forest plan boundary, PCA-initialized linear autoencoder, seeded exact-GP
+multistart, multilabel/ordinal neural losses, and squared-log XGBoost slices.
+The build emits four GNU array-temporary warnings in the squared-log XGBoost
+benchmark app;
 lint and all behavioral tests pass. NVIDIA compiler coverage remains an
 explicit older-build result.
 
