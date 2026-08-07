@@ -17,6 +17,7 @@ program test_derivative_gp_device
     real(dp) :: x(3, 1), y(3, 1), query(2, 1)
     real(dp) :: mean(2, 1), reference_mean(2, 1)
     real(dp) :: variance(2), reference_variance(2)
+    real(dp) :: covariance(2, 2), reference_covariance(2, 2)
     integer :: failures
 
     failures = 0
@@ -41,6 +42,12 @@ program test_derivative_gp_device
         "CUDA derivative-GP prediction refusal", failures)
     call check(all(mean == 1234.0_dp) .and. all(variance == 5678.0_dp), &
         "CUDA refusal leaves outputs untouched", failures)
+    covariance = 4321.0_dp
+    call model%joint_covariance_device(cuda, query, [1, 0], covariance, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
+        "CUDA joint covariance refusal", failures)
+    call check(all(covariance == 4321.0_dp), &
+        "CUDA joint covariance refusal leaves output untouched", failures)
 
     call cpu%select(FORTML_DEVICE_CPU, status)
     call check(status_ok(status), "CPU device selection", failures)
@@ -49,6 +56,10 @@ program test_derivative_gp_device
     call check(status_ok(status) .and. maxval(abs(mean - reference_mean)) < 2.0e-14_dp &
         .and. maxval(abs(variance - reference_variance)) < 2.0e-14_dp, &
         "CPU device dispatch matches reference prediction", failures)
+    call model%joint_covariance_device(cpu, query, [1, 0], covariance, status)
+    call model%joint_covariance(query, [1, 0], reference_covariance, status)
+    call check(status_ok(status) .and. maxval(abs(covariance - reference_covariance)) < 2.0e-14_dp, &
+        "CPU joint covariance dispatch matches reference", failures)
 
     call model%predict_device(unselected, query, [1, 0], mean, variance, status)
     call check(status%code == FORTNUM_DOMAIN_ERROR, &

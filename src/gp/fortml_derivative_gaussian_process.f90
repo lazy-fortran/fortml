@@ -31,6 +31,8 @@ module fortml_derivative_gaussian_process
         procedure, public :: fit => gp_derivative_fit
         procedure, public :: predict => gp_derivative_predict
         procedure, public :: predict_device => gp_derivative_predict_device
+        procedure, public :: joint_covariance => gp_derivative_joint_covariance
+        procedure, public :: joint_covariance_device => gp_derivative_joint_covariance_device
         procedure, public :: device_supported => gp_derivative_device_supported
         procedure, public :: predict_jvp => gp_derivative_predict_jvp
         procedure, public :: predict_vjp => gp_derivative_predict_vjp
@@ -52,6 +54,8 @@ module fortml_derivative_gaussian_process
     public :: gp_derivative_fit
     public :: gp_derivative_predict
     public :: gp_derivative_predict_device
+    public :: gp_derivative_joint_covariance
+    public :: gp_derivative_joint_covariance_device
     public :: gp_derivative_device_supported
     public :: gp_derivative_predict_jvp
     public :: gp_derivative_predict_vjp
@@ -196,6 +200,97 @@ contains
                 "derivative GP device prediction: device kind is invalid")
         end select
     end subroutine gp_derivative_predict_device
+
+    subroutine gp_derivative_joint_covariance(self, x, components, covariance, status)
+        !! Dense latent posterior covariance for an arbitrary mixed query set.
+        !! Rows in `x` and `components` are paired exactly as in `predict`; the
+        !! returned matrix is ordered by that query list and excludes
+        !! observation noise.  CPU is the reference implementation.
+        class(gp_derivative_regression_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        integer, intent(in) :: components(:)
+        real(dp), intent(out) :: covariance(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: cross(:, :), prior(:, :), work(:, :)
+        integer :: i, j
+
+        if (.not. derivative_gp_fitted(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "derivative GP joint covariance: model is not fitted")
+            return
+        end if
+        if (size(x, 1) < 1 .or. size(x, 2) /= self%n_features .or. &
+            size(components) /= size(x, 1) .or. any(components < 0) .or. &
+            any(components > self%n_features) .or. any(.not. ieee_is_finite(x)) .or. &
+            any(shape(covariance) /= [size(x, 1), size(x, 1)])) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "derivative GP joint covariance: input or output shape is invalid")
+            return
+        end if
+        allocate(cross(self%n_observations, size(x, 1)))
+        allocate(prior(size(x, 1), size(x, 1)))
+        do j = 1, size(x, 1)
+            do i = 1, self%n_observations
+                call derivative_covariance(self%kernel, self%x_train(i, :), self%components(i), &
+                    x(j, :), components(j), cross(i, j), status)
+                if (status%code /= FORTNUM_OK) return
+            end do
+            do i = 1, size(x, 1)
+                call derivative_covariance(self%kernel, x(i, :), components(i), x(j, :), &
+                    components(j), prior(i, j), status)
+                if (status%code /= FORTNUM_OK) return
+            end do
+        end do
+        allocate(work, source=cross)
+        call self%factorization%solve(work, status)
+        if (status%code /= FORTNUM_OK) return
+        covariance = prior - matmul(transpose(cross), work)
+        covariance = 0.5_dp*(covariance + transpose(covariance))
+        do i = 1, size(x, 1)
+            if (covariance(i, i) < 0.0_dp) then
+                if (covariance(i, i) < -1.0e-9_dp) then
+                    call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                        "derivative GP joint covariance: posterior variance is not positive")
+                    return
+                end if
+                covariance(i, i) = 0.0_dp
+            end if
+        end do
+        if (any(.not. ieee_is_finite(covariance))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "derivative GP joint covariance: nonfinite result")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_derivative_joint_covariance
+
+    subroutine gp_derivative_joint_covariance_device(self, device, x, components, covariance, status)
+        !! Explicit backend boundary for joint mixed-query covariance.  CUDA
+        !! remains refused until the resident derivative covariance graph is
+        !! linked; no hidden host fallback is permitted.
+        class(gp_derivative_regression_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :)
+        integer, intent(in) :: components(:)
+        real(dp), intent(out) :: covariance(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "derivative GP joint covariance device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%joint_covariance(x, components, covariance, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "derivative GP joint covariance device: no resident CUDA covariance graph is linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "derivative GP joint covariance device: device kind is invalid")
+        end select
+    end subroutine gp_derivative_joint_covariance_device
 
     logical function gp_derivative_device_supported(self, device_kind) result(supported)
         !! Report capability without implying an implicit host fallback.

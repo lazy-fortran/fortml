@@ -21,6 +21,7 @@ program test_derivative_gp_products
     call test_periodic_rational_parameter_products(failures)
     call test_product_parameter_products(failures)
     call test_prediction_products(failures)
+    call test_joint_covariance(failures)
     call test_query_input_products(failures)
     call test_periodic_rational_query_products(failures)
     call test_user_formula_observations(failures)
@@ -309,6 +310,29 @@ contains
             failures = failures + 1
         end if
     end subroutine test_prediction_products
+
+    subroutine test_joint_covariance(failures)
+        integer, intent(inout) :: failures
+        type(gp_derivative_regression_t) :: model
+        type(kernel_t) :: kernel
+        type(fortnum_status_t) :: status
+        real(dp) :: x(3, 1), y(3, 1), x_test(2, 1), covariance(2, 2), expected(2, 2)
+
+        x(:, 1) = [0.0_dp, 0.45_dp, 1.05_dp]
+        y(:, 1) = [1.2_dp, -0.3_dp, 0.8_dp]
+        x_test(:, 1) = [0.25_dp, 0.8_dp]
+        kernel = make_rbf_kernel(1, 1.4_dp, 0.75_dp, status)
+        call model%fit(x, [0, 1, 0], y, kernel, 0.07_dp, status, jitter=1.0e-10_dp)
+        call model%joint_covariance(x_test, [1, 0], covariance, status)
+        call oracle_joint_covariance(model%parameters(), x, [0, 1, 0], y, x_test, [1, 0], &
+            0.07_dp, 1.0e-10_dp, expected)
+        if (.not. status_ok(status) .or. maxval(abs(covariance - expected)) > 2.0e-11_dp .or. &
+            maxval(abs(covariance - transpose(covariance))) > 2.0e-14_dp) then
+            write (error_unit, '(a,2es12.4)') "FAIL [derivative GP joint covariance] ", &
+                maxval(abs(covariance - expected)), maxval(abs(covariance - transpose(covariance)))
+            failures = failures + 1
+        end if
+    end subroutine test_joint_covariance
 
     subroutine test_query_input_products(failures)
         integer, intent(inout) :: failures
@@ -654,6 +678,46 @@ contains
                 dot_product(cross(:, j), work(:, j))
         end do
     end subroutine oracle_predict
+
+    subroutine oracle_joint_covariance(theta, x, components, y, x_test, test_components, &
+            noise, jitter, covariance_out)
+        real(dp), intent(in) :: theta(:), x(:, :), y(:, :), x_test(:, :), noise, jitter
+        integer, intent(in) :: components(:), test_components(:)
+        real(dp), intent(out) :: covariance_out(:, :)
+        type(cholesky_factorization_t) :: factor
+        type(fortnum_status_t) :: status
+        real(dp), allocatable :: covariance(:, :), cross(:, :), work(:, :)
+        integer :: i, j
+
+        allocate(covariance(size(x, 1), size(x, 1)))
+        allocate(cross(size(x, 1), size(x_test, 1)))
+        do j = 1, size(x, 1)
+            do i = 1, size(x, 1)
+                covariance(i, j) = oracle_covariance(x(i, 1), components(i), x(j, 1), &
+                    components(j), exp(theta(1)), exp(theta(2)))
+            end do
+        end do
+        do i = 1, size(x, 1)
+            covariance(i, i) = covariance(i, i) + exp(theta(3)) + jitter
+        end do
+        call factor%factorize(covariance, status)
+        do j = 1, size(x_test, 1)
+            do i = 1, size(x, 1)
+                cross(i, j) = oracle_covariance(x(i, 1), components(i), x_test(j, 1), &
+                    test_components(j), exp(theta(1)), exp(theta(2)))
+            end do
+        end do
+        allocate(work, source=cross)
+        call factor%solve(work, status)
+        do j = 1, size(x_test, 1)
+            do i = 1, size(x_test, 1)
+                covariance_out(i, j) = oracle_covariance(x_test(i, 1), test_components(i), &
+                    x_test(j, 1), test_components(j), exp(theta(1)), exp(theta(2))) - &
+                    dot_product(cross(:, i), work(:, j))
+            end do
+        end do
+        covariance_out = 0.5_dp*(covariance_out + transpose(covariance_out))
+    end subroutine oracle_joint_covariance
 
     real(dp) function oracle_prediction_objective(theta, x, components, y, x_test, &
             test_components, noise, jitter, mean_bar, variance_bar) result(value)

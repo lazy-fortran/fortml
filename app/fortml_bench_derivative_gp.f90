@@ -11,6 +11,7 @@ program fortml_bench_derivative_gp
     real(dp) :: x(n, d), y(n, 1), query(q, d), direction(q, d)
     real(dp) :: mean(q, 1), mean_dot(q, 1), variance(q), variance_dot(q)
     real(dp) :: mean_bar(q, 1), variance_bar(q), x_bar(q, d)
+    real(dp) :: covariance(q, q)
     integer :: components(n), query_components(q), i, j
     type(kernel_t) :: periodic, rational_quadratic
     type(fortnum_status_t) :: status
@@ -80,6 +81,18 @@ contains
         seconds = real(end_clock - begin_clock, dp)/real(rate, dp)/real(repetitions, dp)
         write (*, '(a,a,a,es24.16,a,es24.16)') "derivative_gp,", trim(name), &
             ",input_vjp,", seconds, ",", sum(x_bar)
+
+        call model%joint_covariance(query, query_components, covariance, final_status)
+        if (.not. status_ok(final_status)) return
+        call system_clock(begin_clock, rate)
+        do repetition = 1, repetitions
+            call model%joint_covariance(query, query_components, covariance, final_status)
+            if (.not. status_ok(final_status)) return
+        end do
+        call system_clock(end_clock)
+        seconds = real(end_clock - begin_clock, dp)/real(rate, dp)/real(repetitions, dp)
+        write (*, '(a,a,a,es24.16,a,es24.16)') "derivative_gp,", trim(name), &
+            ",joint_covariance,", seconds, ",", sum(covariance)
     end subroutine benchmark
 
 end program fortml_bench_derivative_gp
