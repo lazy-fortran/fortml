@@ -13,16 +13,23 @@ program test_physics_objective
         real(dp) :: offset(2)
     end type affine_term_t
 
+    type :: nonlinear_term_t
+        real(dp) :: offset(2)
+    end type nonlinear_term_t
+
     type(affine_term_t), target :: data_term, residual_term, boundary_term
     type(affine_term_t), target :: conservation_term
+    type(nonlinear_term_t), target :: nonlinear_term
     type(physics_constraint_t) :: data, residual, boundary, conservation
+    type(physics_constraint_t) :: nonlinear_constraint
     type(physics_objective_t) :: objective, bad_objective, partial_objective
+    type(physics_objective_t) :: nonlinear_objective
     type(objective_t) :: fortopt_objective
     type(fortnum_status_t) :: status
     real(dp) :: theta(2), direction(2), gradient(2), adjoint(2), expected(2)
     real(dp) :: value, value_plus, value_minus, value_dot, h, scalar
     real(dp) :: term_values(4), expected_terms(4)
-    real(dp) :: hessian_direction(2)
+    real(dp) :: hessian_direction(2), hessian_fd(2), gradient_plus(2), gradient_minus(2)
     integer :: failures, i
 
     failures = 0
@@ -110,6 +117,28 @@ program test_physics_objective
         maxval(abs(hessian_direction)) == 0.0_dp, &
         "typed HVP refusal", failures)
 
+    ! A nonlinear independent oracle exercises the optional exact residual HVP
+    ! path used by PINN/symplectic adapters and FortOpt L-BFGS-B.
+    nonlinear_term%offset = [0.17_dp, -0.23_dp]
+    call nonlinear_constraint%initialize(2, 2, 1.75_dp, nonlinear_term, &
+        nonlinear_residual, nonlinear_jvp, nonlinear_vjp, status, &
+        nonlinear_hvp)
+    call check(status_ok(status), "nonlinear HVP constraint initialization", failures)
+    call nonlinear_objective%initialize(2, residual=nonlinear_constraint, status=status)
+    call check(status_ok(status), "nonlinear HVP objective initialization", failures)
+    call nonlinear_objective%value_gradient(theta, value, gradient, status)
+    call check(status_ok(status), "nonlinear HVP objective gradient", failures)
+    call nonlinear_objective%hvp(theta, direction, hessian_direction, status)
+    call check(status_ok(status), "exact nonlinear objective HVP", failures)
+    theta = theta + h*direction
+    call nonlinear_objective%gradient(theta, gradient_plus, status)
+    theta = theta - 2.0_dp*h*direction
+    call nonlinear_objective%gradient(theta, gradient_minus, status)
+    theta = theta + h*direction
+    hessian_fd = (gradient_plus - gradient_minus)/(2.0_dp*h)
+    call check(status_ok(status) .and. maxval(abs(hessian_direction - hessian_fd)) < &
+        3.0e-8_dp, "nonlinear HVP central-difference oracle", failures)
+
     call data%initialize(2, 2, 0.0_dp, data_term, affine_residual, affine_jvp, &
         affine_vjp, status)
     call check(status%code == FORTNUM_DOMAIN_ERROR, "zero-weight refusal", failures)
@@ -190,6 +219,72 @@ contains
             call status_set_local(status, 1)
         end select
     end subroutine affine_vjp
+
+    subroutine nonlinear_residual(context, theta, residual, status)
+        class(*), pointer, intent(in) :: context
+        real(dp), intent(in) :: theta(:)
+        real(dp), intent(out) :: residual(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        select type (context)
+            type is (nonlinear_term_t)
+            residual(1) = theta(1)**2 + 0.5_dp*theta(2) - context%offset(1)
+            residual(2) = theta(1)*theta(2) - context%offset(2)
+            call status_set_local(status, 0)
+        class default
+            residual = 0.0_dp
+            call status_set_local(status, 1)
+        end select
+    end subroutine nonlinear_residual
+
+    subroutine nonlinear_jvp(context, theta, theta_dot, residual, residual_dot, status)
+        class(*), pointer, intent(in) :: context
+        real(dp), intent(in) :: theta(:), theta_dot(:)
+        real(dp), intent(out) :: residual(:), residual_dot(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        call nonlinear_residual(context, theta, residual, status)
+        if (.not. status_ok(status)) then
+            residual_dot = 0.0_dp
+            return
+        end if
+        residual_dot(1) = 2.0_dp*theta(1)*theta_dot(1) + 0.5_dp*theta_dot(2)
+        residual_dot(2) = theta_dot(1)*theta(2) + theta(1)*theta_dot(2)
+        call status_set_local(status, 0)
+    end subroutine nonlinear_jvp
+
+    subroutine nonlinear_vjp(context, theta, residual_bar, theta_bar, status)
+        class(*), pointer, intent(in) :: context
+        real(dp), intent(in) :: theta(:), residual_bar(:)
+        real(dp), intent(out) :: theta_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        associate (unused_context => context)
+        end associate
+        theta_bar(1) = 2.0_dp*theta(1)*residual_bar(1) + &
+            theta(2)*residual_bar(2)
+        theta_bar(2) = 0.5_dp*residual_bar(1) + &
+            theta(1)*residual_bar(2)
+        call status_set_local(status, 0)
+    end subroutine nonlinear_vjp
+
+    subroutine nonlinear_hvp(context, theta, theta_dot, residual_bar, &
+            residual_bar_dot, theta_hvp, status)
+        class(*), pointer, intent(in) :: context
+        real(dp), intent(in) :: theta(:), theta_dot(:)
+        real(dp), intent(in) :: residual_bar(:), residual_bar_dot(:)
+        real(dp), intent(out) :: theta_hvp(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        associate (unused_context => context)
+        end associate
+        theta_hvp(1) = 2.0_dp*theta_dot(1)*residual_bar(1) + &
+            2.0_dp*theta(1)*residual_bar_dot(1) + &
+            theta_dot(2)*residual_bar(2) + theta(2)*residual_bar_dot(2)
+        theta_hvp(2) = 0.5_dp*residual_bar_dot(1) + &
+            theta_dot(1)*residual_bar(2) + theta(1)*residual_bar_dot(2)
+        call status_set_local(status, 0)
+    end subroutine nonlinear_hvp
 
     subroutine oracle_value_gradient(theta, value, gradient)
         real(dp), intent(in) :: theta(:)

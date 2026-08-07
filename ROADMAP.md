@@ -2392,9 +2392,12 @@ results as an external literature claim.
 #### WP9a: physics contracts and autodiff products
 
 - [x] Define a bounded `physics_constraint_t` callback with normalized residual
-  value, JVP, VJP, and typed HVP refusal. `physics_objective_t` composes data,
-  PDE/ODE residual, initial/boundary, and conservation slots and adapts its
-  value/gradient path to FortOpt. The independent affine-residual oracle is
+  value, JVP, VJP, and an optional exact reverse-over-forward HVP product.
+  `physics_objective_t` composes data, PDE/ODE residual, initial/boundary, and
+  conservation slots and adapts its value/gradient path to FortOpt. Providers
+  without the optional HVP callback retain a typed refusal; providers with it
+  supply the exact weighted least-squares HVP without forming a Jacobian or
+  Hessian. Independent affine and nonlinear residual oracles are in
   `test_physics_objective`; callbacks retain ownership of state, coordinates,
   units, and device residency.
 - [ ] Extend the seam with symplectic-form terms, nondimensionalizing

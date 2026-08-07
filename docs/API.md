@@ -1502,17 +1502,19 @@ structures, and implicit integrators remain separate research contracts.
 
 `physics_constraint_t` is the explicit residual seam for PINN, physics-informed
 GP, and conservation adapters. `initialize` binds a positive weight, a
-parameter/residual shape, and caller-owned residual, JVP, and VJP callbacks.
-Its normalized weighted squared residual exposes `value`, `value_gradient`,
-scalar `jvp`, and scalar `vjp`; `hvp` returns
-`FORTNUM_NOT_IMPLEMENTED` until a residual-HVP callback is part of the
-contract. `physics_objective_t` composes four named slots—`data`,
+parameter/residual shape, and caller-owned residual, JVP, and VJP callbacks;
+the optional `hvp_proc` callback is a reverse-over-forward product accepting
+normalized residual and residual-JVP cotangents. When supplied, `hvp` returns
+the exact weighted least-squares Hessian-vector product without forming a
+Jacobian or Hessian. Without it, `hvp` retains the typed
+`FORTNUM_NOT_IMPLEMENTED` refusal. `physics_objective_t` composes four named slots—`data`,
 `residual`, `boundary`, and `conservation`—and sums their value/gradient and
 first-order products. `term_values(theta, values, status)` returns the four
 normalized weighted slot contributions in that order; inactive slots are zero,
 and their sum equals `value(theta)`. This is the stable residual/conservation
 balancing diagnostic. `as_objective` adapts the value/gradient path to FortOpt.
-Callbacks own coordinate/time layouts, units, and device residency;
+Callbacks own coordinate/time layouts, units, derivative implementation, and
+device residency;
 there is no hidden finite-difference or host/GPU fallback. See
 [`docs/PHYSICS_MODELS.md`](PHYSICS_MODELS.md) and the independent
 `test_physics_objective` affine-residual oracle.

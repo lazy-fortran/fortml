@@ -11,10 +11,11 @@ module fortml_physics_objective
     !!
     !! The callbacks are deliberately explicit.  No finite-difference fallback
     !! is hidden behind a derivative method: callers provide a residual JVP
-    !! and VJP, while second-order products return a typed refusal until a
-    !! residual HVP contract is added.  A constraint is CPU/device agnostic;
-    !! resident GPU callbacks can be supplied by an adapter without changing
-    !! the objective reduction.
+    !! and VJP.  Providers that can differentiate their VJP in a parameter
+    !! direction may also provide the optional reverse-over-forward HVP
+    !! callback; otherwise second-order products return a typed refusal.  A
+    !! constraint is CPU/device agnostic; resident GPU callbacks can be
+    !! supplied by an adapter without changing the objective reduction.
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
@@ -50,6 +51,26 @@ module fortml_physics_objective
             type(fortnum_status_t), intent(out) :: status
         end subroutine physics_residual_vjp_proc
 
+        subroutine physics_residual_hvp_proc(context, theta, theta_dot, &
+                residual_bar, residual_bar_dot, theta_hvp, status)
+            !! Differentiate a residual VJP in ``theta_dot``.
+            !!
+            !! The callback returns
+            !! ``d/dtheta [J(theta)^T residual_bar] theta_dot`` plus the
+            !! contribution ``J(theta)^T residual_bar_dot``.  The physics
+            !! constraint supplies the normalized residual and its JVP as
+            !! ``residual_bar`` and ``residual_bar_dot`` respectively.  This
+            !! reverse-over-forward contract is the exact Hessian-vector
+            !! product of the weighted squared residual and does not form a
+            !! Jacobian or Hessian.
+            import :: dp, fortnum_status_t
+            class(*), pointer, intent(in) :: context
+            real(dp), intent(in) :: theta(:), theta_dot(:)
+            real(dp), intent(in) :: residual_bar(:), residual_bar_dot(:)
+            real(dp), intent(out) :: theta_hvp(:)
+            type(fortnum_status_t), intent(out) :: status
+        end subroutine physics_residual_hvp_proc
+
         subroutine physics_objective_context_proc(context, theta, value, &
                 gradient, status)
             import :: dp, fortnum_status_t
@@ -71,6 +92,7 @@ module fortml_physics_objective
         procedure(physics_residual_proc), pointer, nopass :: residual_proc => null()
         procedure(physics_residual_jvp_proc), pointer, nopass :: jvp_proc => null()
         procedure(physics_residual_vjp_proc), pointer, nopass :: vjp_proc => null()
+        procedure(physics_residual_hvp_proc), pointer, nopass :: hvp_proc => null()
     contains
         procedure, public :: initialize => physics_constraint_initialize
         procedure, public :: initialized => physics_constraint_initialized
@@ -109,12 +131,13 @@ module fortml_physics_objective
     end type physics_objective_t
 
     public :: physics_residual_proc, physics_residual_jvp_proc
-    public :: physics_residual_vjp_proc, physics_objective_context_proc
+    public :: physics_residual_vjp_proc, physics_residual_hvp_proc
+    public :: physics_objective_context_proc
 
 contains
 
     subroutine physics_constraint_initialize(self, n_parameters, n_residuals, &
-            weight, context, residual_proc, jvp_proc, vjp_proc, status)
+            weight, context, residual_proc, jvp_proc, vjp_proc, status, hvp_proc)
         class(physics_constraint_t), intent(out) :: self
         integer, intent(in) :: n_parameters, n_residuals
         real(dp), intent(in) :: weight
@@ -123,12 +146,14 @@ contains
         procedure(physics_residual_jvp_proc) :: jvp_proc
         procedure(physics_residual_vjp_proc) :: vjp_proc
         type(fortnum_status_t), intent(out) :: status
+        procedure(physics_residual_hvp_proc), optional :: hvp_proc
 
         self%n_parameters = 0
         self%n_residuals = 0
         self%weight = 0.0_dp
         self%ready = .false.
-        nullify(self%context, self%residual_proc, self%jvp_proc, self%vjp_proc)
+        nullify(self%context, self%residual_proc, self%jvp_proc, self%vjp_proc, &
+            self%hvp_proc)
         if (n_parameters < 1 .or. n_residuals < 1) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "physics constraint: dimensions must be positive")
@@ -146,6 +171,7 @@ contains
         self%residual_proc => residual_proc
         self%jvp_proc => jvp_proc
         self%vjp_proc => vjp_proc
+        if (present(hvp_proc)) self%hvp_proc => hvp_proc
         self%ready = .true.
         call status_set(status, FORTNUM_OK, "")
     end subroutine physics_constraint_initialize
@@ -319,15 +345,48 @@ contains
         real(dp), intent(out) :: theta_hvp(:)
         type(fortnum_status_t), intent(out) :: status
 
+        real(dp), allocatable :: residual(:), residual_dot(:)
+        real(dp), allocatable :: residual_bar(:), residual_bar_dot(:)
+
         theta_hvp = 0.0_dp
-        if (size(theta_hvp) /= self%n_parameters .or. &
-            size(theta_dot) /= self%n_parameters .or. size(theta) /= self%n_parameters) then
+        if (size(theta_hvp) /= self%n_parameters) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "physics constraint: HVP shape is invalid")
             return
         end if
-        call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
-            "physics constraint: residual HVP is not provided")
+        if (size(theta_dot) /= self%n_parameters .or. &
+                size(theta) /= self%n_parameters) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "physics constraint: HVP shape is invalid")
+            return
+        end if
+        call validate_constraint_call(self, theta, status)
+        if (status%code /= FORTNUM_OK) return
+        if (.not. associated(self%hvp_proc)) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "physics constraint: residual HVP is not provided")
+            return
+        end if
+        allocate(residual(self%n_residuals), residual_dot(self%n_residuals))
+        allocate(residual_bar(self%n_residuals), residual_bar_dot(self%n_residuals))
+        call self%jvp_proc(self%context, theta, theta_dot, residual, residual_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        if (any(.not. ieee_is_finite(residual)) .or. &
+                any(.not. ieee_is_finite(residual_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "physics constraint: HVP JVP returned a non-finite residual")
+            return
+        end if
+        residual_bar = self%weight*residual/real(self%n_residuals, dp)
+        residual_bar_dot = self%weight*residual_dot/real(self%n_residuals, dp)
+        call self%hvp_proc(self%context, theta, theta_dot, residual_bar, &
+            residual_bar_dot, theta_hvp, status)
+        if (status%code /= FORTNUM_OK) return
+        if (any(.not. ieee_is_finite(theta_hvp))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "physics constraint: HVP returned a non-finite cotangent")
+            return
+        end if
     end subroutine physics_constraint_hvp
 
     subroutine physics_objective_initialize(self, n_parameters, data, residual, &
@@ -566,8 +625,15 @@ contains
                 "physics objective: HVP shape is invalid")
             return
         end if
-        call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
-            "physics objective: residual HVP is not provided")
+        call accumulate_hvp(self%data, theta, theta_dot, theta_hvp, status)
+        if (status%code /= FORTNUM_OK) return
+        call accumulate_hvp(self%residual, theta, theta_dot, theta_hvp, status)
+        if (status%code /= FORTNUM_OK) return
+        call accumulate_hvp(self%boundary, theta, theta_dot, theta_hvp, status)
+        if (status%code /= FORTNUM_OK) return
+        call accumulate_hvp(self%conservation, theta, theta_dot, theta_hvp, status)
+        if (status%code /= FORTNUM_OK) return
+        call status_set(status, FORTNUM_OK, "")
     end subroutine physics_objective_hvp
 
     subroutine physics_objective_as_objective(self, objective, status)
@@ -718,6 +784,24 @@ contains
         if (status%code /= FORTNUM_OK) return
         theta_bar = theta_bar + term_bar
     end subroutine accumulate_vjp
+
+    subroutine accumulate_hvp(term, theta, theta_dot, theta_hvp, status)
+        type(physics_constraint_t), intent(in) :: term
+        real(dp), intent(in) :: theta(:), theta_dot(:)
+        real(dp), intent(inout) :: theta_hvp(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: term_hvp(:)
+
+        if (.not. term%initialized()) then
+            call status_set(status, FORTNUM_OK, "")
+            return
+        end if
+        allocate(term_hvp(size(theta_hvp)))
+        call term%hvp(theta, theta_dot, term_hvp, status)
+        if (status%code /= FORTNUM_OK) return
+        theta_hvp = theta_hvp + term_hvp
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine accumulate_hvp
 
     subroutine physics_objective_context(context, theta, value, gradient, status)
         class(*), intent(inout) :: context

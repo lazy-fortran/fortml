@@ -38,10 +38,17 @@ weighted contributions in the fixed order `[data, residual, boundary,
 conservation]`; inactive slots are zero and the entries sum to the objective
 value. This makes residual balancing and conservation monitoring observable
 without coupling callers to private constraint storage. The affine independent oracle is
-[`test_physics_objective.f90`](../test/test_physics_objective.f90). HVPs are a
-typed `FORTNUM_NOT_IMPLEMENTED` boundary until residual second products are
-declared; coordinate/time metadata, collocation samplers, PINN/GP adapters,
-and symplectic terms remain future work. The diagnostic itself is CPU/device
+without coupling callers to private constraint storage. A constraint may now
+also register `physics_residual_hvp_proc`, a reverse-over-forward callback
+that receives normalized residual and residual-JVP cotangents and returns the
+exact weighted least-squares HVP. This is the derivative contract needed by
+FortOpt L-BFGS-B for nonlinear PINN, HNN, and symplectic residual providers; it
+does not form a Jacobian or Hessian and has no finite-difference fallback.
+Providers without the optional callback retain a typed
+`FORTNUM_NOT_IMPLEMENTED` HVP refusal. The independent affine and nonlinear
+oracles are in [`test_physics_objective.f90`](../test/test_physics_objective.f90).
+Coordinate/time metadata, collocation samplers, PINN/GP adapters, and
+symplectic terms remain future work. The diagnostic itself is CPU/device
 agnostic and does not introduce a host fallback: a resident adapter remains
 responsible for its residual callback and products.
 
