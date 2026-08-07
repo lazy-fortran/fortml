@@ -142,7 +142,7 @@ resident-batch evidence.
 | `vae_t` | `elbo`, `reconstruct` | No | ELBO gradient | No |
 | `rnn_t` | `forward`, squared-error `loss` | No | Loss gradient by BPTT | No |
 | `kernel_t` | Scalar value and matrix | Parameter JVP | Parameter VJP | Parameter HVP |
-| `xgboost_t` | Squared/squared-log (RMSLE)/logistic/Poisson/Huber/quantile margins and predictions | Fixed-tree input JVP away from split boundaries | Fixed-tree input VJP away from split boundaries | No |
+| `xgboost_t` | Squared/squared-log (RMSLE)/logistic/Poisson/Huber/quantile margins, predictions, and additive tree contributions | Fixed-tree input JVP away from split boundaries | Fixed-tree input VJP away from split boundaries | No |
 | `random_forest_classifier_t` | Bootstrap-ensemble probabilities and labels | Refused: split routing is discrete | Refused: split routing is discrete | No |
 | `extra_trees_classifier_t` | Randomized-threshold ensemble probabilities and labels | Refused: split routing is discrete | Refused: split routing is discrete | No |
 | `gp_regression_t` | Mean, variance, LML | Prediction and LML parameters | Prediction and LML parameters | Mean and LML parameters |
@@ -1919,6 +1919,17 @@ binary classification, `predict_proba_staged` returns an
 returns cumulative margins. `feature_importance(kind,normalize)` reports
 deterministic gain, split-count (`weight`), or cover totals. These diagnostics
 are fitted-state queries and preserve the selected NaN routing policy.
+
+`predict_contributions(x,contributions,status)` returns an additive raw-link
+decomposition with shape `(n_samples,n_estimators+1)`. Column one is the base
+margin and column `i+1` is the learning-rate-scaled output of tree `i`; summing
+the columns reproduces `predict_margin` exactly up to floating-point rounding.
+For logistic, Poisson, and squared-log objectives the decomposition remains in
+the raw link, so apply the objective link after summing. The corresponding
+`predict_contributions_device` entry point dispatches CPU and returns a typed
+`FORTNUM_NOT_IMPLEMENTED` refusal for CUDA until a resident tree kernel is
+linked. Invalid shapes and unsupported NaN policies return
+`FORTNUM_DOMAIN_ERROR`.
 
 `xgboost_multiclass_t` wraps the binary logistic estimator in a deterministic
 one-vs-rest classifier. `fit(x,labels,status[,options,sample_weight])` sorts
