@@ -30,6 +30,7 @@ module fortml_linear_svm_classifier
 
     integer, parameter, public :: SVM_LOSS_HINGE = 1
     integer, parameter, public :: SVM_LOSS_SQUARED_HINGE = 2
+    real(dp), parameter :: SVM_HINGE_SMOOTHING = 1.0e-4_dp
 
     type, public :: linear_svm_classifier_t
         private
@@ -176,6 +177,13 @@ contains
         options%gradient_tolerance = requested_tolerance
         options%step_tolerance = min(1.0e-12_dp, requested_tolerance)
         options%objective_tolerance = min(1.0e-12_dp, requested_tolerance)
+        if (requested_loss == SVM_LOSS_HINGE) then
+            ! Ordinary hinge is convex but nonsmooth at margin one.  A longer,
+            ! less aggressive Armijo search lets FortOpt accept the same
+            ! deterministic subgradient on either side of a split.
+            options%max_line_search = 100
+            options%armijo_constant = 1.0e-8_dp
+        end if
         call optimizer%minimize(objective, theta, lower, upper, options, result, status)
         if (status%code /= FORTNUM_OK) return
         if (.not. result%state%converged) then
@@ -226,14 +234,20 @@ contains
                 margin = encoded(i)*score
                 violation = max(0.0_dp, 1.0_dp-margin)
                 if (requested_loss == SVM_LOSS_HINGE) then
-                    local_value = violation
-                    if (margin < 1.0_dp) then
+                    ! FortOpt's Armijo line search requires a C1 callback.
+                    ! Optimize the epsilon-Huberized hinge while retaining
+                    ! the exact ordinary-hinge objective in the public
+                    ! value/gradient method below.  The smoothing is tiny
+                    ! relative to the fit tolerance and removes optimizer
+                    ! oscillation when a row lands exactly on margin one.
+                    if (violation >= SVM_HINGE_SMOOTHING) then
+                        local_value = violation - 0.5_dp*SVM_HINGE_SMOOTHING
                         score_gradient = -encoded(i)
                     else
-                        ! A deterministic one-sided subgradient is used only
-                        ! inside the optimizer callback.  The public product
-                        ! reports an exact split as a refusal.
-                        score_gradient = 0.0_dp
+                        local_value = 0.5_dp*violation*violation / &
+                            SVM_HINGE_SMOOTHING
+                        score_gradient = -encoded(i)*violation / &
+                            SVM_HINGE_SMOOTHING
                     end if
                 else
                     local_value = violation*violation

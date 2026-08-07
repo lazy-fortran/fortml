@@ -7,7 +7,7 @@ program test_linear_svm_classifier
     use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_NOT_IMPLEMENTED
     implicit none
 
-    type(linear_svm_classifier_t) :: model, weighted_model
+    type(linear_svm_classifier_t) :: model, weighted_model, hinge_model
     type(fortnum_status_t) :: status
     type(fortml_device_t) :: cuda
     real(real64) :: x(6, 2), query(4, 2), x_dot(4, 2)
@@ -108,8 +108,11 @@ program test_linear_svm_classifier
 
     call weighted_model%fit(x, labels, status, l2=0.1_real64, &
         sample_weight=[1.0_real64, 2.0_real64, 1.0_real64, 1.0_real64, &
-        2.0_real64, 1.0_real64], max_iterations=1000)
+            2.0_real64, 1.0_real64], max_iterations=1000)
     call check(status_ok(status), "weighted fit", failures)
+    call hinge_model%fit(x, labels, status, l2=0.1_real64, loss=SVM_LOSS_HINGE, &
+        max_iterations=1500, tolerance=1.0e-7_real64)
+    call check(status_ok(status), "ordinary-hinge fit", failures)
 
     cuda%kind = FORTML_DEVICE_CUDA
     cuda%selected = .true.
