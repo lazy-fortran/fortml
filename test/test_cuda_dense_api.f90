@@ -1,5 +1,6 @@
 program test_cuda_dense_api
     !! Ordinary-build contract for the resident CUDA dense wrapper.
+    use, intrinsic :: iso_c_binding, only: c_int64_t
     use, intrinsic :: iso_fortran_env, only: error_unit, real64
     use fortnum_status, only: fortnum_status_t, FORTNUM_DOMAIN_ERROR, &
         FORTNUM_NOT_IMPLEMENTED, FORTNUM_OK
@@ -14,6 +15,9 @@ program test_cuda_dense_api
     real(real64) :: outputs_dot(4, 2)
     real(real64) :: output_bar(4, 2), query_x_bar(4, 3)
     real(real64) :: weights_bar(3, 2), bias_bar(2)
+    real(real64) :: target(4, 2), loss
+    integer(c_int64_t) :: host_to_device_bytes, device_to_host_bytes
+    integer(c_int64_t) :: resident_bytes
     integer :: failures
 
     failures = 0
@@ -33,6 +37,8 @@ program test_cuda_dense_api
     query_x_bar = -23.0_real64
     weights_bar = -29.0_real64
     bias_bar = -31.0_real64
+    target = 0.25_real64
+    loss = -37.0_real64
 
     call plan%create(weights, bias, MLP_TANH, -1, status)
     call check(status%code == FORTNUM_DOMAIN_ERROR, &
@@ -61,6 +67,24 @@ program test_cuda_dense_api
     call check(all(query_x_bar == -23.0_real64) .and. &
         all(weights_bar == -29.0_real64) .and. all(bias_bar == -31.0_real64), &
         "VJP refusal preserves outputs", failures)
+    call plan%train_mse(query_x, target, 0.1_real64, loss, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
+        "resident MSE update refusal is typed", failures)
+    call check(loss == -37.0_real64, &
+        "MSE update refusal preserves loss output", failures)
+    call plan%parameters(weights_bar, bias_bar, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
+        "resident parameter snapshot refusal is typed", failures)
+    call check(all(weights_bar == -29.0_real64) .and. &
+        all(bias_bar == -31.0_real64), &
+        "parameter snapshot refusal preserves outputs", failures)
+    call plan%transfer_stats(host_to_device_bytes, device_to_host_bytes, &
+        resident_bytes, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
+        "transfer statistics refusal is typed", failures)
+    call check(host_to_device_bytes == 0_c_int64_t .and. &
+        device_to_host_bytes == 0_c_int64_t .and. resident_bytes == 0_c_int64_t, &
+        "transfer statistics refusal preserves zero counters", failures)
     call plan%destroy(status)
     call check(status%code == FORTNUM_OK .and. .not. plan%fitted(), &
         "destroy clears plan state", failures)

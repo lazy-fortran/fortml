@@ -2,7 +2,9 @@
 
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 
 namespace {
@@ -149,6 +151,41 @@ void cpu_vjp_oracle(const double *weights, const double *bias,
   }
 }
 
+double cpu_train_mse_oracle(double *weights, double *bias, int n_inputs,
+                            int n_outputs, int activation,
+                            const double *query_x, const double *target,
+                            int n_query, double learning_rate) {
+  const double inv_count =
+      1.0 / static_cast<double>(n_query * n_outputs);
+  double loss = 0.0;
+  double weight_gradient[6] = {};
+  double bias_gradient[2] = {};
+  for (int output = 0; output < n_outputs; ++output) {
+    for (int query = 0; query < n_query; ++query) {
+      double value = bias[output];
+      for (int input = 0; input < n_inputs; ++input)
+        value += weights[output * n_inputs + input] *
+            query_x[input * n_query + query];
+      const double residual = cpu_activate(value, activation) -
+          target[output * n_query + query];
+      const double scaled = residual *
+          cpu_activation_derivative(value, activation);
+      loss += 0.5 * residual * residual * inv_count;
+      bias_gradient[output] += scaled * inv_count;
+      for (int input = 0; input < n_inputs; ++input)
+        weight_gradient[output * n_inputs + input] += scaled *
+            query_x[input * n_query + query] * inv_count;
+    }
+  }
+  for (int output = 0; output < n_outputs; ++output) {
+    bias[output] -= learning_rate * bias_gradient[output];
+    for (int input = 0; input < n_inputs; ++input)
+      weights[output * n_inputs + input] -= learning_rate *
+          weight_gradient[output * n_inputs + input];
+  }
+  return loss;
+}
+
 bool close(const double *actual, const double *expected, int count,
            double *max_error) {
   *max_error = 0.0;
@@ -266,6 +303,57 @@ int main() {
   max_error = fmax(max_error, repeat_error);
   if (fortml_cuda_dense_plan_destroy(plan) != 0 || !repeat_ok) return 11;
 
+  // A single fixed MSE update forms the complete gradient on device and
+  // mutates only the resident parameters.  The independent CPU recurrence
+  // checks both the loss and the post-step snapshot, while transfer counters
+  // prove that the model was uploaded once and the batch crossed the ABI
+  // boundary explicitly.
+  const double train_target[n_outputs * n_query] = {
+      0.2, -0.1, 0.7, -0.3, 0.4,
+      -0.5, 0.6, -0.2, 0.8, -0.15};
+  double expected_train_weights[n_inputs * n_outputs];
+  double expected_train_bias[n_outputs];
+  std::copy(weights, weights + n_inputs * n_outputs, expected_train_weights);
+  std::copy(bias, bias + n_outputs, expected_train_bias);
+  const double expected_loss = cpu_train_mse_oracle(
+      expected_train_weights, expected_train_bias, n_inputs, n_outputs, 2,
+      query_x, train_target, n_query, 0.15);
+  void *train_plan = nullptr;
+  if (fortml_cuda_dense_plan_create(weights, bias, n_inputs, n_outputs, 2,
+                                    0, &train_plan) != 0 ||
+      train_plan == nullptr)
+    return 17;
+  double actual_loss = -1.0;
+  if (fortml_cuda_dense_plan_train_mse(train_plan, query_x, train_target,
+                                       n_query, 0.15, &actual_loss) != 0)
+    return 18;
+  if (std::fabs(actual_loss - expected_loss) > 3.0e-12) return 19;
+  double actual_train_weights[n_inputs * n_outputs];
+  double actual_train_bias[n_outputs];
+  if (fortml_cuda_dense_plan_get_parameters(
+          train_plan, actual_train_weights, actual_train_bias) != 0)
+    return 20;
+  double train_error = 0.0;
+  if (!close(actual_train_weights, expected_train_weights,
+             n_inputs * n_outputs, &train_error) ||
+      !close(actual_train_bias, expected_train_bias, n_outputs, &train_error))
+    return 21;
+  std::uint64_t host_to_device_bytes = 0;
+  std::uint64_t device_to_host_bytes = 0;
+  std::uint64_t resident_bytes = 0;
+  if (fortml_cuda_dense_plan_transfer_stats(
+          train_plan, &host_to_device_bytes, &device_to_host_bytes,
+          &resident_bytes) != 0 ||
+      host_to_device_bytes < sizeof(double) *
+          (n_inputs * n_outputs + n_outputs + n_inputs * n_query +
+           n_outputs * n_query) ||
+      device_to_host_bytes < sizeof(double) *
+          (n_outputs + n_inputs * n_outputs + n_outputs) ||
+      resident_bytes != sizeof(double) *
+          (n_inputs * n_outputs + n_outputs))
+    return 22;
+  if (fortml_cuda_dense_plan_destroy(train_plan) != 0) return 23;
+
   // Non-finite host inputs are rejected before any CUDA allocation and cannot
   // be mistaken for a successful CPU fallback.
   const double bad_weights[n_inputs * n_outputs] = {
@@ -275,7 +363,7 @@ int main() {
                                     0, &bad_plan) == 0 || bad_plan != nullptr)
     return 12;
 
-  std::printf("PASS CUDA resident dense affine oracle (activations 8, JVPs 8, VJPs 8, repeats 2, max error %.3e)\n",
-              max_error);
+  std::printf("PASS CUDA resident dense affine oracle (activations 8, JVPs 8, VJPs 8, repeats 2, MSE update 1, max error %.3e)\n",
+              fmax(max_error, train_error));
   return 0;
 }

@@ -1,13 +1,14 @@
 module fortml_cuda_dense_api
     !! Typed Fortran control-plane wrapper for the resident CUDA dense ABI.
     !!
-    !! This product is intentionally prediction-only and no-autodiff.  A
-    !! native CUDA build uploads one affine layer once, then copies only each
-    !! query batch and result.  The ordinary build links the unavailable stub;
-    !! it never labels a CPU execution as CUDA or silently falls back.
+    !! This product is intentionally bounded and no-autodiff.  A native CUDA
+    !! build uploads one affine layer once, keeps its parameters resident, and
+    !! exposes prediction/products plus one fixed MSE update.  The ordinary
+    !! build links the unavailable stub; it never labels a CPU execution as
+    !! CUDA or silently falls back.
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
-    use, intrinsic :: iso_c_binding, only: c_double, c_int, c_loc, c_null_ptr, &
-        c_ptr, c_associated
+    use, intrinsic :: iso_c_binding, only: c_double, c_int, c_int64_t, c_loc, &
+        c_null_ptr, c_ptr, c_associated
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
         FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED
@@ -65,6 +66,35 @@ module fortml_cuda_dense_api
             integer(c_int) :: value
         end function fortml_cuda_dense_plan_vjp
 
+        function fortml_cuda_dense_plan_train_mse( &
+                handle, query_x, target, n_query, learning_rate, loss) bind(C, &
+                name="fortml_cuda_dense_plan_train_mse") result(value)
+            import :: c_double, c_int, c_ptr
+            type(c_ptr), value :: handle, query_x, target, loss
+            integer(c_int), value :: n_query
+            real(c_double), value :: learning_rate
+            integer(c_int) :: value
+        end function fortml_cuda_dense_plan_train_mse
+
+        function fortml_cuda_dense_plan_get_parameters( &
+                handle, weights, bias) bind(C, &
+                name="fortml_cuda_dense_plan_get_parameters") result(value)
+            import :: c_double, c_int, c_ptr
+            type(c_ptr), value :: handle, weights, bias
+            integer(c_int) :: value
+        end function fortml_cuda_dense_plan_get_parameters
+
+        function fortml_cuda_dense_plan_transfer_stats( &
+                handle, host_to_device_bytes, device_to_host_bytes, &
+                resident_bytes) bind(C, &
+                name="fortml_cuda_dense_plan_transfer_stats") result(value)
+            import :: c_int, c_int64_t, c_ptr
+            type(c_ptr), value :: handle
+            integer(c_int64_t) :: host_to_device_bytes, device_to_host_bytes
+            integer(c_int64_t) :: resident_bytes
+            integer(c_int) :: value
+        end function fortml_cuda_dense_plan_transfer_stats
+
         function fortml_cuda_dense_plan_destroy(handle) bind(C, &
                 name="fortml_cuda_dense_plan_destroy") result(value)
             import :: c_int, c_ptr
@@ -85,6 +115,9 @@ module fortml_cuda_dense_api
         procedure, public :: predict => cuda_dense_plan_predict
         procedure, public :: jvp => cuda_dense_plan_jvp
         procedure, public :: vjp => cuda_dense_plan_vjp
+        procedure, public :: train_mse => cuda_dense_plan_train_mse
+        procedure, public :: parameters => cuda_dense_plan_parameters
+        procedure, public :: transfer_stats => cuda_dense_plan_transfer_stats
         procedure, public :: destroy => cuda_dense_plan_destroy
         procedure, public :: fitted => cuda_dense_plan_fitted
         procedure, public :: input_count => cuda_dense_plan_input_count
@@ -299,6 +332,107 @@ contains
         bias_bar = bias_bar_c
         call status_set(status, FORTNUM_OK, "")
     end subroutine cuda_dense_plan_vjp
+
+    subroutine cuda_dense_plan_train_mse(self, query_x, target, learning_rate, &
+            loss, status)
+        class(cuda_dense_plan_t), intent(in) :: self
+        real(dp), intent(in), target, contiguous :: query_x(:, :), target(:, :)
+        real(dp), intent(in) :: learning_rate
+        real(dp), intent(out), target :: loss
+        type(fortnum_status_t), intent(out) :: status
+        integer(c_int) :: code
+
+        if (.not. c_associated(self%handle)) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "CUDA dense wrapper: plan is not fitted")
+            return
+        end if
+        if (size(query_x, 2) /= self%n_inputs .or. &
+            size(target, 1) /= size(query_x, 1) .or. &
+            size(target, 2) /= self%n_outputs .or. size(query_x, 1) < 1 .or. &
+            .not. ieee_is_finite(learning_rate) .or. learning_rate <= 0.0_dp .or. &
+            any(.not. ieee_is_finite(query_x)) .or. &
+            any(.not. ieee_is_finite(target))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "CUDA dense wrapper: MSE batch or learning rate is invalid")
+            return
+        end if
+        code = fortml_cuda_dense_plan_train_mse(self%handle, c_loc(query_x), &
+            c_loc(target), int(size(query_x, 1), c_int), real(learning_rate, c_double), &
+            c_loc(loss))
+        if (code /= 0_c_int) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "CUDA dense wrapper: resident MSE update failed")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine cuda_dense_plan_train_mse
+
+    subroutine cuda_dense_plan_parameters(self, weights, bias, status)
+        class(cuda_dense_plan_t), intent(in) :: self
+        real(dp), intent(out), target, contiguous :: weights(:, :), bias(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(c_double), allocatable, target :: weights_c(:)
+        type(c_ptr) :: weights_ptr, bias_ptr
+        integer(c_int) :: code
+        integer :: input, output, position
+
+        if (.not. c_associated(self%handle)) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "CUDA dense wrapper: plan is not fitted")
+            return
+        end if
+        if (size(weights, 1) /= self%n_inputs .or. &
+            size(weights, 2) /= self%n_outputs .or. size(bias) /= self%n_outputs) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "CUDA dense wrapper: parameter snapshot shape is invalid")
+            return
+        end if
+        allocate(weights_c(self%n_inputs*self%n_outputs))
+        weights_ptr = c_loc(weights_c)
+        bias_ptr = c_loc(bias)
+        code = fortml_cuda_dense_plan_get_parameters(self%handle, weights_ptr, &
+            bias_ptr)
+        if (code /= 0_c_int) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "CUDA dense wrapper: resident parameter snapshot failed")
+            return
+        end if
+        position = 0
+        do output = 1, self%n_outputs
+            do input = 1, self%n_inputs
+                position = position + 1
+                weights(input, output) = weights_c(position)
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine cuda_dense_plan_parameters
+
+    subroutine cuda_dense_plan_transfer_stats(self, host_to_device_bytes, &
+            device_to_host_bytes, resident_bytes, status)
+        class(cuda_dense_plan_t), intent(in) :: self
+        integer(c_int64_t), intent(out) :: host_to_device_bytes, device_to_host_bytes
+        integer(c_int64_t), intent(out) :: resident_bytes
+        type(fortnum_status_t), intent(out) :: status
+        integer(c_int) :: code
+
+        host_to_device_bytes = 0_c_int64_t
+        device_to_host_bytes = 0_c_int64_t
+        resident_bytes = 0_c_int64_t
+        if (.not. c_associated(self%handle)) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "CUDA dense wrapper: plan is not fitted")
+            return
+        end if
+        code = fortml_cuda_dense_plan_transfer_stats(self%handle, &
+            host_to_device_bytes, device_to_host_bytes, resident_bytes)
+        if (code /= 0_c_int) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "CUDA dense wrapper: transfer statistics failed")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine cuda_dense_plan_transfer_stats
 
     subroutine cuda_dense_plan_destroy(self, status)
         class(cuda_dense_plan_t), intent(inout) :: self

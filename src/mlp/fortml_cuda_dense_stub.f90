@@ -53,6 +53,39 @@ function fortml_cuda_dense_plan_vjp(handle, query_x, output_bar, n_query, &
     value = 1_c_int
 end function fortml_cuda_dense_plan_vjp
 
+function fortml_cuda_dense_plan_train_mse(handle, query_x, target, n_query, &
+        learning_rate, loss) bind(C, &
+        name="fortml_cuda_dense_plan_train_mse") result(value)
+    use, intrinsic :: iso_c_binding, only: c_double, c_int, c_ptr
+    implicit none
+    type(c_ptr), value :: handle, query_x, target, loss
+    integer(c_int), value :: n_query
+    real(c_double), value :: learning_rate
+    integer(c_int) :: value
+    value = 1_c_int
+end function fortml_cuda_dense_plan_train_mse
+
+function fortml_cuda_dense_plan_get_parameters(handle, weights, bias) bind(C, &
+        name="fortml_cuda_dense_plan_get_parameters") result(value)
+    use, intrinsic :: iso_c_binding, only: c_double, c_int, c_ptr
+    implicit none
+    type(c_ptr), value :: handle, weights, bias
+    integer(c_int) :: value
+    value = 1_c_int
+end function fortml_cuda_dense_plan_get_parameters
+
+function fortml_cuda_dense_plan_transfer_stats(handle, host_to_device_bytes, &
+        device_to_host_bytes, resident_bytes) bind(C, &
+        name="fortml_cuda_dense_plan_transfer_stats") result(value)
+    use, intrinsic :: iso_c_binding, only: c_int, c_int64_t, c_ptr
+    implicit none
+    type(c_ptr), value :: handle
+    integer(c_int64_t) :: host_to_device_bytes, device_to_host_bytes
+    integer(c_int64_t) :: resident_bytes
+    integer(c_int) :: value
+    value = 1_c_int
+end function fortml_cuda_dense_plan_transfer_stats
+
 function fortml_cuda_dense_plan_destroy(handle) bind(C, &
         name="fortml_cuda_dense_plan_destroy") result(value)
     use, intrinsic :: iso_c_binding, only: c_int, c_ptr

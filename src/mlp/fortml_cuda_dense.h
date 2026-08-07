@@ -1,13 +1,16 @@
 #ifndef FORTML_CUDA_DENSE_H
 #define FORTML_CUDA_DENSE_H
 
+#include <stdint.h>
+
 /*
  * Resident, no-autodiff CUDA dense-affine ABI.
  *
- * This is deliberately a no-autodiff affine value/derivative primitive.  The
- * plan owns the weight and bias arrays on one selected device.  Creation and
- * every value or product call are explicit host/device transfer boundaries;
- * there is no host fallback.  All indices use zero-based C conventions.
+ * This is deliberately a bounded no-autodiff affine value/derivative and
+ * MSE-update primitive.  The plan owns the weight and bias arrays on one
+ * selected device.  Creation and every value/product/update call are
+ * explicit host/device transfer boundaries; there is no host fallback.  All
+ * indices use zero-based C conventions.
  *
  * `weights` is output-major (output*n_inputs + input), `query_x` is
  * feature-major (input*n_query + query), and `outputs` is output-major
@@ -46,6 +49,37 @@ int fortml_cuda_dense_plan_vjp(void *opaque_plan, const double *query_x,
                                const double *output_bar, int n_query,
                                double *query_x_bar, double *weights_bar,
                                double *bias_bar);
+
+/* One fixed, no-autodiff training step for the resident affine layer.
+ *
+ * The objective is mean 1/2 squared error over all output/query pairs.  The
+ * query and target batches are copied to the selected device, the gradients
+ * are formed there, and the resident weights and bias are updated in place:
+ *
+ *     theta <- theta - learning_rate * grad(mean(1/2 * (f_theta(x)-y)^2)).
+ *
+ * `query_x` is feature-major and `target` is output-major, following the
+ * layouts documented above.  The scalar loss is copied back to the host.
+ * This bounded primitive deliberately does not expose an optimizer or
+ * autodiff graph; callers that need either should use the CPU objective APIs.
+ */
+int fortml_cuda_dense_plan_train_mse(
+    void *opaque_plan, const double *query_x, const double *target, int n_query,
+    double learning_rate, double *loss);
+
+/* Copy the resident parameters to the host.  This is an explicit snapshot,
+ * not an implicit host fallback for prediction or training. */
+int fortml_cuda_dense_plan_get_parameters(void *opaque_plan, double *weights,
+                                          double *bias);
+
+/* Explicit transfer and residency accounting for this plan.  Byte counters
+ * include model upload and all batch/result copies made by the ABI calls;
+ * resident_bytes is the model allocation that remains on the selected
+ * device. */
+int fortml_cuda_dense_plan_transfer_stats(void *opaque_plan,
+                                          uint64_t *host_to_device_bytes,
+                                          uint64_t *device_to_host_bytes,
+                                          uint64_t *resident_bytes);
 
 int fortml_cuda_dense_plan_destroy(void *opaque_plan);
 
