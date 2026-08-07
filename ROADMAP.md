@@ -120,7 +120,7 @@ derivatives, refusal behavior, and an independent benchmark oracle all exist.
 | Reference family | FortML coverage today | Remaining release gate |
 | --- | --- | --- |
 | scikit-learn linear/GLM | Dense linear regression, logistic/softmax, bounded logistic and MLP L-BFGS-B | Ridge/lasso/elastic-net/robust/quantile/Poisson/Gamma/Tweedie, SGD estimators, solver parity, calibration, multioutput and partial-fit contracts |
-| scikit-learn Naive Bayes | GaussianNB, BernoulliNB, MultinomialNB, ComplementNB | CategoricalNB, sparse counts, calibrated and incremental variants |
+| scikit-learn Naive Bayes | GaussianNB, BernoulliNB, MultinomialNB, ComplementNB, CategoricalNB with weighted sorted categories and unknown-category policy | sparse counts, calibrated and incremental variants |
 | scikit-learn neighbors/margins | No public estimator | kNN/radius search, KD/ball trees, linear/kernel SVM/SVR, one-class SVM, deterministic ties and input/parameter products |
 | scikit-learn trees/ensembles | Stumps, weighted CART, squared boosting, XGBoost-style second-order binary/multiclass lanes | Random/extra forests, bagging, AdaBoost, histogram/leaf-wise growth, missing/categorical/ranking/monotonic/interaction constraints, staged and warm-start APIs |
 | scikit-learn unsupervised | Basis maps, validation splitters, variational primitives | PCA/ICA/NMF/TruncatedSVD, k-means/GMM/density/manifold/outlier methods, sparse/categorical preprocessing, model persistence |
@@ -622,8 +622,11 @@ state, scoring, and refusal rules.
 - [x] Add weighted Multinomial, Bernoulli, and Complement naive Bayes with
   stable log-probability products and declared input/parameter derivative
   boundaries.
-- [ ] Add Categorical naive Bayes, LDA/QDA, and discriminant shrinkage with
-  stable log-probability products.
+- [x] Add Categorical naive Bayes with sorted per-feature category offsets,
+  weighted class priors and likelihood smoothing, explicit unknown-category
+  error/ignore policies, and a discrete-input JVP refusal test.
+- [ ] Add LDA/QDA and discriminant shrinkage with stable log-probability
+  products.
 - [ ] Add k-means/minibatch k-means, Gaussian mixtures, Bayesian mixtures,
   spectral and agglomerative clustering, DBSCAN/OPTICS, affinity propagation,
   BIRCH, and graph-connected components where dependencies and memory limits
@@ -1077,7 +1080,7 @@ peak memory, and batch-size scaling with the same correctness gate as training.
   PyTorch/JAX/XGBoost availability or refusal rows. The release record is
   [`results/FEATURES.md`](../fortml-bench/results/FEATURES.md).
 - [x] Add the exact depth-limited recursive XGBoost-style squared/logistic lane
-  (including depth/node diagnostics) and the
+  (including depth/node diagnostics), explicit learned/forced NaN routing, and the
   fitted-scaler plus binary and one-vs-rest multiclass Laplace GP
   logistic/probit lanes with independent NumPy oracles. The release records are
   [`results/XGBOOST.md`](../fortml-bench/results/XGBOOST.md) and
@@ -1088,8 +1091,8 @@ peak memory, and batch-size scaling with the same correctness gate as training.
   records are [`results/COMPLEMENT_NB.md`](../fortml-bench/results/COMPLEMENT_NB.md)
   and [`results/ONE_HOT_ENCODER.md`](../fortml-bench/results/ONE_HOT_ENCODER.md).
 - [x] Add AdamW training and fixed full-batch MLP hypergradient lanes with
-  independent NumPy recurrences/finite differences, explicit CPU-only and CUDA
-  refusal rows, and clean revision provenance. The release record is
+  independent NumPy recurrences/finite differences, passing FortML release apps,
+  explicit CPU-only and CUDA refusal rows, and clean revision provenance. The release record is
   [`results/ADAMW_HYPERGRADIENT.md`](../fortml-bench/results/ADAMW_HYPERGRADIENT.md).
 - [ ] Define one versioned result schema for correctness, train time, predict
   time, peak host and device memory, compiler, flags, dependency revisions,
