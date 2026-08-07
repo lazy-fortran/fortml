@@ -207,7 +207,7 @@ contains
         accuracy = real(count(multiclass_predicted == multiclass_labels), dp) &
             /real(n_samples, dp)
         if (.not. status_ok(status)) error stop "GP multiclass benchmark failed"
-        write (*, '(a,i0,a,i0,a,es24.16,a,es24.16,a,es24.16)') &
+        write (*, '(a,i0,a,i0,a,es24.16,a,es24.16,a,es24.16,a,es24.16)') &
             "gp_classification_multiclass,", n_samples, ",", n_features, ",", &
             elapsed_multiclass, ",", accuracy, ",", sum(multiclass_probabilities), ",", &
             real(multiclass_state%total_iterations, dp)
