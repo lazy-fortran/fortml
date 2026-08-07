@@ -73,6 +73,15 @@ contains
         if (.not. status_ok(status)) then
             call fail(label//" input derivative status", failures)
         else
+            call kernel%input_derivatives(x1(1, :), x1(1, :), value, gradient_x1, &
+                gradient_x2, hessian, status)
+            if (.not. status_ok(status) .or. maxval(abs(gradient_x1)) > 2.0e-13_real64 .or. &
+                maxval(abs(gradient_x2)) > 2.0e-13_real64 .or. &
+                any(.not. (hessian == hessian))) then
+                call fail(label//" coincident input limit", failures)
+            end if
+            call kernel%input_derivatives(x1(1, :), x2(1, :), value, gradient_x1, &
+                gradient_x2, hessian, status)
             h = 2.0e-4_real64
             do k = 1, 2
                 x_plus = x1(1, :)
