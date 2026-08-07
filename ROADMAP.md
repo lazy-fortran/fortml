@@ -302,7 +302,7 @@ The source inventory is dated 2026-08-07.
 | GP derivatives and hyperparameters | Partial | Exact GP likelihood and prediction products include parameter gradients and HVPs. Mixed value and first-derivative observations can be fitted and predicted. | Exact, derivative, multi-output, sparse, and matrix-free GP families expose documented trainable parameters, scalar objectives, parameter gradients, and train-state adapters. |
 | GPU and device execution | Partial | Kernel, structured, and sparse operator products have selected OpenACC or CUDA paths, including resident CG for kernel operators. `fortml_device` now gives callers an explicit CPU/CUDA selector, runtime capability probe, backend identity, residency ownership metadata, transfer counters, and structured CUDA refusal. | Supported training and prediction workflows keep model, optimizer, and batch state resident on a selected device and have CPU parity tests. |
 | Serialization and distributed execution | Missing | No public model-file or distributed-execution contract exists. | Versioned model and trainer files round-trip across supported compilers, and MPI training or inference agrees with a one-rank oracle. |
-| Benchmark coverage | Partial | Correctness-gated model and GP applications feed release harnesses in `../fortml-bench`. | Every completed parity package has a pinned external oracle, release timings, memory measurements, provenance, raw data, and a maintained report. |
+| Benchmark coverage | Partial | Correctness-gated model and GP applications feed release harnesses in `../fortml-bench`; current release lanes include Bernoulli/MultinomialNB, MLP SGD/Nesterov, differentiable imputation, basis/pipeline, exact/approximate GP, and boosting workloads. | Every completed parity package has a pinned external oracle, release timings, memory measurements, provenance, raw data, and a maintained report. |
 
 ### WP1: classification
 
@@ -1288,6 +1288,12 @@ The maintained reports and their raw artifacts are in `../fortml-bench/results`:
 - [`BERNOULLI_NB.md`](../fortml-bench/results/BERNOULLI_NB.md), backed by
   `bernoulli_naive_bayes.csv` for relaxed Bernoulli Naive Bayes, its input JVP,
   and the native FortML release-app protocol.
+- [`MULTINOMIAL_NB.md`](../fortml-bench/results/MULTINOMIAL_NB.md), backed by
+  `multinomial_naive_bayes.csv` for token-mass smoothing, stable probabilities,
+  predictions, and complete input-JVP output arrays.
+- [`TRAINING_IMPUTER.md`](../fortml-bench/results/TRAINING_IMPUTER.md), backed
+  by `training_imputer.csv` for Adam-independent momentum-SGD/Nesterov MLP
+  trajectories and mean/median/constant imputer transform/JVP/VJP products.
 - Corrected GRBCM evidence in `scalable_gp_grbcm_corrected.csv` and
   `scalable_gp_grbcm_corrected_train_seconds.png`.
 - Current partition and dimension evidence in `scalable_gp_clustered.csv` and
