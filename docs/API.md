@@ -102,6 +102,7 @@ eight-activation oracle, and repeated resident-batch evidence.
 | `one_hot_encoder_t` | Dense one-hot `transform` | Refused: integer categories have no canonical tangent space | Refused: integer categories have no canonical cotangent space | No |
 | `mlp_t` | `predict` | Parameters and inputs | Parameters and inputs | Weighted-output HVP |
 | `mlp_classifier_t` | Logits, probabilities, and labels | Parameter/input JVP, probability JVP | Parameter/input VJP, probability VJP | No |
+| `mlp_binary_classifier_t` | One-logit sigmoid probabilities and binary labels | Parameter/input JVP, probability JVP | Parameter/input VJP, probability VJP; weighted BCE gradient | Exact weighted BCE parameter HVP |
 | `mlp_chain_t` | Sequential composition of named MLP stages | Packed all-stage parameters and inputs | Packed all-stage parameters and inputs | Differentiated reverse chain rule for parameters and inputs |
 | `mlp_training_objective_t` | MSE+L2 scalar objective | Packed network/L2 JVP | Packed network/L2 gradient and scalar VJP | Joint network/L2 HVP |
 | `mlp_grouped_training_objective_t` | MSE with one positive log-L2 coefficient per named parameter range | Packed network/log-L2 JVP | Packed network/log-L2 gradient and scalar VJP | Exact mixed network/log-L2 HVP |
@@ -1549,8 +1550,8 @@ softmax, and `predict` maps the largest probability back to the stored labels.
 `classes`, `feature_count`, `class_count`, `parameter_count`, `parameters`,
 `set_parameters`, and `fitted` expose the state. `loss_gradient` returns the
 cross-entropy value and packed network gradient for a fitted model. Its
-optional sample-weight vector uses the same positive-mass reduction. Binary,
-multilabel, and GP likelihood classifier adapters remain roadmap work;
+optional sample-weight vector uses the same positive-mass reduction.
+`mlp_binary_classifier_t` is the one-logit sigmoid counterpart;
 `ordinal_logistic_classifier_t` is the separate cumulative-logit contract.
 
 `decision_function_jvp`/`decision_function_vjp` provide exact fixed-state
@@ -1561,6 +1562,36 @@ softmax. The device methods `decision_function_device`,
 selected CUDA contexts return `FORTNUM_NOT_IMPLEMENTED` until a resident MLP
 classifier kernel is linked. The derivative tests cover central differences,
 the VJP/JVP duality identity, and the explicit device refusal.
+
+### `fortml_mlp_binary_classifier`
+
+`mlp_binary_classifier_t%fit(x,labels,status[,hidden_layer_sizes,options,state,
+sample_weight,class_weight])` builds a deterministic MLP with one linear logit
+and minimizes weighted binary cross-entropy-with-logits with Adam. Labels may
+be arbitrary integers, but exactly two distinct values must occur; `classes()`
+stores them in ascending order and defines probability columns one (negative)
+and two (positive). `sample_weight` is nonnegative and uses positive-weight-mass
+normalisation. A positive `class_weight(2)` vector follows the sorted class
+order. The options provide hidden activation, seeded initialization and
+shuffling, minibatches, L2 regularisation, early stopping, and best-state
+restoration.
+
+`decision_function` returns one score per row, `predict_proba` returns the two
+stable sigmoid probabilities, and `predict` uses the nonnegative-logit tie rule
+for the second class. `feature_count`, `parameter_count`, `parameters`,
+`set_parameters`, and `fitted` expose the packed MLP state. `loss_gradient`
+returns the weighted BCE plus L2 value and packed gradient for a fitted model;
+`loss_hvp` returns its exact packed-parameter Hessian-vector product, including
+the nonlinear MLP term and the L2 contribution.
+
+`decision_function_jvp`/`decision_function_vjp` and
+`predict_proba_jvp`/`predict_proba_vjp` are exact products with respect to both
+packed parameters and continuous input rows. The device methods dispatch to a
+selected CPU context; selected CUDA contexts return
+`FORTNUM_NOT_IMPLEMENTED` until a resident MLP classifier kernel is linked.
+The independent `test_mlp_binary_classifier` oracle checks fit behavior,
+finite-difference JVP/gradient/HVP products, VJP duality, deterministic Adam,
+and the typed CUDA refusal.
 
 ### `fortml_tree`
 
