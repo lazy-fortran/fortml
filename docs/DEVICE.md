@@ -135,6 +135,19 @@ and checks the result against an independent weighted NumPy-equivalent oracle
 on the selected GPU. This is transfer-inclusive metric evidence, not a claim
 that a complete estimator or trainer is resident.
 
+## Resident CUDA weighted-MSE plan
+
+The C ABI in `src/validation/fortml_cuda_mse_plan.h` provides the resident
+no-autodiff counterpart. `fortml_cuda_mse_plan_create` uploads target,
+prediction, and optional row weights once; repeated
+`fortml_cuda_mse_plan_execute` calls keep those arrays and the reduction
+workspace on the selected device; and `fortml_cuda_mse_plan_destroy` releases
+them. Only block partials and the final scalar cross the device boundary per
+execute. `test/run_cuda_mse_plan.sh` checks five executions and invalid-size
+refusal against an independent CPU oracle. This fixed reduction primitive does
+not claim end-to-end estimator training, and it does not replace FortAD/FortSym
+for autodiff-bearing paths.
+
 ## New estimator contracts
 
 The weighted elastic-net regressor, OVO logistic classifier, Laplace GP
