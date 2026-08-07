@@ -1011,9 +1011,10 @@ weights affect the base score and every gradient/Hessian reduction. The
 `tree_method="hist"` select exhaustive split enumeration or deterministic
 weighted-quantile histogram growth. In histogram mode, `max_bin` bounds the
 number of finite bins per node; every NaN remains an explicit missing bin and
-is routed by `missing_policy` (`error`, `learn`, `left`, or `right`). With
-`max_bin` at least the number of finite values, histogram candidates reduce to
-the exact path. The remaining options control estimator count, learning rate,
+is routed by `missing_policy` (`error`, `learn`, `left`, or `right`). The
+histogram policy remains weighted-quantile even when `max_bin` is large; use
+`tree_method="exact"` when exhaustive split equivalence is required. The
+remaining options control estimator count, learning rate,
 minimum leaf size, L1/L2 leaf regularization, split gamma, and minimum child
 Hessian. Candidate splits aggregate exact gradients and Hessians and use the
 regularized gain. `predict_margin`, `predict`, `predict_proba`,
@@ -1031,7 +1032,8 @@ refusal still applies.
 structured refusal at a discontinuity. `max_depth` grows each exact tree
 recursively, with deterministic feature/threshold tie ordering and
 regularized Newton leaves at every node. Histogram quantile approximation,
-categorical features, ranking, and constraints remain separate policies. The
+categorical features, ranking, and interaction constraints remain separate
+policies. The
 `missing_policy` option is `error` by default and rejects IEEE NaNs. `learn`
 evaluates both default directions for every finite threshold and stores the
 strictly best direction (left wins exact ties); `left` and `right` force a
