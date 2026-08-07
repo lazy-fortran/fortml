@@ -580,8 +580,9 @@ hyperparameter-search seam for neural training. `mlp_loss_hvp` adds the exact jo
 product for a parameter direction and an L2 direction, including the mixed
 parameter/L2 block used by outer hyperparameter optimization. The HVP is
 checked against independent central differences for linear and nonlinear MLP
-fixtures. Optimizer-trajectory, learning-rate, and Adam-beta hypergradients
-remain separate contracts.
+fixtures. The fixed full-batch learning-rate/L2 trajectory contract is provided
+by `fortml_mlp_hypergradient`; stochastic optimizer trajectories, schedules,
+and Adam-beta hypergradients remain separate contracts.
 
 The same loss entry point accepts optional `sample_weight`, `reduction`, and
 `diagnostics` arguments. `MLP_REDUCTION_MEAN` divides the weighted data loss
