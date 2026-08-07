@@ -264,9 +264,26 @@ contains
             return
         end if
         if (self%has_role(FORTML_ROLE_CLASSIFIER) .and. &
+                .not. self%has_role(FORTML_ROLE_PREDICTOR)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "estimator capability: classifier needs predictor role")
+            return
+        end if
+        if (self%has_role(FORTML_ROLE_REGRESSOR) .and. &
+                .not. self%has_role(FORTML_ROLE_PREDICTOR)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "estimator capability: regressor needs predictor role")
+            return
+        end if
+        if (self%has_role(FORTML_ROLE_CLASSIFIER) .and. &
                 self%n_classes < 2) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "estimator capability: classifier needs at least two classes")
+            return
+        end if
+        if (self%has_role(FORTML_ROLE_REGRESSOR) .and. self%n_targets < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "estimator capability: regressor needs a target count")
             return
         end if
         if (self%supports_transform .and. &
