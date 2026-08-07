@@ -2,7 +2,7 @@ program test_cuda_metric_contract
     !! Independent oracle for the weighted CUDA MSE reduction boundary.
     !! The ordinary test build links the typed unavailable stub; a CUDA
     !! harness links the native .cu implementation and exercises parity.
-    use, intrinsic :: iso_fortran_env, only: dp => real64, error_unit
+    use, intrinsic :: iso_fortran_env, only: dp => real64, error_unit, int64
     use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_DOMAIN_ERROR, &
         FORTNUM_NOT_IMPLEMENTED
     use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU, &
@@ -43,6 +43,12 @@ program test_cuda_metric_contract
         call check(status_ok(status), "native CUDA weighted MSE status", failures)
         call check(abs(value - expected) < 5.0e-12_dp, &
             "native CUDA weighted MSE matches direct oracle", failures)
+        call check(cuda%host_to_device_transfers == 1 .and. &
+            cuda%device_to_host_transfers == 1, &
+            "native CUDA metric records explicit transfer events", failures)
+        call check(cuda%host_to_device_bytes == 160_int64 .and. &
+            cuda%device_to_host_bytes == 8_int64 .and. .not. cuda%resident, &
+            "native CUDA metric records transfer bytes and releases residency", failures)
     else
         call check(status%code == FORTNUM_NOT_IMPLEMENTED .and. value == 0.0_dp, &
             "unavailable CUDA metric refuses without host fallback", failures)
