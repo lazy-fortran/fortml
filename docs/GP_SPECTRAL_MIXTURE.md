@@ -5,12 +5,13 @@ scales, status)` adds a stationary spectral-mixture leaf to the exact GP
 kernel tree.  It follows the GPyTorch convention
 
 ```
-k(tau) = sum_q w_q prod_d exp(-2*pi^2*tau_d^2*v_qd)
+k(tau) = sum_q w_q prod_d exp(-2*pi^2*tau_d^2*s_qd^2)
                          * cos(2*pi*tau_d*mu_qd)
 ```
 
-where `tau = x1 - x2`, `weights` and `scales` are strictly positive, and
-`means` are signed frequencies.  `means` and `scales` have shape
+where `tau = x1 - x2`, `weights` and positive frequency-standard-deviation
+`scales` are strictly positive, and `means` are signed frequencies.  `means`
+and `scales` have shape
 `(num_mixtures, input_dim)`.  The constructor validates dimensions, positivity,
 and finiteness before allocating state.
 

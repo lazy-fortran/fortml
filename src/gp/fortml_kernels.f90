@@ -150,9 +150,10 @@ contains
         !! Construct a stationary spectral-mixture kernel.
         !!
         !! For lag ``tau`` the q-th component is
-        !! ``w_q prod_d exp(-2*pi^2*tau_d^2*v_qd)*cos(2*pi*tau_d*mu_qd)``.
-        !! ``weights`` and ``scales`` are positive physical values and are
-        !! packed as logarithms; ``means`` are signed frequencies.  This is
+        !! ``w_q prod_d exp(-2*pi^2*tau_d^2*s_qd**2)*cos(2*pi*tau_d*mu_qd)``.
+        !! ``weights`` and frequency standard deviations ``scales`` are positive
+        !! physical values and are packed as logarithms; ``means`` are signed
+        !! frequencies.  This is
         !! the same parameterization used by GPyTorch's
         !! ``SpectralMixtureKernel`` and composes with the ordinary sum and
         !! product kernel trees.
@@ -2426,9 +2427,9 @@ contains
                     do d = 1, self%input_dim
                         scale_log_direction = direction(base + d)
                         mean_direction = direction(base + self%input_dim + d)
-                        av = -0.5_dp*two_pi*two_pi*tau(d)*tau(d)*scales(d)
+                        av = -two_pi*two_pi*tau(d)*tau(d)*scales(d)*scales(d)
                         c_mu = -two_pi*tau(d)*sin(two_pi*tau(d)*means(d))
-                        mean_dot = exp(-0.5_dp*two_pi*two_pi*tau(d)*tau(d)*scales(d))* &
+                        mean_dot = exp(-0.5_dp*two_pi*two_pi*tau(d)*tau(d)*scales(d)*scales(d))* &
                             (av*scale_log_direction*cos(two_pi*tau(d)*means(d)) + &
                             c_mu*mean_direction)
                         factors_dot(d) = mean_dot
@@ -2509,7 +2510,7 @@ contains
                     parameter_bar(base) = parameter_bar(base) + matrix_bar(i, j)* &
                         weight*product_value
                     do d = 1, self%input_dim
-                        av = -2.0_dp*acos(-1.0_dp)**2*tau(d)*tau(d)*scales(d)
+                        av = -4.0_dp*acos(-1.0_dp)**2*tau(d)*tau(d)*scales(d)*scales(d)
                         parameter_bar(base + d) = parameter_bar(base + d) + matrix_bar(i, j)* &
                             weight*product_value*av
                         mean_product = means_derivative(d)*spectral_product_except(factors, d)
@@ -2578,11 +2579,11 @@ contains
         do d = 1, self%input_dim
             scale_direction = direction(base + d)
             mean_direction = direction(base + self%input_dim + d)
-            av = -0.5_dp*two_pi*two_pi*tau(d)*tau(d)*scales(d)
-            factors_parameter_dot(d) = exp(-0.5_dp*two_pi*two_pi*tau(d)*tau(d)*scales(d))* &
+            av = -two_pi*two_pi*tau(d)*tau(d)*scales(d)*scales(d)
+            factors_parameter_dot(d) = exp(-0.5_dp*two_pi*two_pi*tau(d)*tau(d)* &
+                scales(d)*scales(d))* &
                 (av*scale_direction*cos(two_pi*tau(d)*means(d)) + &
-                means_derivative(d)/exp(-0.5_dp*two_pi*two_pi*tau(d)*tau(d)*scales(d))* &
-                mean_direction)
+                (-two_pi*tau(d)*sin(two_pi*tau(d)*means(d)))*mean_direction)
             product_dot = product_dot + factors_parameter_dot(d)* &
                 spectral_product_except(factors, d)
         end do
@@ -2595,16 +2596,16 @@ contains
         gradients_dot(1) = component_dot
         do d = 1, self%input_dim
             scale_direction = direction(base + d)
-            av = -0.5_dp*two_pi*two_pi*tau(d)*tau(d)*scales(d)
-            av_dot = av*scale_direction
+            av = -two_pi*two_pi*tau(d)*tau(d)*scales(d)*scales(d)
+            av_dot = 2.0_dp*av*scale_direction
             gradients(1 + d) = component*av
             gradients_dot(1 + d) = component_dot*av + component*av_dot
             mean_product = means_derivative(d)*spectral_product_except(factors, d)
             mean_second(d) = -two_pi*two_pi*tau(d)*tau(d)* &
                 cos(two_pi*tau(d)*means(d))* &
-                exp(-0.5_dp*two_pi*two_pi*tau(d)*tau(d)*scales(d))
+                exp(-0.5_dp*two_pi*two_pi*tau(d)*tau(d)*scales(d)*scales(d))
             mean_product_dot = (mean_second(d)*direction(base + self%input_dim + d) + &
-                exp(-0.5_dp*two_pi*two_pi*tau(d)*tau(d)*scales(d))*av* &
+                exp(-0.5_dp*two_pi*two_pi*tau(d)*tau(d)*scales(d)*scales(d))*av* &
                 scale_direction*(-two_pi*tau(d)*sin(two_pi*tau(d)*means(d))))* &
                 spectral_product_except(factors, d)
             do e = 1, self%input_dim
@@ -2637,13 +2638,13 @@ contains
             scales(d) = exp(self%log_parameters(base + 1 + d))
             means(d) = self%log_parameters(base + 1 + self%input_dim + d)
             argument = two_pi*tau(d)*means(d)
-            exponential = exp(-0.5_dp*two_pi*two_pi*tau(d)*tau(d)*scales(d))
+            exponential = exp(-0.5_dp*two_pi*two_pi*tau(d)*tau(d)*scales(d)*scales(d))
             cosine_value = cos(argument)
             sine_value = sin(argument)
-            exp_tau = -two_pi*two_pi*tau(d)*scales(d)*exponential
+            exp_tau = -two_pi*two_pi*tau(d)*scales(d)*scales(d)*exponential
             exp_second = exponential*( &
-                -two_pi*two_pi*scales(d) + &
-                two_pi**4*tau(d)*tau(d)*scales(d)*scales(d))
+                -two_pi*two_pi*scales(d)*scales(d) + &
+                two_pi**4*tau(d)*tau(d)*scales(d)**4)
             cosine_tau = -two_pi*means(d)*sine_value
             cosine_second = -two_pi*two_pi*means(d)*means(d)*cosine_value
             factors(d) = exponential*cosine_value

@@ -155,7 +155,7 @@ contains
             component = weights(q)
             do d = 1, size(x1)
                 tau = x1(d) - x2(d)
-                component = component*exp(-0.5_dp*two_pi*two_pi*tau*tau*scales(q, d))* &
+                component = component*exp(-0.5_dp*two_pi*two_pi*tau*tau*scales(q, d)**2)* &
                     cos(two_pi*tau*means(q, d))
             end do
             value = value + component
