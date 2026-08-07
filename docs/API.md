@@ -699,7 +699,7 @@ labels.  `probability_calibration_options_t%method` selects
 pool-adjacent-violators).  Temperature scaling maps a pre-oriented logit
 `s` to `sigmoid(s/T)` with fitted `T > 0`; unlike Platt scaling it does not
 fit an intercept.  Labels are retained in ascending order and
-`predict_proba` returns columns `[1-p,p]` in that class order.  Both methods
+`predict_proba` returns columns `[1-p,p]` in that class order.  Each fitted method
 validate finite scores, nonnegative weights, positive total mass, and positive
 mass for each class.  The temperature fit uses a positive-domain damped
 Newton solve in inverse temperature, while the sigmoid fit uses a stable
@@ -713,8 +713,9 @@ outside the fitted range.
 temperature and sigmoid calibration and for isotonic interpolation away from
 knots.  `predict_proba_parameter_jvp` and `_vjp` expose the temperature
 product with respect to `[T]` and the two sigmoid products with respect to
-`[slope,intercept]`.  Isotonic products through fitted PAVA parameters, and score products
-at a knot where the active interpolation segment is ambiguous, return
+`[slope,intercept]`.  Isotonic products through fitted PAVA parameters, and
+score products at a knot where the active interpolation segment is ambiguous,
+return
 `FORTNUM_NOT_IMPLEMENTED` rather than differentiating through an active-set
 change.  `parameters`, `parameter_count`, `classes`, `method`, and `fitted`
 expose deterministic state.  `predict` uses the second class only when its
