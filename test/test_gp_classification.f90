@@ -132,6 +132,14 @@ program test_gp_classification
         maxval(abs(sum(probabilities, dim=2) - 1.0_dp)) < 2.0e-14_dp .and. &
         probabilities(1, 1) > probabilities(1, 2) .and. &
         probabilities(5, 2) > probabilities(5, 1), "probit Laplace fit", failures)
+    call probit_model%predict_latent_jvp(x_test, x_dot, mean, mean_dot, variance, &
+        variance_dot, status)
+    mean_bar = [0.1_dp, -0.3_dp, 0.5_dp, 0.2_dp, -0.4_dp]
+    variance_bar = [0.6_dp, -0.2_dp, 0.3_dp, -0.5_dp, 0.7_dp]
+    call probit_model%predict_latent_vjp(x_test, mean_bar, variance_bar, x_bar, status)
+    call check(status_ok(status) .and. abs(sum(x_bar(:, 1)*x_dot(:, 1)) - &
+        (sum(mean_bar*mean_dot) + sum(variance_bar*variance_dot))) < 3.0e-6_dp, &
+        "probit latent input VJP dot-product identity", failures)
 
     call unfitted%predict_proba(x_test, probabilities, status)
     call check(.not. status_ok(status), "unfitted prediction refusal", failures)
