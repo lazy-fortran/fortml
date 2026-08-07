@@ -9,7 +9,7 @@ and implementation limits in [`docs/DESIGN.md`](docs/DESIGN.md) and
 
 | Compiler | Command | Result |
 | --- | --- | --- |
-| GNU Fortran | `fo` | Static, build, test, and lint checks passed. The fresh 2026-08-07 run passed all 139 tests (307 modules; 758 build units). See [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
+| GNU Fortran | `fo` | Static, build, test, and lint checks passed. The fresh 2026-08-07 run passed all 140 tests (309 modules; 759 build units). See [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
 | NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded compiler lane. The checked-in NVIDIA log predates the latest 130-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
@@ -22,7 +22,9 @@ forest plan boundary, PCA-initialized linear autoencoder, seeded exact-GP
 multistart, multilabel/ordinal neural losses, squared-log XGBoost, named MLP
 parameter layout, softmax objective products, and validation-stopping XGBoost
 slices, binary MLP loss products, trainable exact-GP mean products, ARD GP
-products, XGBoost sampling, and XGBoost serialization. The build emits GNU
+products, XGBoost sampling, XGBoost serialization, and the transform-aware
+hyperparameter registry. The independent CUDA gate additionally covers the
+resident dense-affine value/JVP path. The build emits GNU
 array-temporary warnings in existing GP benchmark call boundaries. They are
 non-fatal and isolated to benchmark argument construction; lint and all
 behavioral tests pass. NVIDIA compiler coverage remains an
