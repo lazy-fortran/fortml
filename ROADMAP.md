@@ -1108,6 +1108,17 @@ peak memory, and batch-size scaling with the same correctness gate as training.
   independent NumPy recurrences/finite differences, passing FortML release apps,
   explicit CPU-only and CUDA refusal rows, and clean revision provenance. The release record is
   [`results/ADAMW_HYPERGRADIENT.md`](../fortml-bench/results/ADAMW_HYPERGRADIENT.md).
+- [x] Add a centered dense PCA lane with an independent NumPy thin-SVD oracle,
+  scikit-learn context rows, deterministic-sign/orthogonality guards, and a
+  FortML release-app timing. The raw record is
+  [`results/pca.csv`](../fortml-bench/results/pca.csv); complete fitted-array
+  export remains explicitly open in
+  [`results/PCA.md`](../fortml-bench/results/PCA.md).
+- [x] Add an Adagrad accumulated-square lane with independent recurrence and
+  split/resume checks plus a FortOpt release-app norm/timing gate. The raw
+  record is [`results/adagrad.csv`](../fortml-bench/results/adagrad.csv), with
+  the contract documented in
+  [`results/ADAGRAD.md`](../fortml-bench/results/ADAGRAD.md).
 - [ ] Define one versioned result schema for correctness, train time, predict
   time, peak host and device memory, compiler, flags, dependency revisions,
   hardware, seed, warmup, repetitions, and refusal reason.
