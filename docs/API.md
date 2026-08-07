@@ -123,6 +123,7 @@ repeated resident-batch evidence.
 | `ridge_regression_t` | Weighted `predict` | Packed-parameter and continuous-input JVP | Packed-parameter and continuous-input VJP | No |
 | `elastic_net_regression_t` | Weighted `predict` | Packed-parameter and continuous-input JVP | Packed-parameter and continuous-input VJP | No |
 | `linear_svr_regression_t` | Weighted epsilon-insensitive `predict` | Packed-parameter and continuous-input JVP | Packed-parameter and continuous-input VJP; objective value/gradient | No |
+| `radius_neighbors_regressor_t` | Closed-radius scalar weighted average | Refused across discrete neighbor-selection boundaries | Refused across discrete neighbor-selection boundaries | No |
 | `glm_regression_t` | Weighted positive-response Poisson/Gamma log-link `predict` | Packed-parameter and continuous-input JVP | Packed-parameter and continuous-input VJP; value/gradient objective | No |
 | `pca_t` | Centered projection and reconstruction | Input JVP for a fixed fitted state | Input VJP for a fixed fitted state | Fit-time SVD derivatives are not exposed |
 | `linear_autoencoder_t` | Tied centered linear encode/decode/reconstruct, initialized from PCA | Input JVP for encode and reconstruction | No parameter VJP (weights are fixed PCA state) | No |
@@ -1068,6 +1069,24 @@ the fitted state. Neighbor selection is discontinuous, so input JVP/VJP calls
 return `FORTNUM_NOT_IMPLEMENTED`. CPU dispatch is complete; CUDA is an
 explicit `FORTNUM_NOT_IMPLEMENTED` refusal until a resident radius-search
 kernel is linked, with no host fallback.
+
+### `fortml_radius_neighbors_regression`
+
+`radius_neighbors_regressor_t%fit(x,targets,status[,radius,weights,
+sample_weight,outlier_value])` stores a dense scalar-target training set and
+averages every row within the closed squared-Euclidean radius. Uniform and
+inverse-distance averaging use `RADIUS_REGRESSION_WEIGHTS_UNIFORM` and
+`RADIUS_REGRESSION_WEIGHTS_DISTANCE`; sample weights must be finite,
+nonnegative, and have positive total mass. An optional finite `outlier_value`
+is returned for an empty neighborhood; without it, prediction returns
+`FORTNUM_DOMAIN_ERROR`.
+
+`predict`, `radius`, `weighting`, `feature_count`, `sample_count`, and
+`device_supported` expose the fitted state. Radius membership is discrete, so
+`predict_jvp` and `predict_vjp` return `FORTNUM_NOT_IMPLEMENTED` rather than
+claiming a zero derivative across a selection boundary. CPU dispatch is
+complete. CUDA is an explicit `FORTNUM_NOT_IMPLEMENTED` refusal until a
+resident radius-search reduction is linked; no hidden host fallback is used.
 
 ### `fortml_preprocessing`
 
