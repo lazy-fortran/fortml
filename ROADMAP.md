@@ -951,6 +951,12 @@ products and CUDA execution return typed refusals. Its independent behavioral
 oracle is `test_mlp_calibrated_classifier` and its API contract is documented
 in `docs/MLP_CALIBRATED_CLASSIFIER.md`.
 
+The companion release application `app/fortml_bench_mlp_calibrated_classifier`
+emits a complete-array temperature-calibration workload for the benchmark
+harness.  It records fit/predict timings and a row-oriented CSV of labels,
+predictions, and probability columns; the external NumPy/scikit-learn oracle
+and provenance row remain a `fortml-bench` integration task.
+
 The sibling device-contract report now also includes the resident forest
 prediction gate; higher-level Fortran forest integration remains an explicit
 CUDA refusal until private CART storage is safely bound to the C ABI.
