@@ -203,7 +203,7 @@ only listed as gaps:
 
 - The resident CUDA dense-affine plan now exposes forward-mode `jvp` and
   reverse-mode `vjp` products for feature, weight, bias, and output cotangents.
-  Its native kernels cover all eight MLP activations, keep the immutable layer
+  Its native kernels cover all eight MLP activations, keep the resident layer
   resident, and have independent CPU value/JVP/VJP oracles. It now also has a
   resident full-batch mean-squared-error update with parameter snapshots and
   explicit successful host/device byte counters; ordinary builds retain typed

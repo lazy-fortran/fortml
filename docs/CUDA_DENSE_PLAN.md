@@ -24,7 +24,7 @@ tangents and returns both the value and forward tangent. The native kernel
 keeps the resident weights and evaluates the affine tangent followed by the
 analytic derivative of each supported activation. An ordinary GNU build links
 a stub and returns `FORTNUM_NOT_IMPLEMENTED` without changing output
-sentinels. Its reverse `vjp` keeps the same immutable layer resident and
+sentinels. Its reverse `vjp` keeps the same resident layer and
 returns query, weight, and bias cotangents for the output cotangent; no host
 autodiff callback is involved. The `fortml_device` capability probe includes
 this native availability symbol.
