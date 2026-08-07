@@ -277,3 +277,4 @@ and [test_sparse_operator_device.f90](../test/test_sparse_operator_device.f90).
 | Banded precision, solves, and determinants | [test_banded_precision.f90](../test/test_banded_precision.f90) |
 | Lanczos log determinant and predictive variance | [test_lanczos.f90](../test/test_lanczos.f90) |
 | Named parameter blocks | [test_parameter_registry.f90](../test/test_parameter_registry.f90) |
+| Transform-aware hyperparameter vectors | [test_hyperparameter_registry.f90](../test/test_hyperparameter_registry.f90) |

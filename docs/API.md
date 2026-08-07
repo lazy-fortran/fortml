@@ -2512,6 +2512,26 @@ unique. Blocks retain insertion order. The public callback contracts are
 binds one named range to a live `mlp_chain_t`, so a composed network can share
 the same flat registry as MLPs, kernels, and estimators.
 
+### `fortml_hyperparameter_registry`
+
+`hyperparameter_block_t` adds optimizer metadata to a named block. Use
+`initialize` for a live callback target or `initialize_values` for an owned
+vector. `HYPERPARAMETER_IDENTITY`, `HYPERPARAMETER_LOG`, and
+`HYPERPARAMETER_LOGIT` define the physical/unconstrained coordinate maps;
+logit blocks require explicit finite distinct bounds. Blocks expose
+`get/set_physical`, `get/set_unconstrained`, `unconstrained_bounds`,
+`project_unconstrained`, `trainable`, `hvp_available`, `provenance`, and
+`device`. Non-finite values, invalid bounds, and transform-domain violations
+return `FORTNUM_DOMAIN_ERROR`.
+
+`hyperparameter_registry_t` preserves insertion order and exposes `pack`,
+`unpack`, `pack_unconstrained`, `unpack_unconstrained`, and trainable-only
+`pack_trainable`/`unpack_trainable` vectors. `optimizer_bounds` and `project`
+return the trainable unconstrained vector and its projected L-BFGS-B bounds;
+frozen blocks are omitted without changing their live model state. The
+registry is a coordinate/metadata layer only: an objective must provide its
+own analytic gradient/HVP and explicit device capability.
+
 ### `fortml_parameter_products`
 
 `parameter_products_from_mlp(products,name,model,status)` and

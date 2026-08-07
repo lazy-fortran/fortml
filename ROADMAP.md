@@ -1510,11 +1510,14 @@ state phases are reported separately.
   objective, and backend. It must list supported value, input JVP/VJP/HVP,
   parameter JVP/VJP/HVP, stochastic-path derivative, and refusal conditions.
   an absent product is never inferred to be zero.
-- [ ] Add a unified hyperparameter registry covering preprocessing statistics,
-  basis frequencies/knots, model weights, kernel and likelihood parameters,
-  inducing locations, regularization, optimizer schedules, and differentiable
-  validation weights. Registry entries carry bounds, transforms, priors,
-  trainability, device residency, and provenance.
+- [x] Add the transform-aware hyperparameter registry foundation. Named blocks
+  now expose physical/unconstrained identity, log, and bounded-logit
+  coordinates, finite lower/upper bounds, trainability filtering, provenance
+  and device metadata, HVP-availability metadata, and projected optimizer
+  vectors with deterministic ranges. Owned-value and live callback adapters
+  share the existing parameter-block contract; model-specific priors,
+  inducing locations, validation-weight derivatives, and complete FortOpt
+  objective adapters remain follow-up work.
 - [ ] Route complete hyperparameter gradients and HVPs through bounded
   FortOpt L-BFGS-B, with projected-gradient stopping, active-bound diagnostics,
   line-search status, seeded multistart, and best-finite-state retention.
