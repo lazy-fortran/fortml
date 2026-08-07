@@ -54,15 +54,15 @@ contains
         if (unit /= -1) then
             do j = 1, n_outputs
                 do i = 1, n_samples
-                    write (unit, '(a,a,a,i0,a,i0,a,es26.17e3)') trim(name), &
+                    write (unit, '(a,a,i0,a,i0,a,es26.17e3)') trim(name), &
                         ",transform,", i, ",", j, ",", indicators(i, j)
-                    write (unit, '(a,a,a,i0,a,i0,a,es26.17e3)') trim(name), &
+                    write (unit, '(a,a,i0,a,i0,a,es26.17e3)') trim(name), &
                         ",jvp,", i, ",", j, ",", indicators_dot(i, j)
                 end do
             end do
             do j = 1, n_features
                 do i = 1, n_samples
-                    write (unit, '(a,a,a,i0,a,i0,a,es26.17e3)') trim(name), &
+                    write (unit, '(a,a,i0,a,i0,a,es26.17e3)') trim(name), &
                         ",vjp,", i, ",", j, ",", x_bar(i, j)
                 end do
             end do
