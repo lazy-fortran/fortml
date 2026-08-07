@@ -7,7 +7,8 @@ program test_losses
         binary_cross_entropy_with_logits_vjp, softmax_value, softmax_jvp, &
         softmax_vjp, log_softmax_value, log_softmax_jvp, log_softmax_vjp, &
         softmax_cross_entropy_value, softmax_cross_entropy_jvp, &
-        softmax_cross_entropy_vjp
+        softmax_cross_entropy_vjp, huber_loss_value, huber_loss_jvp, &
+        huber_loss_vjp, quantile_loss_value, quantile_loss_jvp, quantile_loss_vjp
     use fortnum_status, only: fortnum_status_t, status_ok
     implicit none
 
@@ -19,6 +20,7 @@ program test_losses
     call test_softmax(failures)
     call test_log_softmax(failures)
     call test_softmax_cross_entropy(failures)
+    call test_huber_and_quantile(failures)
     call test_invalid_inputs(failures)
     if (failures /= 0) then
         write (error_unit, '(i0,a)') failures, " classification loss test(s) failed"
@@ -245,6 +247,105 @@ contains
         call check(.not. status_ok(status), &
             "softmax cross entropy rejects invalid labels", failures)
     end subroutine test_invalid_inputs
+
+    subroutine test_huber_and_quantile(failures)
+        integer, intent(inout) :: failures
+        type(fortnum_status_t) :: status
+        real(dp) :: prediction(2, 3), targets(2, 3), direction(2, 3)
+        real(dp) :: cotangent(2, 3), prediction_bar(2, 3)
+        real(dp) :: value, value_dot, value_plus, value_minus, finite_dot
+        real(dp) :: h, lhs, rhs, reference, quantile
+
+        prediction = reshape([0.2_dp, 1.4_dp, -0.5_dp, 2.0_dp, 0.8_dp, -1.3_dp], &
+            shape(prediction))
+        targets = reshape([0.0_dp, 1.0_dp, -1.0_dp, 0.5_dp, 1.4_dp, -0.2_dp], &
+            shape(targets))
+        direction = reshape([0.3_dp, -0.4_dp, 0.2_dp, -0.1_dp, 0.5_dp, 0.6_dp], &
+            shape(direction))
+        cotangent = reshape([0.7_dp, -0.2_dp, 0.4_dp, -0.3_dp, 0.5_dp, -0.6_dp], &
+            shape(cotangent))
+        h = 1.0e-6_dp
+        call huber_loss_value(prediction, targets, 0.75_dp, value, status)
+        reference = reference_huber(prediction, targets, 0.75_dp)
+        call check(status_ok(status) .and. abs(value - reference) < 2.0e-15_dp, &
+            "Huber value independent formula", failures)
+        call huber_loss_jvp(prediction, targets, 0.75_dp, direction, value, &
+            value_dot, status)
+        call huber_loss_value(prediction + h*direction, targets, 0.75_dp, &
+            value_plus, status)
+        call huber_loss_value(prediction - h*direction, targets, 0.75_dp, &
+            value_minus, status)
+        finite_dot = (value_plus - value_minus)/(2.0_dp*h)
+        call huber_loss_vjp(prediction, targets, 0.75_dp, 1.3_dp, prediction_bar, &
+            status)
+        lhs = 1.3_dp*value_dot
+        rhs = sum(prediction_bar*direction)
+        call check(status_ok(status) .and. abs(value_dot - finite_dot) < 2.0e-10_dp, &
+            "Huber JVP finite difference", failures)
+        call check(abs(lhs - rhs) < 2.0e-14_dp, "Huber VJP adjoint identity", failures)
+
+        quantile = 0.7_dp
+        call quantile_loss_value(prediction, targets, quantile, value, status)
+        reference = reference_quantile(prediction, targets, quantile)
+        call check(status_ok(status) .and. abs(value - reference) < 2.0e-15_dp, &
+            "quantile value independent formula", failures)
+        call quantile_loss_jvp(prediction, targets, quantile, direction, value, &
+            value_dot, status)
+        call quantile_loss_value(prediction + h*direction, targets, quantile, &
+            value_plus, status)
+        call quantile_loss_value(prediction - h*direction, targets, quantile, &
+            value_minus, status)
+        finite_dot = (value_plus - value_minus)/(2.0_dp*h)
+        call quantile_loss_vjp(prediction, targets, quantile, -0.8_dp, prediction_bar, &
+            status)
+        lhs = -0.8_dp*value_dot
+        rhs = sum(prediction_bar*direction)
+        call check(status_ok(status) .and. abs(value_dot - finite_dot) < 2.0e-10_dp, &
+            "quantile JVP finite difference", failures)
+        call check(abs(lhs - rhs) < 2.0e-14_dp, "quantile VJP adjoint identity", failures)
+        targets(1, 1) = prediction(1, 1)
+        call quantile_loss_jvp(prediction, targets, quantile, direction, value, &
+            value_dot, status)
+        call check(.not. status_ok(status), "quantile kink derivative refusal", failures)
+    end subroutine test_huber_and_quantile
+
+    real(dp) function reference_huber(prediction, targets, delta) result(value)
+        real(dp), intent(in) :: prediction(:, :), targets(:, :), delta
+        real(dp) :: residual
+        integer :: i, j
+
+        value = 0.0_dp
+        do j = 1, size(prediction, 2)
+            do i = 1, size(prediction, 1)
+                residual = prediction(i, j) - targets(i, j)
+                if (abs(residual) <= delta) then
+                    value = value + 0.5_dp*residual*residual
+                else
+                    value = value + delta*(abs(residual) - 0.5_dp*delta)
+                end if
+            end do
+        end do
+        value = value/real(size(prediction), dp)
+    end function reference_huber
+
+    real(dp) function reference_quantile(prediction, targets, quantile) result(value)
+        real(dp), intent(in) :: prediction(:, :), targets(:, :), quantile
+        real(dp) :: residual
+        integer :: i, j
+
+        value = 0.0_dp
+        do j = 1, size(prediction, 2)
+            do i = 1, size(prediction, 1)
+                residual = targets(i, j) - prediction(i, j)
+                if (residual >= 0.0_dp) then
+                    value = value + quantile*residual
+                else
+                    value = value + (quantile - 1.0_dp)*residual
+                end if
+            end do
+        end do
+        value = value/real(size(prediction), dp)
+    end function reference_quantile
 
     subroutine reference_sigmoid(logits, probabilities)
         real(dp), intent(in) :: logits(:, :)

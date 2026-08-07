@@ -16,6 +16,8 @@ module fortml_losses
     public :: softmax_cross_entropy_value
     public :: softmax_cross_entropy_jvp
     public :: softmax_cross_entropy_vjp
+    public :: huber_loss_value, huber_loss_jvp, huber_loss_vjp
+    public :: quantile_loss_value, quantile_loss_jvp, quantile_loss_vjp
 
 contains
 
@@ -429,6 +431,197 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine softmax_cross_entropy_vjp
 
+    !> Mean Huber loss for real-valued predictions.  The derivative is with
+    !> respect to `prediction`; targets are treated as constants.
+    subroutine huber_loss_value(prediction, targets, delta, value, status)
+        real(dp), intent(in) :: prediction(:, :), targets(:, :), delta
+        real(dp), intent(out) :: value
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: residual
+        integer :: i, j
+
+        value = 0.0_dp
+        call validate_regression_inputs(prediction, targets, delta, status, &
+            "Huber loss")
+        if (status%code /= FORTNUM_OK) return
+        do j = 1, size(prediction, 2)
+            do i = 1, size(prediction, 1)
+                residual = prediction(i, j) - targets(i, j)
+                if (abs(residual) <= delta) then
+                    value = value + 0.5_dp*residual*residual
+                else
+                    value = value + delta*(abs(residual) - 0.5_dp*delta)
+                end if
+            end do
+        end do
+        value = value/real(size(prediction), dp)
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine huber_loss_value
+
+    subroutine huber_loss_jvp(prediction, targets, delta, prediction_dot, value, &
+            value_dot, status)
+        real(dp), intent(in) :: prediction(:, :), targets(:, :), delta
+        real(dp), intent(in) :: prediction_dot(:, :)
+        real(dp), intent(out) :: value, value_dot
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: residual, derivative
+        integer :: i, j
+
+        value = 0.0_dp
+        value_dot = 0.0_dp
+        if (any(shape(prediction_dot) /= shape(prediction)) .or. &
+            any(.not. ieee_is_finite(prediction_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "Huber loss JVP: tangent shape or values are invalid")
+            return
+        end if
+        call huber_loss_value(prediction, targets, delta, value, status)
+        if (status%code /= FORTNUM_OK) return
+        do j = 1, size(prediction, 2)
+            do i = 1, size(prediction, 1)
+                residual = prediction(i, j) - targets(i, j)
+                if (abs(residual) <= delta) then
+                    derivative = residual
+                else
+                    derivative = delta*sign(1.0_dp, residual)
+                end if
+                value_dot = value_dot + derivative*prediction_dot(i, j)
+            end do
+        end do
+        value_dot = value_dot/real(size(prediction), dp)
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine huber_loss_jvp
+
+    subroutine huber_loss_vjp(prediction, targets, delta, value_bar, prediction_bar, &
+            status)
+        real(dp), intent(in) :: prediction(:, :), targets(:, :), delta, value_bar
+        real(dp), intent(out) :: prediction_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: value, residual, derivative
+        integer :: i, j
+
+        prediction_bar = 0.0_dp
+        if (any(shape(prediction_bar) /= shape(prediction)) .or. &
+            .not. ieee_is_finite(value_bar)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "Huber loss VJP: cotangent or output shape is invalid")
+            return
+        end if
+        call huber_loss_value(prediction, targets, delta, value, status)
+        if (status%code /= FORTNUM_OK) return
+        do j = 1, size(prediction, 2)
+            do i = 1, size(prediction, 1)
+                residual = prediction(i, j) - targets(i, j)
+                if (abs(residual) <= delta) then
+                    derivative = residual
+                else
+                    derivative = delta*sign(1.0_dp, residual)
+                end if
+                prediction_bar(i, j) = value_bar*derivative/real(size(prediction), dp)
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine huber_loss_vjp
+
+    !> Mean pinball/quantile loss.  The derivative products refuse residual
+    !> zero, where the loss has a genuine kink.
+    subroutine quantile_loss_value(prediction, targets, quantile, value, status)
+        real(dp), intent(in) :: prediction(:, :), targets(:, :), quantile
+        real(dp), intent(out) :: value
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: residual
+        integer :: i, j
+
+        value = 0.0_dp
+        call validate_quantile_inputs(prediction, targets, quantile, status)
+        if (status%code /= FORTNUM_OK) return
+        do j = 1, size(prediction, 2)
+            do i = 1, size(prediction, 1)
+                residual = targets(i, j) - prediction(i, j)
+                if (residual >= 0.0_dp) then
+                    value = value + quantile*residual
+                else
+                    value = value + (quantile - 1.0_dp)*residual
+                end if
+            end do
+        end do
+        value = value/real(size(prediction), dp)
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine quantile_loss_value
+
+    subroutine quantile_loss_jvp(prediction, targets, quantile, prediction_dot, &
+            value, value_dot, status)
+        real(dp), intent(in) :: prediction(:, :), targets(:, :), quantile
+        real(dp), intent(in) :: prediction_dot(:, :)
+        real(dp), intent(out) :: value, value_dot
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: residual, derivative
+        integer :: i, j
+
+        value = 0.0_dp
+        value_dot = 0.0_dp
+        if (any(shape(prediction_dot) /= shape(prediction)) .or. &
+            any(.not. ieee_is_finite(prediction_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "Quantile loss JVP: tangent shape or values are invalid")
+            return
+        end if
+        call quantile_loss_value(prediction, targets, quantile, value, status)
+        if (status%code /= FORTNUM_OK) return
+        do j = 1, size(prediction, 2)
+            do i = 1, size(prediction, 1)
+                residual = targets(i, j) - prediction(i, j)
+                if (residual == 0.0_dp) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "Quantile loss JVP: derivative is undefined at zero residual")
+                    return
+                else if (residual > 0.0_dp) then
+                    derivative = -quantile
+                else
+                    derivative = 1.0_dp - quantile
+                end if
+                value_dot = value_dot + derivative*prediction_dot(i, j)
+            end do
+        end do
+        value_dot = value_dot/real(size(prediction), dp)
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine quantile_loss_jvp
+
+    subroutine quantile_loss_vjp(prediction, targets, quantile, value_bar, &
+            prediction_bar, status)
+        real(dp), intent(in) :: prediction(:, :), targets(:, :), quantile, value_bar
+        real(dp), intent(out) :: prediction_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: value, residual, derivative
+        integer :: i, j
+
+        prediction_bar = 0.0_dp
+        if (any(shape(prediction_bar) /= shape(prediction)) .or. &
+            .not. ieee_is_finite(value_bar)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "Quantile loss VJP: cotangent or output shape is invalid")
+            return
+        end if
+        call quantile_loss_value(prediction, targets, quantile, value, status)
+        if (status%code /= FORTNUM_OK) return
+        do j = 1, size(prediction, 2)
+            do i = 1, size(prediction, 1)
+                residual = targets(i, j) - prediction(i, j)
+                if (residual == 0.0_dp) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "Quantile loss VJP: derivative is undefined at zero residual")
+                    return
+                else if (residual > 0.0_dp) then
+                    derivative = -quantile
+                else
+                    derivative = 1.0_dp - quantile
+                end if
+                prediction_bar(i, j) = value_bar*derivative/real(size(prediction), dp)
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine quantile_loss_vjp
+
     pure real(dp) function binary_loss(logit, target) result(value)
         real(dp), intent(in) :: logit, target
 
@@ -518,5 +711,38 @@ contains
         end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine validate_categorical_inputs
+
+    subroutine validate_regression_inputs(prediction, targets, delta, status, name)
+        real(dp), intent(in) :: prediction(:, :), targets(:, :), delta
+        type(fortnum_status_t), intent(out) :: status
+        character(len=*), intent(in) :: name
+
+        if (size(prediction, 1) < 1 .or. size(prediction, 2) < 1 .or. &
+            any(shape(targets) /= shape(prediction)) .or. &
+            .not. ieee_is_finite(delta) .or. delta <= 0.0_dp .or. &
+            any(.not. ieee_is_finite(prediction)) .or. &
+            any(.not. ieee_is_finite(targets))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                trim(name)//": inputs or delta are invalid")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine validate_regression_inputs
+
+    subroutine validate_quantile_inputs(prediction, targets, quantile, status)
+        real(dp), intent(in) :: prediction(:, :), targets(:, :), quantile
+        type(fortnum_status_t), intent(out) :: status
+
+        if (size(prediction, 1) < 1 .or. size(prediction, 2) < 1 .or. &
+            any(shape(targets) /= shape(prediction)) .or. &
+            .not. ieee_is_finite(quantile) .or. quantile <= 0.0_dp .or. &
+            quantile >= 1.0_dp .or. any(.not. ieee_is_finite(prediction)) .or. &
+            any(.not. ieee_is_finite(targets))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "Quantile loss: inputs or quantile are invalid")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine validate_quantile_inputs
 
 end module fortml_losses
