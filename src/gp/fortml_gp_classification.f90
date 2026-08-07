@@ -224,7 +224,8 @@ contains
         integer :: i, j
 
         if (.not. prediction_shapes(self, x, mean, variance, status)) return
-        if (any(shape(x_dot) /= shape(x)) .or. size(mean_dot) /= size(mean) .or. &
+        if (any(shape(x_dot) /= shape(x)) .or. &
+            any(.not. ieee_is_finite(x_dot)) .or. size(mean_dot) /= size(mean) .or. &
             size(variance_dot) /= size(variance)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "GP classification JVP: input or output shape is invalid")
