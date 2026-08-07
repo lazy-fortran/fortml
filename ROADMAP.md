@@ -1546,6 +1546,14 @@ peak memory, and batch-size scaling with the same correctness gate as training.
   independent NumPy oracles, contextual scikit-learn rows, and explicit
   PyTorch/JAX/XGBoost availability or refusal rows. The release record is
   [`results/FEATURES.md`](../fortml-bench/results/FEATURES.md).
+- [x] Extend the feature lane with an independent central-difference-of-VJP
+  oracle and timing row for polynomial/Fourier basis-pipeline HVPs. The raw
+  record is [`results/features_workloads.csv`](../fortml-bench/results/features_workloads.csv)
+  and the contract is documented in [`results/FEATURES.md`](../fortml-bench/results/FEATURES.md).
+- [x] Add the deterministic seeded random-forest classifier benchmark with a
+  direct NumPy threshold oracle, aligned probability-simplex checks, CPU fit
+  and prediction timings, and an explicit CUDA refusal in
+  [`results/RANDOM_FOREST.md`](../fortml-bench/results/RANDOM_FOREST.md).
 - [x] Add the exact depth-limited recursive XGBoost-style squared/logistic lane
   (including depth/node diagnostics), explicit learned/forced NaN routing, and the
   fitted-scaler plus binary and one-vs-rest multiclass Laplace GP
@@ -1601,6 +1609,10 @@ peak memory, and batch-size scaling with the same correctness gate as training.
   with a NumPy mode/envelope-gradient oracle. The evidence is explicitly for
   mode log posterior rather than full Laplace evidence:
   [`results/GP_CLASSIFICATION_TRAINING.md`](../fortml-bench/results/GP_CLASSIFICATION_TRAINING.md).
+- [x] Extend the generic hyperparameter-search benchmark with an eight-start
+  seeded bounded L-BFGS-B row. The independent quadratic oracle checks the
+  retained best state, start count, evaluation budget, and typed CUDA refusal
+  in [`results/HYPERPARAMETER_SEARCH.md`](../fortml-bench/results/HYPERPARAMETER_SEARCH.md).
 - [ ] Define one versioned result schema for correctness, train time, predict
   time, peak host and device memory, compiler, flags, dependency revisions,
   hardware, seed, warmup, repetitions, and refusal reason.
