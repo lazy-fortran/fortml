@@ -530,6 +530,7 @@ contains
                 hessian, settings%huber_delta, settings%quantile_alpha, status, &
                 group, observation_weight)
             if (status%code /= FORTNUM_OK) return
+            if (is_ranking) hessian = max(hessian, 1.0e-12_dp)
             if (.not. is_ranking) then
                 gradient = observation_weight*gradient
                 hessian = observation_weight*hessian
