@@ -4,6 +4,7 @@ program test_xgboost_monotonic_constraints
     !! must be nondecreasing and a -1 feature nonincreasing on an independent
     !! query grid, for both exact and weighted-histogram tree growth.
     use, intrinsic :: iso_fortran_env, only: dp => real64, error_unit
+    use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     use fortml_xgboost, only: xgboost_t, xgboost_options_t
     use fortnum_status, only: fortnum_status_t, FORTNUM_OK, FORTNUM_DOMAIN_ERROR, &
         FORTNUM_NOT_IMPLEMENTED
@@ -18,6 +19,7 @@ program test_xgboost_monotonic_constraints
     call test_zero_constraint_identity(failures)
     call test_constraint_validation(failures)
     call test_cuda_refusal(failures)
+    call test_large_finite_midpoints(failures)
     if (failures /= 0) then
         write (error_unit, '(i0,a)') failures, &
             " XGBoost monotonic-constraint test(s) failed"
@@ -189,6 +191,32 @@ contains
             .not. model%device_supported(FORTML_DEVICE_CUDA), &
             "CUDA resident tree prediction refusal", failures)
     end subroutine test_cuda_refusal
+
+    subroutine test_large_finite_midpoints(failures)
+        integer, intent(inout) :: failures
+        type(xgboost_t) :: model
+        type(xgboost_options_t) :: options
+        type(fortnum_status_t) :: status
+        real(dp) :: x(4, 1), y(4), prediction(4)
+
+        ! Adjacent positive values have a finite midpoint but their direct
+        ! sum overflows IEEE double precision.  The estimator must retain a
+        ! valid split and finite output rather than routing every row left.
+        x(:, 1) = [1.50e308_dp, 1.60e308_dp, 1.70e308_dp, 1.75e308_dp]
+        y = [0.0_dp, 1.0_dp, 2.0_dp, 3.0_dp]
+        options%n_estimators = 1
+        options%max_depth = 1
+        options%learning_rate = 1.0_dp
+        options%l2 = 1.0_dp
+        options%min_child_weight = 0.0_dp
+        options%monotone_constraints = [1]
+        call model%fit_regression(x, y, status, options)
+        call model%predict(x, prediction, status)
+        call check(status%code == FORTNUM_OK .and. &
+            all(ieee_is_finite(prediction)) .and. &
+            maxval(prediction(1:3) - prediction(2:4)) <= 2.0e-13_dp, &
+            "large finite midpoint stability", failures)
+    end subroutine test_large_finite_midpoints
 
     subroutine check(condition, label, failures)
         logical, intent(in) :: condition

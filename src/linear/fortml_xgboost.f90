@@ -1133,7 +1133,7 @@ contains
                 if (k < options%min_samples_leaf .or. &
                     n_finite - k + n_missing < options%min_samples_leaf) cycle
                 if (finite_values(order(k)) >= finite_values(order(k + 1))) cycle
-                candidate_threshold = 0.5_dp*(finite_values(order(k)) + &
+                candidate_threshold = safe_midpoint(finite_values(order(k)), &
                     finite_values(order(k + 1)))
                 do direction = 1, n_directions
                     missing_left = direction == 1
@@ -1186,7 +1186,7 @@ contains
                             end if
                             cycle
                         end if
-                        candidate_bound = 0.5_dp*(candidate_left_weight + &
+                        candidate_bound = safe_midpoint(candidate_left_weight, &
                             candidate_right_weight)
                         candidate_left_upper = min(candidate_left_upper, candidate_bound)
                         candidate_right_lower = max(candidate_right_lower, candidate_bound)
@@ -1199,7 +1199,7 @@ contains
                             end if
                             cycle
                         end if
-                        candidate_bound = 0.5_dp*(candidate_left_weight + &
+                        candidate_bound = safe_midpoint(candidate_left_weight, &
                             candidate_right_weight)
                         candidate_left_lower = max(candidate_left_lower, candidate_bound)
                         candidate_right_upper = min(candidate_right_upper, candidate_bound)
@@ -1487,6 +1487,14 @@ contains
         clipped = min(max(probability, epsilon), 1.0_dp - epsilon)
         value = log(clipped) - log(1.0_dp - clipped)
     end function stable_logit
+
+    pure real(dp) function safe_midpoint(left, right) result(midpoint)
+        !! Overflow-safe midpoint for finite ordered values.  Computing each
+        !! half before adding keeps valid same-sign values near `huge()` finite.
+        real(dp), intent(in) :: left, right
+
+        midpoint = 0.5_dp*left + 0.5_dp*right
+    end function safe_midpoint
 
     real(dp) function stable_sigmoid(value) result(probability)
         real(dp), intent(in) :: value
