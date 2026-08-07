@@ -1,11 +1,12 @@
 module fortml_probability_calibration
     !! Binary probability calibration with explicit derivative contracts.
     !!
-    !! ``probability_calibrator_t`` implements Platt sigmoid calibration and
-    !! weighted isotonic calibration for a scalar decision score.  Labels are
+    !! ``probability_calibrator_t`` implements positive-temperature scaling,
+    !! Platt sigmoid calibration, and weighted isotonic calibration for a
+    !! scalar decision score.  Labels are
     !! arbitrary integers; the stored class order is ascending and column two
-    !! is the calibrated positive probability.  Sigmoid fitting is smooth and
-    !! exposes score and parameter products.  Isotonic prediction is linearly
+    !! is the calibrated positive probability.  Temperature and sigmoid fits
+    !! are smooth and expose score and parameter products.  Isotonic prediction is linearly
     !! interpolated between weighted PAVA knots and exposes the exact score
     !! derivative away from knots; products at a knot are refused because the
     !! active interpolation segment is not unique.
@@ -25,6 +26,7 @@ module fortml_probability_calibration
 
     integer, parameter, public :: CALIBRATION_SIGMOID = 1
     integer, parameter, public :: CALIBRATION_ISOTONIC = 2
+    integer, parameter, public :: CALIBRATION_TEMPERATURE = 3
 
     type, public :: probability_calibration_options_t
         integer :: method = CALIBRATION_SIGMOID
@@ -47,6 +49,7 @@ module fortml_probability_calibration
         private
         integer :: calibration_method = CALIBRATION_SIGMOID
         integer :: class_label(2) = 0
+        real(dp) :: temperature = 1.0_dp
         real(dp) :: sigmoid_slope = 0.0_dp
         real(dp) :: sigmoid_intercept = 0.0_dp
         real(dp), allocatable :: knots(:)
@@ -153,6 +156,8 @@ contains
             call fit_sigmoid(self, scores, labels, weights, requested, result, status)
         case (CALIBRATION_ISOTONIC)
             call fit_isotonic(self, scores, labels, weights, result, status)
+        case (CALIBRATION_TEMPERATURE)
+            call fit_temperature(self, scores, labels, weights, requested, result, status)
         end select
         if (status%code /= FORTNUM_OK) then
             if (present(state)) state = result
@@ -237,6 +242,73 @@ contains
         state%knot_count = 0
         call status_set(status, FORTNUM_OK, "")
     end subroutine fit_sigmoid
+
+    subroutine fit_temperature(self, scores, labels, weights, options, state, status)
+        !! Fit a positive scalar temperature for already-oriented binary logits.
+        !!
+        !! The optimized coordinate is ``alpha = 1 / temperature``.  The
+        !! weighted logistic objective is convex in alpha, so a damped Newton
+        !! step with a positive-domain line search is sufficient and keeps the
+        !! public parameterization physically meaningful.
+        class(probability_calibrator_t), intent(inout) :: self
+        real(dp), intent(in) :: scores(:), weights(:)
+        integer, intent(in) :: labels(:)
+        type(probability_calibration_options_t), intent(in) :: options
+        type(probability_calibration_state_t), intent(inout) :: state
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: alpha, alpha_trial, objective_old, objective_new
+        real(dp) :: gradient, hessian, step, step_scale, step_norm
+        real(dp) :: alpha_floor
+        integer :: iteration, line_search
+
+        alpha_floor = sqrt(tiny(1.0_dp))
+        alpha = 1.0_dp
+        objective_old = temperature_objective(scores, labels, weights, self%class_label, &
+            alpha, options%l2)
+        state%iterations = 0
+        state%final_step_norm = huge(1.0_dp)
+        state%converged = .false.
+        do iteration = 1, options%max_iterations
+            call temperature_derivatives(scores, labels, weights, self%class_label, alpha, &
+                options%l2, gradient, hessian)
+            if (.not. ieee_is_finite(gradient) .or. .not. ieee_is_finite(hessian) .or. &
+                hessian <= 0.0_dp) then
+                call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                    "probability calibration temperature fit: invalid Newton curvature")
+                return
+            end if
+            step = gradient/hessian
+            step_scale = 1.0_dp
+            alpha_trial = max(alpha_floor, alpha - step_scale*options%damping*step)
+            objective_new = temperature_objective(scores, labels, weights, self%class_label, &
+                alpha_trial, options%l2)
+            do line_search = 1, 30
+                if (objective_new <= objective_old .or. step_scale <= 1.0e-8_dp) exit
+                step_scale = 0.5_dp*step_scale
+                alpha_trial = max(alpha_floor, alpha - step_scale*options%damping*step)
+                objective_new = temperature_objective(scores, labels, weights, self%class_label, &
+                    alpha_trial, options%l2)
+            end do
+            step_norm = abs(alpha_trial - alpha)/max(1.0_dp, abs(alpha))
+            alpha = alpha_trial
+            objective_old = objective_new
+            state%iterations = iteration
+            state%final_step_norm = step_norm
+            if (step_norm <= options%tolerance .or. abs(gradient) <= options%tolerance) then
+                state%converged = .true.
+                exit
+            end if
+        end do
+        if (.not. state%converged) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "probability calibration temperature fit: iteration limit reached")
+            return
+        end if
+        self%temperature = 1.0_dp/alpha
+        state%objective = objective_old
+        state%knot_count = 0
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine fit_temperature
 
     subroutine fit_isotonic(self, scores, labels, weights, state, status)
         class(probability_calibrator_t), intent(inout) :: self
@@ -427,21 +499,34 @@ contains
         real(dp) :: positive, positive_dot, eta
 
         if (.not. prediction_valid(self, scores, probabilities, status)) return
-        if (self%calibration_method /= CALIBRATION_SIGMOID .or. &
-            size(parameters_dot) /= 2 .or. any(.not. ieee_is_finite(parameters_dot)) .or. &
+        if ((self%calibration_method /= CALIBRATION_SIGMOID .and. &
+            self%calibration_method /= CALIBRATION_TEMPERATURE) .or. &
+            size(parameters_dot) /= self%parameter_count() .or. &
+            any(.not. ieee_is_finite(parameters_dot)) .or. &
             any(shape(probabilities_dot) /= shape(probabilities))) then
             call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
-                "probability calibration parameter JVP: only sigmoid parameters are smooth")
+                "probability calibration parameter JVP: method has no smooth parameters")
             return
         end if
-        do i = 1, size(scores)
-            eta = self%sigmoid_slope*scores(i) + self%sigmoid_intercept
-            positive = sigmoid(eta)
-            positive_dot = positive*(1.0_dp - positive)* &
-                (scores(i)*parameters_dot(1) + parameters_dot(2))
-            probabilities(i, :) = [1.0_dp - positive, positive]
-            probabilities_dot(i, :) = [-positive_dot, positive_dot]
-        end do
+        if (self%calibration_method == CALIBRATION_SIGMOID) then
+            do i = 1, size(scores)
+                eta = self%sigmoid_slope*scores(i) + self%sigmoid_intercept
+                positive = sigmoid(eta)
+                positive_dot = positive*(1.0_dp - positive)* &
+                    (scores(i)*parameters_dot(1) + parameters_dot(2))
+                probabilities(i, :) = [1.0_dp - positive, positive]
+                probabilities_dot(i, :) = [-positive_dot, positive_dot]
+            end do
+        else
+            do i = 1, size(scores)
+                eta = scores(i)/self%temperature
+                positive = sigmoid(eta)
+                positive_dot = positive*(1.0_dp - positive)* &
+                    (-scores(i)/self%temperature**2)*parameters_dot(1)
+                probabilities(i, :) = [1.0_dp - positive, positive]
+                probabilities_dot(i, :) = [-positive_dot, positive_dot]
+            end do
+        end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine probability_calibration_predict_proba_parameter_jvp
 
@@ -456,24 +541,40 @@ contains
 
         parameters_bar = 0.0_dp
         if (.not. self%is_fitted .or. size(probabilities_bar, 1) /= size(scores) .or. &
-            size(probabilities_bar, 2) /= 2 .or. size(parameters_bar) /= 2 .or. &
+            size(probabilities_bar, 2) /= 2 .or. &
+            size(parameters_bar) /= self%parameter_count() .or. &
             any(.not. ieee_is_finite(scores)) .or. any(.not. ieee_is_finite(probabilities_bar))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "probability calibration parameter VJP: input or output shape is invalid")
             return
         end if
-        if (self%calibration_method /= CALIBRATION_SIGMOID) then
+        if (self%calibration_method /= CALIBRATION_SIGMOID .and. &
+            self%calibration_method /= CALIBRATION_TEMPERATURE) then
             call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
-                "probability calibration parameter VJP: isotonic fit parameters are discrete")
+                "probability calibration parameter VJP: method parameters are discrete")
             return
         end if
-        do i = 1, size(scores)
-            positive = sigmoid(self%sigmoid_slope*scores(i) + self%sigmoid_intercept)
-            positive_dot = positive*(1.0_dp - positive)
-            factor = (probabilities_bar(i, 2) - probabilities_bar(i, 1))*positive_dot
-            parameters_bar(1) = parameters_bar(1) + factor*scores(i)
-            parameters_bar(2) = parameters_bar(2) + factor
-        end do
+        if (size(parameters_bar) /= self%parameter_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "probability calibration parameter VJP: output shape is invalid")
+            return
+        end if
+        if (self%calibration_method == CALIBRATION_SIGMOID) then
+            do i = 1, size(scores)
+                positive = sigmoid(self%sigmoid_slope*scores(i) + self%sigmoid_intercept)
+                positive_dot = positive*(1.0_dp - positive)
+                factor = (probabilities_bar(i, 2) - probabilities_bar(i, 1))*positive_dot
+                parameters_bar(1) = parameters_bar(1) + factor*scores(i)
+                parameters_bar(2) = parameters_bar(2) + factor
+            end do
+        else
+            do i = 1, size(scores)
+                positive = sigmoid(scores(i)/self%temperature)
+                positive_dot = positive*(1.0_dp - positive)
+                factor = (probabilities_bar(i, 2) - probabilities_bar(i, 1))*positive_dot
+                parameters_bar(1) = parameters_bar(1) - factor*scores(i)/self%temperature**2
+            end do
+        end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine probability_calibration_predict_proba_parameter_vjp
 
@@ -508,14 +609,26 @@ contains
         real(dp), intent(in) :: parameters(:)
         type(fortnum_status_t), intent(out) :: status
 
-        if (.not. self%is_fitted .or. self%calibration_method /= CALIBRATION_SIGMOID .or. &
-            size(parameters) /= 2 .or. any(.not. ieee_is_finite(parameters))) then
+        if (.not. self%is_fitted .or. &
+            ((self%calibration_method /= CALIBRATION_SIGMOID .and. &
+            self%calibration_method /= CALIBRATION_TEMPERATURE)) .or. &
+            size(parameters) /= self%parameter_count() .or. &
+            any(.not. ieee_is_finite(parameters))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
-                "probability calibration set_parameters: only fitted sigmoid state is mutable")
+                "probability calibration set_parameters: fitted smooth state is invalid")
             return
         end if
-        self%sigmoid_slope = parameters(1)
-        self%sigmoid_intercept = parameters(2)
+        if (self%calibration_method == CALIBRATION_SIGMOID) then
+            self%sigmoid_slope = parameters(1)
+            self%sigmoid_intercept = parameters(2)
+        else
+            if (parameters(1) <= 0.0_dp) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "probability calibration set_parameters: temperature must be positive")
+                return
+            end if
+            self%temperature = parameters(1)
+        end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine probability_calibration_set_parameters
 
@@ -523,8 +636,12 @@ contains
         class(probability_calibrator_t), intent(in) :: self
         real(dp), allocatable :: parameters(:)
 
-        if (.not. self%is_fitted .or. self%calibration_method /= CALIBRATION_SIGMOID) then
+        if (.not. self%is_fitted .or. (self%calibration_method /= CALIBRATION_SIGMOID .and. &
+            self%calibration_method /= CALIBRATION_TEMPERATURE)) then
             allocate(parameters(0))
+        else if (self%calibration_method == CALIBRATION_TEMPERATURE) then
+            allocate(parameters(1))
+            parameters = [self%temperature]
         else
             allocate(parameters(2))
             parameters = [self%sigmoid_slope, self%sigmoid_intercept]
@@ -534,7 +651,9 @@ contains
     integer function probability_calibration_parameter_count(self) result(count)
         class(probability_calibrator_t), intent(in) :: self
 
-        if (self%is_fitted .and. self%calibration_method == CALIBRATION_SIGMOID) then
+        if (self%is_fitted .and. self%calibration_method == CALIBRATION_TEMPERATURE) then
+            count = 1
+        else if (self%is_fitted .and. self%calibration_method == CALIBRATION_SIGMOID) then
             count = 2
         else
             count = 0
@@ -625,6 +744,8 @@ contains
         select case (self%calibration_method)
         case (CALIBRATION_SIGMOID)
             positive = sigmoid(self%sigmoid_slope*score + self%sigmoid_intercept)
+        case (CALIBRATION_TEMPERATURE)
+            positive = sigmoid(score/self%temperature)
         case (CALIBRATION_ISOTONIC)
             positive = isotonic_value(self, score)
         case default
@@ -687,6 +808,8 @@ contains
         select case (self%calibration_method)
         case (CALIBRATION_SIGMOID)
             derivative = positive*(1.0_dp - positive)*self%sigmoid_slope
+        case (CALIBRATION_TEMPERATURE)
+            derivative = positive*(1.0_dp - positive)/self%temperature
         case (CALIBRATION_ISOTONIC)
             derivative = 0.0_dp
             if (self%n_knots <= 1) then
@@ -748,7 +871,8 @@ contains
         type(probability_calibration_options_t), intent(in) :: options
 
         valid = (options%method == CALIBRATION_SIGMOID .or. &
-            options%method == CALIBRATION_ISOTONIC) .and. &
+            options%method == CALIBRATION_ISOTONIC .or. &
+            options%method == CALIBRATION_TEMPERATURE) .and. &
             options%max_iterations >= 1 .and. ieee_is_finite(options%tolerance) .and. &
             options%tolerance > 0.0_dp .and. ieee_is_finite(options%damping) .and. &
             options%damping > 0.0_dp .and. options%damping <= 1.0_dp .and. &
@@ -787,6 +911,48 @@ contains
         end do
         objective = objective + 0.5_dp*l2*(slope*slope + intercept*intercept)
     end function sigmoid_objective
+
+    real(dp) function temperature_objective(scores, labels, weights, classes, alpha, l2) &
+            result(objective)
+        real(dp), intent(in) :: scores(:), weights(:), alpha, l2
+        integer, intent(in) :: labels(:), classes(2)
+        real(dp) :: eta, target
+        integer :: i
+
+        objective = 0.0_dp
+        do i = 1, size(scores)
+            eta = alpha*scores(i)
+            target = merge(1.0_dp, 0.0_dp, labels(i) == classes(2))
+            if (eta >= 0.0_dp) then
+                objective = objective + weights(i)*(log(1.0_dp + exp(-eta)) + &
+                    (1.0_dp - target)*eta)
+            else
+                objective = objective + weights(i)*(log(1.0_dp + exp(eta)) - target*eta)
+            end if
+        end do
+        objective = objective + 0.5_dp*l2*alpha*alpha
+    end function temperature_objective
+
+    subroutine temperature_derivatives(scores, labels, weights, classes, alpha, l2, &
+            gradient, hessian)
+        real(dp), intent(in) :: scores(:), weights(:), alpha, l2
+        integer, intent(in) :: labels(:), classes(2)
+        real(dp), intent(out) :: gradient, hessian
+        real(dp) :: eta, probability, curvature, target, residual
+        integer :: i
+
+        gradient = l2*alpha
+        hessian = l2
+        do i = 1, size(scores)
+            eta = alpha*scores(i)
+            probability = sigmoid(eta)
+            target = merge(1.0_dp, 0.0_dp, labels(i) == classes(2))
+            residual = probability - target
+            curvature = max(probability*(1.0_dp - probability), 1.0e-14_dp)
+            gradient = gradient + weights(i)*residual*scores(i)
+            hessian = hessian + weights(i)*curvature*scores(i)*scores(i)
+        end do
+    end subroutine temperature_derivatives
 
     subroutine sigmoid_derivatives(scores, labels, weights, classes, slope, intercept, l2, &
             gradient_slope, gradient_intercept, hessian_ss, hessian_si, hessian_ii)

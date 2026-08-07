@@ -237,12 +237,12 @@ stacked recurrent layers, checkpointing, and long-lag tests remain design
 targets.
 
 Binary probability calibration is a post-estimator composition boundary.  The
-`probability_calibrator_t` stores either a smooth two-parameter Platt map or a
-weighted pool-adjacent-violators map over scalar decision scores.  The former
-has analytic score and parameter products and can therefore be included in a
-FortOpt objective; the latter linearly interpolates between fitted knots and
+`probability_calibrator_t` stores a smooth positive-temperature map, a smooth
+two-parameter Platt map, or a weighted pool-adjacent-violators map over scalar
+decision scores.  The smooth maps have analytic score and parameter products
+and can therefore be included in a FortOpt objective; the latter linearly interpolates between fitted knots and
 returns a typed refusal at active-set boundaries rather than differentiating
-through a changing PAVA partition.  Both maps preserve arbitrary integer
+through a changing PAVA partition.  All maps preserve arbitrary integer
 class order and `[1-p,p]` probability columns.  CPU prediction is complete;
 CUDA remains an explicit capability refusal until calibration state and
 interpolation are resident in a native kernel.
