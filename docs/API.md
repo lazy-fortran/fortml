@@ -144,6 +144,7 @@ repeated resident-batch evidence.
 | `one_hot_encoder_t` | Dense one-hot `transform` | Refused: integer categories have no canonical tangent space | Refused: integer categories have no canonical cotangent space | No |
 | `mlp_t` | `predict` | Parameters and inputs | Parameters and inputs | Weighted-output HVP |
 | `mlp_classifier_t` | Logits, probabilities, and labels | Parameter/input JVP, probability JVP | Parameter/input VJP, probability VJP | No |
+| `mlp_ordinal_classifier_t` | Ordered cumulative-logit neural score, probabilities, and labels | Packed network/threshold and input JVP | Packed network/threshold and input VJP | No |
 | `mlp_binary_classifier_t` | One-logit sigmoid probabilities and binary labels | Parameter/input JVP, probability JVP | Parameter/input VJP, probability VJP; weighted BCE gradient | Exact weighted BCE parameter HVP |
 | `mlp_multilabel_classifier_t` | Independent sigmoid probabilities and indicator labels | Packed parameter/input JVP, probability JVP | Packed parameter/input VJP, probability VJP; mean BCE gradient | Exact mean BCE parameter HVP |
 | `mlp_chain_t` | Sequential composition of named MLP stages | Packed all-stage parameters and inputs | Packed all-stage parameters and inputs | Differentiated reverse chain rule for parameters and inputs |
@@ -1719,6 +1720,20 @@ they are never approximated by hidden finite differences. See
 [`docs/MLP_HYPERGRADIENT.md`](MLP_HYPERGRADIENT.md) for the complete layout and
 example.
 
+### `fortml_mlp_sgd_momentum_hypergradient`
+
+`mlp_sgd_momentum_hypergradient_objective_t` provides the exact fixed
+full-batch SGD momentum/Nesterov trajectory contract. Its packed vector is
+`[log(learning_rate),log(l2),momentum]`; the velocity state and, for Nesterov,
+the look-ahead direction are differentiated with the analytic MLP HVP. Both
+classical and Nesterov modes expose `value_gradient`, `jvp`, scalar `vjp`, and
+a bounded FortOpt L-BFGS-B adapter through
+`mlp_optimize_sgd_momentum_hyperparameters`. The Nesterov branch is a fixed
+discrete choice and requires a positive momentum bound. Mini-batch, schedules,
+clipping, stochastic/device-resident state, and CUDA products remain typed
+refusals until their full state derivatives are available. See
+[`docs/MLP_SGD_MOMENTUM_HYPERGRADIENT.md`](MLP_SGD_MOMENTUM_HYPERGRADIENT.md).
+
 `mlp_adamw_hypergradient_objective_t` provides the corresponding exact
 full-batch AdamW trajectory contract. Its packed vector is
 `[log(learning_rate),log(l2),log(weight_decay)]`; bias-corrected first and
@@ -1805,6 +1820,31 @@ softmax. The device methods `decision_function_device`,
 selected CUDA contexts return `FORTNUM_NOT_IMPLEMENTED` until a resident MLP
 classifier kernel is linked. The derivative tests cover central differences,
 the VJP/JVP duality identity, and the explicit device refusal.
+
+### `fortml_mlp_ordinal_classifier`
+
+`mlp_ordinal_classifier_t%fit(x,labels,status[,hidden_layer_sizes,options,
+state,sample_weight])` fits a deterministic scalar-score MLP with an ordered
+cumulative-logit head. Integer labels are sorted and preserved in `classes()`;
+the fitted cut points are strictly increasing and `thresholds()` returns them
+in that order. The default topology is `[n_features,8,1]`; passing
+`hidden_layer_sizes` replaces the hidden stack. Full-batch CPU training uses
+FortOpt L-BFGS-B on the network parameters and log-positive threshold
+increments, with optional L2 regularisation and a deterministic initialization
+seed. Nonnegative sample weights are normalized by their positive total mass.
+
+`decision_function` returns the latent score, `predict_proba` evaluates the
+stable cumulative-logit probabilities, and `predict` maps the largest category
+probability back to the original integer label. `parameters` packs the MLP
+parameters followed by the actual thresholds; `set_parameters` validates the
+strict ordering before replacing the fitted state.
+
+`predict_proba_jvp` and `predict_proba_vjp` are exact fixed-state products for
+continuous inputs and the packed network/threshold vector. The parameter JVP
+and VJP methods are also available separately, and the independent test checks
+their finite-difference and adjoint identities. CPU device dispatch executes
+the host path; selected CUDA contexts return `FORTNUM_NOT_IMPLEMENTED` until a
+resident ordinal neural kernel is linked.
 
 ### `fortml_mlp_binary_classifier`
 
@@ -2519,8 +2559,10 @@ components,covariance,status)` dispatches selected CPU contexts exactly and
 returns `FORTNUM_NOT_IMPLEMENTED` for CUDA until the resident derivative-GP
 covariance graph is linked. No hidden host fallback is used.
 `log_marginal_likelihood`, `log_marginal_likelihood_jvp`,
-`hyperparameter_gradient`, and `hyperparameter_hvp` provide likelihood
-products. The gradient uses analytic parameter tangents of the supported RBF,
+`log_marginal_likelihood_vjp`, `hyperparameter_gradient`,
+`hyperparameter_vjp`, and `hyperparameter_hvp` provide likelihood products.
+The scalar VJP accepts an objective cotangent and returns the packed pullback.
+The gradient uses analytic parameter tangents of the supported RBF,
 Matérn 1/2, 3/2, 5/2, periodic, rational-quadratic, cosine, linear, constant,
 polynomial, validated user-formula, and sum/product kernels. Matérn 1/2 still refuses
 coincident derivative
@@ -2536,8 +2578,11 @@ host-only until the same resident derivative graph exists, so no derivative
 product silently copies arrays to the host.
 Value-only covariances and their variance-parameter products remain defined at
 coincidence. The refusal applies only when an input derivative is requested.
-The HVP is a deterministic directional finite difference of that analytic
-gradient. The RBF parameter JVP/VJP path uses the checked FortSym-generated
+For mixed value/first-derivative observations, `hyperparameter_hvp` is analytic
+for RBF, linear, constant, and sums/products built solely from those leaves.
+It returns `FORTNUM_NOT_IMPLEMENTED` for other leaves until their second
+input/parameter products are generated and independently checked; it never
+silently finite-differences the likelihood gradient. The RBF parameter JVP/VJP path uses the checked FortSym-generated
 natural-leaf value and first derivatives (FortSym `f71a1aa`, 15 IR nodes, 7
 compound operations). The Matérn 1/2 HVP now uses a FortSym-generated leaf
 (`9482261`, 37 IR nodes, 28 compound operations), and the Matérn 3/2 HVP now
