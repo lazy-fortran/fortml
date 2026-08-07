@@ -1498,8 +1498,12 @@ the allocation or structure that selected it.
 `parameter_block_t%initialize(name,n_parameters,context,getter,setter,status)`
 binds a named range to a live `target` object. The context must outlive the
 block and every registry containing it. `parameter_block_from_mlp`,
-`parameter_block_from_kernel`, and `parameter_block_from_gp` provide typed
-adapters. A block also exposes `name`, `size`, `get`, `set`, and `initialized`.
+`parameter_block_from_kernel`, `parameter_block_from_gp`,
+`parameter_block_from_ridge`, `parameter_block_from_elastic_net`,
+`parameter_block_from_logistic`, `parameter_block_from_softmax`,
+`parameter_block_from_basis_pipeline`, and
+`parameter_block_from_sequential_pipeline` provide typed adapters. A block
+also exposes `name`, `size`, `get`, `set`, and `initialized`.
 
 `parameter_registry_t` exposes `clear`, `add`, `block_count`,
 `parameter_count`, `pack`, `unpack`, and `range`. Names must be nonempty and <!-- slop-ok -->

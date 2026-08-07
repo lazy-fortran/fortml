@@ -13,6 +13,11 @@ module fortml_parameter_registry
     use fortml_mlp, only: mlp_t
     use fortml_kernels, only: kernel_t
     use fortml_gaussian_process, only: gp_regression_t
+    use fortml_ridge_regression, only: ridge_regression_t
+    use fortml_elastic_net_regression, only: elastic_net_regression_t
+    use fortml_logistic_regression, only: logistic_regression_t
+    use fortml_softmax_regression, only: softmax_regression_t
+    use fortml_pipeline, only: basis_pipeline_t, sequential_basis_pipeline_t
     implicit none
     private
 
@@ -65,7 +70,10 @@ module fortml_parameter_registry
 
     public :: parameter_get_proc, parameter_set_proc
     public :: parameter_block_from_mlp, parameter_block_from_kernel, &
-        parameter_block_from_gp
+        parameter_block_from_gp, parameter_block_from_ridge, &
+        parameter_block_from_elastic_net, parameter_block_from_logistic, &
+        parameter_block_from_softmax, parameter_block_from_basis_pipeline, &
+        parameter_block_from_sequential_pipeline
 
 contains
 
@@ -300,6 +308,66 @@ contains
             gp_parameter_get, gp_parameter_set, status)
     end subroutine parameter_block_from_gp
 
+    subroutine parameter_block_from_ridge(self, name, model, status)
+        type(parameter_block_t), intent(out) :: self
+        character(*), intent(in) :: name
+        type(ridge_regression_t), target, intent(inout) :: model
+        type(fortnum_status_t), intent(out) :: status
+
+        call self%initialize(name, model%parameter_count(), model, &
+            ridge_parameter_get, ridge_parameter_set, status)
+    end subroutine parameter_block_from_ridge
+
+    subroutine parameter_block_from_elastic_net(self, name, model, status)
+        type(parameter_block_t), intent(out) :: self
+        character(*), intent(in) :: name
+        type(elastic_net_regression_t), target, intent(inout) :: model
+        type(fortnum_status_t), intent(out) :: status
+
+        call self%initialize(name, model%parameter_count(), model, &
+            elastic_net_parameter_get, elastic_net_parameter_set, status)
+    end subroutine parameter_block_from_elastic_net
+
+    subroutine parameter_block_from_logistic(self, name, model, status)
+        type(parameter_block_t), intent(out) :: self
+        character(*), intent(in) :: name
+        type(logistic_regression_t), target, intent(inout) :: model
+        type(fortnum_status_t), intent(out) :: status
+
+        call self%initialize(name, model%parameter_count(), model, &
+            logistic_parameter_get, logistic_parameter_set, status)
+    end subroutine parameter_block_from_logistic
+
+    subroutine parameter_block_from_softmax(self, name, model, status)
+        type(parameter_block_t), intent(out) :: self
+        character(*), intent(in) :: name
+        type(softmax_regression_t), target, intent(inout) :: model
+        type(fortnum_status_t), intent(out) :: status
+
+        call self%initialize(name, model%parameter_count(), model, &
+            softmax_parameter_get, softmax_parameter_set, status)
+    end subroutine parameter_block_from_softmax
+
+    subroutine parameter_block_from_basis_pipeline(self, name, model, status)
+        type(parameter_block_t), intent(out) :: self
+        character(*), intent(in) :: name
+        type(basis_pipeline_t), target, intent(inout) :: model
+        type(fortnum_status_t), intent(out) :: status
+
+        call self%initialize(name, model%parameter_count(), model, &
+            basis_pipeline_parameter_get, basis_pipeline_parameter_set, status)
+    end subroutine parameter_block_from_basis_pipeline
+
+    subroutine parameter_block_from_sequential_pipeline(self, name, model, status)
+        type(parameter_block_t), intent(out) :: self
+        character(*), intent(in) :: name
+        type(sequential_basis_pipeline_t), target, intent(inout) :: model
+        type(fortnum_status_t), intent(out) :: status
+
+        call self%initialize(name, model%parameter_count(), model, &
+            sequential_pipeline_parameter_get, sequential_pipeline_parameter_set, status)
+    end subroutine parameter_block_from_sequential_pipeline
+
     subroutine mlp_parameter_get(context, values, status)
         class(*), pointer, intent(in) :: context
         real(dp), intent(out) :: values(:)
@@ -401,5 +469,209 @@ contains
                 "GP parameter block: context has the wrong type")
         end select
     end subroutine gp_parameter_set
+
+    subroutine ridge_parameter_get(context, values, status)
+        class(*), pointer, intent(in) :: context
+        real(dp), intent(out) :: values(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        select type (model => context)
+            type is (ridge_regression_t)
+            if (size(values) /= model%parameter_count()) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "ridge parameter block: output shape is invalid")
+                return
+            end if
+            values = model%parameters()
+            call status_set(status, FORTNUM_OK, "")
+        class default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ridge parameter block: context has the wrong type")
+        end select
+    end subroutine ridge_parameter_get
+
+    subroutine ridge_parameter_set(context, values, status)
+        class(*), pointer, intent(inout) :: context
+        real(dp), intent(in) :: values(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        select type (model => context)
+            type is (ridge_regression_t)
+            call model%set_parameters(values, status)
+        class default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ridge parameter block: context has the wrong type")
+        end select
+    end subroutine ridge_parameter_set
+
+    subroutine elastic_net_parameter_get(context, values, status)
+        class(*), pointer, intent(in) :: context
+        real(dp), intent(out) :: values(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        select type (model => context)
+            type is (elastic_net_regression_t)
+            if (size(values) /= model%parameter_count()) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "elastic-net parameter block: output shape is invalid")
+                return
+            end if
+            values = model%parameters()
+            call status_set(status, FORTNUM_OK, "")
+        class default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "elastic-net parameter block: context has the wrong type")
+        end select
+    end subroutine elastic_net_parameter_get
+
+    subroutine elastic_net_parameter_set(context, values, status)
+        class(*), pointer, intent(inout) :: context
+        real(dp), intent(in) :: values(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        select type (model => context)
+            type is (elastic_net_regression_t)
+            call model%set_parameters(values, status)
+        class default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "elastic-net parameter block: context has the wrong type")
+        end select
+    end subroutine elastic_net_parameter_set
+
+    subroutine logistic_parameter_get(context, values, status)
+        class(*), pointer, intent(in) :: context
+        real(dp), intent(out) :: values(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        select type (model => context)
+            type is (logistic_regression_t)
+            if (size(values) /= model%parameter_count()) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "logistic parameter block: output shape is invalid")
+                return
+            end if
+            values = model%parameters()
+            call status_set(status, FORTNUM_OK, "")
+        class default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "logistic parameter block: context has the wrong type")
+        end select
+    end subroutine logistic_parameter_get
+
+    subroutine logistic_parameter_set(context, values, status)
+        class(*), pointer, intent(inout) :: context
+        real(dp), intent(in) :: values(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        select type (model => context)
+            type is (logistic_regression_t)
+            call model%set_parameters(values, status)
+        class default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "logistic parameter block: context has the wrong type")
+        end select
+    end subroutine logistic_parameter_set
+
+    subroutine softmax_parameter_get(context, values, status)
+        class(*), pointer, intent(in) :: context
+        real(dp), intent(out) :: values(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        select type (model => context)
+            type is (softmax_regression_t)
+            if (size(values) /= model%parameter_count()) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "softmax parameter block: output shape is invalid")
+                return
+            end if
+            values = model%parameters()
+            call status_set(status, FORTNUM_OK, "")
+        class default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "softmax parameter block: context has the wrong type")
+        end select
+    end subroutine softmax_parameter_get
+
+    subroutine softmax_parameter_set(context, values, status)
+        class(*), pointer, intent(inout) :: context
+        real(dp), intent(in) :: values(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        select type (model => context)
+            type is (softmax_regression_t)
+            call model%set_parameters(values, status)
+        class default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "softmax parameter block: context has the wrong type")
+        end select
+    end subroutine softmax_parameter_set
+
+    subroutine basis_pipeline_parameter_get(context, values, status)
+        class(*), pointer, intent(in) :: context
+        real(dp), intent(out) :: values(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        select type (model => context)
+            type is (basis_pipeline_t)
+            if (size(values) /= model%parameter_count()) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "basis-pipeline parameter block: output shape is invalid")
+                return
+            end if
+            values = model%parameters()
+            call status_set(status, FORTNUM_OK, "")
+        class default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "basis-pipeline parameter block: context has the wrong type")
+        end select
+    end subroutine basis_pipeline_parameter_get
+
+    subroutine basis_pipeline_parameter_set(context, values, status)
+        class(*), pointer, intent(inout) :: context
+        real(dp), intent(in) :: values(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        select type (model => context)
+            type is (basis_pipeline_t)
+            call model%set_parameters(values, status)
+        class default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "basis-pipeline parameter block: context has the wrong type")
+        end select
+    end subroutine basis_pipeline_parameter_set
+
+    subroutine sequential_pipeline_parameter_get(context, values, status)
+        class(*), pointer, intent(in) :: context
+        real(dp), intent(out) :: values(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        select type (model => context)
+            type is (sequential_basis_pipeline_t)
+            if (size(values) /= model%parameter_count()) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "sequential-pipeline parameter block: output shape is invalid")
+                return
+            end if
+            values = model%parameters()
+            call status_set(status, FORTNUM_OK, "")
+        class default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "sequential-pipeline parameter block: context has the wrong type")
+        end select
+    end subroutine sequential_pipeline_parameter_get
+
+    subroutine sequential_pipeline_parameter_set(context, values, status)
+        class(*), pointer, intent(inout) :: context
+        real(dp), intent(in) :: values(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        select type (model => context)
+            type is (sequential_basis_pipeline_t)
+            call model%set_parameters(values, status)
+        class default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "sequential-pipeline parameter block: context has the wrong type")
+        end select
+    end subroutine sequential_pipeline_parameter_set
 
 end module fortml_parameter_registry
