@@ -182,7 +182,9 @@ and VJP paths; its generated header records FortSym `f71a1aa`, 15 IR nodes, and
 7 compound operations. The independent scalar/finite-difference test is
 `test_fortsym_rbf_leaf`. Matérn 1/2 HVPs now use a second generated FortSym
 leaf (`9482261`, 37 IR nodes, 28 compound operations), checked by
-`test_fortsym_matern12`; Matérn 3/2 and 5/2 retain FortAD products until a
+`test_fortsym_matern12`. Matérn 3/2 now also uses a FortSym-generated HVP
+leaf (`b72a23a`, 60 IR nodes, 48 compound operations), checked by
+`test_fortsym_matern32`; Matérn 5/2 retains the FortAD product until a
 symbolic operation-count comparison accepts a smaller replacement.
 
 Exact inference uses dense Cholesky for small problems. Large problems use the

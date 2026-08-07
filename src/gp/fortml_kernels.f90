@@ -4,8 +4,8 @@ module fortml_kernels
         FORTNUM_DOMAIN_ERROR, FORTNUM_CONVERGENCE_ERROR
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     use fortml_generated_matern12_products, only: fortml_matern12_hvp
-    use fortml_generated_matern_products, only: fortml_matern32_hvp, &
-        fortml_matern52_hvp
+    use fortml_generated_matern32_products, only: fortml_matern32_hvp
+    use fortml_generated_matern_products, only: fortml_matern52_hvp
     use fortml_generated_rbf_products, only: fortml_rbf_hvp
     use fortml_kernel_formula, only: kernel_formula_t, MAX_FORMULA_STACK, &
         OPCODE_PUSH_R2, OPCODE_PUSH_R, OPCODE_PUSH_DOT, OPCODE_PUSH_CONST, &
