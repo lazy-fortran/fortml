@@ -138,7 +138,7 @@ multiclass, weighted, probabilistic, derivative, or GPU coverage.
 | Feature transforms and basis maps | Polynomial, Fourier, radial, B-spline, callback bases, standard/min-max scalers, integer categorical one-hot encoding, horizontal/sequential/column pipelines, analytic basis/pipeline HVPs, and a fitted basis-to-linear estimator are implemented | Sparse/categorical feature views, DAG pipelines, leakage-safe cross-validation, differentiable basis hyperparameters, callback second derivatives |
 | Nearest-neighbor and margin methods | Dense exact kNN and closed-radius classifiers, weighted linear SVM and SVR | KD-tree or ball-tree search, sparse inputs, kernel SVM/SVR, calibrated probabilities, and differentiable soft-neighbor policies |
 | Trees and ensembles | Partial | Deterministic finite-only regression stumps, weighted depth-limited CART regression and classification, seeded bootstrap random-forest classification, squared-loss stump boosting, and exact/histogram depth-limited second-order squared/logistic/Poisson/Huber/quantile boosting are implemented. XGBoost-style trees support weighted quantile cuts, bounded histograms, explicit NaN rejection, learned default directions, forced-left/right routing, and per-feature monotonic constraints with recursive leaf bounds; extra-trees, bagging, ranking, categorical, and interaction constraints remain planned |
-| Clustering and unsupervised learning | Centered dense `pca_t` is implemented with deterministic SVD signs, rank selection, whitening, reconstruction, variance metadata, and fixed-state input products | Incremental/randomized/sparse/kernel PCA, ICA, NMF, k-means/minibatch k-means, Gaussian mixtures/EM, density and graph clustering, manifold methods, outlier detection, matrix factorization, and density metrics |
+| Clustering and unsupervised learning | Centered dense `pca_t` is implemented with deterministic SVD signs, rank selection, whitening, reconstruction, variance metadata, and fixed-state input products; `linear_autoencoder_t` reuses fitted PCA as the tied linear optimum with exact encode/reconstruction JVPs | Incremental/randomized/sparse/kernel PCA, ICA, NMF, k-means/minibatch k-means, Gaussian mixtures/EM, density and graph clustering, manifold methods, outlier detection, matrix factorization, and density metrics |
 | Neural networks | MLP/BNN/VAE/RNN primitives, a separable Hamiltonian MLP, a named sequential `mlp_chain_t` parameter tree, dense MLP linear/`tanh`/ReLU/GELU/SiLU/ELU/softplus/leaky-ReLU products, deterministic MLP Adam/AdamW/Adagrad/RMSprop/SGD training, bounded full-batch MLP and composed-chain L-BFGS-B paths, and in-memory resumable optimizer checkpoints exist | Alias-aware module/buffer tree, the remaining activation/loss/module catalog, convolution/attention/sequence/graph extensions, mixed precision, distributed training, compile/fusion, and serialized/distributed trainers |
 | Gaussian processes | Exact, derivative, sparse, structured and local variants are partial-to-implemented. Exact fitted GPs and binary/shared-kernel one-vs-rest Laplace classifiers have bounded FortOpt L-BFGS-B adapters | GPyTorch/GPflow-style kernels, likelihoods, multitask/batch shapes, exact/variational/lazy inference, derivative operators, constraints, calibration, coupled multiclass GP classification, evidence-corrected and likelihood-parameter training |
 | Derivatives | Exact GP, analytic polynomial/Fourier/radial/spline basis and pipeline HVPs, and selected neural/kernel products exist | Value/JVP/VJP/HVP and implicit/hypergradients for every declared parameter/input path, including preprocessing, likelihood, optimizer/search variables, and device kernels |
@@ -1830,7 +1830,7 @@ checkouts before deciding that a product is unavailable.
   from the infinite-width GP or NNGP/NTK feature representation to finite
   weights must record its mean, covariance, and structure-defect error instead
   of claiming an exact finite-width equivalence.
-- [ ] Add PCA initialization for linear autoencoders, following the exact
+- [x] Add PCA initialization for linear autoencoders, following the exact
   Baldi--Hornik optimum above. The empirical [principal-component
   initialization proposal](https://doi.org/10.1007/978-3-030-30484-3_14)
   (Suzuki and Sakanashi, 2019) is a separate deep-autoencoder warm start, not
@@ -1838,10 +1838,12 @@ checkouts before deciding that a product is unavailable.
   selected principal subspace, with centering, whitening, rank, and sign
   conventions recorded. The reconstruction oracle must match the PCA
   projection to numerical tolerance.
-- [ ] Reuse the public `pca_t` centered-SVD state for a linear autoencoder
+- [x] Reuse the public `pca_t` centered-SVD state for a linear autoencoder
   initializer. Tied and untied decoder choices, rank
   truncation, whitening, and sign conventions must produce the same projected
-  reconstruction oracle.
+  reconstruction oracle. The current `linear_autoencoder_t` implements the
+  tied, centered, unwhitened reconstruction and exact input JVPs; untied
+  decoders and nonlinear starts remain separate work.
 - [ ] Add GP or basis-map initialization for nonlinear autoencoders and VAEs.
   The linear optimum is the starting point, while nonlinear layers begin with
   an identity or contractive perturbation whose reconstruction and Jacobian

@@ -62,6 +62,7 @@ not supplied through a hidden generic interface.
 | `linear_svr_regression_t` | Weighted epsilon-insensitive `predict` | Packed-parameter and continuous-input JVP | Packed-parameter and continuous-input VJP; objective value/gradient | No |
 | `glm_regression_t` | Weighted positive-response Poisson/Gamma log-link `predict` | Packed-parameter and continuous-input JVP | Packed-parameter and continuous-input VJP; value/gradient objective | No |
 | `pca_t` | Centered projection and reconstruction | Input JVP for a fixed fitted state | Input VJP for a fixed fitted state | Fit-time SVD derivatives are not exposed |
+| `linear_autoencoder_t` | Tied centered linear encode/decode/reconstruct, initialized from PCA | Input JVP for encode and reconstruction | No parameter VJP (weights are fixed PCA state) | No |
 | `logistic_regression_t` | Decision score and probabilities | Parameter/input JVP, probability JVP | Parameter/input VJP, probability VJP | No |
 | `linear_svm_classifier_t` | Signed decision score and labels | Parameter/input JVP away from fit-time boundaries | Parameter/input VJP; hinge objective value/gradient | No |
 | `softmax_regression_t` | Multiclass decision scores and probabilities | Parameter/input JVP, probability JVP | Parameter/input VJP, probability VJP | No |
@@ -101,6 +102,22 @@ not supplied through a hidden generic interface.
 packed value/JVP/VJP/HVP interface. Inputs remain fixed in that interface.
 
 ## Regression and basis maps
+
+### `fortml_linear_autoencoder`
+
+`linear_autoencoder_t` is the explicit linear-optimum initialization seam for
+future nonlinear autoencoders. `fit(x,status[,n_components])` fits centered
+PCA and stores the loading matrix as an encoder and its transpose as a tied
+decoder. `initialize_from_pca(pca,status)` performs the same copy from an
+already fitted `pca_t`; it does not claim that a finite nonlinear network or
+an NNGP posterior is identical to this optimum.
+
+`encode`, `decode`, and `reconstruct` use row-oriented sample semantics and
+preserve the PCA center. `encode_jvp` and `reconstruct_jvp` are exact for a
+fixed fitted state. `encoder_weights`, `decoder_weights`, and `mean` return
+copies for inspection. `device_supported(FORTML_DEVICE_CPU)` is true after
+initialization; CUDA is explicitly false until a resident matrix-product
+lowering is linked, so callers cannot count a host fallback as GPU execution.
 
 ### `fortml_linear_regression`
 
