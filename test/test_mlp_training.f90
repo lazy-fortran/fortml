@@ -4,7 +4,7 @@ program test_mlp_training
     use fortnum_status, only: fortnum_status_t, status_ok
     use fortml_mlp, only: mlp_t, MLP_LINEAR
     use fortml_mlp_training, only: mlp_training_options_t, &
-        mlp_training_state_t, mlp_loss_value_gradient, mlp_train
+        mlp_training_state_t, mlp_loss_value_gradient, mlp_loss_hvp, mlp_train
     implicit none
 
     integer :: failures
@@ -13,6 +13,8 @@ program test_mlp_training
     call test_first_adam_step(failures)
     call test_reproducible_minibatch_and_callback(failures)
     call test_l2_hyperparameter_product(failures)
+    call test_loss_hvp_oracle(failures)
+    call test_nonlinear_loss_hvp(failures)
     if (failures > 0) then
         write (*, '(a,i0)') "FAIL MLP training cases: ", failures
         error stop 1
@@ -115,6 +117,78 @@ contains
         call check(abs(l2_bar - (plus - minus)/(2.0_dp*h)) < 2.0e-10_dp, &
             "finite-difference L2 derivative", failures)
     end subroutine test_l2_hyperparameter_product
+
+    subroutine test_loss_hvp_oracle(failures)
+        integer, intent(inout) :: failures
+        type(mlp_t) :: model
+        type(fortnum_status_t) :: status
+        real(dp) :: x(3, 1), target(3, 1), theta(2), dtheta(2)
+        real(dp) :: gradient_plus(2), gradient_minus(2), parameter_hvp(2)
+        real(dp) :: value, l2_bar, ignored, l2_hvp, finite_l2_hvp
+        real(dp) :: h, l2, l2_direction
+
+        x(:, 1) = [-1.0_dp, 0.5_dp, 2.0_dp]
+        target(:, 1) = [0.5_dp, -0.25_dp, 1.5_dp]
+        theta = [0.3_dp, -0.2_dp]
+        dtheta = [-0.4_dp, 0.7_dp]
+        l2 = 0.4_dp
+        l2_direction = -0.15_dp
+        call model%initialize([1, 1], status, output_activation=MLP_LINEAR)
+        call model%set_parameters(theta, status)
+        call mlp_loss_hvp(model, x, target, l2, dtheta, l2_direction, &
+            parameter_hvp, l2_hvp, status)
+        h = 1.0e-6_dp
+        call model%set_parameters(theta + h*dtheta, status)
+        call mlp_loss_value_gradient(model, x, target, l2 + h*l2_direction, &
+            value, gradient_plus, l2_bar, status)
+        call model%set_parameters(theta - h*dtheta, status)
+        call mlp_loss_value_gradient(model, x, target, l2 - h*l2_direction, &
+            value, gradient_minus, ignored, status)
+        call model%set_parameters(theta, status)
+        finite_l2_hvp = (0.5_dp*sum((theta + h*dtheta)**2) - &
+            0.5_dp*sum((theta - h*dtheta)**2))/(2.0_dp*h)
+        call check(status_ok(status), "loss HVP status", failures)
+        call check(maxval(abs(parameter_hvp - &
+            (gradient_plus - gradient_minus)/(2.0_dp*h))) < 2.0e-8_dp, &
+            "joint parameter HVP finite difference", failures)
+        call check(abs(l2_hvp - finite_l2_hvp) < 2.0e-10_dp, &
+            "mixed L2 HVP finite difference", failures)
+    end subroutine test_loss_hvp_oracle
+
+    subroutine test_nonlinear_loss_hvp(failures)
+        integer, intent(inout) :: failures
+        type(mlp_t) :: model
+        type(fortnum_status_t) :: status
+        real(dp) :: x(3, 1), target(3, 1), theta(7), dtheta(7)
+        real(dp) :: parameter_hvp(7), gradient_plus(7), gradient_minus(7)
+        real(dp) :: value, l2_bar, ignored, l2_hvp
+        real(dp) :: h, l2, l2_direction
+
+        x(:, 1) = [-0.8_dp, 0.2_dp, 1.1_dp]
+        target(:, 1) = [0.4_dp, -0.1_dp, 0.9_dp]
+        theta = [0.2_dp, -0.3_dp, 0.1_dp, 0.05_dp, 0.7_dp, -0.4_dp, 0.2_dp]
+        dtheta = [-0.1_dp, 0.15_dp, 0.07_dp, -0.12_dp, 0.2_dp, 0.09_dp, -0.18_dp]
+        l2 = 0.25_dp
+        l2_direction = 0.11_dp
+        call model%initialize([1, 2, 1], status, initialization_seed=9)
+        call model%set_parameters(theta, status)
+        call mlp_loss_hvp(model, x, target, l2, dtheta, l2_direction, &
+            parameter_hvp, l2_hvp, status)
+        h = 1.0e-6_dp
+        call model%set_parameters(theta + h*dtheta, status)
+        call mlp_loss_value_gradient(model, x, target, l2 + h*l2_direction, &
+            value, gradient_plus, l2_bar, status)
+        call model%set_parameters(theta - h*dtheta, status)
+        call mlp_loss_value_gradient(model, x, target, l2 - h*l2_direction, &
+            value, gradient_minus, ignored, status)
+        call model%set_parameters(theta, status)
+        call check(status_ok(status), "nonlinear HVP status", failures)
+        call check(maxval(abs(parameter_hvp - &
+            (gradient_plus - gradient_minus)/(2.0_dp*h))) < 3.0e-8_dp, &
+            "nonlinear joint HVP finite difference", failures)
+        call check(abs(l2_hvp - dot_product(theta, dtheta)) < 2.0e-10_dp, &
+            "nonlinear mixed L2 HVP", failures)
+    end subroutine test_nonlinear_loss_hvp
 
     subroutine stop_at_three(epoch, loss, gradient_norm, stop)
         integer, intent(in) :: epoch

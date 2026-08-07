@@ -60,6 +60,7 @@ module fortml_mlp_training
 
     public :: mlp_epoch_callback_proc
     public :: mlp_loss_value_gradient
+    public :: mlp_loss_hvp
     public :: mlp_train
 
 contains
@@ -100,6 +101,68 @@ contains
         gradient = gradient + l2*theta
         call status_set(status, FORTNUM_OK, "")
     end subroutine mlp_loss_value_gradient
+
+    subroutine mlp_loss_hvp(model, x, target, l2, dtheta, l2_direction, &
+            parameter_hvp, l2_hvp, status)
+        !! Hessian-vector product for the MSE+L2 objective.
+        !!
+        !! The joint direction is `(dtheta,l2_direction)`.  The returned
+        !! `parameter_hvp` is the parameter block of the joint Hessian-vector
+        !! product and `l2_hvp` is the scalar L2 block.  Thus this product can
+        !! be passed directly to a second-order outer hyperparameter method:
+        !!
+        !!   H * (dtheta, dl2) =
+        !!     ( H_theta_theta*dtheta + theta*dl2, theta^T*dtheta ).
+        !!
+        !! The data term uses the network's JVP/VJP/HVP products; no finite
+        !! differences are used in the implementation.
+        class(mlp_t), intent(in) :: model
+        real(dp), intent(in) :: x(:, :), target(:, :), l2, dtheta(:)
+        real(dp), intent(in) :: l2_direction
+        real(dp), intent(out) :: parameter_hvp(:), l2_hvp
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: prediction(:, :), residual(:, :)
+        real(dp), allocatable :: output_tangent(:, :), zero_input(:, :)
+        real(dp), allocatable :: x_bar(:, :), jtj_product(:), curvature(:)
+        real(dp), allocatable :: theta(:)
+        integer :: n_samples, n_parameters
+
+        parameter_hvp = 0.0_dp
+        l2_hvp = 0.0_dp
+        n_parameters = model%parameter_count()
+        if (.not. valid_data(model, x, target) .or. l2 < 0.0_dp .or. &
+                size(dtheta) /= n_parameters .or. &
+                size(parameter_hvp) /= n_parameters) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP loss HVP: model, data, penalty, or direction shape is invalid")
+            return
+        end if
+
+        n_samples = size(x, 1)
+        allocate(prediction(size(target, 1), size(target, 2)))
+        allocate(residual, mold=prediction)
+        allocate(output_tangent, mold=prediction)
+        allocate(zero_input, mold=x)
+        allocate(x_bar, mold=x)
+        allocate(jtj_product(n_parameters), curvature(n_parameters))
+        call model%predict(x, prediction, status)
+        if (status%code /= FORTNUM_OK) return
+        residual = prediction - target
+        zero_input = 0.0_dp
+        call model%jvp(x, dtheta, zero_input, prediction, output_tangent, status)
+        if (status%code /= FORTNUM_OK) return
+        call model%vjp(x, output_tangent/real(n_samples, dp), jtj_product, &
+            x_bar, status)
+        if (status%code /= FORTNUM_OK) return
+        call model%hvp(x, residual/real(n_samples, dp), dtheta, zero_input, &
+            curvature, x_bar, status)
+        if (status%code /= FORTNUM_OK) return
+        theta = model%parameters()
+        parameter_hvp = jtj_product + curvature + l2*dtheta + &
+            l2_direction*theta
+        l2_hvp = dot_product(theta, dtheta)
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine mlp_loss_hvp
 
     subroutine mlp_train(model, x, target, status, options, state)
         !! Train `model` with deterministic Adam updates.
