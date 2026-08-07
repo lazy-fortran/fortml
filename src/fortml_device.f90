@@ -6,7 +6,7 @@ module fortml_device
     !! runtime.  Operators may register their explicit data regions here so a
     !! caller can report ownership, residency, and transfer costs without
     !! hiding a host fallback.
-    use, intrinsic :: iso_c_binding, only: c_int
+    use, intrinsic :: iso_c_binding, only: c_double, c_int, c_ptr
     use, intrinsic :: iso_fortran_env, only: int64
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
         FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED
@@ -66,6 +66,11 @@ module fortml_device
 
     public :: fortml_device_available
     public :: fortml_query_device
+    public :: fortml_cuda_knn_available
+    public :: fortml_cuda_knn_plan_create
+    public :: fortml_cuda_knn_plan_destroy
+    public :: fortml_cuda_knn_plan_predict
+    public :: fortml_cuda_knn_predict
 
     interface
         function fortml_cuda_kernel_available() bind(C, &
@@ -79,6 +84,55 @@ module fortml_device
             import :: c_int
             integer(c_int) :: available
         end function fortml_cuda_rbf_available
+
+        function fortml_cuda_knn_available() bind(C, &
+                name="fortml_cuda_knn_available") result(available)
+            import :: c_int
+            integer(c_int) :: available
+        end function fortml_cuda_knn_available
+
+        function fortml_cuda_knn_predict( &
+                train_x, train_class, sample_weight, query_x, class_label, &
+                output, n_train, n_features, n_query, n_classes, &
+                n_neighbors, weighting_code) bind(C, &
+                name="fortml_cuda_knn_predict") result(status)
+            import :: c_double, c_int, c_ptr
+            type(c_ptr), value :: train_x, train_class, sample_weight
+            type(c_ptr), value :: query_x, class_label, output
+            integer(c_int), value :: n_train, n_features, n_query, n_classes
+            integer(c_int), value :: n_neighbors, weighting_code
+            integer(c_int) :: status
+        end function fortml_cuda_knn_predict
+
+        function fortml_cuda_knn_plan_create( &
+                train_x, train_class, sample_weight, class_label, n_train, &
+                n_features, n_classes, n_neighbors, weighting_code, &
+                device_index, plan) bind(C, &
+                name="fortml_cuda_knn_plan_create") result(status)
+            import :: c_double, c_int, c_ptr
+            type(c_ptr), value :: train_x, train_class, sample_weight
+            type(c_ptr), value :: class_label
+            integer(c_int), value :: n_train, n_features, n_classes
+            integer(c_int), value :: n_neighbors, weighting_code, device_index
+            type(c_ptr) :: plan
+            integer(c_int) :: status
+        end function fortml_cuda_knn_plan_create
+
+        function fortml_cuda_knn_plan_destroy(plan) bind(C, &
+                name="fortml_cuda_knn_plan_destroy") result(status)
+            import :: c_int, c_ptr
+            type(c_ptr), value :: plan
+            integer(c_int) :: status
+        end function fortml_cuda_knn_plan_destroy
+
+        function fortml_cuda_knn_plan_predict( &
+                plan, query_x, n_query, output) bind(C, &
+                name="fortml_cuda_knn_plan_predict") result(status)
+            import :: c_int, c_ptr
+            type(c_ptr), value :: plan, query_x, output
+            integer(c_int), value :: n_query
+            integer(c_int) :: status
+        end function fortml_cuda_knn_plan_predict
     end interface
 
 contains
@@ -323,7 +377,7 @@ contains
         type(fortml_device_capability_t), intent(out) :: capability
         type(fortnum_status_t), intent(out) :: status
 
-        integer(c_int) :: cuda_kernel, cuda_rbf
+        integer(c_int) :: cuda_kernel, cuda_rbf, cuda_knn
 
         capability = fortml_device_capability_t()
         select case (kind)
@@ -334,8 +388,10 @@ contains
         case (FORTML_DEVICE_CUDA)
             cuda_kernel = fortml_cuda_kernel_available()
             cuda_rbf = fortml_cuda_rbf_available()
+            cuda_knn = fortml_cuda_knn_available()
             capability%supports_cuda_kernels = &
-                cuda_kernel /= 0_c_int .or. cuda_rbf /= 0_c_int
+                cuda_kernel /= 0_c_int .or. cuda_rbf /= 0_c_int .or. &
+                cuda_knn /= 0_c_int
             capability%available = capability%supports_cuda_kernels
             capability%host_accessible = .false.
             capability%supports_residency = capability%available

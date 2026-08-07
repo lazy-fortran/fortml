@@ -75,14 +75,14 @@ registered and validated against an independent CPU oracle.
 
 ## Estimator capability example: kNN
 
-`knn_classifier_t%device_supported(kind)` reports estimator-level support. It
-currently returns true only for `FORTML_DEVICE_CPU`; the classifier's stable
-distance ordering and vote reduction do not yet have a resident CUDA/OpenACC
-kernel. `knn_classifier_t%predict_device(device,x,labels,status)` therefore
-delegates only an explicitly selected CPU context and returns
-`FORTNUM_NOT_IMPLEMENTED` for CUDA. The CUDA branch never copies the training
-rows back to the host and never fabricates a host prediction. The independent
-`test_knn_classifier_device` behavioral test checks CPU parity, the capability
-query, the CUDA refusal, and rejection of an unselected context. This is a
-declared gap, not GPU evidence; a future resident implementation must add a
-distance/tie-order oracle and transfer accounting before changing the query.
+`knn_classifier_t%device_supported(kind)` reports estimator-level support. The
+default GNU build links a CUDA stub and therefore reports CPU support only.
+Native CUDA builds link `src/classification/fortml_cuda_knn.cu`. In that build,
+`knn_classifier_t%predict_device(device,x,labels,status)` creates one resident
+training-set plan per CUDA device and copies each query batch explicitly. The
+kernel keeps squared-distance ordering and original-row tie rules and returns
+labels without a host neighbor-selection fallback. `test/run_cuda_knn_plan.sh`
+checks the kernel directly, while `test/run_knn_classifier_cuda.sh` checks the
+Fortran API against the same nearest-neighbor oracle. CUDA remains unavailable
+when the native object is not linked, and JVP/VJP products remain refused at
+the discrete neighbor boundary.

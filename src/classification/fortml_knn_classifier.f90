@@ -13,11 +13,15 @@ module fortml_knn_classifier
     !! zero derivative.  The fixed-state prediction itself is deterministic
     !! and suitable for use inside a piecewise-constant objective.
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+    use, intrinsic :: iso_c_binding, only: c_associated, c_int, c_loc, c_null_ptr, &
+        c_ptr
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
         FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED
     use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU, &
-        FORTML_DEVICE_CUDA
+        FORTML_DEVICE_CUDA, fortml_cuda_knn_available, &
+        fortml_cuda_knn_plan_create, fortml_cuda_knn_plan_destroy, &
+        fortml_cuda_knn_plan_predict
     implicit none
     private
 
@@ -40,6 +44,8 @@ module fortml_knn_classifier
         integer :: n_classes = 0
         integer :: weighting_code = KNN_WEIGHTS_UNIFORM
         logical :: is_fitted = .false.
+        type(c_ptr) :: cuda_plan = c_null_ptr
+        integer :: cuda_plan_device = -1
     contains
         procedure, public :: fit => knn_classifier_fit
         procedure, public :: predict_proba => knn_classifier_predict_proba
@@ -55,6 +61,7 @@ module fortml_knn_classifier
         procedure, public :: sample_count => knn_classifier_sample_count
         procedure, public :: class_count => knn_classifier_class_count
         procedure, public :: fitted => knn_classifier_fitted
+        final :: knn_classifier_finalize
     end type knn_classifier_t
 
     public :: knn_classifier_fit
@@ -263,14 +270,22 @@ contains
         !! Predict through the explicit device control plane.
         !!
         !! CPU selection delegates to the deterministic host implementation.
-        !! CUDA selection is a structured refusal until neighbor distances and
-        !! stable tie ordering have a resident implementation; it never falls
-        !! back to a hidden host copy.
-        class(knn_classifier_t), intent(in) :: self
+        !! CUDA lazily creates a resident training-set plan on the selected
+        !! device. Query batches are copied explicitly to that plan and the
+        !! labels are copied back; the CUDA branch never invokes host
+        !! neighbor selection as a fallback.
+        class(knn_classifier_t), intent(inout) :: self
         type(fortml_device_t), intent(in) :: device
-        real(dp), intent(in) :: x(:, :)
-        integer, intent(out) :: labels(:)
+        real(dp), intent(in), target :: x(:, :)
+        integer, intent(out), target :: labels(:)
         type(fortnum_status_t), intent(out) :: status
+
+        integer(c_int) :: c_status, n_train, n_features, n_query, n_classes
+        integer(c_int) :: n_neighbors, weighting_code
+        real(dp), allocatable, target :: train_x(:,:), train_weight(:)
+        integer(c_int), allocatable, target :: train_class(:), class_label(:)
+        integer(c_int), allocatable, target :: labels_c(:)
+        real(dp), allocatable, target :: query_x(:,:)
 
         if (.not. device%selected .or. .not. device%available) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -281,8 +296,76 @@ contains
         case (FORTML_DEVICE_CPU)
             call self%predict(x, labels, status)
         case (FORTML_DEVICE_CUDA)
-            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
-                "KNN classifier device prediction: resident CUDA neighbor search is not implemented")
+            if (fortml_cuda_knn_available() == 0_c_int) then
+                call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                    "KNN classifier device prediction: CUDA kNN kernel is not linked")
+                return
+            end if
+            if (.not. self%is_fitted) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "KNN classifier device prediction: model is not fitted")
+                return
+            end if
+            n_query = int(size(x, 1), c_int)
+            if (size(x, 2) /= self%n_features .or. size(labels) /= size(x, 1)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "KNN classifier device prediction: input or output shape is invalid")
+                return
+            end if
+            if (any(.not. ieee_is_finite(x))) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "KNN classifier device prediction: inputs must be finite")
+                return
+            end if
+            if (size(x, 1) == 0) then
+                call status_set(status, FORTNUM_OK, "")
+                return
+            end if
+            if (self%cuda_plan_device >= 0 .and. &
+                self%cuda_plan_device /= device%device_index) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "KNN classifier device prediction: plan belongs to another CUDA device")
+                return
+            end if
+            n_train = int(self%n_samples, c_int)
+            n_features = int(self%n_features, c_int)
+            n_classes = int(self%n_classes, c_int)
+            n_neighbors = int(self%n_neighbors, c_int)
+            weighting_code = int(self%weighting_code, c_int)
+            if (.not. c_associated(self%cuda_plan)) then
+                allocate(train_x(size(self%x_train, 1), size(self%x_train, 2)), &
+                    train_weight(size(self%sample_weight)), &
+                    train_class(size(self%train_class)), &
+                    class_label(size(self%class_label)))
+                train_x = self%x_train
+                train_weight = self%sample_weight
+                train_class = int(self%train_class, c_int)
+                class_label = int(self%class_label, c_int)
+                c_status = fortml_cuda_knn_plan_create( &
+                    c_loc(train_x), c_loc(train_class), c_loc(train_weight), &
+                    c_loc(class_label), &
+                    n_train, n_features, n_classes, n_neighbors, &
+                    weighting_code, int(device%device_index, c_int), &
+                    self%cuda_plan)
+                if (c_status /= 0_c_int) then
+                    self%cuda_plan = c_null_ptr
+                    call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                        "KNN classifier device prediction: CUDA resident plan creation failed")
+                    return
+                end if
+                self%cuda_plan_device = device%device_index
+            end if
+            allocate(query_x(size(x, 1), size(x, 2)), labels_c(size(labels)))
+            query_x = x
+            c_status = fortml_cuda_knn_plan_predict(self%cuda_plan, c_loc(query_x), &
+                n_query, c_loc(labels_c))
+            if (c_status /= 0_c_int) then
+                call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                    "KNN classifier device prediction: CUDA resident prediction failed")
+                return
+            end if
+            labels = labels_c
+            call status_set(status, FORTNUM_OK, "")
         case default
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "KNN classifier device prediction: device kind is invalid")
@@ -294,7 +377,14 @@ contains
         class(knn_classifier_t), intent(in) :: self
         integer, intent(in) :: device_kind
 
-        supported = self%is_fitted .and. device_kind == FORTML_DEVICE_CPU
+        select case (device_kind)
+        case (FORTML_DEVICE_CPU)
+            supported = self%is_fitted
+        case (FORTML_DEVICE_CUDA)
+            supported = self%is_fitted .and. fortml_cuda_knn_available() /= 0_c_int
+        case default
+            supported = .false.
+        end select
     end function knn_classifier_device_supported
 
     subroutine knn_classifier_predict_proba_jvp(self, x, x_dot, probabilities, &
@@ -362,6 +452,17 @@ contains
         class(knn_classifier_t), intent(in) :: self
         value = self%is_fitted
     end function knn_classifier_fitted
+
+    subroutine knn_classifier_finalize(self)
+        type(knn_classifier_t), intent(inout) :: self
+        integer(c_int) :: c_status
+
+        if (c_associated(self%cuda_plan)) then
+            c_status = fortml_cuda_knn_plan_destroy(self%cuda_plan)
+            self%cuda_plan = c_null_ptr
+        end if
+        self%cuda_plan_device = -1
+    end subroutine knn_classifier_finalize
 
     integer function class_index(classes, label) result(index)
         integer, intent(in) :: classes(:), label

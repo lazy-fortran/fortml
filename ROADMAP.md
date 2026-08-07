@@ -9,12 +9,12 @@ and implementation limits in [`docs/DESIGN.md`](docs/DESIGN.md) and
 
 | Compiler | Command | Result |
 | --- | --- | --- |
-| GNU Fortran | `fo` | Static, build, and lint checks passed. The fresh 2026-08-07 run passed all 82 tests. See [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
-| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded compiler lane. The checked-in NVIDIA log predates the latest 82-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
+| GNU Fortran | `fo` | Static, build, and lint checks passed. The fresh 2026-08-07 run passed all 83 tests. See [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
+| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded compiler lane. The checked-in NVIDIA log predates the latest 83-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
 The checked-in compiler logs above are older compiler snapshots. A fresh GNU
-Fortran `fo` run on 2026-08-07 passed static analysis, the build, all 82 tests,
+Fortran `fo` run on 2026-08-07 passed static analysis, the build, all 83 tests,
 and lint. The fresh run includes implementation work whose compiler logs have
 not yet replaced those snapshots. NVIDIA compiler coverage therefore remains
 an explicit older-build result.
@@ -107,7 +107,7 @@ documentation, refusal behavior, and benchmark evidence are all present.
 | Derivatives | Exact GP and selected neural/kernel products exist | Value/JVP/VJP/HVP and implicit/hypergradients for every declared parameter/input path, including preprocessing, likelihood, optimizer/search variables, and device kernels |
 | Model selection and metrics | Benchmark-specific checks exist | Shared metrics, splitters, cross-validation, calibration, grid/random/Bayesian/differentiable search, nested validation, and leakage/refusal checks |
 | Persistence and serving | Missing public contract | Versioned state dictionaries, safe model/trainer serialization, compiler-independent metadata, streaming inference, batching, and reproducible deployment manifests |
-| GPU and scale-out | Operator-specific OpenACC/CUDA paths; the new kNN, RMSprop, XGBoost staged, and GP-classification-training release rows are CPU-only until resident kernels are added | Complete resident CPU/CUDA/OpenACC training and inference for supported estimators, mixed precision, multi-GPU/MPI sharding, transfer accounting, and deterministic reductions |
+| GPU and scale-out | Operator-specific OpenACC/CUDA paths; kNN now has a resident native-CUDA plan, while RMSprop, staged XGBoost, and GP-classification-training release rows remain CPU-only until resident kernels are added | Complete resident CPU/CUDA/OpenACC training and inference for supported estimators, mixed precision, multi-GPU/MPI sharding, transfer accounting, and deterministic reductions |
 | Performance evidence | Several model/GP lanes exist | Matched correctness-gated comparisons with scikit-learn, XGBoost/LightGBM, PyTorch/JAX, GPyTorch/GPflow, and published hardware/toolchain provenance |
 
 ### Parity inventory and release gates
@@ -128,7 +128,7 @@ derivatives, refusal behavior, and an independent benchmark oracle all exist.
 | GPyTorch/GPflow | Exact, derivative-observation, sparse/local/SKI/structured GP primitives; Laplace binary/OVR GP classification | Kernel/likelihood/constraint/batch-shape parity, variational categorical/count likelihoods, multitask, operator-valued derivatives, implicit hypergradients, serialization and resident GPU training |
 | XGBoost/LightGBM | Exact depth-limited squared/logistic Newton trees, binary/OVR multiclass staged predictions, margins, and gain/weight/cover diagnostics with explicit NaN policies (`error`, learned, forced-left/right) | Histogram quantiles, categorical/quantile/ranking objectives, DART, monotonic/interaction constraints, and distributed training |
 | Differentiability and search | Capability-specific JVP/VJP/HVP products, FortOpt L-BFGS-B for selected objectives, and an exact fixed-trajectory MLP hypergradient over log learning rate/L2 | Complete derivative matrix for every declared parameter/input/hyperparameter, stochastic/device optimizer hypergradients, implicit differentiation, and refusal rather than hidden finite differences |
-| Device and performance | OpenACC/native CUDA operator lanes plus explicit device control-plane contract; kNN, RMSprop, staged boosting, and GP-classification training still report CPU-only benchmark rows | Resident model/optimizer/batch state for every supported estimator, CPU parity, transfer/memory accounting, mixed precision, and matched PyTorch/JAX/GPyTorch/XGBoost evidence |
+| Device and performance | OpenACC/native CUDA operator lanes plus explicit device control-plane contract; kNN has a correctness-gated resident native-CUDA plan, while RMSprop, staged boosting, and GP-classification training still report CPU-only benchmark rows | Resident model/optimizer/batch state for every supported estimator, CPU parity, transfer/memory accounting, mixed precision, and matched PyTorch/JAX/GPyTorch/XGBoost evidence |
 
 The inventory deliberately distinguishes an implemented algorithm from an
 implemented *workflow*. For example, an XGBoost-style Newton tree without
@@ -475,7 +475,7 @@ The source inventory is dated 2026-08-07.
 | Tree boosting | Partial | `decision_stump_t`, weighted depth-limited `cart_regressor_t` and `cart_classifier_t`, squared-loss `gradient_boosting_regressor_t`, `xgboost_t`, and `xgboost_multiclass_t` provide deterministic exhaustive split products. The CART lanes have weighted squared-error or Gini/entropy criteria, depth and leaf constraints, fixed feature/threshold tie ordering, piecewise input JVP/refusal for regression, and finite-only probability/prediction paths for classification. The XGBoost-style lane has exact depth-limited squared/logistic gradients, Hessians, regularized gains, recursive Newton leaves, tree-depth/node diagnostics, binary and one-vs-rest multiclass probabilities, staged predictions/margins, and gain/weight/cover feature importance. | Regression and classification trees support deterministic histogram boosting, validation-based stopping, missing values, deeper growth, and model persistence. |
 | Training infrastructure | Partial | Model-specific gradients, exact MSE+L2 neural HVPs including the L2 mixed hyperparameter block, `fortopt_adam` and FortOpt SGD momentum/Nesterov integration, AdamW with decoupled decay, Adagrad with an explicit accumulated-square state, RMSprop with centered/uncentered statistics and optional momentum, deterministic seeded batch cursors, per-update learning-rate callbacks, norm clipping, sample-weighted gradient accumulation, validation/early stopping, resumable optimizer state, fixed-trajectory SGD/AdamW/RMSprop hypergradients, natural-gradient seams, and seeded variational draws exist. | One trainer owns batches, optimizer state, schedules, clipping, validation, early stopping, callbacks, and resumable state for every model with a completed trainer adapter; stochastic and device-resident optimizer hypergradients remain open. |
 | GP derivatives and hyperparameters | Partial | Exact GP likelihood and prediction products include parameter gradients and HVPs. Mixed value and first-derivative observations can be fitted and predicted. | Exact, derivative, multi-output, sparse, and matrix-free GP families expose documented trainable parameters, scalar objectives, parameter gradients, and train-state adapters. |
-| GPU and device execution | Partial | Kernel, structured, and sparse operator products have selected OpenACC or CUDA paths, including resident CG for kernel operators. `fortml_device` now gives callers an explicit CPU/CUDA selector, runtime capability probe, backend identity, residency ownership metadata, transfer counters, and structured CUDA refusal. | Supported training and prediction workflows keep model, optimizer, and batch state resident on a selected device and have CPU parity tests. |
+| GPU and device execution | Partial | Kernel, structured, and sparse operator products have selected OpenACC or CUDA paths, including resident CG for kernel operators. The kNN classifier has a resident native-CUDA training-set plan with a direct kernel oracle. `fortml_device` gives callers an explicit CPU/CUDA selector, runtime capability probe, backend identity, residency ownership metadata, transfer counters, and typed refusal when a CUDA object is not linked. | Supported training and prediction workflows keep model, optimizer, and batch state resident on a selected device and have CPU parity tests. |
 | Serialization and distributed execution | Missing | No public model-file or distributed-execution contract exists. | Versioned model and trainer files round-trip across supported compilers, and MPI training or inference agrees with a one-rank oracle. |
 | Benchmark coverage | Partial | Correctness-gated model and GP applications feed release harnesses in `../fortml-bench`; current release lanes include Bernoulli/Multinomial/ComplementNB, integer one-hot encoding, MLP SGD/Nesterov/AdamW, fixed-trajectory MLP hypergradients, differentiable imputation, basis/pipeline, exact/approximate GP, and boosting workloads. | Every completed parity package has a pinned external oracle, release timings, memory measurements, provenance, raw data, and a maintained report. |
 
@@ -1288,6 +1288,10 @@ peak memory, and batch-size scaling with the same correctness gate as training.
   records are [`results/KNN.md`](../fortml-bench/results/KNN.md),
   [`results/RMSPROP.md`](../fortml-bench/results/RMSPROP.md), and
   [`results/XGBOOST.md`](../fortml-bench/results/XGBOOST.md).
+- [x] Add the fixed full-batch RMSprop hypergradient release app and
+  correctness-gated NumPy central-difference lane. The packed five-component
+  product, centered branch, and explicit CPU/CUDA capability rows are recorded
+  in [`results/RMSPROP_HYPERGRADIENT.md`](../fortml-bench/results/RMSPROP_HYPERGRADIENT.md).
 - [x] Add a bounded binary/shared-kernel GP-classification hyperparameter lane
   with a NumPy mode/envelope-gradient oracle. The evidence is explicitly for
   mode log posterior rather than full Laplace evidence:

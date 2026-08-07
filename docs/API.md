@@ -422,6 +422,13 @@ change the selected neighbor set. KD/ball-tree, radius, sparse, and soft
 neighbor variants are separate roadmap items. Unfitted models, nonfinite data,
 invalid `k`, and malformed weights are refused with a domain status.
 
+`predict_device` uses the selected CPU context directly. A CUDA build that
+links `fortml_cuda_knn.cu` creates a resident training-set plan and runs the
+distance and stable-tie reduction in native CUDA, with explicit query and label
+transfers. The default stub build returns `FORTNUM_NOT_IMPLEMENTED` for CUDA.
+The kernel and Fortran API are checked by `test/run_cuda_knn_plan.sh` and
+`test/run_knn_classifier_cuda.sh`.
+
 ### `fortml_preprocessing`
 
 `standard_scaler_t%fit` stores column means and population standard deviations.
