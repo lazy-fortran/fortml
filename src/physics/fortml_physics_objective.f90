@@ -360,6 +360,11 @@ contains
                 "physics constraint: HVP shape is invalid")
             return
         end if
+        if (any(.not. ieee_is_finite(theta_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "physics constraint: HVP direction is not finite")
+            return
+        end if
         call validate_constraint_call(self, theta, status)
         if (status%code /= FORTNUM_OK) return
         if (.not. associated(self%hvp_proc)) then
@@ -623,6 +628,11 @@ contains
             size(theta_hvp) /= self%n_parameters) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "physics objective: HVP shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(theta_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "physics objective: HVP direction is not finite")
             return
         end if
         call accumulate_hvp(self%data, theta, theta_dot, theta_hvp, status)
