@@ -144,7 +144,7 @@ multiclass, weighted, probabilistic, derivative, or GPU coverage.
 | Derivatives | Exact GP, analytic polynomial/Fourier/radial/spline basis and pipeline HVPs, and selected neural/kernel products exist | Value/JVP/VJP/HVP and implicit/hypergradients for every declared parameter/input path, including preprocessing, likelihood, optimizer/search variables, and device kernels |
 | Model selection and metrics | Benchmark-specific checks exist | Shared metrics, splitters, cross-validation, calibration, grid/random/Bayesian/differentiable search, nested validation, and leakage/refusal checks |
 | Persistence and serving | Missing public contract | Versioned state dictionaries, safe model/trainer serialization, compiler-independent metadata, streaming inference, batching, and reproducible deployment manifests |
-| GPU and scale-out | Operator-specific OpenACC/CUDA paths; kNN has a resident native-CUDA plan and direct RMSprop/AdamW state has resident CUDA C plans. Elastic-net, OVO, LDA/QDA, Laplace-GP (binary and OVR multiclass), probability calibration, neural losses, XGBoost (binary/OVR and robust objectives), and typed schedules expose explicit CPU/CUDA capability and typed CUDA refusals; complete RMSprop training, staged XGBoost, robust/discriminant training, and GP-classification-training release rows remain CPU-only | Complete resident CPU/CUDA/OpenACC training and inference for supported estimators, mixed precision, multi-GPU/MPI sharding, transfer accounting, and deterministic reductions |
+| GPU and scale-out | Operator-specific OpenACC/CUDA paths; kNN has a resident native-CUDA plan and direct RMSprop/AdamW state has resident CUDA C plans. Elastic-net, OVO, LDA/QDA, random forest, MLP-classifier prediction products, basis/pipeline HVPs, Laplace-GP (binary and OVR multiclass), probability calibration, neural losses, XGBoost (binary/OVR and robust objectives), and typed schedules expose explicit CPU/CUDA capability and typed CUDA refusals; complete RMSprop training, staged XGBoost, robust/discriminant/forest training, basis transforms, and GP-classification-training release rows remain CPU-only | Complete resident CPU/CUDA/OpenACC training and inference for supported estimators, mixed precision, multi-GPU/MPI sharding, transfer accounting, and deterministic reductions |
 | Performance evidence | Several model/GP lanes exist | Matched correctness-gated comparisons with scikit-learn, XGBoost/LightGBM, PyTorch/JAX, GPyTorch/GPflow, and published hardware/toolchain provenance |
 
 ### Production closure ledger
@@ -1443,14 +1443,19 @@ count as a production lazy implementation.
   neural NLL products. Their independent tests and benchmark rows return a
   typed CUDA refusal with no host fallback; this is a correctness boundary,
   not a claim of GPU support.
+- [x] Add explicit CPU/CUDA capability contracts for the seeded random-forest
+  classifier, MLP-classifier prediction JVP/VJP products, and analytic basis/
+  pipeline HVPs. CPU behavior is independently oracle-tested; selected CUDA
+  contexts return typed `FORTNUM_NOT_IMPLEMENTED` until resident ensemble,
+  neural, and derivative kernels exist.
 - [ ] Keep batches, parameters, gradients, optimizer accumulators, and workspaces
   resident through complete MLP and variational training steps.
 - [ ] Extend residency to basis/pipeline transforms, tree histograms, classifier
   likelihoods, neural forward/backward products, GP solves, derivative
   operators, and L-BFGS-B objective/gradient evaluations. A mixed CPU/GPU graph
   must expose every transfer and cannot claim full-device execution.
-- [ ] Lower the fixed no-autodiff portions of robust tree prediction/training,
-  discriminant Gaussian scoring, and common NLL/reduction products to resident
+- [ ] Lower the fixed no-autodiff portions of robust/random-forest tree
+  prediction/training, discriminant Gaussian scoring, and common NLL/reduction products to resident
   CUDA kernels when OpenACC cannot preserve the declared residency or
   determinism. Keep differentiable paths on generated FortAD/FortSym products
   until matching device JVP/VJP/HVP kernels and transfer accounting exist.
