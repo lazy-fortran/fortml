@@ -9,6 +9,8 @@ program test_mlp_chain
         mlp_chain_optimize_lbfgsb
     use fortml_parameter_registry, only: parameter_block_t, parameter_registry_t, &
         parameter_block_from_mlp_chain
+    use fortml_parameter_products, only: parameter_products_t, &
+        parameter_products_from_mlp_chain
     implicit none
 
     integer :: failures
@@ -31,12 +33,15 @@ contains
         type(mlp_chain_t), target :: chain
         type(parameter_block_t) :: chain_block
         type(parameter_registry_t) :: registry
+        type(parameter_products_t) :: products
         type(fortnum_status_t) :: status
         real(dp) :: x(3, 2), dx(3, 2), u(3, 1)
         real(dp) :: y(3, 1), dy(3, 1), y_plus(3, 1), y_minus(3, 1)
+        real(dp) :: y_products(3, 1), dy_products(3, 1), dy_fixed(3, 1)
+        real(dp) :: zero_dx(3, 2), x_hvp_fixed(3, 2)
         real(dp), allocatable :: theta(:), theta_plus(:), theta_minus(:), dtheta(:)
-        real(dp), allocatable :: parameter_bar(:), parameter_hvp(:)
-        real(dp), allocatable :: plus_bar(:), minus_bar(:)
+        real(dp), allocatable :: parameter_bar(:), parameter_hvp(:), parameter_hvp_fixed(:)
+        real(dp), allocatable :: plus_bar(:), minus_bar(:), products_bar(:), products_hvp(:)
         real(dp) :: x_bar(3, 2), x_hvp(3, 2), plus_x_bar(3, 2), minus_x_bar(3, 2)
         real(dp) :: epsilon, lhs, rhs
         integer :: first_range, last_range
@@ -61,9 +66,14 @@ contains
         call registry%pack(theta, status)
         call check(status_ok(status) .and. maxval(abs(theta - chain%parameters())) < 1.0e-14_dp, &
             "parameter registry routes the composed tree", failures)
+        call parameter_products_from_mlp_chain(products, "network", chain, status)
+        call check(status_ok(status) .and. products%initialized() .and. &
+            products%has_hvp() .and. products%parameter_count() == chain%parameter_count(), &
+            "parameter products expose the composed tree", failures)
 
         x = reshape([0.2_dp, -0.4_dp, 0.7_dp, 1.1_dp, -0.3_dp, 0.9_dp], shape(x))
         dx = reshape([-0.1_dp, 0.3_dp, 0.4_dp, -0.2_dp, 0.6_dp, 0.5_dp], shape(dx))
+        zero_dx = 0.0_dp
         u(:, 1) = [0.7_dp, -0.4_dp, 0.9_dp]
         theta = chain%parameters()
         dtheta = [0.03_dp, -0.05_dp, 0.02_dp, 0.04_dp, -0.01_dp, 0.06_dp, &
@@ -72,7 +82,18 @@ contains
         allocate(plus_bar(size(theta)), minus_bar(size(theta)))
         call chain%predict(x, y, status)
         call chain%jvp(x, dtheta, dx, y, dy, status)
+        allocate(products_bar(size(theta)), products_hvp(size(theta)))
+        call products%value(x, y_products, status)
+        call products%jvp(x, dtheta, y_products, dy_products, status)
+        call products%vjp(x, u, products_bar, status)
+        call products%hvp(x, u, dtheta, products_hvp, status)
+        call chain%jvp(x, dtheta, zero_dx, y, dy_fixed, status)
+        allocate(parameter_hvp_fixed(size(theta)))
+        call chain%hvp(x, u, dtheta, zero_dx, parameter_hvp_fixed, x_hvp_fixed, status)
         call check(status_ok(status), "composed value/JVP status", failures)
+        call check(maxval(abs(y_products - y)) < 1.0e-14_dp .and. &
+            maxval(abs(dy_products - dy_fixed)) < 1.0e-14_dp, &
+            "parameter products agree with chain products", failures)
         epsilon = 1.0e-6_dp
         theta_plus = theta + epsilon*dtheta
         theta_minus = theta - epsilon*dtheta
@@ -89,6 +110,8 @@ contains
         rhs = dot_product(parameter_bar, dtheta) + sum(x_bar*dx)
         call check(status_ok(status) .and. abs(lhs - rhs) < 2.0e-10_dp, &
             "chain VJP adjoint identity", failures)
+        call check(maxval(abs(products_bar - parameter_bar)) < 1.0e-14_dp, &
+            "parameter-products VJP agrees with chain", failures)
 
         call chain%hvp(x, u, dtheta, dx, parameter_hvp, x_hvp, status)
         call chain%set_parameters(theta_plus, status)
@@ -100,6 +123,8 @@ contains
             maxval(abs(parameter_hvp - (plus_bar - minus_bar)/(2.0_dp*epsilon))) < 2.0e-6_dp .and. &
             maxval(abs(x_hvp - (plus_x_bar - minus_x_bar)/(2.0_dp*epsilon))) < 2.0e-6_dp, &
             "chain HVP agrees with differentiated VJP oracle", failures)
+        call check(maxval(abs(products_hvp - parameter_hvp_fixed)) < 1.0e-14_dp, &
+            "parameter-products HVP agrees with chain", failures)
     end subroutine test_composed_products
 
     subroutine test_objective_and_lbfgsb(failures)

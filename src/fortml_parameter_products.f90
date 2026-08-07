@@ -10,8 +10,10 @@ module fortml_parameter_products
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
         FORTNUM_DOMAIN_ERROR
     use fortml_parameter_registry, only: parameter_registry_t, &
-        parameter_block_t, parameter_block_from_mlp, parameter_block_from_gp
+        parameter_block_t, parameter_block_from_mlp, parameter_block_from_gp, &
+        parameter_block_from_mlp_chain
     use fortml_mlp, only: mlp_t
+    use fortml_mlp_chain, only: mlp_chain_t
     use fortml_gaussian_process, only: gp_regression_t
     implicit none
     private
@@ -74,7 +76,8 @@ module fortml_parameter_products
 
     public :: parameter_value_proc, parameter_jvp_proc, parameter_vjp_proc
     public :: parameter_hvp_proc
-    public :: parameter_products_from_mlp, parameter_products_from_gp
+    public :: parameter_products_from_mlp, parameter_products_from_gp, &
+        parameter_products_from_mlp_chain
 
 contains
 
@@ -113,6 +116,24 @@ contains
         self%vjp_proc => gp_parameter_vjp
         self%hvp_proc => gp_parameter_hvp
     end subroutine parameter_products_from_gp
+
+    subroutine parameter_products_from_mlp_chain(self, name, model, status)
+        type(parameter_products_t), intent(out) :: self
+        character(*), intent(in) :: name
+        type(mlp_chain_t), target, intent(inout) :: model
+        type(fortnum_status_t), intent(out) :: status
+        type(parameter_block_t) :: block
+
+        call parameter_block_from_mlp_chain(block, name, model, status)
+        if (status%code /= FORTNUM_OK) return
+        call self%registry%add(block, status)
+        if (status%code /= FORTNUM_OK) return
+        self%context => model
+        self%value_proc => mlp_chain_parameter_value
+        self%jvp_proc => mlp_chain_parameter_jvp
+        self%vjp_proc => mlp_chain_parameter_vjp
+        self%hvp_proc => mlp_chain_parameter_hvp
+    end subroutine parameter_products_from_mlp_chain
 
     logical function parameter_products_initialized(self) result(yes)
         class(parameter_products_t), intent(in) :: self
@@ -314,6 +335,75 @@ contains
                 "MLP parameter products: context has the wrong type")
         end select
     end subroutine mlp_parameter_hvp
+
+    subroutine mlp_chain_parameter_value(context, x, y, status)
+        class(*), pointer, intent(in) :: context
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: y(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        select type (model => context)
+            type is (mlp_chain_t)
+            call model%predict(x, y, status)
+        class default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP chain parameter products: context has the wrong type")
+        end select
+    end subroutine mlp_chain_parameter_value
+
+    subroutine mlp_chain_parameter_jvp(context, x, theta_dot, y, y_dot, status)
+        class(*), pointer, intent(in) :: context
+        real(dp), intent(in) :: x(:, :), theta_dot(:)
+        real(dp), intent(out) :: y(:, :), y_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: x_dot(:, :)
+
+        select type (model => context)
+            type is (mlp_chain_t)
+            allocate(x_dot, source=x)
+            x_dot = 0.0_dp
+            call model%jvp(x, theta_dot, x_dot, y, y_dot, status)
+        class default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP chain parameter products: context has the wrong type")
+        end select
+    end subroutine mlp_chain_parameter_jvp
+
+    subroutine mlp_chain_parameter_vjp(context, x, y_bar, theta_bar, status)
+        class(*), pointer, intent(in) :: context
+        real(dp), intent(in) :: x(:, :), y_bar(:, :)
+        real(dp), intent(out) :: theta_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: x_bar(:, :)
+
+        select type (model => context)
+            type is (mlp_chain_t)
+            allocate(x_bar, source=x)
+            call model%vjp(x, y_bar, theta_bar, x_bar, status)
+        class default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP chain parameter products: context has the wrong type")
+        end select
+    end subroutine mlp_chain_parameter_vjp
+
+    subroutine mlp_chain_parameter_hvp(context, x, y_bar, theta_dot, theta_hvp, status)
+        class(*), pointer, intent(in) :: context
+        real(dp), intent(in) :: x(:, :), y_bar(:, :), theta_dot(:)
+        real(dp), intent(out) :: theta_hvp(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: x_dot(:, :), x_hvp(:, :)
+
+        select type (model => context)
+            type is (mlp_chain_t)
+            allocate(x_dot, source=x)
+            allocate(x_hvp, source=x)
+            x_dot = 0.0_dp
+            call model%hvp(x, y_bar, theta_dot, x_dot, theta_hvp, x_hvp, status)
+        class default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP chain parameter products: context has the wrong type")
+        end select
+    end subroutine mlp_chain_parameter_hvp
 
     subroutine gp_parameter_value(context, x, y, status)
         class(*), pointer, intent(in) :: context
