@@ -605,6 +605,22 @@ transfers. The default stub build returns `FORTNUM_NOT_IMPLEMENTED` for CUDA.
 The kernel and Fortran API are checked by `test/run_cuda_knn_plan.sh` and
 `test/run_knn_classifier_cuda.sh`.
 
+### `fortml_radius_neighbors_classifier`
+
+`radius_neighbors_classifier_t%fit(x,labels,status[,radius,weights,
+sample_weight,outlier_label])` stores a dense training matrix and includes
+every row within the closed squared-Euclidean radius. Uniform and
+inverse-distance votes use the same deterministic sorted-class and sample
+weight conventions as kNN. An optional `outlier_label` must name a fitted
+class and receives a one-hot probability when a query has no neighbors;
+without it, empty neighborhoods return a domain status.
+
+`predict_proba`, `predict`, `classes`, `radius`, and `device_supported` expose
+the fitted state. Neighbor selection is discontinuous, so input JVP/VJP calls
+return `FORTNUM_NOT_IMPLEMENTED`. CPU dispatch is complete; CUDA is an
+explicit `FORTNUM_NOT_IMPLEMENTED` refusal until a resident radius-search
+kernel is linked, with no host fallback.
+
 ### `fortml_preprocessing`
 
 `standard_scaler_t%fit` stores column means and population standard deviations.

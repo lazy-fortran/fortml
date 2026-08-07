@@ -203,9 +203,15 @@ when a lower-level primitive already exists.
 - [x] Dense k-nearest-neighbor classification with deterministic ties, uniform
   or inverse-distance voting, optional sample weights, and explicit
   nondifferentiable neighbor-selection boundaries.
-- [ ] Radius-neighbor search with deterministic ties,
-  brute/KD-tree/ball-tree backends, sparse inputs, leave-one-out scoring, and
-  explicit nondifferentiable neighbor-selection boundaries.
+- [x] Add dense radius-neighbor classification with a closed squared-Euclidean
+  radius, uniform or inverse-distance votes, nonnegative sample weights,
+  arbitrary sorted integer labels, deterministic probability ties, an
+  in-training outlier-label policy, and explicit nondifferentiable
+  selection-boundary products. CPU behavior has an independent hand oracle;
+  CUDA returns `FORTNUM_NOT_IMPLEMENTED` until a resident radius kernel is
+  linked.
+- [ ] Add brute/KD-tree/ball-tree backends, sparse inputs, leave-one-out
+  scoring, and resident GPU radius search.
 - [ ] Linear, kernel, one-class, and ranking SVM/SVR estimators with bounded
   solvers, probability calibration, support-vector metadata, and input/parameter
   products for smooth regions.
@@ -858,8 +864,8 @@ state, scoring, and refusal rules.
 - [ ] Add linear SGD/regression and classification with deterministic minibatch
   schedules, averaging, penalties, and `partial_fit` semantics. Keep its
   stochastic objective separate from the exact logistic/softmax objective.
-- [ ] Add nearest-neighbor regression/classification, radius neighbors,
-  kernel-density estimation, and large-data exact/brute, KD-tree, and ball-tree
+- [ ] Add nearest-neighbor regression, kernel-density estimation, and large-data
+  exact/brute, KD-tree, and ball-tree
   search with deterministic ties, metric callbacks, and missing-value policy.
 - [ ] Add linear and kernel SVM/SVR, one-class SVM, and kernel approximation
   (Nyström and random Fourier features), with probability calibration and
