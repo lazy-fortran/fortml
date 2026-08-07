@@ -60,6 +60,12 @@ module fortml_gp_variational_classification
             gvc_predict_latent_parameter_jvp
         procedure, public :: predict_proba_parameter_jvp => &
             gvc_predict_proba_parameter_jvp
+        procedure, public :: predict_latent_parameter_vjp => &
+            gvc_predict_latent_parameter_vjp
+        procedure, public :: predict_proba_parameter_vjp => &
+            gvc_predict_proba_parameter_vjp
+        procedure, public :: predict_proba_parameter_vjp_device => &
+            gvc_predict_proba_parameter_vjp_device
         procedure, public :: elbo_device => gvc_elbo_device
         procedure, public :: device_supported => gvc_device_supported
     end type gp_variational_classification_t
@@ -561,6 +567,123 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine gvc_predict_proba_parameter_jvp
 
+    !> Reverse product of the latent prediction with respect to packed
+    !! variational parameters.  Query points and the inducing prior are fixed.
+    !! The packed ordering is exactly ``parameters()``: posterior mean,
+    !! log-diagonal Cholesky entries, then strict lower-triangular entries.
+    subroutine gvc_predict_latent_parameter_vjp(self, x, mean_bar, variance_bar, &
+            parameter_bar, status)
+        class(gp_variational_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), mean_bar(:), variance_bar(:)
+        real(dp), intent(out) :: parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: projection(:, :), local_mean(:), local_variance(:)
+        real(dp), allocatable :: factor_bar(:, :), tangent(:)
+        integer :: i, j, position
+
+        parameter_bar = 0.0_dp
+        if (.not. latent_vjp_valid(self, x, mean_bar, variance_bar, parameter_bar, status)) return
+        call build_projection(self, x, projection, local_mean, local_variance, status)
+        if (status%code /= FORTNUM_OK) return
+        allocate(factor_bar(self%n_inducing, self%n_inducing), tangent(self%n_inducing))
+        parameter_bar(1:self%n_inducing) = matmul(projection, mean_bar)
+        factor_bar = 0.0_dp
+        do i = 1, size(x, 1)
+            tangent = matmul(transpose(self%variational_factor), projection(:, i))
+            do j = 1, self%n_inducing
+                factor_bar(:, j) = factor_bar(:, j) + &
+                    2.0_dp*variance_bar(i)*projection(:, i)*tangent(j)
+            end do
+        end do
+        position = self%n_inducing + 1
+        do j = 1, self%n_inducing
+            parameter_bar(position) = self%variational_factor(j, j)*factor_bar(j, j)
+            position = position + 1
+            do i = j + 1, self%n_inducing
+                parameter_bar(position) = factor_bar(i, j)
+                position = position + 1
+            end do
+        end do
+        if (any(.not. ieee_is_finite(parameter_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP latent VJP: nonfinite parameter cotangent")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gvc_predict_latent_parameter_vjp
+
+    !> Reverse product of Bernoulli predictive probabilities with respect to
+    !! packed variational parameters.  Both probability columns may carry a
+    !! cotangent; the implementation reduces them to the positive-column
+    !! scalar derivative and then applies the exact latent reverse product.
+    subroutine gvc_predict_proba_parameter_vjp(self, x, probabilities_bar, &
+            parameter_bar, status)
+        class(gp_variational_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), probabilities_bar(:, :)
+        real(dp), intent(out) :: parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: mean(:), variance(:), mean_bar(:), variance_bar(:)
+        real(dp) :: scale, z, density, p, p_mu, p_variance
+        integer :: i
+
+        parameter_bar = 0.0_dp
+        if (.not. prediction_probability_cotangent_valid(self, x, probabilities_bar, &
+            parameter_bar, status)) return
+        allocate(mean(size(x, 1)), variance(size(x, 1)), mean_bar(size(x, 1)), &
+            variance_bar(size(x, 1)))
+        call self%predict_latent(x, mean, variance, status)
+        if (status%code /= FORTNUM_OK) return
+        mean_bar = 0.0_dp
+        variance_bar = 0.0_dp
+        do i = 1, size(x, 1)
+            if (self%likelihood == GP_VARIATIONAL_PROBIT) then
+                scale = sqrt(1.0_dp + variance(i))
+                z = mean(i)/scale
+                density = exp(-0.5_dp*z*z)/SQRT_TWO_PI
+                p = 0.5_dp*erfc(-z/SQRT_TWO)
+                p_mu = density/scale
+                p_variance = density*(-mean(i)/(2.0_dp*scale**3))
+            else
+                scale = sqrt(1.0_dp + PI*variance(i)/8.0_dp)
+                p = 1.0_dp/(1.0_dp + exp(-mean(i)/scale))
+                p_mu = p*(1.0_dp-p)/scale
+                p_variance = p*(1.0_dp-p)*(-mean(i)*PI/(16.0_dp*scale**3))
+            end if
+            mean_bar(i) = (probabilities_bar(i, 2) - probabilities_bar(i, 1))*p_mu
+            variance_bar(i) = (probabilities_bar(i, 2) - probabilities_bar(i, 1))*p_variance
+        end do
+        call self%predict_latent_parameter_vjp(x, mean_bar, variance_bar, parameter_bar, status)
+    end subroutine gvc_predict_proba_parameter_vjp
+
+    !> Explicit backend boundary for the predictive reverse product.  CUDA is
+    !! refused until a resident inducing solve and probability-reverse kernel
+    !! are linked; no hidden host fallback is permitted.
+    subroutine gvc_predict_proba_parameter_vjp_device(self, device, x, probabilities_bar, &
+            parameter_bar, status)
+        class(gp_variational_classification_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :), probabilities_bar(:, :)
+        real(dp), intent(out) :: parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        parameter_bar = 0.0_dp
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP classification VJP device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_proba_parameter_vjp(x, probabilities_bar, parameter_bar, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "variational GP classification VJP device: resident CUDA graph is not linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP classification VJP device: device kind is invalid")
+        end select
+    end subroutine gvc_predict_proba_parameter_vjp_device
+
     subroutine gvc_elbo_device(self, device, x, labels, value, status, scale)
         class(gp_variational_classification_t), intent(inout) :: self
         type(fortml_device_t), intent(in) :: device
@@ -850,6 +973,55 @@ contains
         valid = .true.
         call status_set(status, FORTNUM_OK, "")
     end function prediction_probability_valid
+
+    logical function latent_vjp_valid(self, x, mean_bar, variance_bar, parameter_bar, status) &
+            result(valid)
+        class(gp_variational_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), mean_bar(:), variance_bar(:), parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        valid = .false.
+        if (.not. allocated(self%variational_mean) .or. self%n_inducing < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP latent VJP: model is not initialized")
+            return
+        end if
+        if (size(x, 1) < 1 .or. size(x, 2) /= self%kernel%input_dim .or. &
+            size(mean_bar) /= size(x, 1) .or. size(variance_bar) /= size(x, 1) .or. &
+            size(parameter_bar) /= self%parameter_count() .or. &
+            any(.not. ieee_is_finite(x)) .or. any(.not. ieee_is_finite(mean_bar)) .or. &
+            any(.not. ieee_is_finite(variance_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP latent VJP: input, cotangent, or output shape is invalid")
+            return
+        end if
+        valid = .true.
+        call status_set(status, FORTNUM_OK, "")
+    end function latent_vjp_valid
+
+    logical function prediction_probability_cotangent_valid(self, x, probabilities_bar, &
+            parameter_bar, status) result(valid)
+        class(gp_variational_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), probabilities_bar(:, :), parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        valid = .false.
+        if (size(x, 1) < 1 .or. size(x, 2) /= self%kernel%input_dim .or. &
+            any(shape(probabilities_bar) /= [size(x, 1), 2]) .or. &
+            size(parameter_bar) /= self%parameter_count() .or. &
+            any(.not. ieee_is_finite(x)) .or. any(.not. ieee_is_finite(probabilities_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP probability VJP: input, cotangent, or output shape is invalid")
+            return
+        end if
+        if (.not. allocated(self%variational_mean) .or. self%n_inducing < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP probability VJP: model is not initialized")
+            return
+        end if
+        valid = .true.
+        call status_set(status, FORTNUM_OK, "")
+    end function prediction_probability_cotangent_valid
 
     subroutine bernoulli_terms(label, latent, likelihood, value, gradient)
         integer, intent(in) :: label, likelihood

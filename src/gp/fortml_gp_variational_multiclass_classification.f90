@@ -45,6 +45,10 @@ module fortml_gp_variational_multiclass_classification
         procedure, public :: predict_proba => gvmc_predict_proba
         procedure, public :: predict_proba_parameter_jvp => &
             gvmc_predict_proba_parameter_jvp
+        procedure, public :: predict_proba_parameter_vjp => &
+            gvmc_predict_proba_parameter_vjp
+        procedure, public :: predict_proba_parameter_vjp_device => &
+            gvmc_predict_proba_parameter_vjp_device
         procedure, public :: predict => gvmc_predict
         procedure, public :: elbo_device => gvmc_elbo_device
         procedure, public :: predict_proba_device => gvmc_predict_proba_device
@@ -412,6 +416,95 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine gvmc_predict_proba_parameter_jvp
 
+    !> Reverse product of normalized OVR probabilities with respect to the
+    !! packed per-class variational vectors.  The normalization adjoint is
+    !! applied first, then each binary posterior receives its positive-column
+    !! cotangent independently.
+    subroutine gvmc_predict_proba_parameter_vjp(self, x, probabilities_bar, &
+            parameter_bar, status)
+        class(gp_variational_multiclass_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), probabilities_bar(:, :)
+        real(dp), intent(out) :: parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: probabilities(:, :), raw(:, :), raw_bar(:, :), local_bar(:, :)
+        real(dp), allocatable :: local_parameter_bar(:)
+        real(dp) :: total, projection
+        integer :: i, j, first, last, local_count
+
+        parameter_bar = 0.0_dp
+        if (.not. multiclass_probability_cotangent_valid(self, x, probabilities_bar, &
+            parameter_bar, status)) return
+        allocate(probabilities(size(x, 1), self%n_classes), raw(size(x, 1), self%n_classes), &
+            raw_bar(size(x, 1), self%n_classes), local_bar(size(x, 1), 2))
+        do i = 1, self%n_classes
+            call self%models(i)%predict_proba(x, local_bar, status)
+            if (status%code /= FORTNUM_OK) return
+            raw(:, i) = local_bar(:, 2)
+        end do
+        do j = 1, size(x, 1)
+            total = sum(raw(j, :))
+            if (.not. ieee_is_finite(total) .or. total <= tiny(1.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "variational GP multiclass probability VJP: invalid normalization")
+                return
+            end if
+            probabilities(j, :) = raw(j, :)/total
+            projection = sum(probabilities_bar(j, :)*probabilities(j, :))
+            do i = 1, self%n_classes
+                raw_bar(j, i) = (probabilities_bar(j, i) - projection)/total
+            end do
+        end do
+        first = 1
+        do i = 1, self%n_classes
+            local_count = self%models(i)%parameter_count()
+            last = first + local_count - 1
+            local_bar = 0.0_dp
+            local_bar(:, 2) = raw_bar(:, i)
+            allocate(local_parameter_bar(local_count))
+            call self%models(i)%predict_proba_parameter_vjp(x, local_bar, &
+                local_parameter_bar, status)
+            if (status%code /= FORTNUM_OK) return
+            parameter_bar(first:last) = local_parameter_bar
+            deallocate(local_parameter_bar)
+            first = last + 1
+        end do
+        if (any(.not. ieee_is_finite(parameter_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP multiclass probability VJP: nonfinite parameter cotangent")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gvmc_predict_proba_parameter_vjp
+
+    !> Explicit CPU/CUDA capability boundary for the multiclass predictive
+    !! reverse product.  CUDA remains refused until a resident OVR reduction
+    !! and inducing-posterior reverse kernel are linked.
+    subroutine gvmc_predict_proba_parameter_vjp_device(self, device, x, probabilities_bar, &
+            parameter_bar, status)
+        class(gp_variational_multiclass_classification_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :), probabilities_bar(:, :)
+        real(dp), intent(out) :: parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        parameter_bar = 0.0_dp
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP multiclass VJP device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_proba_parameter_vjp(x, probabilities_bar, parameter_bar, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "variational GP multiclass VJP device: resident CUDA graph is not linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP multiclass VJP device: device kind is invalid")
+        end select
+    end subroutine gvmc_predict_proba_parameter_vjp_device
+
     subroutine gvmc_predict(self, x, labels, status)
         class(gp_variational_multiclass_classification_t), intent(in) :: self
         real(dp), intent(in) :: x(:, :)
@@ -611,6 +704,25 @@ contains
                 "variational GP multiclass: probability output shape is invalid")
         end if
     end function prediction_probability_valid
+
+    logical function multiclass_probability_cotangent_valid(self, x, probabilities_bar, &
+            parameter_bar, status) result(valid)
+        class(gp_variational_multiclass_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), probabilities_bar(:, :), parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        valid = prediction_input_valid(self, x, status)
+        if (.not. valid) return
+        if (any(shape(probabilities_bar) /= [size(x, 1), self%n_classes]) .or. &
+            size(parameter_bar) /= self%parameter_count() .or. &
+            any(.not. ieee_is_finite(probabilities_bar))) then
+            valid = .false.
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP multiclass probability VJP: cotangent shape is invalid")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end function multiclass_probability_cotangent_valid
 
     subroutine encode_labels(labels, positive, encoded, status)
         integer, intent(in) :: labels(:), positive

@@ -19,6 +19,8 @@ program test_gp_variational_multiclass_classification
     real(dp) :: gradient(15), direction(15), reference(15)
     real(dp) :: probabilities(6, 3), probabilities_dot(6, 3)
     real(dp) :: probabilities_plus(6, 3), probabilities_minus(6, 3)
+    real(dp) :: probabilities_bar(6, 3), parameter_bar(15), parameter_bar_fd(15)
+    real(dp) :: objective_plus, objective_minus
     real(dp), allocatable :: lambda(:), shifted(:)
     integer :: labels(6), requested_classes(3), sorted_classes(3), predicted(6)
     integer :: binary_labels(6), failures, i, j
@@ -118,15 +120,46 @@ program test_gp_variational_multiclass_classification
     call check(maxval(abs(probabilities_dot - (probabilities_plus - probabilities_minus)/ &
         (2.0_dp*h))) < 5.0e-5_dp, "probability JVP finite-difference oracle", failures)
 
+    probabilities_bar(:, 1) = [0.17_dp, -0.09_dp, 0.04_dp, 0.12_dp, -0.06_dp, 0.08_dp]
+    probabilities_bar(:, 2) = [-0.05_dp, 0.11_dp, -0.08_dp, 0.07_dp, 0.03_dp, -0.02_dp]
+    probabilities_bar(:, 3) = [0.02_dp, 0.06_dp, 0.09_dp, -0.04_dp, 0.05_dp, 0.01_dp]
+    call model%predict_proba_parameter_vjp(x, probabilities_bar, parameter_bar, status)
+    call check(status_ok(status), "multiclass probability parameter VJP", failures)
+    do i = 1, size(parameter_bar)
+        shifted = lambda
+        shifted(i) = shifted(i) + h
+        call model%set_parameters(shifted, status)
+        call model%predict_proba(x, probabilities_plus, status)
+        objective_plus = sum(probabilities_plus*probabilities_bar)
+        shifted(i) = lambda(i) - h
+        call model%set_parameters(shifted, status)
+        call model%predict_proba(x, probabilities_minus, status)
+        objective_minus = sum(probabilities_minus*probabilities_bar)
+        parameter_bar_fd(i) = (objective_plus - objective_minus)/(2.0_dp*h)
+    end do
+    call model%set_parameters(lambda, status)
+    call check(maxval(abs(parameter_bar - parameter_bar_fd)) < 6.0e-5_dp, &
+        "multiclass probability VJP finite-difference oracle", failures)
+    call check(abs(dot_product(parameter_bar, direction) - sum(probabilities_dot* &
+        probabilities_bar)) < 6.0e-5_dp, &
+        "multiclass probability JVP/VJP dot-product identity", failures)
+    call model%predict_proba_parameter_vjp(x(1:5, :), probabilities_bar, parameter_bar, status)
+    call check(.not. status_ok(status), "multiclass malformed VJP cotangent refusal", failures)
+
     device%kind = FORTML_DEVICE_CPU
     device%selected = .true.
     device%available = .true.
     call model%predict_proba_device(device, x, probabilities_plus, status)
     call check(status_ok(status), "CPU device prediction dispatch", failures)
+    call model%predict_proba_parameter_vjp_device(device, x, probabilities_bar, parameter_bar, status)
+    call check(status_ok(status), "CPU multiclass probability VJP dispatch", failures)
     device%kind = FORTML_DEVICE_CUDA
     call model%predict_proba_device(device, x, probabilities_plus, status)
     call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
         "CUDA resident multiclass refusal", failures)
+    call model%predict_proba_parameter_vjp_device(device, x, probabilities_bar, parameter_bar, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
+        "CUDA multiclass probability VJP refusal", failures)
     call model%elbo_device(device, x, labels, value, status)
     call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
         "CUDA resident multiclass ELBO refusal", failures)
