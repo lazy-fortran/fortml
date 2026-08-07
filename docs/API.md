@@ -1063,6 +1063,28 @@ kernel/refusal behavior. It is a coupling policy rather than a multinomial
 likelihood, so variational categorical likelihoods and shared multiclass
 hyperparameter training remain separate work.
 
+### `fortml_gp_classification_training`
+
+`gp_classification_optimize_hyperparameters(model,x,labels,kernel,options,
+result,status)` runs bounded FortOpt L-BFGS-B over the binary classifier's
+recursive kernel-log parameter vector. Every trial refits the damped Laplace
+mode and consumes `hyperparameter_gradient`; it therefore differentiates the
+converged mode log posterior without finite-difference gradients. The caller's
+`kernel` is updated in place and the final fitted state is left in `model`.
+`gp_classification_hyperparameter_options_t%fit` carries the logistic/probit
+Newton settings, while the remaining fields carry memory, convergence, and
+uniform log-parameter bounds. A failed mode solve, invalid bound, nonfinite
+value, or iteration limit is returned through `fortnum_status_t`.
+
+`gp_multiclass_optimize_hyperparameters(model,x,labels,kernel,options,result,
+status)` provides the corresponding shared-kernel one-vs-rest adapter. It
+optimizes one constructor-kernel vector shared by all sorted classes and sums
+the independent binary envelope gradients. The packed per-class metadata
+returned by `gp_multiclass_classification_t%parameters()` is intentionally not
+optimized as independent blocks by this adapter. Neither adapter differentiates
+the full Laplace evidence, likelihood parameters, or an implicit mode HVP;
+those boundaries remain explicit refusals/roadmap work.
+
 ### `fortml_derivative_gaussian_process`
 
 `gp_derivative_regression_t%fit(x,components,y,kernel,noise_variance,status

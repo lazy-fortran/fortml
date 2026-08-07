@@ -103,7 +103,7 @@ documentation, refusal behavior, and benchmark evidence are all present.
 | Trees and ensembles | Partial | Deterministic finite-only regression stumps, weighted depth-limited CART regression and classification, squared-loss stump boosting, and exact depth-limited second-order squared/logistic boosting are implemented. Exact XGBoost-style trees now support explicit NaN rejection, learned default directions, and forced-left/right routing; forests, histograms, ranking, monotonic and interaction constraints remain planned |
 | Clustering and unsupervised learning | Centered dense `pca_t` is implemented with deterministic SVD signs, rank selection, whitening, reconstruction, variance metadata, and fixed-state input products | Incremental/randomized/sparse/kernel PCA, ICA, NMF, k-means/minibatch k-means, Gaussian mixtures/EM, density and graph clustering, manifold methods, outlier detection, matrix factorization, and density metrics |
 | Neural networks | MLP/BNN/VAE/RNN primitives, a separable Hamiltonian MLP, selected products, deterministic MLP Adam/AdamW/Adagrad/RMSprop/SGD training, a bounded full-batch MLP L-BFGS-B path, and an in-memory resumable optimizer checkpoint exist | A production module/parameter tree, all common activations and losses, convolution/attention/sequence/graph extensions, mixed precision, distributed training, compile/fusion, and serialized/distributed trainers |
-| Gaussian processes | Exact, derivative, sparse, structured and local variants are partial-to-implemented. Exact fitted GPs have a bounded FortOpt L-BFGS-B adapter, and binary plus one-vs-rest multiclass Laplace logistic/probit GP classification is implemented | GPyTorch/GPflow-style kernels, likelihoods, multitask/batch shapes, exact/variational/lazy inference, derivative operators, constraints, calibration, multiclass GP classification, and trainable hyperparameters |
+| Gaussian processes | Exact, derivative, sparse, structured and local variants are partial-to-implemented. Exact fitted GPs and binary/shared-kernel one-vs-rest Laplace classifiers have bounded FortOpt L-BFGS-B adapters | GPyTorch/GPflow-style kernels, likelihoods, multitask/batch shapes, exact/variational/lazy inference, derivative operators, constraints, calibration, coupled multiclass GP classification, evidence-corrected and likelihood-parameter training |
 | Derivatives | Exact GP and selected neural/kernel products exist | Value/JVP/VJP/HVP and implicit/hypergradients for every declared parameter/input path, including preprocessing, likelihood, optimizer/search variables, and device kernels |
 | Model selection and metrics | Benchmark-specific checks exist | Shared metrics, splitters, cross-validation, calibration, grid/random/Bayesian/differentiable search, nested validation, and leakage/refusal checks |
 | Persistence and serving | Missing public contract | Versioned state dictionaries, safe model/trainer serialization, compiler-independent metadata, streaming inference, batching, and reproducible deployment manifests |
@@ -195,10 +195,11 @@ when a lower-level primitive already exists.
   vector fields, Hessian observations, operator-valued outputs, analytic
   third-order query products, and covariance products over value/derivative
   blocks.
-- [ ] GP classification optimization over kernel and likelihood parameters,
-  multiclass likelihoods beyond one-vs-rest, calibration, Laplace evidence
-  corrections, variational classification, and exact JVP/VJP/HVP products
-  through the selected inference state.
+- [ ] GP classification optimization beyond the implemented binary/shared-kernel
+  adapters: likelihood parameters, independent per-class blocks, multiclass
+  likelihoods beyond one-vs-rest, calibration, Laplace evidence corrections,
+  variational classification, and exact JVP/VJP/HVP products through the
+  selected inference state.
 
 ### Neural networks and training state
 
@@ -1075,6 +1076,11 @@ state phases are reported separately.
 - [x] Add one-vs-rest multiclass GP classification as a deterministic wrapper
   over the binary Laplace contract, with sorted labels and normalized positive
   probabilities. Variational categorical likelihoods remain open.
+- [x] Add bounded FortOpt L-BFGS-B adapters for binary and shared-kernel
+  one-vs-rest GP classification. Each trial refits the Laplace mode and uses
+  the analytic envelope gradient; invalid bounds, failed mode solves, and
+  nonfinite objectives are refused. Full evidence, likelihood-parameter,
+  independent per-class, and implicit/HVP training remain open.
 - [ ] Add Bernoulli and multiclass variational GP classification after the shared
   classifier likelihood and metric contracts are complete.
 
