@@ -104,10 +104,12 @@ only listed as gaps:
   deterministic Adam minibatches, early stopping, packed input/parameter
   JVP/VJP products, exact loss HVPs, and an explicit CUDA refusal. Multilabel,
   ordinal, calibrated, and resident-GPU neural heads remain separate contracts.
+  The release evidence is `results/MLP_BINARY_CLASSIFIER.md` in `fortml-bench`.
 - Exact GP regression accepts zero, constant, and linear mean templates. Mean
   coefficients are packed per output after kernel and log-noise parameters, and
   prediction and likelihood products include their analytic JVP/VJP/HVP terms.
-  ARD, priors, and sparse/multitask mean routing remain open.
+  ARD, priors, and sparse/multitask mean routing remain open. A dedicated
+  release benchmark for this mean block remains the next evidence task.
 - XGBoost validation monitoring accepts typed validation arrays, computes
   objective-native weighted validation loss, records best iteration and loss,
   and supports restore-best or retain-all ensembles. Warm starts, serialized
