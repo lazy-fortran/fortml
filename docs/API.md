@@ -2452,7 +2452,10 @@ user leaves have `[log_variance]`. Cosine leaves use
 concatenate the complete left vector and then the complete right vector.
 
 Spectral-mixture leaves use `make_spectral_mixture_kernel` with positive
-`weights` and `scales` plus signed `means`, each shaped by mixture and feature.
+`weights` and positive frequency-standard-deviation `scales` plus signed
+`means`, each shaped by mixture and feature. The covariance factor is
+`exp(-2*pi**2*tau**2*scale**2)*cos(2*pi*tau*mean)`, matching GPyTorch's
+spectral-mixture convention.
 Their packed block is `[log_weight,log_scale(:),mean(:)]` per mixture. Dense
 values, input derivatives, parameter JVP/VJP/HVP products, and exact-GP
 likelihood integration are analytic; resident CUDA execution is an explicit
