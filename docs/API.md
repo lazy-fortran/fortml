@@ -313,6 +313,24 @@ statistics are state rather than differentiable parameters. The JVPs are with
 respect to the input batch. Unfitted models, nonfinite values, and shape
 mismatches are refused.
 
+### `fortml_simple_imputer`
+
+`simple_imputer_t%fit(x,status[,strategy,fill_value])` fits one statistic per
+feature using row-oriented data. `strategy` is `"mean"` (the default),
+`"median"`, or `"constant"`; the latter uses the finite `fill_value` (default
+zero) and permits a feature whose entire training column is missing. Missing
+values are IEEE NaNs. Infinities and empty matrices are refused, and mean or
+median fitting refuses an entirely missing feature. `transform` replaces NaNs
+while preserving observed values. `statistics`, `feature_count`, `strategy`,
+and `fitted` expose the fitted state.
+
+`transform_jvp(x,x_dot,transformed_dot,status)` and
+`transform_vjp(x,output_bar,input_bar,status)` implement the exact piecewise
+input derivative: observed entries are identity and missing entries are locally
+constant, hence have zero tangent and cotangent. Fitted statistics are state,
+not silently promoted to trainable parameters; callers that need statistic
+hypergradients must differentiate the fitting objective explicitly.
+
 ### `fortml_basis`
 
 `basis_map_t` has these constructors and equivalent type-bound initializers:
@@ -447,12 +465,14 @@ structures, and implicit integrators remain separate research contracts.
 ### `fortml_mlp_training`
 
 `mlp_train(model,x,target,status,options,state[,validation_x,validation_target,checkpoint])`
-trains an existing `mlp_t` with deterministic Adam. A zero `batch_size`
+trains an existing `mlp_t` with deterministic Adam or FortOpt-backed SGD. A zero `batch_size`
 selects full-batch updates.
 Mini-batch shuffling uses an explicit Park-Miller stream controlled by
 `shuffle_seed`, and does not mutate process-global random state. The options
-also provide learning-rate and Adam coefficients, L2 regularization,
-gradient tolerance, patience, best-state restoration, and an epoch callback.
+also provide optimizer selection (`MLP_OPTIMIZER_ADAM` or
+`MLP_OPTIMIZER_SGD`), learning-rate and Adam coefficients, optional SGD
+momentum/Nesterov acceleration, L2 regularization, gradient tolerance,
+patience, best-state restoration, and an epoch callback.
 
 `mlp_training_state_t` records epoch and update counts, the best epoch and
 loss, the final loss and gradient norm, convergence flags, a compact loss
@@ -486,13 +506,13 @@ uninitialized checkpoint to `mlp_train` to capture it after each completed
 epoch (and at every microbatch boundary). Pass the initialized checkpoint back
 to a later call to resume. `options%max_epochs` is the total target epoch, not
 an additional count. The snapshot includes packed model parameters, Adam first
-and second moments plus bias-correction step, permutation/order and Park--Miller
-state, active epoch/microbatch cursor and accumulated gradient, learning-rate
+and second moments (or SGD velocity) plus optimizer step and configuration,
+permutation/order and Park--Miller state, active epoch/microbatch cursor and accumulated gradient, learning-rate
 schedule position/history, validation and early-stopping counters, and the
 best-parameter state. Procedure pointers are not serializable: install the
 same deterministic schedule and callback on the resumed options. A checkpoint
-is rejected when dimensions, batch/accumulation policy, shuffle seed, Adam
-coefficients, L2, validation/early-stopping policy, or clipping/tolerance
+is rejected when dimensions, batch/accumulation policy, shuffle seed, optimizer
+configuration, Adam coefficients, L2, validation/early-stopping policy, or clipping/tolerance
 policy differ. A resumed call intentionally clears terminal convergence or
 early-stop flags so increasing the total epoch target continues training.
 Best-state restoration changes model parameters
@@ -515,7 +535,8 @@ owns that adapter and the FortOpt `lbfgsb_t` lifecycle. The
 `optimize_l2=.true.`, appends a bounded L2 hyperparameter to the same vector.
 The result reports convergence, iterations, line-search evaluations, objective,
 gradient norm, and the final L2 value. This is a deterministic full-batch
-optimizer path. Mini-batch Adam remains the appropriate stochastic trainer.
+optimizer path. Mini-batch Adam and SGD (with optional momentum/Nesterov
+acceleration) are available stochastic trainers.
 The optimizer consumes the analytic value/gradient path above, so no
 finite-difference hyperparameter approximation is introduced.
 
@@ -528,9 +549,10 @@ the next epoch. Its explicit position, epoch, and copied RNG state make an
 in-memory batch boundary resumable. `mlp_learning_rate_schedule_proc` can be
 installed in `mlp_training_options_t%learning_rate_schedule`. It receives the
 epoch, one-based update number, and base rate and must return a finite positive
-rate. `gradient_clip_norm` applies global norm clipping before each Adam step.
+rate. `gradient_clip_norm` applies global norm clipping before each selected
+optimizer step.
 Zero disables clipping. `accumulation_steps` combines that many consecutive
-microbatches into one sample-weighted mean gradient before an Adam step. The
+microbatches into one sample-weighted mean gradient before an Adam or SGD step. The
 last uneven group is flushed at the epoch boundary. L2 is added once per
 optimizer update, clipping is applied after accumulation, and the state records
 `microbatches`, `updates`, and the configured accumulation count. This gives an

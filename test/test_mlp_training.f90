@@ -17,6 +17,7 @@ program test_mlp_training
     failures = 0
     call test_first_adam_step(failures)
     call test_sgd_step_and_checkpoint(failures)
+    call test_sgd_option_refusals(failures)
     call test_reproducible_minibatch_and_callback(failures)
     call test_resume_checkpoint(failures)
     call test_l2_hyperparameter_product(failures)
@@ -192,6 +193,28 @@ contains
             maxval(abs(full_state%loss_history - resumed_state%loss_history)) < &
             1.0e-14_dp, "resumed SGD trajectory", failures)
     end subroutine test_sgd_step_and_checkpoint
+
+    subroutine test_sgd_option_refusals(failures)
+        integer, intent(inout) :: failures
+        type(mlp_t) :: model
+        type(mlp_training_options_t) :: options
+        type(mlp_training_state_t) :: state
+        type(fortnum_status_t) :: status
+        real(dp) :: x(2, 1), target(2, 1)
+
+        x(:, 1) = [-1.0_dp, 1.0_dp]
+        target(:, 1) = [-1.0_dp, 1.0_dp]
+        call model%initialize([1, 1], status, output_activation=MLP_LINEAR)
+        options%optimizer = 99
+        options%max_epochs = 1
+        call mlp_train(model, x, target, status, options, state)
+        call check(.not. status_ok(status), "invalid optimizer refusal", failures)
+        options%optimizer = MLP_OPTIMIZER_SGD
+        options%nesterov = .true.
+        options%momentum = 0.0_dp
+        call mlp_train(model, x, target, status, options, state)
+        call check(.not. status_ok(status), "zero-momentum Nesterov refusal", failures)
+    end subroutine test_sgd_option_refusals
 
     subroutine test_reproducible_minibatch_and_callback(failures)
         integer, intent(inout) :: failures

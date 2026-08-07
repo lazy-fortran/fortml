@@ -9,12 +9,12 @@ and implementation limits in [`docs/DESIGN.md`](docs/DESIGN.md) and
 
 | Compiler | Command | Result |
 | --- | --- | --- |
-| GNU Fortran | `fo` | Static, build, and lint checks passed. The fresh 2026-08-07 run passed all 61 tests. See [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
-| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded compiler lane. The checked-in NVIDIA log predates the latest 60-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
+| GNU Fortran | `fo` | Static, build, and lint checks passed. The fresh 2026-08-07 run passed all 62 tests. See [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
+| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded compiler lane. The checked-in NVIDIA log predates the latest 62-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
 The checked-in compiler logs above are older compiler snapshots. A fresh GNU
-Fortran `fo` run on 2026-08-07 passed static analysis, the build, all 61 tests,
+Fortran `fo` run on 2026-08-07 passed static analysis, the build, all 62 tests,
 and lint. The fresh run includes implementation work whose compiler logs have
 not yet replaced those snapshots. NVIDIA compiler coverage therefore remains
 an explicit older-build result.
@@ -423,9 +423,13 @@ return status errors.
   partial fitting, derivatives, device support, and probabilistic outputs.
   Search and pipeline code must query capabilities instead of guessing from a
   dynamic type.
-- [ ] Add constant and mean imputation, one-hot encoding with a stored category
-  order, and column selection. Standard and min-max scaling are implemented.
-  robust/quantile/power transforms remain open.
+- [x] Add `simple_imputer_t` with mean, median, and constant strategies,
+  explicit IEEE-NaN missingness, all-missing-column policy, fitted statistics,
+  and independent transform/JVP/VJP tests. One-hot encoding with stored
+  category order remains open.
+- [ ] Add one-hot encoding with a stored category order, missing-indicator
+  features, and sparse feature views. Column selection is implemented for basis
+  unions; general transformer columns remain open.
 - [ ] Add robust scaling, quantile and power transforms, normalization,
   missing-indicator features, ordinal encoding, target encoding with leakage
   guards, polynomial interactions, hashing, and sparse CSR/CSC feature views.
@@ -693,6 +697,11 @@ trials remain visible in the result schema.
   Adam/AdamW, RMSprop, Adagrad, L-BFGS/L-BFGS-B, natural gradient, cosine,
   one-cycle, warmup/decay, plateau, and user callbacks. Optimizer state is
   dtype/device aware and rejects incompatible parameter trees.
+- [x] Add FortOpt-backed SGD with momentum and Nesterov acceleration to the
+  dense MLP trainer. Its velocity, optimizer kind, and step counter are
+  checkpointed and resumed exactly; independent one-step and trajectory
+  oracles cover the update and state contract. AdamW, RMSprop, Adagrad,
+  schedule families, and device-aware optimizer state remain open.
 - [ ] Add automatic mixed precision with loss scaling, overflow detection,
   master weights, deterministic accumulation modes, and explicit fp16/bf16/fp32
   capability reports. A mixed-precision result must pass a full-precision
