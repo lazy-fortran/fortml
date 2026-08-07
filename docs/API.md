@@ -2690,6 +2690,11 @@ covariance, and Cholesky solve exactly; the VJP uses the symmetric covariance
 cotangent and is adjoint to the JVP. These parameter products are CPU-only
 until the resident covariance graph is linked and never silently finite-
 difference.
+`joint_covariance_jvp_device(device,x,components,direction,covariance,
+covariance_dot,status)` and `joint_covariance_vjp_device(device,x,components,
+covariance_bar,parameter_bar,status)` make that backend boundary explicit:
+selected CPU contexts dispatch exactly, while selected CUDA contexts return
+`FORTNUM_NOT_IMPLEMENTED` before touching outputs.
 `log_marginal_likelihood`, `log_marginal_likelihood_jvp`,
 `log_marginal_likelihood_vjp`, `hyperparameter_gradient`,
 `hyperparameter_vjp`, and `hyperparameter_hvp` provide likelihood products.
