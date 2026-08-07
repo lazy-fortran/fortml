@@ -669,6 +669,16 @@ they are never approximated by hidden finite differences. See
 [`docs/MLP_HYPERGRADIENT.md`](MLP_HYPERGRADIENT.md) for the complete layout and
 example.
 
+`mlp_adamw_hypergradient_objective_t` provides the corresponding exact
+full-batch AdamW trajectory contract. Its packed vector is
+`[log(learning_rate),log(l2),log(weight_decay)]`; bias-corrected first and
+second moments, decoupled decay, and the analytic MLP HVP are differentiated
+without finite differences. `value_gradient`, `jvp`, and scalar `vjp` are
+available, and `mlp_optimize_adamw_hyperparameters` routes the products to
+FortOpt L-BFGS-B with explicit log bounds. Mini-batch, schedules, beta
+hypergradients, and CUDA state remain refused until their complete state
+derivatives are specified.
+
 ### `fortml_mlp_classifier`
 
 `mlp_classifier_t%fit(x,labels,status[,hidden_layer_sizes,options,state,class_weight])`
@@ -743,8 +753,15 @@ regularized gain. `predict_margin`, `predict`, `predict_proba`,
 structured refusal at a discontinuity. `max_depth` grows each exact tree
 recursively, with deterministic feature/threshold tie ordering and
 regularized Newton leaves at every node. Histogram quantile approximation,
-missing-value routing, categorical features, ranking, and constraints are
-deliberately refused until their independent contracts land.
+categorical features, ranking, and constraints remain separate policies. The
+`missing_policy` option is `error` by default and rejects IEEE NaNs. `learn`
+evaluates both default directions for every finite threshold and stores the
+strictly best direction (left wins exact ties); `left` and `right` force a
+deterministic default branch. In these three modes, fit and prediction accept
+IEEE NaNs while infinities remain domain errors. The learned branch is used
+consistently by prediction and JVP; a NaN query has zero local input JVP, while
+a finite query exactly on a split still returns the structured boundary
+refusal. `missing_policy()` and `accepts_missing()` report the fitted policy.
 
 `xgboost_multiclass_t` wraps the binary logistic estimator in a deterministic
 one-vs-rest classifier. `fit(x,labels,status[,options])` sorts arbitrary
@@ -754,7 +771,10 @@ positive OVR probabilities. `classes`, `class_count`, `feature_count`,
 `predict_proba` expose the fitted state. `predict_proba_jvp` applies the exact
 quotient-rule JVP away from learned split boundaries and propagates the binary
 boundary refusal. The classifier inherits the binary estimator's dense,
-finite-input scope.
+finite-input scope unless its options select `missing_policy="learn"`,
+`"left"`, or `"right"`; the selected default branch is retained independently
+in every one-vs-rest tree and is used for NaN prediction. Infinities and an
+invalid policy are always refused.
 
 ### `fortml_bnn`
 

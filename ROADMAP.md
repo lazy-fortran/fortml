@@ -100,7 +100,7 @@ documentation, refusal behavior, and benchmark evidence are all present.
 | Linear regression and generalized linear models | Linear regression is implemented. Logistic and softmax support sample and positive sorted-class weights | OLS, weighted/ridge/lasso/elastic-net, robust, quantile, Poisson/Gamma/Tweedie, multinomial, calibrated and regularized classifiers with shared solver and derivative contracts |
 | Feature transforms and basis maps | Polynomial, Fourier, radial, B-spline, callback bases, standard/min-max scalers, integer categorical one-hot encoding, horizontal/sequential basis pipelines, and a fitted basis-to-linear estimator are implemented | Sparse/categorical feature views, feature names, DAG pipelines, leakage-safe cross-validation, differentiable basis hyperparameters |
 | Nearest-neighbor and margin methods | Missing | kNN/KD-tree or ball-tree search, kernel/radius neighbors, linear/kernel SVM and SVR, calibrated probabilities, deterministic tie and missing-value policies |
-| Trees and ensembles | Partial | Deterministic finite-only regression stumps, weighted depth-limited CART regression and classification, squared-loss stump boosting, and exact depth-limited second-order squared/logistic boosting are implemented. Forests, histograms, missing-value routing, ranking, monotonic and interaction constraints remain planned |
+| Trees and ensembles | Partial | Deterministic finite-only regression stumps, weighted depth-limited CART regression and classification, squared-loss stump boosting, and exact depth-limited second-order squared/logistic boosting are implemented. Exact XGBoost-style trees now support explicit NaN rejection, learned default directions, and forced-left/right routing; forests, histograms, ranking, monotonic and interaction constraints remain planned |
 | Clustering and unsupervised learning | Missing | k-means/minibatch k-means, Gaussian mixtures/EM, density and graph clustering, manifold methods, outlier detection, decomposition, matrix factorization, and density metrics |
 | Neural networks | MLP/BNN/VAE/RNN primitives, a separable Hamiltonian MLP, selected products, deterministic MLP Adam/AdamW/SGD training, a bounded full-batch MLP L-BFGS-B path, and an in-memory resumable optimizer checkpoint exist | A production module/parameter tree, all common activations and losses, convolution/attention/sequence/graph extensions, mixed precision, distributed training, compile/fusion, and serialized/distributed trainers |
 | Gaussian processes | Exact, derivative, sparse, structured and local variants are partial-to-implemented. Exact fitted GPs have a bounded FortOpt L-BFGS-B adapter, and binary plus one-vs-rest multiclass Laplace logistic/probit GP classification is implemented | GPyTorch/GPflow-style kernels, likelihoods, multitask/batch shapes, exact/variational/lazy inference, derivative operators, constraints, calibration, multiclass GP classification, and trainable hyperparameters |
@@ -124,9 +124,9 @@ derivatives, refusal behavior, and an independent benchmark oracle all exist.
 | scikit-learn neighbors/margins | No public estimator | kNN/radius search, KD/ball trees, linear/kernel SVM/SVR, one-class SVM, deterministic ties and input/parameter products |
 | scikit-learn trees/ensembles | Stumps, weighted CART, squared boosting, XGBoost-style second-order binary/multiclass lanes | Random/extra forests, bagging, AdaBoost, histogram/leaf-wise growth, missing/categorical/ranking/monotonic/interaction constraints, staged and warm-start APIs |
 | scikit-learn unsupervised | Basis maps, validation splitters, variational primitives | PCA/ICA/NMF/TruncatedSVD, k-means/GMM/density/manifold/outlier methods, sparse/categorical preprocessing, model persistence |
-| PyTorch/JAX neural core | Dense MLP, classifier, BNN, VAE, RNN, Hamiltonian MLP; Adam, AdamW, and SGD momentum/Nesterov; exact fixed full-batch learning-rate/L2 trajectory hypergradient | RMSprop/Adagrad, optimizer-trajectory schedules and stochastic/device hypergradients, complete loss/activation/module tree, convolution/attention/sequence/graph models, AMP, compile/fusion, distributed and device-resident train state |
+| PyTorch/JAX neural core | Dense MLP, classifier, BNN, VAE, RNN, Hamiltonian MLP; Adam, AdamW, and SGD momentum/Nesterov; exact fixed full-batch SGD learning-rate/L2 and AdamW learning-rate/L2/weight-decay trajectory hypergradients | RMSprop/Adagrad, optimizer-trajectory schedules and stochastic/device hypergradients, complete loss/activation/module tree, convolution/attention/sequence/graph models, AMP, compile/fusion, distributed and device-resident train state |
 | GPyTorch/GPflow | Exact, derivative-observation, sparse/local/SKI/structured GP primitives; Laplace binary/OVR GP classification | Kernel/likelihood/constraint/batch-shape parity, variational categorical/count likelihoods, multitask, operator-valued derivatives, implicit hypergradients, serialization and resident GPU training |
-| XGBoost/LightGBM | Exact depth-limited squared/logistic Newton trees and OVR multiclass probabilities | Histogram quantiles, missing/default directions, categorical/quantile/ranking objectives, DART, monotonic/interaction constraints, distributed training and staged prediction |
+| XGBoost/LightGBM | Exact depth-limited squared/logistic Newton trees and OVR multiclass probabilities with explicit NaN policies (`error`, learned, forced-left/right) | Histogram quantiles, categorical/quantile/ranking objectives, DART, monotonic/interaction constraints, distributed training and staged prediction |
 | Differentiability and search | Capability-specific JVP/VJP/HVP products, FortOpt L-BFGS-B for selected objectives, and an exact fixed-trajectory MLP hypergradient over log learning rate/L2 | Complete derivative matrix for every declared parameter/input/hyperparameter, stochastic/device optimizer hypergradients, implicit differentiation, and refusal rather than hidden finite differences |
 | Device and performance | OpenACC/native CUDA operator lanes plus explicit device control-plane contract | Resident model/optimizer/batch state for every supported estimator, CPU parity, transfer/memory accounting, mixed precision, and matched PyTorch/JAX/GPyTorch/XGBoost evidence |
 
@@ -534,13 +534,21 @@ hyperparameter block. A deliberate train/validation leakage fixture must fail.
   applies L1/L2/gamma/min-child-Hessian regularization and shrinkage, exposes
   margins/probabilities, split gains and leaf weights, and has a piecewise
   input-JVP/refusal contract. Recursive growth and tree depth/node diagnostics
-  are implemented. Histograms and missing-value or constraint policies remain
-  open.
+  are implemented. Explicit NaN policies reject, learn, or force a default
+  branch per split; infinities remain refused and NaN queries have zero local
+  input JVP. Histograms and constraint policies remain open.
 - [x] Add deterministic one-vs-rest `xgboost_multiclass_t` classification over
   the binary logistic lane. Sorted integer labels, normalized probabilities,
   argmax prediction, decision margins, quotient-rule probability JVPs, and
   split-boundary refusals have independent behavioral and finite-difference
   tests.
+- [x] Add explicit XGBoost-compatible NaN handling to binary and one-vs-rest
+  trees. `missing_policy="error"` is the default refusal; `"learn"` compares
+  both default directions in every exact threshold and stores the strict-best
+  route (left wins exact ties), while `"left"` and `"right"` force a route.
+  Prediction and multiclass normalization use the stored route, infinities are
+  rejected, and binary NaN routing plus boundary/JVP behavior have independent
+  analytic tests.
 - [x] Add a deterministic depth-limited CART regression tree with weighted
   squared-error splits, `max_depth` and `min_samples_leaf` constraints, fixed
   feature/threshold tie ordering, finite-only/refusal behavior, and independent
@@ -701,6 +709,11 @@ trials remain visible in the result schema.
   momentum/Nesterov, mini-batch, schedule, and CUDA trajectories explicitly
   refuse until their optimizer state and reproducibility derivatives are
   implemented.
+- [x] Add the exact fixed full-batch AdamW trajectory hypergradient objective
+  over `[log(learning_rate), log(l2), log(weight_decay)]`, including analytic
+  moment/decoupled-decay sensitivities, JVP/VJP products, independent central
+  differences, and a FortOpt L-BFGS-B adapter. Mini-batch, schedule, beta, and
+  CUDA AdamW hypergradients remain explicit follow-up contracts.
 - [x] Add `mlp_training_objective_t`, a FortOpt context adapter exposing the
   packed MLP objective, analytic gradient, and exact HVP. Its optional final L2
   component makes bounded L-BFGS-B regularization search use the same products

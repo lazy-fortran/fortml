@@ -120,9 +120,13 @@ and Hessians at the current margins, exhaustively evaluates every feature
 threshold, and stores the regularized Newton leaf weights. Predictions are
 piecewise constant. Their input JVP is zero in an open leaf and refuses on a
 learned split. This makes the second-order objective contract testable without
-pretending that discrete split selection is differentiable. Histograms,
-missing-value routing, and categorical or monotonic constraints
-will be added as distinct policies with independent oracles.
+pretending that discrete split selection is differentiable. The exact backend
+has an explicit IEEE-NaN policy: `error` rejects NaNs, `learn` scores both
+default directions for each finite threshold, and `left`/`right` force a
+direction. The selected route is stored per node and shared by fit,
+prediction, multiclass normalization, and JVP validation; infinities remain
+domain errors. Histograms, categorical, or monotonic constraints will be added
+as distinct policies with independent oracles.
 
 `fortml_preprocessing` keeps fitted statistics in model state and exposes only
 the smooth input derivative of a transform. Standard scaling uses unit scale

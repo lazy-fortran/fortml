@@ -61,3 +61,21 @@ with `FORTNUM_NOT_IMPLEMENTED`; silently differentiating a different optimizer
 would invalidate the hypergradient. Extending this contract to schedules,
 mini-batches, stochastic state, and resident device buffers requires separate
 derivative and reproducibility products.
+
+## AdamW trajectory contract
+
+`mlp_adamw_hypergradient_objective_t` applies the same fixed full-batch
+validation objective through bias-corrected AdamW. Its packed outer vector is
+
+```text
+[ log_learning_rate, log_l2, log_weight_decay ]
+```
+
+The first and second moment recurrences, decoupled weight decay, and each
+log-parameter sensitivity are propagated analytically using the MLP HVP. The
+object exposes exact `value_gradient`, `jvp`, and scalar `vjp` products;
+`mlp_optimize_adamw_hyperparameters` sends them to FortOpt L-BFGS-B with
+independent log bounds. The behavioral test
+`test_mlp_adamw_hypergradient` checks all three components against central
+differences, the JVP, the scalar adjoint, and an L-BFGS-B solve. Mini-batch,
+schedule, beta, and CUDA AdamW trajectories remain explicit follow-up work.
