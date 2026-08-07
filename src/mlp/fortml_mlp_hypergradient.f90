@@ -533,7 +533,7 @@ contains
             return
         end if
         direction = 0.0_dp
-        call adamw_forward(self, parameters, direction, value, tangent, gradient, status)
+        call adamw_reverse_value_gradient(self, parameters, value, gradient, status)
     end subroutine mlp_adamw_hypergradient_value_gradient
 
     subroutine mlp_adamw_hypergradient_jvp(self, parameters, direction, value, &
@@ -676,6 +676,110 @@ contains
         end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine mlp_optimize_adamw_hyperparameters
+
+    subroutine adamw_reverse_value_gradient(self, parameters, value, gradient, status)
+        !! Reverse adjoint through the complete AdamW state recurrence.
+        class(mlp_adamw_hypergradient_objective_t), intent(inout) :: self
+        real(dp), intent(in) :: parameters(:)
+        real(dp), intent(out) :: value, gradient(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: theta_history(:, :), gradient_history(:, :)
+        real(dp), allocatable :: first_history(:, :), second_history(:, :)
+        real(dp), allocatable :: theta_bar(:), first_bar(:), second_bar(:)
+        real(dp), allocatable :: gradient_bar(:), hvp(:), validation_gradient(:)
+        real(dp), allocatable :: denominator(:), sqrt_second(:), update(:), bar_update(:)
+        real(dp) :: learning_rate, l2, weight_decay, train_value, l2_gradient
+        real(dp) :: a
+        real(dp) :: bar_learning_rate, bar_l2, bar_weight_decay
+        integer :: n_parameters, step
+
+        value = huge(1.0_dp)
+        gradient = 0.0_dp
+        if (.not. finite_adamw_logs(parameters, learning_rate, l2, weight_decay)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP AdamW hypergradient: log hyperparameters are invalid")
+            return
+        end if
+        n_parameters = size(self%initial_parameters)
+        allocate(theta_history(n_parameters, self%layout%inner_steps + 1))
+        allocate(gradient_history(n_parameters, self%layout%inner_steps))
+        allocate(first_history(n_parameters, self%layout%inner_steps))
+        allocate(second_history(n_parameters, self%layout%inner_steps))
+        allocate(theta_bar(n_parameters), first_bar(n_parameters), second_bar(n_parameters))
+        allocate(gradient_bar(n_parameters), hvp(n_parameters), validation_gradient(n_parameters))
+        allocate(denominator(n_parameters), sqrt_second(n_parameters), update(n_parameters), &
+            bar_update(n_parameters))
+        theta_history(:, 1) = self%initial_parameters
+        first_bar = 0.0_dp
+        second_bar = 0.0_dp
+        do step = 1, self%layout%inner_steps
+            call self%model%set_parameters(theta_history(:, step), status)
+            if (status%code /= FORTNUM_OK) return
+            call mlp_loss_value_gradient(self%model, self%train_x, self%train_target, &
+                l2, train_value, gradient_history(:, step), l2_gradient, status)
+            if (status%code /= FORTNUM_OK) return
+            if (step == 1) then
+                first_history(:, step) = (1.0_dp-self%beta1)*gradient_history(:, step)
+                second_history(:, step) = (1.0_dp-self%beta2)* &
+                    gradient_history(:, step)*gradient_history(:, step)
+            else
+                first_history(:, step) = self%beta1*first_history(:, step-1) + &
+                    (1.0_dp-self%beta1)*gradient_history(:, step)
+                second_history(:, step) = self%beta2*second_history(:, step-1) + &
+                    (1.0_dp-self%beta2)*gradient_history(:, step)*gradient_history(:, step)
+            end if
+            denominator = sqrt(second_history(:, step)/(1.0_dp-self%beta2**step)) + self%epsilon
+            update = (first_history(:, step)/(1.0_dp-self%beta1**step))/denominator
+            theta_history(:, step+1) = (1.0_dp-learning_rate*weight_decay)* &
+                theta_history(:, step) - learning_rate*update
+        end do
+        call self%model%set_parameters(theta_history(:, self%layout%inner_steps+1), status)
+        if (status%code /= FORTNUM_OK) return
+        call mlp_loss_value_gradient(self%model, self%validation_x, &
+            self%validation_target, 0.0_dp, value, validation_gradient, &
+            l2_gradient, status)
+        if (status%code /= FORTNUM_OK) return
+        theta_bar = validation_gradient
+        bar_learning_rate = 0.0_dp
+        bar_l2 = 0.0_dp
+        bar_weight_decay = 0.0_dp
+        a = 1.0_dp-learning_rate*weight_decay
+        do step = self%layout%inner_steps, 1, -1
+            denominator = sqrt(second_history(:, step)/(1.0_dp-self%beta2**step)) + self%epsilon
+            sqrt_second = sqrt(second_history(:, step)/(1.0_dp-self%beta2**step))
+            update = (first_history(:, step)/(1.0_dp-self%beta1**step))/denominator
+            bar_update = -learning_rate*theta_bar
+            gradient_bar = 0.0_dp
+            first_bar = first_bar + bar_update/denominator/(1.0_dp-self%beta1**step)
+            where (sqrt_second > 0.0_dp)
+                second_bar = second_bar + bar_update*update* &
+                    (-0.5_dp/(sqrt_second*denominator*(1.0_dp-self%beta2**step)))
+            end where
+            gradient_bar = (1.0_dp-self%beta1)*first_bar + &
+                2.0_dp*(1.0_dp-self%beta2)*gradient_history(:, step)*second_bar
+            first_bar = self%beta1*first_bar
+            second_bar = self%beta2*second_bar
+            call self%model%set_parameters(theta_history(:, step), status)
+            if (status%code /= FORTNUM_OK) return
+            call mlp_loss_hvp(self%model, self%train_x, self%train_target, l2, &
+                gradient_bar, 0.0_dp, hvp, l2_gradient, status)
+            if (status%code /= FORTNUM_OK) return
+            bar_learning_rate = bar_learning_rate + dot_product(theta_bar, &
+                -weight_decay*theta_history(:, step)-update)
+            bar_weight_decay = bar_weight_decay - learning_rate* &
+                dot_product(theta_bar, theta_history(:, step))
+            bar_l2 = bar_l2 + dot_product(gradient_bar, theta_history(:, step))
+            theta_bar = a*theta_bar + hvp
+        end do
+        gradient = [learning_rate*bar_learning_rate, l2*bar_l2, &
+            weight_decay*bar_weight_decay]
+        if (.not. ieee_is_finite(value) .or. any(.not. ieee_is_finite(gradient))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP AdamW hypergradient: reverse product is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine adamw_reverse_value_gradient
 
     subroutine adamw_forward(self, parameters, direction, value, tangent, gradient, &
             status)
