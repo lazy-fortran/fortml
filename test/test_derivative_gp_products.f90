@@ -18,6 +18,7 @@ program test_derivative_gp_products
     failures = 0
     call test_likelihood_products(failures)
     call test_matern_parameter_products(failures)
+    call test_periodic_rational_parameter_products(failures)
     call test_product_parameter_products(failures)
     call test_prediction_products(failures)
     call test_query_input_products(failures)
@@ -145,6 +146,54 @@ contains
             failures = failures + 1
         end if
     end subroutine test_matern_parameter_products
+
+    subroutine test_periodic_rational_parameter_products(failures)
+        integer, intent(inout) :: failures
+        type(kernel_t) :: periodic, rational_quadratic
+        type(fortnum_status_t) :: status
+
+        periodic = make_periodic_kernel(1, 1.2_dp, 0.75_dp, 1.8_dp, status)
+        call check_kernel_parameter_gradient(periodic, "periodic", failures)
+        rational_quadratic = make_rational_quadratic_kernel(1, 1.2_dp, 0.75_dp, &
+            1.6_dp, status)
+        call check_kernel_parameter_gradient(rational_quadratic, "rational-quadratic", failures)
+    end subroutine test_periodic_rational_parameter_products
+
+    subroutine check_kernel_parameter_gradient(kernel, name, failures)
+        type(kernel_t), intent(in) :: kernel
+        character(len=*), intent(in) :: name
+        integer, intent(inout) :: failures
+        type(gp_derivative_regression_t) :: model
+        type(fortnum_status_t) :: status
+        real(dp) :: x(3, 1), y(3, 1), theta(4), gradient(4), finite_gradient(4)
+        real(dp) :: plus, minus, h
+        integer :: i
+
+        x(:, 1) = [0.0_dp, 0.42_dp, 1.03_dp]
+        y(:, 1) = [0.8_dp, -0.2_dp, 0.6_dp]
+        call model%fit(x, [0, 1, 0], y, kernel, 0.08_dp, status, jitter=1.0e-10_dp)
+        if (.not. status_ok(status)) then
+            write (error_unit, '(a,a)') "FAIL [", trim(name)//" parameter fit]"
+            failures = failures + 1
+            return
+        end if
+        theta = model%parameters()
+        call model%hyperparameter_gradient(gradient, status)
+        h = 2.0e-5_dp
+        do i = 1, size(theta)
+            call model%set_parameters(theta + h*unit_vector(size(theta), i), status)
+            call model%log_marginal_likelihood(plus, status)
+            call model%set_parameters(theta - h*unit_vector(size(theta), i), status)
+            call model%log_marginal_likelihood(minus, status)
+            finite_gradient(i) = (plus - minus)/(2.0_dp*h)
+        end do
+        call model%set_parameters(theta, status)
+        if (.not. status_ok(status) .or. maxval(abs(gradient - finite_gradient)) > 3.0e-5_dp) then
+            write (error_unit, '(a,a,es12.4)') "FAIL [", trim(name)//" parameter gradient] ", &
+                maxval(abs(gradient - finite_gradient))
+            failures = failures + 1
+        end if
+    end subroutine check_kernel_parameter_gradient
 
     subroutine test_product_parameter_products(failures)
         integer, intent(inout) :: failures

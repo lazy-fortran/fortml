@@ -1291,7 +1291,11 @@ contains
         real(dp) :: f, f_first, f_second, f_dot, f_first_dot, f_second_dot
         real(dp) :: radial_scale, radial_scale_dot, radial_coefficient
         real(dp) :: radial_coefficient_dot, difference
+        real(dp) :: difference_vector(size(x1))
         real(dp) :: exponential, a
+        real(dp) :: alpha, period, inverse_length_squared, denominator, t
+        real(dp) :: frequency, argument, t1, t2, t1_dot, t2_dot, b, b_dot
+        real(dp) :: p, p2, p_dot, p2_dot, curvature, curvature_dot, logf_dot
         integer :: i, j
 
         value = 0.0_dp
@@ -1346,6 +1350,97 @@ contains
                 gradient_x2_dot = gradient_x2
                 mixed_hessian_dot = mixed_hessian
             end if
+            call status_set(status, FORTNUM_OK, "")
+            return
+        case (KERNEL_PERIODIC, KERNEL_RATIONAL_QUADRATIC)
+            !! Both leaves are functions F(s), s=||x1-x2||**2.  Work in
+            !! s-space so the value, gradient, and mixed Hessian parameter
+            !! products share the same stable expressions at coincidence.
+            difference_vector = x1 - x2
+            squared_distance = sum(difference_vector*difference_vector)
+            variance = exp(kernel%log_parameters(1))
+            lengthscale = exp(kernel%log_parameters(2))
+            if (kernel%kind == KERNEL_PERIODIC) then
+                period = exp(kernel%log_parameters(3))
+                frequency = acos(-1.0_dp)/period
+                distance = sqrt(squared_distance)
+                argument = frequency*distance
+                if (distance <= 1.0e-8_dp) then
+                    t1 = frequency*frequency
+                    t2 = -2.0_dp*frequency**4/3.0_dp
+                    t = frequency*frequency*squared_distance
+                else
+                    t1 = frequency*sin(2.0_dp*argument)/(2.0_dp*distance)
+                    t2 = frequency*(2.0_dp*frequency*distance*cos(2.0_dp*argument) - &
+                        sin(2.0_dp*argument))/(4.0_dp*distance**3)
+                    t = sin(argument)**2
+                end if
+                b = 2.0_dp/(lengthscale*lengthscale)
+                value = variance*exp(-b*t)
+                p = -b*t1*value
+                p2 = (b*b*t1*t1 - b*t2)*value
+                if (parameter == 1) then
+                    logf_dot = 1.0_dp
+                    b_dot = 0.0_dp
+                    t1_dot = 0.0_dp
+                    t2_dot = 0.0_dp
+                else if (parameter == 2) then
+                    logf_dot = 2.0_dp*b*t
+                    b_dot = -2.0_dp*b
+                    t1_dot = 0.0_dp
+                    t2_dot = 0.0_dp
+                else
+                    logf_dot = b*frequency*distance*sin(2.0_dp*argument)
+                    b_dot = 0.0_dp
+                    if (distance <= 1.0e-8_dp) then
+                        t1_dot = -2.0_dp*t1
+                        t2_dot = -4.0_dp*t2
+                    else
+                        t1_dot = -t1 - frequency*frequency*cos(2.0_dp*argument)
+                        t2_dot = -t2 + frequency**3*sin(2.0_dp*argument)/distance
+                    end if
+                end if
+                value_dot = value*logf_dot
+                p_dot = -(b_dot*t1 + b*t1_dot)*value - b*t1*value_dot
+                curvature = b*b*t1*t1 - b*t2
+                curvature_dot = 2.0_dp*b*b_dot*t1*t1 + 2.0_dp*b*b*t1*t1_dot - &
+                    b_dot*t2 - b*t2_dot
+                p2_dot = curvature_dot*value + curvature*value_dot
+            else
+                alpha = exp(kernel%log_parameters(3))
+                denominator = 1.0_dp + 0.5_dp*squared_distance/(alpha*lengthscale*lengthscale)
+                t = 0.5_dp*squared_distance/(alpha*lengthscale*lengthscale)
+                value = variance*denominator**(-alpha)
+                p = -0.5_dp*value/(lengthscale*lengthscale*denominator)
+                p2 = value*(alpha + 1.0_dp)/(4.0_dp*alpha*lengthscale**4*denominator**2)
+                if (parameter == 1) then
+                    logf_dot = 1.0_dp
+                    p_dot = p
+                    p2_dot = p2
+                else if (parameter == 2) then
+                    logf_dot = 2.0_dp*alpha*t/denominator
+                    p_dot = p*(-2.0_dp + 2.0_dp*(alpha + 1.0_dp)*t/denominator)
+                    p2_dot = p2*(-4.0_dp + 2.0_dp*(alpha + 2.0_dp)*t/denominator)
+                else
+                    logf_dot = alpha*(t/denominator - log(denominator))
+                    p_dot = p*(-alpha*log(denominator) + (alpha + 1.0_dp)*t/denominator)
+                    p2_dot = p2*(-1.0_dp/(alpha + 1.0_dp) - alpha*log(denominator) + &
+                        (alpha + 2.0_dp)*t/denominator)
+                end if
+                value_dot = value*logf_dot
+            end if
+            gradient_x1 = 2.0_dp*p*difference_vector
+            gradient_x2 = -gradient_x1
+            gradient_x1_dot = 2.0_dp*p_dot*difference_vector
+            gradient_x2_dot = -gradient_x1_dot
+            do i = 1, size(x1)
+                do j = 1, size(x2)
+                    mixed_hessian(i, j) = -2.0_dp*p*merge(1.0_dp, 0.0_dp, i == j) - &
+                        4.0_dp*p2*difference_vector(i)*difference_vector(j)
+                    mixed_hessian_dot(i, j) = -2.0_dp*p_dot*merge(1.0_dp, 0.0_dp, i == j) - &
+                        4.0_dp*p2_dot*difference_vector(i)*difference_vector(j)
+                end do
+            end do
             call status_set(status, FORTNUM_OK, "")
             return
         case (KERNEL_RBF, KERNEL_MATERN12, KERNEL_MATERN32, KERNEL_MATERN52)
