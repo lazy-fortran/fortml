@@ -1431,12 +1431,22 @@ count as a production lazy implementation.
   harness with
   machine-readable pass/skipped/failed rows, hardware and revision provenance,
   and no claim of end-to-end MLP/GP/XGBoost GPU residency.
+- [x] Add explicit CPU/CUDA capability contracts for the new cosine/polynomial
+  kernels, weighted LDA/QDA, robust XGBoost objectives, and Gaussian/Poisson
+  neural NLL products. Their independent tests and benchmark rows return a
+  typed CUDA refusal with no host fallback; this is a correctness boundary,
+  not a claim of GPU support.
 - [ ] Keep batches, parameters, gradients, optimizer accumulators, and workspaces
   resident through complete MLP and variational training steps.
 - [ ] Extend residency to basis/pipeline transforms, tree histograms, classifier
   likelihoods, neural forward/backward products, GP solves, derivative
   operators, and L-BFGS-B objective/gradient evaluations. A mixed CPU/GPU graph
   must expose every transfer and cannot claim full-device execution.
+- [ ] Lower the fixed no-autodiff portions of robust tree prediction/training,
+  discriminant Gaussian scoring, and common NLL/reduction products to resident
+  CUDA kernels when OpenACC cannot preserve the declared residency or
+  determinism. Keep differentiable paths on generated FortAD/FortSym products
+  until matching device JVP/VJP/HVP kernels and transfer accounting exist.
 - [ ] Add CUDA kernels for common dense primitives, reductions, activations,
   normalization, scatter/gather, segmented histogramming, sparse products, and
   batched factorizations. Each kernel has a scalar CPU oracle and a noncontiguous
