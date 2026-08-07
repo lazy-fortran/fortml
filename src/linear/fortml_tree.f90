@@ -1,5 +1,6 @@
 !> Deterministic tree primitives and a small gradient-boosting foundation.
 module fortml_tree
+    use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
         FORTNUM_DOMAIN_ERROR
@@ -85,6 +86,11 @@ contains
                 "decision stump fit: invalid dimensions or leaf size")
             return
         end if
+        if (any(.not. ieee_is_finite(x)) .or. any(.not. ieee_is_finite(y))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "decision stump fit: inputs and targets must be finite")
+            return
+        end if
 
         allocate(order(n_samples))
         best_sse = huge(1.0_dp)
@@ -142,9 +148,10 @@ contains
         integer :: i
 
         if (.not. self%initialized .or. size(x, 2) /= self%n_inputs .or. &
-            any(shape(y) /= [size(x, 1), 1])) then
+            any(shape(y) /= [size(x, 1), 1]) .or. &
+            any(.not. ieee_is_finite(x))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
-                "decision stump predict: model or array shape is invalid")
+                "decision stump predict: model, input, or array shape is invalid")
             return
         end if
         do i = 1, size(x, 1)
@@ -184,9 +191,10 @@ contains
 
         if (.not. self%initialized .or. size(x, 2) /= self%n_inputs .or. &
             any(shape(x_dot) /= shape(x)) .or. size(y) /= size(x, 1) .or. &
-            size(y_dot) /= size(y)) then
+            size(y_dot) /= size(y) .or. any(.not. ieee_is_finite(x)) .or. &
+            any(.not. ieee_is_finite(x_dot))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
-                "decision stump jvp: model or array shape is invalid")
+                "decision stump jvp: model, input, tangent, or shape is invalid")
             return
         end if
         do i = 1, size(x, 1)
@@ -248,6 +256,11 @@ contains
                 "gradient boosting fit: invalid dimensions or hyperparameters")
             return
         end if
+        if (any(.not. ieee_is_finite(x)) .or. any(.not. ieee_is_finite(y))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "gradient boosting fit: inputs and targets must be finite")
+            return
+        end if
 
         allocate(self%estimators(n_trees))
         allocate(prediction(n_samples), residual(n_samples), correction(n_samples))
@@ -278,9 +291,10 @@ contains
         integer :: i
 
         if (.not. self%initialized .or. size(x, 2) /= self%n_inputs .or. &
-            any(shape(y) /= [size(x, 1), 1])) then
+            any(shape(y) /= [size(x, 1), 1]) .or. &
+            any(.not. ieee_is_finite(x))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
-                "gradient boosting predict: model or array shape is invalid")
+                "gradient boosting predict: model, input, or array shape is invalid")
             return
         end if
         allocate(correction(size(x, 1)))
@@ -320,9 +334,10 @@ contains
 
         if (.not. self%initialized .or. size(x, 2) /= self%n_inputs .or. &
             any(shape(x_dot) /= shape(x)) .or. size(y) /= size(x, 1) .or. &
-            size(y_dot) /= size(y)) then
+            size(y_dot) /= size(y) .or. any(.not. ieee_is_finite(x)) .or. &
+            any(.not. ieee_is_finite(x_dot))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
-                "gradient boosting jvp: model or array shape is invalid")
+                "gradient boosting jvp: model, input, tangent, or shape is invalid")
             return
         end if
         allocate(correction(size(x, 1)), correction_dot(size(x, 1)))

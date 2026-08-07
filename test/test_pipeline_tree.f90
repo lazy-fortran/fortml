@@ -1,4 +1,6 @@
 program test_pipeline_tree
+    use, intrinsic :: ieee_arithmetic, only: ieee_quiet_nan, ieee_value, &
+        ieee_positive_inf
     use, intrinsic :: iso_fortran_env, only: dp => real64, error_unit
     use fortml_basis, only: basis_map_t, make_polynomial_basis, make_fourier_basis
     use fortml_pipeline, only: basis_pipeline_t, make_basis_pipeline, &
@@ -15,6 +17,7 @@ program test_pipeline_tree
     call test_pipeline_refusals(failures)
     call test_stump_oracle(failures)
     call test_boosting(failures)
+    call test_tree_nonfinite_refusals(failures)
     if (failures /= 0) then
         write (error_unit, '(i0,a)') failures, &
             " pipeline/tree test(s) failed"
@@ -212,6 +215,68 @@ contains
             failures = failures + 1
         end if
     end subroutine test_boosting
+
+    subroutine test_tree_nonfinite_refusals(failures)
+        integer, intent(inout) :: failures
+        type(decision_stump_t) :: stump
+        type(gradient_boosting_regressor_t) :: booster
+        type(fortnum_status_t) :: status
+        real(dp) :: x(4, 1), y(4), query(2, 1), prediction(2), prediction_dot(2)
+        real(dp) :: x_dot(2, 1)
+        real(dp) :: nan_value, inf_value
+
+        nan_value = ieee_value(0.0_dp, ieee_quiet_nan)
+        inf_value = ieee_value(0.0_dp, ieee_positive_inf)
+        x(:, 1) = [0.0_dp, 1.0_dp, 2.0_dp, 3.0_dp]
+        y = [0.0_dp, 0.0_dp, 1.0_dp, 1.0_dp]
+        query(:, 1) = [0.25_dp, 2.25_dp]
+        x_dot(:, 1) = [0.1_dp, -0.2_dp]
+
+        x(2, 1) = nan_value
+        call stump%fit(x, y, status)
+        if (status%code /= FORTNUM_DOMAIN_ERROR) then
+            write (error_unit, '(a)') "FAIL [tree refusal] NaN fit"
+            failures = failures + 1
+        end if
+        x(2, 1) = 1.0_dp
+        y(3) = inf_value
+        call stump%fit(x, y, status)
+        if (status%code /= FORTNUM_DOMAIN_ERROR) then
+            write (error_unit, '(a)') "FAIL [tree refusal] Inf target fit"
+            failures = failures + 1
+        end if
+
+        y = [0.0_dp, 0.0_dp, 1.0_dp, 1.0_dp]
+        call stump%fit(x, y, status)
+        query(1, 1) = nan_value
+        call stump%predict(query, prediction, status)
+        if (status%code /= FORTNUM_DOMAIN_ERROR) then
+            write (error_unit, '(a)') "FAIL [tree refusal] NaN prediction"
+            failures = failures + 1
+        end if
+        query(1, 1) = 0.25_dp
+        x_dot(2, 1) = inf_value
+        call stump%jvp(query, x_dot, prediction, prediction_dot, status)
+        if (status%code /= FORTNUM_DOMAIN_ERROR) then
+            write (error_unit, '(a)') "FAIL [tree refusal] Inf tangent"
+            failures = failures + 1
+        end if
+
+        x(3, 1) = nan_value
+        call booster%fit(x, y, status)
+        if (status%code /= FORTNUM_DOMAIN_ERROR) then
+            write (error_unit, '(a)') "FAIL [boosting refusal] NaN fit"
+            failures = failures + 1
+        end if
+        x(3, 1) = 2.0_dp
+        call booster%fit(x, y, status, n_estimators=2)
+        query(1, 1) = inf_value
+        call booster%predict(query, prediction, status)
+        if (status%code /= FORTNUM_DOMAIN_ERROR) then
+            write (error_unit, '(a)') "FAIL [boosting refusal] Inf prediction"
+            failures = failures + 1
+        end if
+    end subroutine test_tree_nonfinite_refusals
 
     subroutine fill_cotangent(u)
         real(dp), intent(out) :: u(:, :)
