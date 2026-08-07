@@ -57,6 +57,12 @@ module fortml_xgboost
         character(len=16) :: missing_policy = "error"
         character(len=16) :: tree_method = "exact"
         integer :: max_bin = 256
+        !! Evaluate an optional validation set after every boosting round.
+        !! A positive value stops after this many consecutive rounds without
+        !! an improvement larger than `early_stopping_min_delta`.
+        integer :: early_stopping_rounds = 0
+        real(dp) :: early_stopping_min_delta = 0.0_dp
+        logical :: restore_best = .true.
         integer, allocatable :: monotone_constraints(:)
     end type xgboost_options_t
 
@@ -95,6 +101,9 @@ module fortml_xgboost
         real(dp) :: learning_rate = 0.0_dp
         real(dp) :: base_score = 0.0_dp
         real(dp) :: objective_parameter = 0.0_dp
+        integer :: best_iteration_value = 0
+        real(dp) :: best_validation_loss_value = huge(1.0_dp)
+        logical :: early_stopped_flag = .false.
         integer :: missing_code = XGB_MISSING_ERROR
         integer, allocatable :: monotone_constraints(:)
         type(xgb_tree_t), allocatable :: estimators(:)
@@ -142,26 +151,58 @@ module fortml_xgboost
         procedure, public :: accepts_missing => xgb_accepts_missing
         procedure, public :: monotone_constraint => xgb_monotone_constraint
         procedure, public :: fitted => xgb_fitted
+        procedure, public :: best_iteration => xgb_best_iteration
+        procedure, public :: best_validation_loss => xgb_best_validation_loss
+        procedure, public :: early_stopped => xgb_early_stopped
     end type xgboost_t
 
 contains
 
-    subroutine xgb_fit(self, x, y, status, options, sample_weight)
+    subroutine xgb_fit(self, x, y, status, options, sample_weight, &
+            validation_x, validation_y, validation_weight)
         class(xgboost_t), intent(out) :: self
         real(dp), intent(in) :: x(:, :), y(:)
         type(fortnum_status_t), intent(out) :: status
         type(xgboost_options_t), intent(in), optional :: options
         real(dp), intent(in), optional :: sample_weight(:)
+        real(dp), intent(in), optional :: validation_x(:, :), validation_y(:), &
+            validation_weight(:)
         type(xgboost_options_t) :: settings
         real(dp), allocatable :: prediction(:), gradient(:), hessian(:)
         real(dp), allocatable :: correction(:)
         real(dp), allocatable :: observation_weight(:)
+        real(dp), allocatable :: validation_prediction(:), validation_correction(:)
+        real(dp), allocatable :: validation_observation_weight(:)
+        type(xgb_tree_t), allocatable :: best_estimators(:), retained_estimators(:)
         real(dp) :: mean_target, rate, weight_sum
+        real(dp) :: validation_loss, best_validation_loss
         integer :: objective_code, missing_code, tree_method_code, i, n_samples
-        integer :: n_features
+        integer :: n_features, n_validation, completed_estimators
+        integer :: best_iteration, stale_rounds
+        logical :: have_validation, improved
 
         settings = xgboost_options_t()
         if (present(options)) settings = options
+        have_validation = present(validation_x) .or. present(validation_y) .or. &
+            present(validation_weight)
+        if (present(validation_x) .neqv. present(validation_y)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost fit: validation_x and validation_y must be supplied together")
+            return
+        end if
+        if (present(validation_weight) .and. .not. present(validation_x)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost fit: validation_weight requires validation data")
+            return
+        end if
+        if (settings%early_stopping_rounds < 0 .or. &
+            .not. ieee_is_finite(settings%early_stopping_min_delta) .or. &
+            settings%early_stopping_min_delta < 0.0_dp .or. &
+            (settings%early_stopping_rounds > 0 .and. .not. have_validation)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost fit: invalid early-stopping configuration")
+            return
+        end if
         objective_code = parse_objective(settings%objective)
         if (objective_code == 0) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -183,6 +224,17 @@ contains
 
         n_samples = size(x, 1)
         n_features = size(x, 2)
+        if (have_validation) then
+            n_validation = size(validation_x, 1)
+            if (n_validation < 1 .or. size(validation_x, 2) /= n_features .or. &
+                size(validation_y) /= n_validation) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "xgboost fit: validation dimensions do not match training features")
+                return
+            end if
+        else
+            n_validation = 0
+        end if
         rate = settings%learning_rate
         if (n_samples < 2 .or. n_features < 1 .or. size(y) /= n_samples .or. &
             settings%n_estimators < 1 .or. settings%max_depth < 1 .or. &
@@ -214,10 +266,26 @@ contains
                 "xgboost fit: inputs must be finite or IEEE NaN and targets finite")
             return
         end if
+        if (have_validation) then
+            if (any((.not. ieee_is_finite(validation_x)) .and. &
+                (.not. ieee_is_nan(validation_x))) .or. &
+                any(.not. ieee_is_finite(validation_y))) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "xgboost fit: validation inputs must be finite or IEEE NaN and targets finite")
+                return
+            end if
+        end if
         if (missing_code == XGB_MISSING_ERROR .and. any(ieee_is_nan(x))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "xgboost fit: NaN inputs require a missing-value policy")
             return
+        end if
+        if (have_validation) then
+            if (missing_code == XGB_MISSING_ERROR .and. any(ieee_is_nan(validation_x))) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "xgboost fit: validation NaN inputs require a missing-value policy")
+                return
+            end if
         end if
         if (objective_code == XGB_OBJECTIVE_LOGISTIC) then
             if (any(y < 0.0_dp) .or. any(y > 1.0_dp)) then
@@ -225,17 +293,38 @@ contains
                     "xgboost fit: logistic targets must be in [0, 1]")
                 return
             end if
+            if (have_validation) then
+                if (any(validation_y < 0.0_dp) .or. any(validation_y > 1.0_dp)) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "xgboost fit: validation logistic targets must be in [0, 1]")
+                    return
+                end if
+            end if
         else if (objective_code == XGB_OBJECTIVE_POISSON) then
             if (any(y < 0.0_dp)) then
                 call status_set(status, FORTNUM_DOMAIN_ERROR, &
                     "xgboost fit: poisson targets must be nonnegative counts")
                 return
             end if
+            if (have_validation) then
+                if (any(validation_y < 0.0_dp)) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "xgboost fit: validation poisson targets must be nonnegative counts")
+                    return
+                end if
+            end if
         else if (objective_code == XGB_OBJECTIVE_SQUARED_LOG) then
             if (any(y < 0.0_dp)) then
                 call status_set(status, FORTNUM_DOMAIN_ERROR, &
                     "xgboost fit: squared-log targets must be nonnegative")
                 return
+            end if
+            if (have_validation) then
+                if (any(validation_y < 0.0_dp)) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "xgboost fit: validation squared-log targets must be nonnegative")
+                    return
+                end if
             end if
         end if
         if (objective_code == XGB_OBJECTIVE_HUBER) then
@@ -273,6 +362,26 @@ contains
                 "xgboost fit: sample_weight has no positive mass")
             return
         end if
+        if (have_validation) then
+            allocate(validation_observation_weight(n_validation))
+            validation_observation_weight = 1.0_dp
+            if (present(validation_weight)) then
+                if (size(validation_weight) /= n_validation .or. &
+                    any(.not. ieee_is_finite(validation_weight)) .or. &
+                    any(validation_weight <= 0.0_dp)) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "xgboost fit: validation_weight must be positive and finite")
+                    return
+                end if
+                validation_observation_weight = validation_weight
+            end if
+            if (.not. ieee_is_finite(sum(validation_observation_weight)) .or. &
+                sum(validation_observation_weight) <= 0.0_dp) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "xgboost fit: validation_weight has no positive mass")
+                return
+            end if
+        end if
 
         mean_target = sum(observation_weight*y)/weight_sum
         if (.not. ieee_is_finite(mean_target)) then
@@ -303,7 +412,19 @@ contains
         allocate(prediction(n_samples), gradient(n_samples), hessian(n_samples))
         allocate(correction(n_samples))
         prediction = self%base_score
+        if (have_validation) then
+            allocate(validation_prediction(n_validation), validation_correction(n_validation))
+            validation_prediction = self%base_score
+            best_validation_loss = huge(1.0_dp)
+            best_iteration = 0
+            stale_rounds = 0
+        else
+            best_validation_loss = huge(1.0_dp)
+            best_iteration = settings%n_estimators
+            stale_rounds = 0
+        end if
 
+        completed_estimators = 0
         do i = 1, settings%n_estimators
             call objective_derivatives(objective_code, prediction, y, gradient, &
                 hessian, settings%huber_delta, settings%quantile_alpha, status)
@@ -316,10 +437,58 @@ contains
             call tree_predict(self%estimators(i), x, correction, status)
             if (status%code /= FORTNUM_OK) return
             prediction = prediction + rate*correction
+            completed_estimators = i
+            if (have_validation) then
+                call tree_predict(self%estimators(i), validation_x, &
+                    validation_correction, status)
+                if (status%code /= FORTNUM_OK) return
+                validation_prediction = validation_prediction + rate*validation_correction
+                call xgb_objective_loss(objective_code, validation_prediction, &
+                    validation_y, validation_observation_weight, settings%huber_delta, &
+                    settings%quantile_alpha, validation_loss, status)
+                if (status%code /= FORTNUM_OK) return
+                improved = validation_loss < best_validation_loss - &
+                    settings%early_stopping_min_delta
+                if (improved) then
+                    best_validation_loss = validation_loss
+                    best_iteration = i
+                    stale_rounds = 0
+                    if (settings%restore_best) best_estimators = self%estimators(:i)
+                else
+                    stale_rounds = stale_rounds + 1
+                end if
+                if (settings%early_stopping_rounds > 0 .and. &
+                    stale_rounds >= settings%early_stopping_rounds) then
+                    self%early_stopped_flag = .true.
+                    exit
+                end if
+            end if
         end do
+
+        if (have_validation) then
+            if (best_iteration < 1) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "xgboost fit: validation objective did not produce a finite score")
+                return
+            end if
+            self%best_iteration_value = best_iteration
+            self%best_validation_loss_value = best_validation_loss
+            if (settings%restore_best .and. allocated(best_estimators)) then
+                call retain_xgb_estimators(self, best_estimators)
+                completed_estimators = best_iteration
+            else if (completed_estimators < settings%n_estimators) then
+                allocate(retained_estimators(completed_estimators))
+                retained_estimators = self%estimators(:completed_estimators)
+                call move_alloc(retained_estimators, self%estimators)
+            end if
+        else
+            self%best_iteration_value = settings%n_estimators
+            self%best_validation_loss_value = huge(1.0_dp)
+        end if
 
         self%n_inputs = n_features
         self%n_estimators = settings%n_estimators
+        if (have_validation) self%n_estimators = completed_estimators
         self%objective_code = objective_code
         self%tree_method_code = tree_method_code
         self%max_bin = settings%max_bin
@@ -341,43 +510,90 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine xgb_fit
 
-    subroutine xgb_fit_regression(self, x, y, status, options, sample_weight)
+    subroutine xgb_fit_regression(self, x, y, status, options, sample_weight, &
+            validation_x, validation_y, validation_weight)
         class(xgboost_t), intent(out) :: self
         real(dp), intent(in) :: x(:, :), y(:)
         type(fortnum_status_t), intent(out) :: status
         type(xgboost_options_t), intent(in), optional :: options
         real(dp), intent(in), optional :: sample_weight(:)
+        real(dp), intent(in), optional :: validation_x(:, :), validation_y(:), &
+            validation_weight(:)
         type(xgboost_options_t) :: settings
 
         settings = xgboost_options_t()
         if (present(options)) settings = options
         settings%objective = "squared"
-        if (present(sample_weight)) then
+        if (present(validation_x) .or. present(validation_y)) then
+            if (present(sample_weight)) then
+                if (present(validation_weight)) then
+                    call xgb_fit(self, x, y, status, settings, sample_weight, &
+                        validation_x, validation_y, validation_weight)
+                else
+                    call xgb_fit(self, x, y, status, settings, sample_weight, &
+                        validation_x, validation_y)
+                end if
+            else if (present(validation_weight)) then
+                call xgb_fit(self, x, y, status, settings, &
+                    validation_x=validation_x, validation_y=validation_y, &
+                    validation_weight=validation_weight)
+            else
+                call xgb_fit(self, x, y, status, settings, &
+                    validation_x=validation_x, validation_y=validation_y)
+            end if
+        else if (present(validation_weight)) then
+            call xgb_fit(self, x, y, status, settings, &
+                validation_weight=validation_weight)
+        else if (present(sample_weight)) then
             call xgb_fit(self, x, y, status, settings, sample_weight)
         else
             call xgb_fit(self, x, y, status, settings)
         end if
     end subroutine xgb_fit_regression
 
-    subroutine xgb_fit_binary(self, x, y, status, options, sample_weight)
+    subroutine xgb_fit_binary(self, x, y, status, options, sample_weight, &
+            validation_x, validation_y, validation_weight)
         class(xgboost_t), intent(out) :: self
         real(dp), intent(in) :: x(:, :), y(:)
         type(fortnum_status_t), intent(out) :: status
         type(xgboost_options_t), intent(in), optional :: options
         real(dp), intent(in), optional :: sample_weight(:)
+        real(dp), intent(in), optional :: validation_x(:, :), validation_y(:), &
+            validation_weight(:)
         type(xgboost_options_t) :: settings
 
         settings = xgboost_options_t()
         if (present(options)) settings = options
         settings%objective = "logistic"
-        if (present(sample_weight)) then
+        if (present(validation_x) .or. present(validation_y)) then
+            if (present(sample_weight)) then
+                if (present(validation_weight)) then
+                    call xgb_fit(self, x, y, status, settings, sample_weight, &
+                        validation_x, validation_y, validation_weight)
+                else
+                    call xgb_fit(self, x, y, status, settings, sample_weight, &
+                        validation_x, validation_y)
+                end if
+            else if (present(validation_weight)) then
+                call xgb_fit(self, x, y, status, settings, &
+                    validation_x=validation_x, validation_y=validation_y, &
+                    validation_weight=validation_weight)
+            else
+                call xgb_fit(self, x, y, status, settings, &
+                    validation_x=validation_x, validation_y=validation_y)
+            end if
+        else if (present(validation_weight)) then
+            call xgb_fit(self, x, y, status, settings, &
+                validation_weight=validation_weight)
+        else if (present(sample_weight)) then
             call xgb_fit(self, x, y, status, settings, sample_weight)
         else
             call xgb_fit(self, x, y, status, settings)
         end if
     end subroutine xgb_fit_binary
 
-    subroutine xgb_fit_poisson(self, x, y, status, options, sample_weight)
+    subroutine xgb_fit_poisson(self, x, y, status, options, sample_weight, &
+            validation_x, validation_y, validation_weight)
         !! Fit a nonnegative-count model with the log-link Poisson objective.
         !!
         !! The fitted margin is the log mean and predictions are positive
@@ -390,19 +606,42 @@ contains
         type(fortnum_status_t), intent(out) :: status
         type(xgboost_options_t), intent(in), optional :: options
         real(dp), intent(in), optional :: sample_weight(:)
+        real(dp), intent(in), optional :: validation_x(:, :), validation_y(:), &
+            validation_weight(:)
         type(xgboost_options_t) :: settings
 
         settings = xgboost_options_t()
         if (present(options)) settings = options
         settings%objective = "poisson"
-        if (present(sample_weight)) then
+        if (present(validation_x) .or. present(validation_y)) then
+            if (present(sample_weight)) then
+                if (present(validation_weight)) then
+                    call xgb_fit(self, x, y, status, settings, sample_weight, &
+                        validation_x, validation_y, validation_weight)
+                else
+                    call xgb_fit(self, x, y, status, settings, sample_weight, &
+                        validation_x, validation_y)
+                end if
+            else if (present(validation_weight)) then
+                call xgb_fit(self, x, y, status, settings, &
+                    validation_x=validation_x, validation_y=validation_y, &
+                    validation_weight=validation_weight)
+            else
+                call xgb_fit(self, x, y, status, settings, &
+                    validation_x=validation_x, validation_y=validation_y)
+            end if
+        else if (present(validation_weight)) then
+            call xgb_fit(self, x, y, status, settings, &
+                validation_weight=validation_weight)
+        else if (present(sample_weight)) then
             call xgb_fit(self, x, y, status, settings, sample_weight)
         else
             call xgb_fit(self, x, y, status, settings)
         end if
     end subroutine xgb_fit_poisson
 
-    subroutine xgb_fit_squared_log(self, x, y, status, options, sample_weight)
+    subroutine xgb_fit_squared_log(self, x, y, status, options, sample_weight, &
+            validation_x, validation_y, validation_weight)
         !! Fit the XGBoost `reg:squaredlogerror` objective (RMSLE loss).
         !!
         !! Margins represent `log(1 + prediction)`.  Targets must be
@@ -415,19 +654,42 @@ contains
         type(fortnum_status_t), intent(out) :: status
         type(xgboost_options_t), intent(in), optional :: options
         real(dp), intent(in), optional :: sample_weight(:)
+        real(dp), intent(in), optional :: validation_x(:, :), validation_y(:), &
+            validation_weight(:)
         type(xgboost_options_t) :: settings
 
         settings = xgboost_options_t()
         if (present(options)) settings = options
         settings%objective = "squaredlog"
-        if (present(sample_weight)) then
+        if (present(validation_x) .or. present(validation_y)) then
+            if (present(sample_weight)) then
+                if (present(validation_weight)) then
+                    call xgb_fit(self, x, y, status, settings, sample_weight, &
+                        validation_x, validation_y, validation_weight)
+                else
+                    call xgb_fit(self, x, y, status, settings, sample_weight, &
+                        validation_x, validation_y)
+                end if
+            else if (present(validation_weight)) then
+                call xgb_fit(self, x, y, status, settings, &
+                    validation_x=validation_x, validation_y=validation_y, &
+                    validation_weight=validation_weight)
+            else
+                call xgb_fit(self, x, y, status, settings, &
+                    validation_x=validation_x, validation_y=validation_y)
+            end if
+        else if (present(validation_weight)) then
+            call xgb_fit(self, x, y, status, settings, &
+                validation_weight=validation_weight)
+        else if (present(sample_weight)) then
             call xgb_fit(self, x, y, status, settings, sample_weight)
         else
             call xgb_fit(self, x, y, status, settings)
         end if
     end subroutine xgb_fit_squared_log
 
-    subroutine xgb_fit_huber(self, x, y, status, options, sample_weight)
+    subroutine xgb_fit_huber(self, x, y, status, options, sample_weight, &
+            validation_x, validation_y, validation_weight)
         !! Fit a robust Huber regression tree ensemble.  The objective uses
         !! the exact piecewise Huber gradient and a positive Hessian floor on
         !! its linear tails; the split/tree boundary remains nondifferentiable.
@@ -436,19 +698,42 @@ contains
         type(fortnum_status_t), intent(out) :: status
         type(xgboost_options_t), intent(in), optional :: options
         real(dp), intent(in), optional :: sample_weight(:)
+        real(dp), intent(in), optional :: validation_x(:, :), validation_y(:), &
+            validation_weight(:)
         type(xgboost_options_t) :: settings
 
         settings = xgboost_options_t()
         if (present(options)) settings = options
         settings%objective = "huber"
-        if (present(sample_weight)) then
+        if (present(validation_x) .or. present(validation_y)) then
+            if (present(sample_weight)) then
+                if (present(validation_weight)) then
+                    call xgb_fit(self, x, y, status, settings, sample_weight, &
+                        validation_x, validation_y, validation_weight)
+                else
+                    call xgb_fit(self, x, y, status, settings, sample_weight, &
+                        validation_x, validation_y)
+                end if
+            else if (present(validation_weight)) then
+                call xgb_fit(self, x, y, status, settings, &
+                    validation_x=validation_x, validation_y=validation_y, &
+                    validation_weight=validation_weight)
+            else
+                call xgb_fit(self, x, y, status, settings, &
+                    validation_x=validation_x, validation_y=validation_y)
+            end if
+        else if (present(validation_weight)) then
+            call xgb_fit(self, x, y, status, settings, &
+                validation_weight=validation_weight)
+        else if (present(sample_weight)) then
             call xgb_fit(self, x, y, status, settings, sample_weight)
         else
             call xgb_fit(self, x, y, status, settings)
         end if
     end subroutine xgb_fit_huber
 
-    subroutine xgb_fit_quantile(self, x, y, status, options, sample_weight)
+    subroutine xgb_fit_quantile(self, x, y, status, options, sample_weight, &
+            validation_x, validation_y, validation_weight)
         !! Fit a pinball/quantile regression tree ensemble.  The subgradient
         !! convention is alpha at an exact zero residual and alpha-1 below
         !! zero; a positive Hessian floor makes Newton leaf updates explicit.
@@ -457,12 +742,34 @@ contains
         type(fortnum_status_t), intent(out) :: status
         type(xgboost_options_t), intent(in), optional :: options
         real(dp), intent(in), optional :: sample_weight(:)
+        real(dp), intent(in), optional :: validation_x(:, :), validation_y(:), &
+            validation_weight(:)
         type(xgboost_options_t) :: settings
 
         settings = xgboost_options_t()
         if (present(options)) settings = options
         settings%objective = "quantile"
-        if (present(sample_weight)) then
+        if (present(validation_x) .or. present(validation_y)) then
+            if (present(sample_weight)) then
+                if (present(validation_weight)) then
+                    call xgb_fit(self, x, y, status, settings, sample_weight, &
+                        validation_x, validation_y, validation_weight)
+                else
+                    call xgb_fit(self, x, y, status, settings, sample_weight, &
+                        validation_x, validation_y)
+                end if
+            else if (present(validation_weight)) then
+                call xgb_fit(self, x, y, status, settings, &
+                    validation_x=validation_x, validation_y=validation_y, &
+                    validation_weight=validation_weight)
+            else
+                call xgb_fit(self, x, y, status, settings, &
+                    validation_x=validation_x, validation_y=validation_y)
+            end if
+        else if (present(validation_weight)) then
+            call xgb_fit(self, x, y, status, settings, &
+                validation_weight=validation_weight)
+        else if (present(sample_weight)) then
             call xgb_fit(self, x, y, status, settings, sample_weight)
         else
             call xgb_fit(self, x, y, status, settings)
@@ -1101,6 +1408,117 @@ contains
         fitted = self%initialized
     end function xgb_fitted
 
+    integer function xgb_best_iteration(self) result(iteration)
+        !! One-based boosting round with the lowest validation objective.
+        !! Without validation data this is the requested estimator count.
+        class(xgboost_t), intent(in) :: self
+
+        iteration = self%best_iteration_value
+    end function xgb_best_iteration
+
+    real(dp) function xgb_best_validation_loss(self) result(loss)
+        !! Best weighted validation objective observed during fitting.
+        !! It is `huge()` when no validation set was supplied.
+        class(xgboost_t), intent(in) :: self
+
+        loss = self%best_validation_loss_value
+    end function xgb_best_validation_loss
+
+    logical function xgb_early_stopped(self) result(stopped)
+        class(xgboost_t), intent(in) :: self
+
+        stopped = self%early_stopped_flag
+    end function xgb_early_stopped
+
+    subroutine retain_xgb_estimators(self, source)
+        class(xgboost_t), intent(inout) :: self
+        type(xgb_tree_t), intent(in) :: source(:)
+        type(xgb_tree_t), allocatable :: retained(:)
+
+        allocate(retained(size(source)))
+        retained = source
+        call move_alloc(retained, self%estimators)
+    end subroutine retain_xgb_estimators
+
+    subroutine xgb_objective_loss(objective_code, margin, target, weights, &
+            huber_delta, quantile_alpha, loss, status)
+        !! Evaluate a finite weighted validation objective independently of
+        !! the tree gain calculation.  All supported objectives are losses,
+        !! so lower values are better for deterministic early stopping.
+        integer, intent(in) :: objective_code
+        real(dp), intent(in) :: margin(:), target(:), weights(:)
+        real(dp), intent(in) :: huber_delta, quantile_alpha
+        real(dp), intent(out) :: loss
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: residual, term, weight_sum
+        integer :: i
+
+        loss = huge(1.0_dp)
+        if (size(margin) /= size(target) .or. size(weights) /= size(target) .or. &
+            size(target) < 1 .or. any(.not. ieee_is_finite(margin)) .or. &
+            any(.not. ieee_is_finite(target)) .or. &
+            any(.not. ieee_is_finite(weights)) .or. any(weights <= 0.0_dp)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost validation objective: invalid arrays")
+            return
+        end if
+        weight_sum = sum(weights)
+        if (.not. ieee_is_finite(weight_sum) .or. weight_sum <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost validation objective: invalid weight mass")
+            return
+        end if
+        term = 0.0_dp
+        select case (objective_code)
+        case (XGB_OBJECTIVE_SQUARED)
+            term = 0.5_dp*sum(weights*(margin - target)**2)
+        case (XGB_OBJECTIVE_LOGISTIC)
+            do i = 1, size(target)
+                if (margin(i) >= 0.0_dp) then
+                    residual = (1.0_dp - target(i))*margin(i) + &
+                        log(1.0_dp + exp(-margin(i)))
+                else
+                    residual = -target(i)*margin(i) + log(1.0_dp + exp(margin(i)))
+                end if
+                term = term + weights(i)*residual
+            end do
+        case (XGB_OBJECTIVE_POISSON)
+            term = sum(weights*(stable_poisson_array(margin) - target*margin))
+        case (XGB_OBJECTIVE_SQUARED_LOG)
+            term = 0.5_dp*sum(weights*(margin - log(1.0_dp + target))**2)
+        case (XGB_OBJECTIVE_HUBER)
+            do i = 1, size(target)
+                residual = margin(i) - target(i)
+                if (abs(residual) <= huber_delta) then
+                    term = term + weights(i)*0.5_dp*residual**2
+                else
+                    term = term + weights(i)*huber_delta*(abs(residual) - &
+                        0.5_dp*huber_delta)
+                end if
+            end do
+        case (XGB_OBJECTIVE_QUANTILE)
+            do i = 1, size(target)
+                residual = margin(i) - target(i)
+                if (residual >= 0.0_dp) then
+                    term = term + weights(i)*quantile_alpha*residual
+                else
+                    term = term + weights(i)*(quantile_alpha - 1.0_dp)*residual
+                end if
+            end do
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost validation objective: unsupported objective")
+            return
+        end select
+        if (.not. ieee_is_finite(term)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost validation objective: nonfinite loss")
+            return
+        end if
+        loss = term/weight_sum
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine xgb_objective_loss
+
     subroutine objective_derivatives(objective_code, margin, target, gradient, &
             hessian, huber_delta, quantile_alpha, status)
         integer, intent(in) :: objective_code
@@ -1695,7 +2113,10 @@ contains
             end do
             if (position >= n) cycle
             if (values(order(position)) >= values(order(position + 1))) cycle
-            if (n_positions == 0 .or. positions(n_positions) /= position) then
+            if (n_positions == 0) then
+                n_positions = n_positions + 1
+                positions(n_positions) = position
+            else if (positions(n_positions) /= position) then
                 n_positions = n_positions + 1
                 positions(n_positions) = position
             end if
