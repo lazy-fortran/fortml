@@ -9,12 +9,12 @@ and implementation limits in [`docs/DESIGN.md`](docs/DESIGN.md) and
 
 | Compiler | Command | Result |
 | --- | --- | --- |
-| GNU Fortran | `fo` | Static, build, and lint checks passed. The fresh 2026-08-07 run passed all 78 tests. See [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
-| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded compiler lane. The checked-in NVIDIA log predates the latest 78-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
+| GNU Fortran | `fo` | Static, build, and lint checks passed. The fresh 2026-08-07 run passed all 79 tests. See [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
+| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded compiler lane. The checked-in NVIDIA log predates the latest 79-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
 The checked-in compiler logs above are older compiler snapshots. A fresh GNU
-Fortran `fo` run on 2026-08-07 passed static analysis, the build, all 78 tests,
+Fortran `fo` run on 2026-08-07 passed static analysis, the build, all 79 tests,
 and lint. The fresh run includes implementation work whose compiler logs have
 not yet replaced those snapshots. NVIDIA compiler coverage therefore remains
 an explicit older-build result.
@@ -1268,6 +1268,15 @@ peak memory, and batch-size scaling with the same correctness gate as training.
   record is [`results/adagrad.csv`](../fortml-bench/results/adagrad.csv), with
   the contract documented in
   [`results/ADAGRAD.md`](../fortml-bench/results/ADAGRAD.md).
+- [x] Add independent kNN uniform/inverse-distance, RMSprop direct/MLP, and
+  binary/multiclass staged-XGBoost benchmark lanes. Their reports and raw
+  records are [`results/KNN.md`](../fortml-bench/results/KNN.md),
+  [`results/RMSPROP.md`](../fortml-bench/results/RMSPROP.md), and
+  [`results/XGBOOST.md`](../fortml-bench/results/XGBOOST.md).
+- [x] Add a bounded binary/shared-kernel GP-classification hyperparameter lane
+  with a NumPy mode/envelope-gradient oracle. The evidence is explicitly for
+  mode log posterior rather than full Laplace evidence:
+  [`results/GP_CLASSIFICATION_TRAINING.md`](../fortml-bench/results/GP_CLASSIFICATION_TRAINING.md).
 - [ ] Define one versioned result schema for correctness, train time, predict
   time, peak host and device memory, compiler, flags, dependency revisions,
   hardware, seed, warmup, repetitions, and refusal reason.
