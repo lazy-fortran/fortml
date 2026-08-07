@@ -156,7 +156,8 @@ only listed as gaps:
   and multi-output linear coefficients in one packed CPU objective. It exposes
   analytic value/gradient/JVP/VJP/HVP products, ridge regularization, a FortOpt
   callback, and a typed CUDA refusal. The independent fixture is
-  `test_basis_pipeline_training`; a release benchmark row remains open.
+  `test_basis_pipeline_training`; release evidence is
+  `results/BASIS_PIPELINE_TRAINING.md` in `fortml-bench`.
 
 The FortBO and FortMC companion pins were rechecked against their remote
 `main` branches on this date: FortBO
