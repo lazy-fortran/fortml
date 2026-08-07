@@ -183,8 +183,9 @@ only listed as gaps:
   JVP/VJP products, exact loss HVPs, and an explicit CUDA refusal. The shared
   `mlp_multilabel_classifier_t` now emits all indicator logits from one MLP,
   supports per-label thresholds, mean-reduced BCE products, exact parameter
-  HVPs, and the same typed CUDA refusal. Ordinal, calibrated, and resident-GPU
-  neural heads remain separate contracts.
+  HVPs, and the same typed CUDA refusal. The calibrated neural head is now a
+  separate deterministic composition contract; resident-GPU neural heads
+  remain open.
   The release evidence is `results/MLP_BINARY_CLASSIFIER.md` in `fortml-bench`.
 - The multilabel MLP wrapper validates indicator targets, exposes concatenated
   parameter/input JVP/VJP products and exact mean-reduced loss HVPs, and keeps
@@ -941,6 +942,15 @@ the detailed closure slices and their independent benchmark reports below are
 authoritative when this compact work-package table is read alongside older
 package prose.
 
+The calibrated neural classification slice adds
+`mlp_calibrated_classifier_t`: binary MLP logits can be calibrated with the
+shared sigmoid, positive-temperature, or weighted-PAVA isotonic maps, while
+multiclass logits use one positive softmax temperature. Smooth temperature and
+sigmoid network/input/calibration products are exact; isotonic active-set
+products and CUDA execution return typed refusals. Its independent behavioral
+oracle is `test_mlp_calibrated_classifier` and its API contract is documented
+in `docs/MLP_CALIBRATED_CLASSIFIER.md`.
+
 The sibling device-contract report now also includes the resident forest
 prediction gate; higher-level Fortran forest integration remains an explicit
 CUDA refusal until private CART storage is safely bound to the C ABI.
@@ -1042,7 +1052,7 @@ CUDA refusal until private CART storage is safely bound to the C ABI.
   configurable per-label thresholds, deterministic full-batch Adam, exact
   logits/probability input and parameter JVP/VJP products, BCE parameter HVPs,
   and typed CUDA refusal. Binary and ordinal heads have separate contracts;
-  calibrated neural heads and resident GPU training remain open.
+  calibrated neural heads are covered by the next checked slice.
 - [x] Add a scalar-score ordinal neural classifier with sorted arbitrary integer
   labels, strictly increasing cumulative-logit thresholds, deterministic
   full-batch FortOpt L-BFGS-B training, positive sample weights, packed
@@ -1050,10 +1060,16 @@ CUDA refusal until private CART storage is safely bound to the C ABI.
   products, and typed CPU/CUDA dispatch. The independent behavioral oracle is
   `test_mlp_ordinal_classifier`; resident GPU training and calibrated neural
   ordinal heads remain open.
-- [ ] Complete the neural classifier-head matrix for binary, ordinal, calibrated,
-  and resident-GPU outputs. Heads must expose loss, logits, probabilities, and
-  derivative products separately so a user can train on logits without losing
-  a stable deployment probability path.
+- [x] Add `mlp_calibrated_classifier_t` as a deterministic composition of the
+  MLP logits head and shared probability calibration primitives. Binary heads
+  support sigmoid, positive temperature, and weighted isotonic calibration;
+  multiclass heads support one positive softmax temperature. Packed parameters
+  include the network and smooth calibration coordinates, with exact joint
+  input/parameter JVP/VJP products for sigmoid/temperature and explicit
+  `FORTNUM_NOT_IMPLEMENTED` refusal for isotonic PAVA active-set products.
+  `test_mlp_calibrated_classifier` covers sorted labels, normalization,
+  deterministic fit, finite-difference/adjoint products, and typed CUDA
+  refusal. Resident-GPU neural outputs remain a separate open exit.
 - [x] Add accuracy, top-k accuracy, balanced accuracy, confusion matrix, log
   loss, Brier score, binary Matthews correlation, precision, recall, and F1
   with explicit class ordering, zero-support behavior, and weighted
