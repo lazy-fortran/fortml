@@ -117,3 +117,18 @@ does not evaluate network gradients, JVP/VJP/HVP products, or hypergradients.
 Those paths must remain on the FortAD/FortSym graph until a complete resident
 device graph and an independent derivative oracle are available. A caller
 must therefore not report end-to-end GPU training from this state kernel alone.
+
+## New estimator contracts
+
+The weighted elastic-net regressor, OVO logistic classifier, Laplace GP
+classifier, and typed MLP learning-rate schedules expose
+`device_supported(kind)`. They currently report CPU support only. Their
+`predict_device`/`predict_proba_device` (or GP latent-prediction) entry points
+dispatch exactly to the selected CPU context and return
+`FORTNUM_NOT_IMPLEMENTED` for CUDA because no resident model kernel is linked.
+The scalar GP likelihood helper likewise reports CUDA derivative products as
+unsupported. These typed refusals are intentional: an unrelated CUDA kernel
+in the process cannot turn a host allocation into a GPU benchmark, and no
+implicit host/device transfer is hidden behind a prediction call. The
+independent `test_device_contract_new_features` fixture checks these refusal
+boundaries without requiring a CUDA driver.

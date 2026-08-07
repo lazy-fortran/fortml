@@ -14,7 +14,9 @@ module fortml_elastic_net_regression
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
-        FORTNUM_DOMAIN_ERROR, FORTNUM_CONVERGENCE_ERROR
+        FORTNUM_DOMAIN_ERROR, FORTNUM_CONVERGENCE_ERROR, FORTNUM_NOT_IMPLEMENTED
+    use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU, &
+        FORTML_DEVICE_CUDA
     implicit none
     private
 
@@ -36,6 +38,8 @@ module fortml_elastic_net_regression
         procedure, public :: predict_matrix => elastic_net_predict_matrix
         procedure, public :: predict_vector => elastic_net_predict_vector
         generic, public :: predict => predict_matrix, predict_vector
+        procedure, public :: predict_device => elastic_net_predict_device
+        procedure, public :: device_supported => elastic_net_device_supported
         procedure, public :: predict_jvp => elastic_net_predict_jvp
         procedure, public :: predict_vjp => elastic_net_predict_vjp
         procedure, public :: jvp => elastic_net_predict_jvp
@@ -240,6 +244,37 @@ contains
         if (status%code == FORTNUM_OK) y = values(:, 1)
     end subroutine elastic_net_predict_vector
 
+    subroutine elastic_net_predict_device(self, device, x, y, status)
+        !! Predict through the explicit device contract.
+        !!
+        !! A resident elastic-net prediction kernel is not linked yet.  CPU
+        !! dispatch is therefore the only successful path; a selected CUDA
+        !! context returns a typed refusal instead of silently copying to the
+        !! host.  This method is intentionally matrix-shaped, matching the
+        !! complete multi-output prediction primitive.
+        class(elastic_net_regression_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: y(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "elastic-net device prediction: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_matrix(x, y, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "elastic-net device prediction: no resident CUDA kernel is linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "elastic-net device prediction: device kind is invalid")
+        end select
+    end subroutine elastic_net_predict_device
+
     subroutine elastic_net_predict_jvp(self, x, theta_dot, x_dot, y, y_dot, status)
         class(elastic_net_regression_t), intent(in) :: self
         real(dp), intent(in) :: x(:, :), theta_dot(:), x_dot(:, :)
@@ -391,6 +426,21 @@ contains
         class(elastic_net_regression_t), intent(in) :: self
         value = self%fitted_value .and. allocated(self%coefficient)
     end function elastic_net_fitted
+
+    logical function elastic_net_device_supported(self, device_kind) result(supported)
+        !! Report support without inferring a host fallback for accelerators.
+        class(elastic_net_regression_t), intent(in) :: self
+        integer, intent(in) :: device_kind
+
+        select case (device_kind)
+        case (FORTML_DEVICE_CPU)
+            supported = self%fitted()
+        case (FORTML_DEVICE_CUDA)
+            supported = .false.
+        case default
+            supported = .false.
+        end select
+    end function elastic_net_device_supported
 
     pure real(dp) function soft_threshold(value, threshold) result(output)
         real(dp), intent(in) :: value, threshold

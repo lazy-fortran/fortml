@@ -10,8 +10,10 @@ module fortml_ovo_logistic_classifier
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
-        FORTNUM_DOMAIN_ERROR
+        FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED
     use fortml_logistic_regression, only: logistic_regression_t
+    use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU, &
+        FORTML_DEVICE_CUDA
     implicit none
     private
 
@@ -29,6 +31,7 @@ module fortml_ovo_logistic_classifier
         procedure, public :: fit => ovo_logistic_fit
         procedure, public :: decision_function => ovo_logistic_decision
         procedure, public :: predict_proba => ovo_logistic_predict_proba
+        procedure, public :: predict_proba_device => ovo_logistic_predict_proba_device
         procedure, public :: predict_proba_jvp => ovo_logistic_predict_proba_jvp
         procedure, public :: predict_proba_parameter_jvp => &
             ovo_logistic_predict_proba_parameter_jvp
@@ -36,6 +39,8 @@ module fortml_ovo_logistic_classifier
         procedure, public :: predict_proba_parameter_vjp => &
             ovo_logistic_predict_proba_parameter_vjp
         procedure, public :: predict => ovo_logistic_predict
+        procedure, public :: predict_device => ovo_logistic_predict_device
+        procedure, public :: device_supported => ovo_logistic_device_supported
         procedure, public :: classes => ovo_logistic_classes
         procedure, public :: pair_classes => ovo_logistic_pair_classes
         procedure, public :: pair_count => ovo_logistic_pair_count
@@ -77,7 +82,7 @@ contains
 
         self%is_fitted = .false.
         if (size(x, 1) < 1 .or. size(x, 2) < 1 .or. &
-                size(labels) /= size(x, 1)) then
+            size(labels) /= size(x, 1)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "OVO logistic fit: input dimensions are invalid")
             return
@@ -101,8 +106,8 @@ contains
         class_factors = 1.0_dp
         if (present(sample_weight)) then
             if (size(sample_weight) /= n_samples .or. &
-                    any(.not. ieee_is_finite(sample_weight)) .or. &
-                    any(sample_weight < 0.0_dp)) then
+                any(.not. ieee_is_finite(sample_weight)) .or. &
+                any(sample_weight < 0.0_dp)) then
                 call status_set(status, FORTNUM_DOMAIN_ERROR, &
                     "OVO logistic fit: sample weights must be finite and nonnegative")
                 return
@@ -111,8 +116,8 @@ contains
         end if
         if (present(class_weight)) then
             if (size(class_weight) /= n_classes .or. &
-                    any(.not. ieee_is_finite(class_weight)) .or. &
-                    any(class_weight <= 0.0_dp)) then
+                any(.not. ieee_is_finite(class_weight)) .or. &
+                any(class_weight <= 0.0_dp)) then
                 call status_set(status, FORTNUM_DOMAIN_ERROR, &
                     "OVO logistic fit: class weights must be finite and positive "// &
                     "in sorted class order")
@@ -129,7 +134,7 @@ contains
             end do
         end if
         if (.not. ieee_is_finite(sum(effective_weight)) .or. &
-                sum(effective_weight) <= 0.0_dp) then
+            sum(effective_weight) <= 0.0_dp) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "OVO logistic fit: effective weights must have positive mass")
             return
@@ -170,9 +175,9 @@ contains
                     pair_weight(k) = effective_weight(indices(k))
                 end do
                 if (.not. ieee_is_finite(sum(pair_weight)) .or. &
-                        sum(pair_weight) <= 0.0_dp .or. &
-                        sum(pair_weight, mask=pair_labels == 0) <= 0.0_dp .or. &
-                        sum(pair_weight, mask=pair_labels == 1) <= 0.0_dp) then
+                    sum(pair_weight) <= 0.0_dp .or. &
+                    sum(pair_weight, mask=pair_labels == 0) <= 0.0_dp .or. &
+                    sum(pair_weight, mask=pair_labels == 1) <= 0.0_dp) then
                     call status_set(status, FORTNUM_DOMAIN_ERROR, &
                         "OVO logistic fit: every class pair needs positive weight mass")
                     return
@@ -209,7 +214,7 @@ contains
             return
         end if
         if (size(x, 2) /= self%n_features .or. &
-                any(shape(scores) /= [size(x, 1), self%n_pairs])) then
+            any(shape(scores) /= [size(x, 1), self%n_pairs])) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "OVO logistic decision: input or output shape is invalid")
             return
@@ -243,7 +248,7 @@ contains
             return
         end if
         if (size(x, 2) /= self%n_features .or. &
-                any(shape(probabilities) /= [size(x, 1), self%n_classes])) then
+            any(shape(probabilities) /= [size(x, 1), self%n_classes])) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "OVO logistic probability: input or output shape is invalid")
             return
@@ -269,6 +274,35 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine ovo_logistic_predict_proba
 
+    subroutine ovo_logistic_predict_proba_device(self, device, x, probabilities, status)
+        !! Predict probabilities through the explicit device contract.
+        !!
+        !! The pairwise logistic reduction has no resident CUDA kernel yet.
+        !! CPU dispatch is exact; CUDA returns a typed refusal rather than a
+        !! hidden host fallback or an unaccounted transfer.
+        class(ovo_logistic_classifier_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: probabilities(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "OVO logistic device prediction: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_proba(x, probabilities, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "OVO logistic device prediction: no resident CUDA kernel is linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "OVO logistic device prediction: device kind is invalid")
+        end select
+    end subroutine ovo_logistic_predict_proba_device
+
     subroutine ovo_logistic_predict_proba_jvp(self, x, x_dot, probabilities, &
             probabilities_dot, status)
         class(ovo_logistic_classifier_t), intent(in) :: self
@@ -281,14 +315,14 @@ contains
         integer :: pair_index, negative_class, positive_class
 
         if (size(x_dot, 1) /= size(x, 1) .or. size(x_dot, 2) /= size(x, 2) .or. &
-                any(.not. ieee_is_finite(x_dot)) .or. &
-                any(shape(probabilities_dot) /= shape(probabilities))) then
+            any(.not. ieee_is_finite(x_dot)) .or. &
+            any(shape(probabilities_dot) /= shape(probabilities))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "OVO logistic probability JVP: tangent or output shape is invalid")
             return
         end if
         if (.not. self%is_fitted .or. size(x, 2) /= self%n_features .or. &
-                any(shape(probabilities) /= [size(x, 1), self%n_classes])) then
+            any(shape(probabilities) /= [size(x, 1), self%n_classes])) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "OVO logistic probability JVP: model or input shape is invalid")
             return
@@ -329,15 +363,15 @@ contains
         integer :: pair_index, negative_class, positive_class, first, last
 
         if (.not. self%is_fitted .or. size(x, 2) /= self%n_features .or. &
-                any(shape(probabilities) /= [size(x, 1), self%n_classes]) .or. &
-                any(shape(probabilities_dot) /= shape(probabilities)) .or. &
-                size(theta_dot) /= self%parameter_count()) then
+            any(shape(probabilities) /= [size(x, 1), self%n_classes]) .or. &
+            any(shape(probabilities_dot) /= shape(probabilities)) .or. &
+            size(theta_dot) /= self%parameter_count()) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "OVO logistic parameter JVP: model, parameter, or output shape is invalid")
             return
         end if
         if (any(.not. ieee_is_finite(x)) .or. &
-                any(.not. ieee_is_finite(theta_dot))) then
+            any(.not. ieee_is_finite(theta_dot))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "OVO logistic parameter JVP: inputs and tangents must be finite")
             return
@@ -382,15 +416,15 @@ contains
 
         x_bar = 0.0_dp
         if (.not. self%is_fitted .or. size(x, 2) /= self%n_features .or. &
-                size(probabilities_bar, 1) /= size(x, 1) .or. &
-                size(probabilities_bar, 2) /= self%n_classes .or. &
-                any(shape(x_bar) /= shape(x))) then
+            size(probabilities_bar, 1) /= size(x, 1) .or. &
+            size(probabilities_bar, 2) /= self%n_classes .or. &
+            any(shape(x_bar) /= shape(x))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "OVO logistic probability VJP: model or shape is invalid")
             return
         end if
         if (any(.not. ieee_is_finite(x)) .or. &
-                any(.not. ieee_is_finite(probabilities_bar))) then
+            any(.not. ieee_is_finite(probabilities_bar))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "OVO logistic probability VJP: inputs and cotangents must be finite")
             return
@@ -427,15 +461,15 @@ contains
 
         theta_bar = 0.0_dp
         if (.not. self%is_fitted .or. size(x, 2) /= self%n_features .or. &
-                size(probabilities_bar, 1) /= size(x, 1) .or. &
-                size(probabilities_bar, 2) /= self%n_classes .or. &
-                size(theta_bar) /= self%parameter_count()) then
+            size(probabilities_bar, 1) /= size(x, 1) .or. &
+            size(probabilities_bar, 2) /= self%n_classes .or. &
+            size(theta_bar) /= self%parameter_count()) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "OVO logistic parameter VJP: model or shape is invalid")
             return
         end if
         if (any(.not. ieee_is_finite(x)) .or. &
-                any(.not. ieee_is_finite(probabilities_bar))) then
+            any(.not. ieee_is_finite(probabilities_bar))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "OVO logistic parameter VJP: inputs and cotangents must be finite")
             return
@@ -486,6 +520,31 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine ovo_logistic_predict
+
+    subroutine ovo_logistic_predict_device(self, device, x, labels, status)
+        !! Class-label prediction through the explicit device contract.
+        class(ovo_logistic_classifier_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :)
+        integer, intent(out) :: labels(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "OVO logistic device prediction: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict(x, labels, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "OVO logistic device prediction: no resident CUDA kernel is linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "OVO logistic device prediction: device kind is invalid")
+        end select
+    end subroutine ovo_logistic_predict_device
 
     function ovo_logistic_classes(self) result(labels)
         class(ovo_logistic_classifier_t), intent(in) :: self
@@ -559,7 +618,7 @@ contains
         integer :: pair_index, first, last
 
         if (.not. self%is_fitted .or. size(values) /= self%parameter_count() .or. &
-                any(.not. ieee_is_finite(values))) then
+            any(.not. ieee_is_finite(values))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "OVO logistic set_parameters: model, shape, or values are invalid")
             return
@@ -578,6 +637,21 @@ contains
 
         is_fitted = self%is_fitted
     end function ovo_logistic_fitted
+
+    logical function ovo_logistic_device_supported(self, device_kind) result(supported)
+        !! Report support without inferring a host fallback for accelerators.
+        class(ovo_logistic_classifier_t), intent(in) :: self
+        integer, intent(in) :: device_kind
+
+        select case (device_kind)
+        case (FORTML_DEVICE_CPU)
+            supported = self%is_fitted
+        case (FORTML_DEVICE_CUDA)
+            supported = .false.
+        case default
+            supported = .false.
+        end select
+    end function ovo_logistic_device_supported
 
     subroutine sorted_unique_labels(labels, classes)
         integer, intent(in) :: labels(:)

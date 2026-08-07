@@ -10,9 +10,12 @@ module fortml_gp_classification
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, &
-        FORTNUM_OK, FORTNUM_DOMAIN_ERROR, FORTNUM_CONVERGENCE_ERROR
+        FORTNUM_OK, FORTNUM_DOMAIN_ERROR, FORTNUM_CONVERGENCE_ERROR, &
+        FORTNUM_NOT_IMPLEMENTED
     use fortnum_cholesky, only: cholesky_factorization_t
     use fortml_kernels, only: kernel_t
+    use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU, &
+        FORTML_DEVICE_CUDA
     implicit none
     private
 
@@ -56,9 +59,11 @@ module fortml_gp_classification
     contains
         procedure, public :: fit => gp_classification_fit
         procedure, public :: predict_latent => gp_classification_predict_latent
+        procedure, public :: predict_latent_device => gp_classification_predict_latent_device
         procedure, public :: predict_latent_jvp => gp_classification_predict_latent_jvp
         procedure, public :: predict_latent_vjp => gp_classification_predict_latent_vjp
         procedure, public :: predict_proba => gp_classification_predict_proba
+        procedure, public :: predict_proba_device => gp_classification_predict_proba_device
         procedure, public :: predict_proba_jvp => gp_classification_predict_proba_jvp
         procedure, public :: predict_proba_vjp => gp_classification_predict_proba_vjp
         procedure, public :: predict => gp_classification_predict
@@ -70,19 +75,23 @@ module fortml_gp_classification
             gp_classification_hyperparameter_gradient
         procedure, public :: fitted => gp_classification_fitted
         procedure, public :: likelihood_kind => gp_classification_likelihood
+        procedure, public :: device_supported => gp_classification_device_supported
     end type gp_classification_t
 
     public :: gp_classification_fit
     public :: gp_classification_predict_latent
+    public :: gp_classification_predict_latent_device
     public :: gp_classification_predict_latent_jvp
     public :: gp_classification_predict_latent_vjp
     public :: gp_classification_predict_proba
+    public :: gp_classification_predict_proba_device
     public :: gp_classification_predict_proba_jvp
     public :: gp_classification_predict_proba_vjp
     public :: gp_classification_predict
     public :: gp_classification_log_likelihood_value
     public :: gp_classification_log_likelihood_jvp
     public :: gp_classification_log_likelihood_vjp
+    public :: gp_classification_likelihood_device_supported
 
 contains
 
@@ -222,6 +231,36 @@ contains
         call predict_core(self, x, mean, variance, status)
     end subroutine gp_classification_predict_latent
 
+    subroutine gp_classification_predict_latent_device(self, device, x, mean, &
+            variance, status)
+        !! Latent prediction through the explicit device contract.
+        !!
+        !! The Laplace solve and covariance workspaces are not resident on a
+        !! CUDA backend yet.  CPU dispatch is exact; CUDA returns a typed
+        !! refusal rather than staging a hidden host computation.
+        class(gp_classification_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: mean(:), variance(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP classification device prediction: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_latent(x, mean, variance, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "GP classification device prediction: no resident CUDA Laplace kernel is linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP classification device prediction: device kind is invalid")
+        end select
+    end subroutine gp_classification_predict_latent_device
+
     subroutine gp_classification_predict_latent_jvp( &
             self, x, x_dot, mean, mean_dot, variance, variance_dot, status)
         class(gp_classification_t), intent(in) :: self
@@ -359,6 +398,32 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine gp_classification_predict_proba
 
+    subroutine gp_classification_predict_proba_device(self, device, x, &
+            probabilities, status)
+        !! Observed-probability prediction through the device contract.
+        class(gp_classification_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: probabilities(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP classification device prediction: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_proba(x, probabilities, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "GP classification device prediction: no resident CUDA Laplace kernel is linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP classification device prediction: device kind is invalid")
+        end select
+    end subroutine gp_classification_predict_proba_device
+
     subroutine gp_classification_predict_proba_jvp( &
             self, x, x_dot, probabilities, probabilities_dot, status)
         class(gp_classification_t), intent(in) :: self
@@ -476,6 +541,24 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine gp_classification_predict
+
+    logical function gp_classification_likelihood_device_supported(device_kind) result(supported)
+        !! Report device support for the scalar likelihood products.
+        !!
+        !! The value, JVP, and VJP routines are backend-independent host
+        !! references.  No resident CUDA reduction is linked, and derivative
+        !! products must not silently execute on the host for a CUDA request.
+        integer, intent(in) :: device_kind
+
+        select case (device_kind)
+        case (FORTML_DEVICE_CPU)
+            supported = .true.
+        case (FORTML_DEVICE_CUDA)
+            supported = .false.
+        case default
+            supported = .false.
+        end select
+    end function gp_classification_likelihood_device_supported
 
     !> Evaluate the sum of log likelihoods for signed latent margins.
     !!
@@ -661,6 +744,21 @@ contains
             allocated(self%mode) .and. allocated(self%alpha) .and. &
             allocated(self%sqrt_w) .and. self%n_samples > 0 .and. self%n_features > 0
     end function gp_classification_fitted
+
+    logical function gp_classification_device_supported(self, device_kind) result(supported)
+        !! Report support without inferring a host fallback for accelerators.
+        class(gp_classification_t), intent(in) :: self
+        integer, intent(in) :: device_kind
+
+        select case (device_kind)
+        case (FORTML_DEVICE_CPU)
+            supported = self%fitted()
+        case (FORTML_DEVICE_CUDA)
+            supported = .false.
+        case default
+            supported = .false.
+        end select
+    end function gp_classification_device_supported
 
     integer function gp_classification_likelihood(self) result(kind)
         class(gp_classification_t), intent(in) :: self

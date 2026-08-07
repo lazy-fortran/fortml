@@ -12,6 +12,7 @@ module fortml_mlp_schedules
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
         FORTNUM_DOMAIN_ERROR
+    use fortml_device, only: FORTML_DEVICE_CPU, FORTML_DEVICE_CUDA
     implicit none
     private
 
@@ -30,6 +31,7 @@ module fortml_mlp_schedules
         real(dp) :: decay_factor = 1.0_dp
     contains
         procedure, public :: valid => schedule_valid
+        procedure, public :: device_supported => schedule_device_supported
         procedure, public :: rate_with_derivatives => schedule_rate_with_derivatives
         procedure, public :: rate => schedule_rate
     end type mlp_learning_rate_schedule_t
@@ -117,6 +119,25 @@ contains
             valid = self%decay_factor < 1.0_dp
         end select
     end function schedule_valid
+
+    logical function schedule_device_supported(self, device_kind) result(supported)
+        !! Report whether this scalar schedule has a resident device lowering.
+        !!
+        !! Schedules are stateless host products today.  They can be copied
+        !! into a future native CUDA/OpenACC optimizer kernel, but no such
+        !! kernel is linked by this release, so CUDA is explicitly refused.
+        class(mlp_learning_rate_schedule_t), intent(in) :: self
+        integer, intent(in) :: device_kind
+
+        select case (device_kind)
+        case (FORTML_DEVICE_CPU)
+            supported = self%valid()
+        case (FORTML_DEVICE_CUDA)
+            supported = .false.
+        case default
+            supported = .false.
+        end select
+    end function schedule_device_supported
 
     subroutine schedule_rate(self, update, base_rate, rate, status)
         class(mlp_learning_rate_schedule_t), intent(in) :: self
