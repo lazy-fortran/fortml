@@ -544,10 +544,16 @@ contains
         class(mlp_t), intent(in) :: model
         real(dp), intent(in) :: x(:, :), target(:, :)
 
-        valid = model%parameter_count() > 0 .and. size(x, 1) > 0 .and. &
-            size(x, 2) == model%layer_sizes(1) .and. size(target, 1) == size(x, 1) .and. &
-            size(target, 2) == model%layer_sizes(size(model%layer_sizes)) .and. &
-            all(ieee_is_finite(x)) .and. all(ieee_is_finite(target))
+        valid = .false.
+        if (.not. allocated(model%layer_sizes)) return
+        if (size(model%layer_sizes) < 2) return
+        if (model%parameter_count() <= 0) return
+        if (size(x, 1) <= 0 .or. size(target, 1) /= size(x, 1)) return
+        if (size(x, 2) /= model%layer_sizes(1)) return
+        if (size(target, 2) /= model%layer_sizes(size(model%layer_sizes))) return
+        if (any(.not. ieee_is_finite(x)) .or. &
+            any(.not. ieee_is_finite(target))) return
+        valid = .true.
     end function valid_data
 
 end module fortml_mlp_hypergradient
