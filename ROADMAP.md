@@ -20,8 +20,8 @@ derivative-GP, multilabel/ROC-AUC/PR-AUC/F-beta ranking, derivative-GP
 capability refusals, resident-MSE and dense-affine CUDA contracts, resident
 forest plan boundary, PCA-initialized linear autoencoder, seeded exact-GP
 multistart, multilabel/ordinal neural losses, and squared-log XGBoost slices.
-The build emits four GNU array-temporary warnings in the squared-log XGBoost
-benchmark app;
+The build emits four GNU array-temporary warnings in the exact-GP hyperparameter
+benchmark app. They are non-fatal and isolated to the benchmark call boundary;
 lint and all behavioral tests pass. NVIDIA compiler coverage remains an
 explicit older-build result.
 
