@@ -138,7 +138,7 @@ multiclass, weighted, probabilistic, derivative, or GPU coverage.
 | Nearest-neighbor and margin methods | Dense exact kNN classifier | KD-tree or ball-tree search, radius neighbors, sparse inputs, linear/kernel SVM and SVR, calibrated probabilities, and differentiable soft-neighbor policies |
 | Trees and ensembles | Partial | Deterministic finite-only regression stumps, weighted depth-limited CART regression and classification, squared-loss stump boosting, and exact/histogram depth-limited second-order squared/logistic/Poisson boosting are implemented. XGBoost-style trees support weighted quantile cuts, bounded histograms, explicit NaN rejection, learned default directions, forced-left/right routing, and per-feature monotonic constraints with recursive leaf bounds; forests, ranking, categorical, and interaction constraints remain planned |
 | Clustering and unsupervised learning | Centered dense `pca_t` is implemented with deterministic SVD signs, rank selection, whitening, reconstruction, variance metadata, and fixed-state input products | Incremental/randomized/sparse/kernel PCA, ICA, NMF, k-means/minibatch k-means, Gaussian mixtures/EM, density and graph clustering, manifold methods, outlier detection, matrix factorization, and density metrics |
-| Neural networks | MLP/BNN/VAE/RNN primitives, a separable Hamiltonian MLP, dense MLP linear/`tanh`/ReLU/GELU/SiLU/ELU/softplus/leaky-ReLU products, deterministic MLP Adam/AdamW/Adagrad/RMSprop/SGD training, a bounded full-batch MLP L-BFGS-B path, and an in-memory resumable optimizer checkpoint exist | A production module/parameter tree, the remaining activation/loss/module catalog, convolution/attention/sequence/graph extensions, mixed precision, distributed training, compile/fusion, and serialized/distributed trainers |
+| Neural networks | MLP/BNN/VAE/RNN primitives, a separable Hamiltonian MLP, a named sequential `mlp_chain_t` parameter tree, dense MLP linear/`tanh`/ReLU/GELU/SiLU/ELU/softplus/leaky-ReLU products, deterministic MLP Adam/AdamW/Adagrad/RMSprop/SGD training, bounded full-batch MLP and composed-chain L-BFGS-B paths, and in-memory resumable optimizer checkpoints exist | Alias-aware module/buffer tree, the remaining activation/loss/module catalog, convolution/attention/sequence/graph extensions, mixed precision, distributed training, compile/fusion, and serialized/distributed trainers |
 | Gaussian processes | Exact, derivative, sparse, structured and local variants are partial-to-implemented. Exact fitted GPs and binary/shared-kernel one-vs-rest Laplace classifiers have bounded FortOpt L-BFGS-B adapters | GPyTorch/GPflow-style kernels, likelihoods, multitask/batch shapes, exact/variational/lazy inference, derivative operators, constraints, calibration, coupled multiclass GP classification, evidence-corrected and likelihood-parameter training |
 | Derivatives | Exact GP and selected neural/kernel products exist | Value/JVP/VJP/HVP and implicit/hypergradients for every declared parameter/input path, including preprocessing, likelihood, optimizer/search variables, and device kernels |
 | Model selection and metrics | Benchmark-specific checks exist | Shared metrics, splitters, cross-validation, calibration, grid/random/Bayesian/differentiable search, nested validation, and leakage/refusal checks |
@@ -261,9 +261,14 @@ when a lower-level primitive already exists.
 - [x] Dense MLP, classifier, BNN, VAE, vanilla RNN, and separable Hamiltonian
   MLP primitives with selected value/JVP/VJP/HVP products and deterministic
   checkpointable Adam, AdamW, Adagrad, RMSprop, and SGD training.
-- [ ] A general module tree with explicit parameter/state buffers, named
-  submodules, cloning, freezing, tied weights, parameter groups, buffers,
-  hooks, train/eval modes, and a stable flat-registry projection.
+- [x] Add the first production module-tree slice: `fortml_mlp_chain` owns
+  named sequential `mlp_t` children, validates interface widths, exposes stable
+  stage parameter ranges, and routes exact composed value/JVP/VJP/HVP products
+  through one flat parameter vector. `mlp_chain_objective_t` and its bounded
+  FortOpt L-BFGS-B adapter consume the same all-stage gradient and optional L2
+  hyperparameter block. The broader tree contract (buffers, cloning, freezing,
+  tied weights, parameter groups, hooks, train/eval modes, and resident GPU
+  lowering) remains open.
 - [ ] Convolution, transposed convolution, pooling, normalization, dropout,
   embeddings, attention, transformers, residual blocks, recurrent LSTM/GRU,
   temporal convolutions, graph message passing, and neural operators.
@@ -1033,9 +1038,12 @@ trials remain visible in the result schema.
   facade. Huber has a continuous first derivative at its transition; quantile
   JVP/VJP products refuse exact zero residuals. Independent formula,
   finite-difference, adjoint, and kink-refusal tests cover both products.
-- [ ] Define a module tree and parameter-tree API for nested neural networks.
-  Parameters, buffers, frozen blocks, tied/shared weights, masks, and stateful
-  layers have stable paths and can be flattened without losing aliases.
+- [x] Define a sequential nested-MLP parameter-tree seam with stable named
+  stage paths, contiguous offsets, exact chain-rule products, and an analytic
+  FortOpt L-BFGS-B objective. Independent JVP finite-difference, VJP adjoint,
+  HVP differentiated-VJP, optimizer, and CUDA-refusal tests cover the current
+  scope. Buffers, frozen/tied blocks, masks, stateful layers, and alias-aware
+  flattening remain open extensions of the general tree.
 - [ ] Add common neural losses and metrics: MSE/MAE/Huber/quantile,
   cross-entropy and focal losses, multilabel and ordinal losses, Gaussian and
   count likelihoods, contrastive and triplet losses, KL terms, and sequence
