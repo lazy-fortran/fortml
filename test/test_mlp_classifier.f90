@@ -10,7 +10,7 @@ program test_mlp_classifier
     type(mlp_classifier_options_t) :: options
     type(mlp_classifier_state_t) :: first_state, second_state
     type(fortnum_status_t) :: status
-    real(dp) :: x(6, 3), probabilities(6, 3), scores(6, 3)
+    real(dp) :: x(6, 3), probabilities(6, 3), scores(6, 3), wrong_scores(6, 2)
     real(dp), allocatable :: theta(:), gradient(:), plus_gradient(:)
     real(dp) :: value, plus, minus, h
     integer :: labels(6), predicted(6), predicted_second(6), classes(3), failures
@@ -52,6 +52,8 @@ program test_mlp_classifier
         "probability normalization", failures)
     call check(count(predicted == labels) >= 5, "classification behavior", failures)
     call check(any(abs(scores) > 1.0e-12_dp), "nonconstant logits", failures)
+    call first_model%decision_function(x, wrong_scores, status)
+    call check(.not. status_ok(status), "decision shape refusal", failures)
 
     theta = first_model%parameters()
     allocate(gradient(size(theta)), plus_gradient(size(theta)))
@@ -81,6 +83,8 @@ program test_mlp_classifier
 
     call first_model%fit(x, [1, 1, 1, 1, 1, 1], status, options=options)
     call check(.not. status_ok(status), "one-class refusal", failures)
+    call first_model%fit(x, labels(:5), status, options=options)
+    call check(.not. status_ok(status), "label/sample shape refusal", failures)
     call first_model%fit(x, labels, status, hidden_layer_sizes=[0], options=options)
     call check(.not. status_ok(status), "invalid hidden width refusal", failures)
 
