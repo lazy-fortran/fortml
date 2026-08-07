@@ -11,6 +11,9 @@ program fortml_bench_features
     use fortml_basis, only: basis_map_t, make_polynomial_basis, &
         make_fourier_basis
     use fortml_pipeline, only: basis_pipeline_t, make_basis_pipeline
+    use fortml_regression_metrics, only: regression_mean_squared_error, &
+        regression_mean_absolute_error, regression_r2_score, &
+        regression_mean_pinball_loss
     use fortml_tree, only: decision_stump_t, gradient_boosting_regressor_t, &
         cart_regressor_t
     use fortnum_status, only: fortnum_status_t, status_ok
@@ -19,6 +22,7 @@ program fortml_bench_features
     call benchmark_mlp_training()
     call benchmark_basis_pipeline()
     call benchmark_tree_models()
+    call benchmark_regression_metrics()
 
 contains
 
@@ -279,5 +283,46 @@ contains
             "boosting,", n_samples, ",", n_features, ",", n_estimators, ",", &
             elapsed_fit, ",", elapsed_predict, ",", mse, ",", sum(prediction)
     end subroutine benchmark_tree_models
+
+    subroutine benchmark_regression_metrics()
+        integer, parameter :: n_samples = 128, n_outputs = 2, repetitions = 64
+        real(dp) :: target(n_samples, n_outputs), prediction(n_samples, n_outputs)
+        real(dp) :: mse, mae, r2, pinball, elapsed
+        integer(int64) :: clock_start, clock_end, clock_rate
+        integer :: i, repetition
+        type(fortnum_status_t) :: status
+
+        do i = 1, n_samples
+            target(i, 1) = sin(0.03_dp*real(i, dp))
+            target(i, 2) = cos(0.05_dp*real(i, dp))
+            prediction(i, 1) = target(i, 1) + 0.1_dp*cos(0.07_dp*real(i, dp))
+            prediction(i, 2) = target(i, 2) - 0.07_dp*sin(0.09_dp*real(i, dp))
+        end do
+        call regression_mean_squared_error(target, prediction, mse, status)
+        if (.not. status_ok(status)) error stop "MSE metric benchmark failed"
+        call regression_mean_absolute_error(target, prediction, mae, status)
+        if (.not. status_ok(status)) error stop "MAE metric benchmark failed"
+        call regression_r2_score(target, prediction, r2, status)
+        if (.not. status_ok(status)) error stop "R2 metric benchmark failed"
+        call regression_mean_pinball_loss(target, prediction, 0.25_dp, pinball, &
+            status)
+        if (.not. status_ok(status)) error stop "pinball metric benchmark failed"
+
+        call system_clock(clock_start, clock_rate)
+        do repetition = 1, repetitions
+            call regression_mean_squared_error(target, prediction, mse, status)
+            call regression_mean_absolute_error(target, prediction, mae, status)
+            call regression_r2_score(target, prediction, r2, status)
+            call regression_mean_pinball_loss(target, prediction, 0.25_dp, pinball, &
+                status)
+            if (.not. status_ok(status)) error stop "metric timing failed"
+        end do
+        call system_clock(clock_end)
+        elapsed = real(clock_end - clock_start, dp)/real(clock_rate, dp) &
+            /real(repetitions, dp)
+        write (*, '(a,i0,a,i0,a,es24.16,a,es24.16,a,es24.16,a,es24.16,a,es24.16)') &
+            "regression_metrics,", n_samples, ",", n_outputs, ",", elapsed, &
+            ",", mse, ",", mae, ",", r2, ",", pinball
+    end subroutine benchmark_regression_metrics
 
 end program fortml_bench_features
