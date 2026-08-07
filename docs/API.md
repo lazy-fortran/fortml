@@ -268,6 +268,25 @@ probabilities. Negative/nonfinite counts, nonpositive smoothing, malformed
 packs, nonpositive effective class mass, unfitted models, and nonfinite query
 inputs are refused.
 
+### `fortml_categorical_naive_bayes`
+
+`categorical_naive_bayes_t%fit(x,labels,status[,alpha,priors,sample_weight,
+class_weight,handle_unknown])` fits CategoricalNB on integer category codes.
+Categories are sorted independently per feature and exposed through packed
+`category_values` and one-based `category_offsets` metadata. Positive additive
+smoothing, nonnegative sample weights, positive sorted-class weights, and
+explicit normalized priors follow the same conventions as the other Naive
+Bayes estimators. Unknown query categories raise a domain error by default;
+`handle_unknown=.true.` skips their likelihood contribution.
+
+`predict_log_proba`, `predict_proba`, and `predict` use stable normalization
+and deterministic first-class ties. `classes`, `category_count`,
+`category_values`, `category_offsets`, `class_prior`,
+`weighted_class_counts`, `alpha_value`, `parameter_count`, and `fitted` expose
+the fitted state. Category lookup is discrete, so `predict_proba_jvp` returns
+an explicit `FORTNUM_NOT_IMPLEMENTED` status rather than a hidden finite
+difference.
+
 ### `fortml_classification_metrics`
 
 The shared metric procedures keep arbitrary integer labels and an explicit

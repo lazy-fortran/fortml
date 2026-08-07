@@ -9,12 +9,12 @@ and implementation limits in [`docs/DESIGN.md`](docs/DESIGN.md) and
 
 | Compiler | Command | Result |
 | --- | --- | --- |
-| GNU Fortran | `fo` | Static, build, and lint checks passed. The fresh 2026-08-07 run passed all 71 tests. See [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
-| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded compiler lane. The checked-in NVIDIA log predates the latest 71-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
+| GNU Fortran | `fo` | Static, build, and lint checks passed. The fresh 2026-08-07 run passed all 72 tests. See [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
+| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded compiler lane. The checked-in NVIDIA log predates the latest 72-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
 The checked-in compiler logs above are older compiler snapshots. A fresh GNU
-Fortran `fo` run on 2026-08-07 passed static analysis, the build, all 71 tests,
+Fortran `fo` run on 2026-08-07 passed static analysis, the build, all 72 tests,
 and lint. The fresh run includes implementation work whose compiler logs have
 not yet replaced those snapshots. NVIDIA compiler coverage therefore remains
 an explicit older-build result.
@@ -1090,6 +1090,8 @@ peak memory, and batch-size scaling with the same correctness gate as training.
   refusals, and parseable unavailable FortML release-target rows. The release
   records are [`results/COMPLEMENT_NB.md`](../fortml-bench/results/COMPLEMENT_NB.md)
   and [`results/ONE_HOT_ENCODER.md`](../fortml-bench/results/ONE_HOT_ENCODER.md).
+- [x] Add a CategoricalNB release app and independent category-count oracle;
+  the report is [`results/CATEGORICAL_NB.md`](../fortml-bench/results/CATEGORICAL_NB.md).
 - [x] Add AdamW training and fixed full-batch MLP hypergradient lanes with
   independent NumPy recurrences/finite differences, passing FortML release apps,
   explicit CPU-only and CUDA refusal rows, and clean revision provenance. The release record is
