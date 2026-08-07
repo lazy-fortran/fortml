@@ -124,6 +124,7 @@ eight-activation oracle, and repeated resident-batch evidence.
 | `mlp_t` | `predict` | Parameters and inputs | Parameters and inputs | Weighted-output HVP |
 | `mlp_classifier_t` | Logits, probabilities, and labels | Parameter/input JVP, probability JVP | Parameter/input VJP, probability VJP | No |
 | `mlp_binary_classifier_t` | One-logit sigmoid probabilities and binary labels | Parameter/input JVP, probability JVP | Parameter/input VJP, probability VJP; weighted BCE gradient | Exact weighted BCE parameter HVP |
+| `mlp_multilabel_classifier_t` | Independent sigmoid probabilities and indicator labels | Packed parameter/input JVP, probability JVP | Packed parameter/input VJP, probability VJP; mean BCE gradient | Exact mean BCE parameter HVP |
 | `mlp_chain_t` | Sequential composition of named MLP stages | Packed all-stage parameters and inputs | Packed all-stage parameters and inputs | Differentiated reverse chain rule for parameters and inputs |
 | `mlp_training_objective_t` | MSE+L2 scalar objective | Packed network/L2 JVP | Packed network/L2 gradient and scalar VJP | Joint network/L2 HVP |
 | `mlp_grouped_training_objective_t` | MSE with one positive log-L2 coefficient per named parameter range | Packed network/log-L2 JVP | Packed network/log-L2 gradient and scalar VJP | Exact mixed network/log-L2 HVP |
@@ -1623,6 +1624,32 @@ selected CPU context; selected CUDA contexts return
 The independent `test_mlp_binary_classifier` oracle checks fit behavior,
 finite-difference JVP/gradient/HVP products, VJP duality, deterministic Adam,
 and the typed CUDA refusal.
+
+### `fortml_mlp_multilabel_classifier`
+
+`mlp_multilabel_classifier_t%fit(x,targets,status[,hidden_layer_sizes,options,
+state,sample_weight,class_weight])` composes one deterministic binary MLP head
+per target column. Targets are finite zero/one indicators with shape
+`(n_samples,n_labels)`. The options mirror the binary head's Adam, minibatch,
+shuffling, early-stopping, activation, and L2 controls. `class_weight`, when
+present, has shape `(2,n_labels)` in negative/positive order and
+`sample_weight` is shared across heads.
+
+`decision_function` returns one logit column per label, `predict_proba` returns
+the independent positive sigmoid probabilities, and `predict` returns an
+integer indicator matrix using each head's nonnegative-logit tie rule.
+`label_count`, `feature_count`, `parameter_count`, `parameters`,
+`set_parameters`, and `fitted` expose the packed state. Head parameter blocks
+are concatenated in label order. `loss_gradient` and `loss_hvp` return the
+mean over labels of the per-head BCE+L2 value and exact packed products.
+
+`decision_function_jvp`/`decision_function_vjp` and
+`predict_proba_jvp`/`predict_proba_vjp` are exact products with respect to the
+packed head parameters and continuous input rows. CPU device dispatch is
+exact; selected CUDA contexts return `FORTNUM_NOT_IMPLEMENTED` until a
+resident multi-head MLP graph is linked. The independent
+`test_mlp_multilabel_classifier` oracle checks finite-difference JVP/HVP
+products, VJP duality, indicator validation, and the typed CUDA refusal.
 
 ### `fortml_tree`
 

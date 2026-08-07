@@ -103,9 +103,16 @@ only listed as gaps:
   remain open.
 - `mlp_binary_classifier_t` adds a one-logit sigmoid head with weighted BCE,
   deterministic Adam minibatches, early stopping, packed input/parameter
-  JVP/VJP products, exact loss HVPs, and an explicit CUDA refusal. Multilabel,
-  ordinal, calibrated, and resident-GPU neural heads remain separate contracts.
+  JVP/VJP products, exact loss HVPs, and an explicit CUDA refusal. The composed
+  `mlp_multilabel_classifier_t` now provides one such head per indicator column,
+  mean-reduced packed loss products, and the same typed CUDA refusal. Ordinal,
+  calibrated, and resident-GPU neural heads remain separate contracts.
   The release evidence is `results/MLP_BINARY_CLASSIFIER.md` in `fortml-bench`.
+- The multilabel MLP wrapper validates indicator targets, exposes concatenated
+  parameter/input JVP/VJP products and exact mean-reduced loss HVPs, and keeps
+  head fitting deterministic. Its independent finite-difference/adjoint test
+  is `test_mlp_multilabel_classifier`; release evidence is
+  `results/MLP_MULTILABEL_CLASSIFIER.md` in `fortml-bench`.
 - Exact GP regression accepts zero, constant, and linear mean templates. Mean
   coefficients are packed per output after kernel and log-noise parameters, and
   prediction and likelihood products include their analytic JVP/VJP/HVP terms.
