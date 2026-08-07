@@ -2,7 +2,7 @@
 
 `fortml_device` is the explicit control-plane boundary for accelerator-aware
 models and operators. It describes the selected backend and records data-region
-metadata; it does not allocate buffers, launch kernels, or silently move an
+metadata. It does not allocate buffers, launch kernels, or silently move an
 array to the host.
 
 ## Select and query a backend
@@ -29,7 +29,7 @@ end if
 `FORTML_DEVICE_CPU` is always available. CUDA is available only when the
 current build supplies at least one of FortML's CUDA kernel entry points. The
 default Fortran build links the CUDA stubs, so a CUDA request returns
-`FORTNUM_NOT_IMPLEMENTED`; this is a recoverable refusal, not a host fallback.
+`FORTNUM_NOT_IMPLEMENTED`. This is a recoverable refusal, not a host fallback.
 `fortml_query_device` and `fortml_device_available` expose the same runtime
 probe without changing a context. An invalid kind returns
 `FORTNUM_DOMAIN_ERROR`.
@@ -64,7 +64,7 @@ prevents a CPU timing from being reported as a GPU transfer. The counters are
 
 The accounting object is deliberately separate from an operator's data
 ownership. `owns_residency=.true.` means that the caller registered ownership
-for reporting; `fortml_device` still never deallocates the operator's arrays.
+for reporting. `fortml_device` still never deallocates the operator's arrays.
 Call `end_residency` before `clear` or backend selection. Repeated create,
 register, and destroy cycles therefore remain observable and recoverable.
 
@@ -106,7 +106,7 @@ API in `src/mlp/fortml_cuda_adamw.cu` (declarations are in
 `src/mlp/fortml_cuda_adamw.h`). `fortml_cuda_adamw_plan_create` selects an
 explicit nonnegative CUDA device and copies the initial parameters and moment
 state to that device. `fortml_cuda_adamw_plan_step` requires a gradient pointer
-that is already resident on the selected device; it performs the bias-corrected
+that is already resident on the selected device. It performs the bias-corrected
 first/second-moment update and decoupled weight decay without a hidden host
 copy. `plan_download` is the explicit inspection/checkpoint boundary and
 `plan_destroy` releases the resident state. `test/run_cuda_adamw_state.sh`
@@ -127,7 +127,7 @@ copies them explicitly to a temporary allocation on the selected device, and
 performs the squared-error and block reduction in
 `src/validation/fortml_cuda_metrics.cu`. The block partials are copied back
 for the final scalar accumulation, and the wrapper records the exact transfer
-bytes/events; there is no hidden CPU metric fallback. `fortml_cuda_mse_available()` and
+bytes/events. There is no hidden CPU metric fallback. `fortml_cuda_mse_available()` and
 `fortml_device` capability probing report whether the native object is linked.
 The ordinary Fortran build therefore gives a typed `FORTNUM_NOT_IMPLEMENTED`
 refusal, while `test/run_cuda_metric.sh` builds the CUDA object with `nvcc`
@@ -139,9 +139,9 @@ that a complete estimator or trainer is resident.
 
 The C ABI in `src/validation/fortml_cuda_mse_plan.h` provides the resident
 no-autodiff counterpart. `fortml_cuda_mse_plan_create` uploads target,
-prediction, and optional row weights once; repeated
+prediction, and optional row weights once. Repeated
 `fortml_cuda_mse_plan_execute` calls keep those arrays and the reduction
-workspace on the selected device; and `fortml_cuda_mse_plan_destroy` releases
+workspace on the selected device. `fortml_cuda_mse_plan_destroy` releases
 them. Only block partials and the final scalar cross the device boundary per
 execute. `test/run_cuda_mse_plan.sh` checks five executions and invalid-size
 refusal against an independent CPU oracle. This fixed reduction primitive does
@@ -170,13 +170,13 @@ and sequential pipeline HVP methods: the analytic CPU products are tested by
 finite-difference-of-VJP oracles, but no CUDA derivative kernel is claimed.
 `basis_linear_regression_t%static_lowering_eligible()` reports only whether
 its fitted feature pipeline can be statically lowered (and is false for
-callback stages); it does not claim a resident GPU solve or prediction path.
+callback stages). It does not claim a resident GPU solve or prediction path.
 Until a resident linear-regression kernel exists, accelerator requests for
 the composed estimator remain an explicit device refusal rather than a hidden
 host fallback.
 Random-forest prediction is a fixed, piecewise tree route. Its
 `random_forest_cuda_plan_t` now exposes ABI version 1 and shape/device metadata
-as a no-autodiff native-CUDA planning boundary; create and prediction still
+as a no-autodiff native-CUDA planning boundary. Create and prediction still
 return typed refusals until a resident-state kernel and oracle are linked.
 CUDA requests therefore remain refusals rather than OpenACC host fallbacks.
 
@@ -185,7 +185,7 @@ The mixed value/first-derivative GP has the same explicit boundary. Its
 contexts to the reference covariance solve and returns
 `FORTNUM_NOT_IMPLEMENTED` for CUDA until covariance assembly, factorization,
 and derivative-query products are resident on the device. The companion
-`device_supported` query reports this distinction; derivative parameter and
+`device_supported` query reports this distinction. Derivative parameter and
 query-input JVP/VJP methods are not presented as GPU-capable by the CPU-only
 build. `test_derivative_gp_device` verifies that CUDA refusal leaves output
 buffers untouched and that CPU dispatch agrees with the ordinary prediction
