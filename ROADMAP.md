@@ -1097,11 +1097,12 @@ trials remain visible in the result schema.
   HVP differentiated-VJP, optimizer, and CUDA-refusal tests cover the current
   scope. Buffers, frozen/tied blocks, masks, stateful layers, and alias-aware
   flattening remain open extensions of the general tree.
-- [ ] Add common neural losses and metrics: MSE/MAE/Huber/quantile,
-  cross-entropy and focal losses, multilabel and ordinal losses, Gaussian and
-  count likelihoods, contrastive and triplet losses, KL terms, and sequence
-  masking. Every loss has explicit reduction, weighting, logits/probability,
-  and empty-batch semantics.
+- [ ] Add the remaining common neural losses and metrics: multilabel and
+  ordinal losses, Gaussian and count likelihoods, contrastive and triplet
+  losses, KL terms, and sequence masking. MSE/MAE/Huber/quantile, binary and
+  softmax cross-entropy, and focal BCE are implemented with explicit
+  reduction/weighting contracts; the remaining families still need the same
+  logits/probability and empty-batch semantics.
 - [x] Add a deterministic batch iterator with seeded shuffling and final-batch
   behavior. Separate training and validation streams remain open.
 - [ ] Add a trainer that owns optimizer state, learning-rate schedules, gradient

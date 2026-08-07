@@ -59,6 +59,7 @@ not supplied through a hidden generic interface.
 | `linear_regression_t` | `predict` | Free `linear_predict_jvp` | Free `linear_predict_vjp` | No |
 | `ridge_regression_t` | Weighted `predict` | Packed-parameter and continuous-input JVP | Packed-parameter and continuous-input VJP | No |
 | `elastic_net_regression_t` | Weighted `predict` | Packed-parameter and continuous-input JVP | Packed-parameter and continuous-input VJP | No |
+| `linear_svr_regression_t` | Weighted epsilon-insensitive `predict` | Packed-parameter and continuous-input JVP | Packed-parameter and continuous-input VJP; objective value/gradient | No |
 | `glm_regression_t` | Weighted positive-response Poisson/Gamma log-link `predict` | Packed-parameter and continuous-input JVP | Packed-parameter and continuous-input VJP; value/gradient objective | No |
 | `pca_t` | Centered projection and reconstruction | Input JVP for a fixed fitted state | Input VJP for a fixed fitted state | Fit-time SVD derivatives are not exposed |
 | `logistic_regression_t` | Decision score and probabilities | Parameter/input JVP, probability JVP | Parameter/input VJP, probability VJP | No |
@@ -1157,6 +1158,15 @@ have no resident CUDA optimizer lowering yet, so they must not be timed as GPU
 workloads or used to imply device-resident trajectory hypergradients.
 See [`docs/MLP_SCHEDULES.md`](MLP_SCHEDULES.md) for constructors and a
 callback adapter.
+
+`mlp_training_options_t%event_callback` installs a typed
+`mlp_training_event_proc` callback for `train_begin`, `update`, `validation`,
+`epoch_end`, `checkpoint`, and `train_end` events. Each event carries the
+epoch/update counters and current loss, validation loss, gradient norm, and
+learning rate. The callback can request an early stop or return a non-success
+status; callback failures propagate from `mlp_train` without being swallowed.
+The callback receives caller-owned scalar data and is not serialized in an
+in-memory checkpoint.
 
 ### `fortml_mlp_hypergradient`
 
