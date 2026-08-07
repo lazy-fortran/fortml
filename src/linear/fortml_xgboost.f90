@@ -16,6 +16,7 @@ module fortml_xgboost
     integer, parameter, public :: XGB_OBJECTIVE_HUBER = 4
     integer, parameter, public :: XGB_OBJECTIVE_QUANTILE = 5
     integer, parameter, public :: XGB_OBJECTIVE_SQUARED_LOG = 6
+    integer, parameter, public :: XGB_OBJECTIVE_RANK_PAIRWISE = 7
     integer, parameter, public :: XGB_MISSING_ERROR = 0
     integer, parameter, public :: XGB_MISSING_LEARN = 1
     integer, parameter, public :: XGB_MISSING_LEFT = 2
@@ -26,6 +27,8 @@ module fortml_xgboost
         "FORTML_XGBOOST_TEXT"
     integer, parameter, public :: XGB_MODEL_TEXT_SCHEMA_VERSION = 1
     integer, parameter :: XGB_MAX_SERIALIZED_NODES = 1000000
+
+    public :: xgb_pairwise_loss, xgb_pairwise_derivatives
 
     !> Options for the deterministic exact- or histogram-split
     !> XGBoost-style estimator.
@@ -142,6 +145,7 @@ module fortml_xgboost
         procedure, public :: fit_huber => xgb_fit_huber
         procedure, public :: fit_quantile => xgb_fit_quantile
         procedure, public :: fit_squared_log => xgb_fit_squared_log
+        procedure, public :: fit_ranking => xgb_fit_ranking
         procedure, public :: predict_matrix => xgb_predict_matrix
         procedure, public :: predict_vector => xgb_predict_vector
         generic, public :: predict => predict_matrix, predict_vector
@@ -189,8 +193,33 @@ module fortml_xgboost
 
 contains
 
+    !> Fit the `rank:pairwise` objective using integer query/group IDs.
+    !! Rows sharing one ID form one ranking query; pairs from different
+    !! queries never contribute to the gradient, Hessian, or validation loss.
+    !! The fitted model predicts raw ranking margins (there is no probability
+    !! link).  Optional sample weights use the smaller weight of each pair.
+    subroutine xgb_fit_ranking(self, x, y, group, status, options, sample_weight, &
+            validation_x, validation_y, validation_group, validation_weight)
+        class(xgboost_t), intent(out) :: self
+        real(dp), intent(in) :: x(:, :), y(:)
+        integer, intent(in) :: group(:)
+        type(fortnum_status_t), intent(out) :: status
+        type(xgboost_options_t), intent(in), optional :: options
+        real(dp), intent(in), optional :: sample_weight(:)
+        real(dp), intent(in), optional :: validation_x(:, :), validation_y(:)
+        integer, intent(in), optional :: validation_group(:)
+        real(dp), intent(in), optional :: validation_weight(:)
+        type(xgboost_options_t) :: settings
+
+        settings = xgboost_options_t()
+        if (present(options)) settings = options
+        settings%objective = "rank:pairwise"
+        call xgb_fit(self, x, y, status, settings, sample_weight, &
+            validation_x, validation_y, validation_weight, group, validation_group)
+    end subroutine xgb_fit_ranking
+
     subroutine xgb_fit(self, x, y, status, options, sample_weight, &
-            validation_x, validation_y, validation_weight)
+            validation_x, validation_y, validation_weight, group, validation_group)
         class(xgboost_t), intent(out) :: self
         real(dp), intent(in) :: x(:, :), y(:)
         type(fortnum_status_t), intent(out) :: status
@@ -198,6 +227,7 @@ contains
         real(dp), intent(in), optional :: sample_weight(:)
         real(dp), intent(in), optional :: validation_x(:, :), validation_y(:), &
             validation_weight(:)
+        integer, intent(in), optional :: group(:), validation_group(:)
         type(xgboost_options_t) :: settings
         real(dp), allocatable :: prediction(:), gradient(:), hessian(:)
         real(dp), allocatable :: correction(:)
@@ -213,7 +243,7 @@ contains
         integer(int64) :: sampling_state
         integer, allocatable :: sample_index(:)
         logical, allocatable :: feature_mask(:)
-        logical :: have_validation, improved
+        logical :: have_validation, improved, is_ranking
 
         settings = xgboost_options_t()
         if (present(options)) settings = options
@@ -243,6 +273,27 @@ contains
                 "xgboost fit: unsupported objective")
             return
         end if
+        is_ranking = objective_code == XGB_OBJECTIVE_RANK_PAIRWISE
+        if (is_ranking .neqv. present(group)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost fit: rank:pairwise requires group IDs and other objectives reject them")
+            return
+        end if
+        if (present(validation_group) .and. .not. is_ranking) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost fit: validation group IDs are only valid for rank:pairwise")
+            return
+        end if
+        if (is_ranking .and. have_validation .and. .not. present(validation_group)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost fit: ranking validation data requires validation group IDs")
+            return
+        end if
+        if (is_ranking .and. .not. valid_group_ids(group, size(y))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost fit: group IDs must be positive and match the target length")
+            return
+        end if
         missing_code = parse_missing_policy(settings%missing_policy)
         if (missing_code < XGB_MISSING_ERROR) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -264,6 +315,11 @@ contains
                 size(validation_y) /= n_validation) then
                 call status_set(status, FORTNUM_DOMAIN_ERROR, &
                     "xgboost fit: validation dimensions do not match training features")
+                return
+            end if
+            if (is_ranking .and. .not. valid_group_ids(validation_group, n_validation)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "xgboost fit: validation group IDs must be positive and match validation targets")
                 return
             end if
         else
@@ -428,7 +484,11 @@ contains
                 "xgboost fit: weighted target mean is nonfinite")
             return
         end if
-        if (objective_code == XGB_OBJECTIVE_LOGISTIC) then
+        if (objective_code == XGB_OBJECTIVE_RANK_PAIRWISE) then
+            ! Pairwise ranking is invariant to an additive margin shift.  A
+            ! zero link intercept keeps the initial pair margins exactly zero.
+            self%base_score = 0.0_dp
+        else if (objective_code == XGB_OBJECTIVE_LOGISTIC) then
             self%base_score = stable_logit(mean_target)
         else if (objective_code == XGB_OBJECTIVE_POISSON) then
             self%base_score = stable_log_rate(mean_target)
@@ -467,10 +527,13 @@ contains
         sampling_state = settings%seed
         do i = 1, settings%n_estimators
             call objective_derivatives(objective_code, prediction, y, gradient, &
-                hessian, settings%huber_delta, settings%quantile_alpha, status)
+                hessian, settings%huber_delta, settings%quantile_alpha, status, &
+                group, observation_weight)
             if (status%code /= FORTNUM_OK) return
-            gradient = observation_weight*gradient
-            hessian = observation_weight*hessian
+            if (.not. is_ranking) then
+                gradient = observation_weight*gradient
+                hessian = observation_weight*hessian
+            end if
             call sample_training_rows(n_samples, settings%subsample, sampling_state, &
                 sample_index)
             call sample_training_features(n_features, settings%colsample_bytree, &
@@ -489,7 +552,7 @@ contains
                 validation_prediction = validation_prediction + rate*validation_correction
                 call xgb_objective_loss(objective_code, validation_prediction, &
                     validation_y, validation_observation_weight, settings%huber_delta, &
-                    settings%quantile_alpha, validation_loss, status)
+                    settings%quantile_alpha, validation_loss, status, validation_group)
                 if (status%code /= FORTNUM_OK) return
                 improved = validation_loss < best_validation_loss - &
                     settings%early_stopping_min_delta
@@ -1458,6 +1521,8 @@ contains
             name = "quantile"
         case (XGB_OBJECTIVE_SQUARED_LOG)
             name = "squaredlog"
+        case (XGB_OBJECTIVE_RANK_PAIRWISE)
+            name = "rank:pairwise"
         case default
             name = "unfitted"
         end select
@@ -1878,7 +1943,7 @@ contains
         valid = model%n_inputs >= 1 .and. model%n_estimators >= 1 .and. &
             model%requested_estimators >= model%n_estimators .and. &
             model%objective_code >= XGB_OBJECTIVE_SQUARED .and. &
-            model%objective_code <= XGB_OBJECTIVE_SQUARED_LOG .and. &
+            model%objective_code <= XGB_OBJECTIVE_RANK_PAIRWISE .and. &
             (model%tree_method_code == XGB_TREE_EXACT .or. &
              model%tree_method_code == XGB_TREE_HIST) .and. &
             model%max_bin >= 2 .and. model%max_depth_value >= 1 .and. &
@@ -2087,8 +2152,147 @@ contains
         call move_alloc(retained, self%estimators)
     end subroutine retain_xgb_estimators
 
+    !> Evaluate the normalized pairwise logistic ranking loss.
+    !! Only pairs with equal query IDs and unequal labels contribute.  For a
+    !! preferred row `i` over `j`, the term is
+    !! `log(1 + exp(-(margin_i-margin_j)))`; pair weights are the smaller of
+    !! the two optional observation weights.
+    subroutine xgb_pairwise_loss(margin, target, group, loss, status, weights)
+        real(dp), intent(in) :: margin(:), target(:)
+        integer, intent(in) :: group(:)
+        real(dp), intent(out) :: loss
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: weights(:)
+        real(dp) :: weight_i, weight_j, pair_weight, delta, term, weight_sum
+        integer :: i, j, pair_count
+
+        loss = huge(1.0_dp)
+        if (.not. valid_pairwise_arrays(margin, target, group, weights)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost pairwise loss: invalid arrays or weights")
+            return
+        end if
+        term = 0.0_dp
+        weight_sum = 0.0_dp
+        pair_count = 0
+        do i = 1, size(target) - 1
+            do j = i + 1, size(target)
+                if (group(i) /= group(j) .or. target(i) == target(j)) cycle
+                pair_count = pair_count + 1
+                if (present(weights)) then
+                    weight_i = weights(i)
+                    weight_j = weights(j)
+                else
+                    weight_i = 1.0_dp
+                    weight_j = 1.0_dp
+                end if
+                pair_weight = min(weight_i, weight_j)
+                if (target(i) > target(j)) then
+                    delta = margin(i) - margin(j)
+                else
+                    delta = margin(j) - margin(i)
+                end if
+                if (delta >= 0.0_dp) then
+                    term = term + pair_weight*log(1.0_dp + exp(-delta))
+                else
+                    term = term + pair_weight*(-delta + log(1.0_dp + exp(delta)))
+                end if
+                weight_sum = weight_sum + pair_weight
+            end do
+        end do
+        if (pair_count < 1 .or. .not. ieee_is_finite(weight_sum) .or. &
+            weight_sum <= 0.0_dp .or. .not. ieee_is_finite(term)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost pairwise loss: every query needs an unequal-label pair")
+            return
+        end if
+        loss = term/weight_sum
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine xgb_pairwise_loss
+
+    !> Return unnormalised pairwise gradients and positive Hessians suitable
+    !! for the XGBoost tree gain formula.  The gradient/Hessian sums use the
+    !! same pair weights as `xgb_pairwise_loss`.
+    subroutine xgb_pairwise_derivatives(margin, target, group, gradient, hessian, &
+            status, weights)
+        real(dp), intent(in) :: margin(:), target(:)
+        integer, intent(in) :: group(:)
+        real(dp), intent(out) :: gradient(:), hessian(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: weights(:)
+        real(dp), parameter :: minimum_hessian = 1.0e-12_dp
+        real(dp) :: weight_i, weight_j, pair_weight, delta, probability
+        integer :: i, j, high, low, pair_count
+
+        gradient = 0.0_dp
+        hessian = 0.0_dp
+        if (size(gradient) /= size(margin) .or. size(hessian) /= size(margin) .or. &
+            .not. valid_pairwise_arrays(margin, target, group, weights)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost pairwise derivatives: invalid arrays or weights")
+            return
+        end if
+        pair_count = 0
+        do i = 1, size(target) - 1
+            do j = i + 1, size(target)
+                if (group(i) /= group(j) .or. target(i) == target(j)) cycle
+                pair_count = pair_count + 1
+                if (target(i) > target(j)) then
+                    high = i
+                    low = j
+                else
+                    high = j
+                    low = i
+                end if
+                if (present(weights)) then
+                    weight_i = weights(i)
+                    weight_j = weights(j)
+                else
+                    weight_i = 1.0_dp
+                    weight_j = 1.0_dp
+                end if
+                pair_weight = min(weight_i, weight_j)
+                delta = margin(high) - margin(low)
+                if (delta >= 0.0_dp) then
+                    probability = exp(-delta)/(1.0_dp + exp(-delta))
+                else
+                    probability = 1.0_dp/(1.0_dp + exp(delta))
+                end if
+                gradient(high) = gradient(high) - pair_weight*probability
+                gradient(low) = gradient(low) + pair_weight*probability
+                hessian(high) = hessian(high) + pair_weight*max( &
+                    probability*(1.0_dp - probability), minimum_hessian)
+                hessian(low) = hessian(low) + pair_weight*max( &
+                    probability*(1.0_dp - probability), minimum_hessian)
+            end do
+        end do
+        if (pair_count < 1 .or. any(.not. ieee_is_finite(gradient)) .or. &
+            any(.not. ieee_is_finite(hessian))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost pairwise derivatives: every query needs an unequal-label pair")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine xgb_pairwise_derivatives
+
+    logical function valid_pairwise_arrays(margin, target, group, weights) result(valid)
+        real(dp), intent(in) :: margin(:), target(:)
+        integer, intent(in) :: group(:)
+        real(dp), intent(in), optional :: weights(:)
+
+        valid = size(margin) >= 2 .and. size(target) == size(margin) .and. &
+            size(group) == size(margin) .and. any(group > 0) .and. &
+            all(group > 0) .and. all(ieee_is_finite(margin)) .and. &
+            all(ieee_is_finite(target))
+        if (.not. valid) return
+        if (present(weights)) then
+            valid = size(weights) == size(margin) .and. &
+                all(ieee_is_finite(weights)) .and. all(weights > 0.0_dp)
+        end if
+    end function valid_pairwise_arrays
+
     subroutine xgb_objective_loss(objective_code, margin, target, weights, &
-            huber_delta, quantile_alpha, loss, status)
+            huber_delta, quantile_alpha, loss, status, group)
         !! Evaluate a finite weighted validation objective independently of
         !! the tree gain calculation.  All supported objectives are losses,
         !! so lower values are better for deterministic early stopping.
@@ -2097,6 +2301,7 @@ contains
         real(dp), intent(in) :: huber_delta, quantile_alpha
         real(dp), intent(out) :: loss
         type(fortnum_status_t), intent(out) :: status
+        integer, intent(in), optional :: group(:)
         real(dp) :: residual, term, weight_sum
         integer :: i
 
@@ -2116,6 +2321,15 @@ contains
             return
         end if
         term = 0.0_dp
+        if (objective_code == XGB_OBJECTIVE_RANK_PAIRWISE) then
+            if (.not. present(group)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "xgboost validation objective: ranking group IDs are missing")
+                return
+            end if
+            call xgb_pairwise_loss(margin, target, group, loss, status, weights)
+            return
+        end if
         select case (objective_code)
         case (XGB_OBJECTIVE_SQUARED)
             term = 0.5_dp*sum(weights*(margin - target)**2)
@@ -2167,12 +2381,14 @@ contains
     end subroutine xgb_objective_loss
 
     subroutine objective_derivatives(objective_code, margin, target, gradient, &
-            hessian, huber_delta, quantile_alpha, status)
+            hessian, huber_delta, quantile_alpha, status, group, weights)
         integer, intent(in) :: objective_code
         real(dp), intent(in) :: margin(:), target(:)
         real(dp), intent(out) :: gradient(:), hessian(:)
         real(dp), intent(in) :: huber_delta, quantile_alpha
         type(fortnum_status_t), intent(out) :: status
+        integer, intent(in), optional :: group(:)
+        real(dp), intent(in), optional :: weights(:)
         real(dp), parameter :: minimum_hessian = 1.0e-12_dp
         real(dp), allocatable :: probability(:)
         real(dp) :: residual, probability_value
@@ -2182,6 +2398,16 @@ contains
             size(hessian) /= size(target)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "xgboost derivatives: array shapes differ")
+            return
+        end if
+        if (objective_code == XGB_OBJECTIVE_RANK_PAIRWISE) then
+            if (.not. present(group)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "xgboost derivatives: ranking group IDs are missing")
+                return
+            end if
+            call xgb_pairwise_derivatives(margin, target, group, gradient, hessian, &
+                status, weights)
             return
         end if
         select case (objective_code)
@@ -2745,10 +2971,21 @@ contains
         case ("squaredlog", "squared-log", "squaredlogerror", &
                 "reg:squaredlogerror", "rmsle")
             code = XGB_OBJECTIVE_SQUARED_LOG
+        case ("rank:pairwise", "rank_pairwise", "pairwise", "ranking")
+            code = XGB_OBJECTIVE_RANK_PAIRWISE
         case default
             code = 0
         end select
     end function parse_objective
+
+    logical function valid_group_ids(group, n_rows) result(valid)
+        integer, intent(in), optional :: group(:)
+        integer, intent(in) :: n_rows
+
+        valid = present(group)
+        if (.not. valid) return
+        valid = size(group) == n_rows .and. n_rows >= 2 .and. all(group > 0)
+    end function valid_group_ids
 
     integer function parse_missing_policy(name) result(code)
         character(len=*), intent(in) :: name
