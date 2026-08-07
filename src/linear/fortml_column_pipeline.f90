@@ -37,6 +37,7 @@ module fortml_column_pipeline
         procedure, public :: evaluate => column_pipeline_transform
         procedure, public :: jvp => column_pipeline_jvp
         procedure, public :: vjp => column_pipeline_vjp
+        procedure, public :: hvp => column_pipeline_hvp
         procedure, public :: input_count => column_pipeline_input_count
         procedure, public :: stage_count => column_pipeline_stage_count
         procedure, public :: feature_count => column_pipeline_feature_count
@@ -324,6 +325,72 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine column_pipeline_vjp
+
+    subroutine column_pipeline_hvp(self, x, u, theta_dot, x_dot, theta_hvp, &
+            x_hvp, status)
+        !! HVP for a column-selecting union.  Each stage computes its local
+        !! second-order product on gathered columns and the result is scattered
+        !! back, accumulating contributions when stages reuse an input column.
+        class(column_basis_pipeline_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), u(:, :), theta_dot(:), x_dot(:, :)
+        real(dp), intent(out) :: theta_hvp(:), x_hvp(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: x_local(:, :), x_dot_local(:, :)
+        real(dp), allocatable :: local_theta_dot(:), local_theta_hvp(:)
+        real(dp), allocatable :: local_x_hvp(:, :)
+        integer :: i, j, feature_offset, parameter_offset, n_features, n_parameters
+
+        if (.not. column_pipeline_valid(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "column basis pipeline hvp: model is invalid")
+            return
+        end if
+        if (size(x, 1) < 1 .or. size(x, 2) /= self%n_inputs .or. &
+                size(u, 1) /= size(x, 1) .or. size(u, 2) /= self%feature_count() .or. &
+                any(shape(x_dot) /= shape(x)) .or. &
+                size(theta_dot) /= self%parameter_count() .or. &
+                size(theta_hvp) /= self%parameter_count() .or. &
+                any(shape(x_hvp) /= shape(x))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "column basis pipeline hvp: array shape is invalid")
+            return
+        end if
+        theta_hvp = 0.0_dp
+        x_hvp = 0.0_dp
+        feature_offset = 0
+        parameter_offset = 0
+        do i = 1, self%n_stages
+            n_features = self%stages(i)%map%feature_count()
+            n_parameters = self%stages(i)%map%parameter_count()
+            allocate(x_local(size(x, 1), size(self%stages(i)%columns)))
+            allocate(x_dot_local(size(x, 1), size(self%stages(i)%columns)))
+            allocate(local_theta_dot(n_parameters), local_theta_hvp(n_parameters))
+            allocate(local_x_hvp(size(x, 1), size(self%stages(i)%columns)))
+            call gather_columns(x, self%stages(i)%columns, x_local)
+            call gather_columns(x_dot, self%stages(i)%columns, x_dot_local)
+            if (n_parameters > 0) local_theta_dot = theta_dot(parameter_offset + 1: &
+                parameter_offset + n_parameters)
+            call self%stages(i)%map%hvp(x_local, &
+                u(:, feature_offset + 1:feature_offset + n_features), &
+                local_theta_dot, x_dot_local, local_theta_hvp, local_x_hvp, status)
+            if (status%code /= FORTNUM_OK) then
+                deallocate(x_local, x_dot_local, local_theta_dot, local_theta_hvp, &
+                    local_x_hvp)
+                return
+            end if
+            if (n_parameters > 0) theta_hvp(parameter_offset + 1: &
+                parameter_offset + n_parameters) = local_theta_hvp
+            do j = 1, size(self%stages(i)%columns)
+                x_hvp(:, self%stages(i)%columns(j)) = x_hvp(:, &
+                    self%stages(i)%columns(j)) + local_x_hvp(:, j)
+            end do
+            deallocate(x_local, x_dot_local, local_theta_dot, local_theta_hvp, &
+                local_x_hvp)
+            feature_offset = feature_offset + n_features
+            parameter_offset = parameter_offset + n_parameters
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine column_pipeline_hvp
 
     integer function column_pipeline_input_count(self) result(count)
         class(column_basis_pipeline_t), intent(in) :: self

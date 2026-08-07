@@ -33,6 +33,7 @@ module fortml_pipeline
         procedure, public :: evaluate => pipeline_transform
         procedure, public :: jvp => pipeline_jvp
         procedure, public :: vjp => pipeline_vjp
+        procedure, public :: hvp => pipeline_hvp
         procedure, public :: input_count => pipeline_input_count
         procedure, public :: stage_count => pipeline_stage_count
         procedure, public :: feature_count => pipeline_feature_count
@@ -77,6 +78,7 @@ module fortml_pipeline
         procedure, public :: evaluate => sequential_pipeline_transform
         procedure, public :: jvp => sequential_pipeline_jvp
         procedure, public :: vjp => sequential_pipeline_vjp
+        procedure, public :: hvp => sequential_pipeline_hvp
         procedure, public :: input_count => sequential_pipeline_input_count
         procedure, public :: stage_count => sequential_pipeline_stage_count
         procedure, public :: feature_count => sequential_pipeline_feature_count
@@ -330,6 +332,59 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine pipeline_vjp
+
+    subroutine pipeline_hvp(self, x, u, theta_dot, x_dot, theta_hvp, x_hvp, &
+            status)
+        !! HVP of a horizontal feature union.  Each stage contributes an
+        !! independent parameter block; input curvature is accumulated because
+        !! all stages consume the same original input matrix.
+        class(basis_pipeline_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), u(:, :), theta_dot(:), x_dot(:, :)
+        real(dp), intent(out) :: theta_hvp(:), x_hvp(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: local_theta_dot(:), local_theta_hvp(:)
+        real(dp), allocatable :: local_x_hvp(:, :)
+        integer :: i, feature_offset, parameter_offset
+        integer :: n_features, n_parameters
+
+        if (.not. pipeline_valid(self) .or. size(x, 1) < 1 .or. &
+                size(x, 2) /= self%n_inputs .or. size(u, 1) /= size(x, 1) .or. &
+                size(u, 2) /= self%feature_count() .or. &
+                any(shape(x_dot) /= shape(x)) .or. &
+                size(theta_dot) /= self%parameter_count() .or. &
+                size(theta_hvp) /= self%parameter_count() .or. &
+                any(shape(x_hvp) /= shape(x))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "basis pipeline hvp: model or array shape is invalid")
+            return
+        end if
+        theta_hvp = 0.0_dp
+        x_hvp = 0.0_dp
+        feature_offset = 0
+        parameter_offset = 0
+        do i = 1, self%n_stages
+            n_features = self%stages(i)%feature_count()
+            n_parameters = self%stages(i)%parameter_count()
+            allocate(local_theta_dot(n_parameters), local_theta_hvp(n_parameters))
+            if (n_parameters > 0) local_theta_dot = theta_dot(parameter_offset + 1: &
+                parameter_offset + n_parameters)
+            allocate(local_x_hvp(size(x, 1), size(x, 2)))
+            call self%stages(i)%hvp(x, u(:, feature_offset + 1: &
+                feature_offset + n_features), local_theta_dot, x_dot, &
+                local_theta_hvp, local_x_hvp, status)
+            if (status%code /= FORTNUM_OK) then
+                deallocate(local_theta_dot, local_theta_hvp, local_x_hvp)
+                return
+            end if
+            if (n_parameters > 0) theta_hvp(parameter_offset + 1: &
+                parameter_offset + n_parameters) = local_theta_hvp
+            x_hvp = x_hvp + local_x_hvp
+            deallocate(local_theta_dot, local_theta_hvp, local_x_hvp)
+            feature_offset = feature_offset + n_features
+            parameter_offset = parameter_offset + n_parameters
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine pipeline_hvp
 
     integer function pipeline_input_count(self) result(count)
         class(basis_pipeline_t), intent(in) :: self
@@ -783,6 +838,111 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine sequential_pipeline_vjp
+
+    subroutine sequential_pipeline_hvp(self, x, u, theta_dot, x_dot, theta_hvp, &
+            x_hvp, status)
+        !! Forward-over-reverse HVP for a sequential basis composition.
+        !!
+        !! The reverse cotangent itself has a directional component when a
+        !! downstream stage is parameterized.  We therefore combine each
+        !! stage's fixed-cotangent HVP with a VJP of that cotangent tangent,
+        !! which is the standard compositional second-order chain rule.
+        class(sequential_basis_pipeline_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), u(:, :), theta_dot(:), x_dot(:, :)
+        real(dp), intent(out) :: theta_hvp(:), x_hvp(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        type(pipeline_matrix_buffer_t), allocatable :: inputs(:), outputs(:)
+        type(pipeline_matrix_buffer_t), allocatable :: input_dots(:), output_dots(:)
+        real(dp), allocatable :: current_u(:, :), current_u_dot(:, :)
+        real(dp), allocatable :: local_theta_dot(:), local_theta_hvp(:)
+        real(dp), allocatable :: local_theta_bar(:), local_x_hvp(:, :), local_x_bar(:, :)
+        real(dp), allocatable :: local_x_bar_fixed(:, :)
+        integer :: i, n_features, n_parameters, offset
+
+        if (.not. sequential_pipeline_valid(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "sequential basis pipeline hvp: model is invalid")
+            return
+        end if
+        if (size(x, 1) < 1 .or. size(x, 2) /= self%n_inputs .or. &
+                size(u, 1) /= size(x, 1) .or. size(u, 2) /= self%n_features .or. &
+                any(shape(x_dot) /= shape(x)) .or. &
+                size(theta_dot) /= self%parameter_count() .or. &
+                size(theta_hvp) /= self%parameter_count() .or. &
+                any(shape(x_hvp) /= shape(x))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "sequential basis pipeline hvp: array shape is invalid")
+            return
+        end if
+
+        allocate(inputs(self%n_stages), outputs(self%n_stages))
+        allocate(input_dots(self%n_stages), output_dots(self%n_stages))
+        allocate(inputs(1)%values(size(x, 1), size(x, 2)))
+        allocate(input_dots(1)%values(size(x, 1), size(x, 2)))
+        inputs(1)%values = x
+        input_dots(1)%values = x_dot
+        offset = 0
+        do i = 1, self%n_stages
+            n_features = self%stages(i)%feature_count()
+            n_parameters = self%stages(i)%parameter_count()
+            allocate(outputs(i)%values(size(x, 1), n_features))
+            allocate(output_dots(i)%values(size(x, 1), n_features))
+            allocate(local_theta_dot(n_parameters))
+            if (n_parameters > 0) local_theta_dot = theta_dot(offset + 1: &
+                offset + n_parameters)
+            call self%stages(i)%jvp(inputs(i)%values, local_theta_dot, &
+                input_dots(i)%values, outputs(i)%values, output_dots(i)%values, &
+                status)
+            deallocate(local_theta_dot)
+            if (status%code /= FORTNUM_OK) return
+            if (i < self%n_stages) then
+                allocate(inputs(i + 1)%values(size(x, 1), n_features))
+                allocate(input_dots(i + 1)%values(size(x, 1), n_features))
+                inputs(i + 1)%values = outputs(i)%values
+                input_dots(i + 1)%values = output_dots(i)%values
+            end if
+            offset = offset + n_parameters
+        end do
+
+        allocate(current_u(size(u, 1), size(u, 2)))
+        allocate(current_u_dot(size(u, 1), size(u, 2)))
+        current_u = u
+        current_u_dot = 0.0_dp
+        theta_hvp = 0.0_dp
+        offset = self%parameter_count()
+        do i = self%n_stages, 1, -1
+            n_features = self%stages(i)%feature_count()
+            n_parameters = self%stages(i)%parameter_count()
+            offset = offset - n_parameters
+            allocate(local_theta_dot(n_parameters), local_theta_hvp(n_parameters))
+            if (n_parameters > 0) local_theta_dot = theta_dot(offset + 1: &
+                offset + n_parameters)
+            allocate(local_theta_bar(n_parameters))
+            allocate(local_x_hvp(size(x, 1), size(inputs(i)%values, 2)))
+            allocate(local_x_bar(size(x, 1), size(inputs(i)%values, 2)))
+            allocate(local_x_bar_fixed(size(x, 1), size(inputs(i)%values, 2)))
+            call self%stages(i)%hvp(inputs(i)%values, current_u, local_theta_dot, &
+                input_dots(i)%values, local_theta_hvp, local_x_hvp, status)
+            if (status%code /= FORTNUM_OK) return
+            call self%stages(i)%vjp(inputs(i)%values, current_u, &
+                local_theta_bar, local_x_bar_fixed, status)
+            if (status%code /= FORTNUM_OK) return
+            call self%stages(i)%vjp(inputs(i)%values, current_u_dot, &
+                local_theta_bar, local_x_bar, status)
+            if (status%code /= FORTNUM_OK) return
+            if (n_parameters > 0) theta_hvp(offset + 1:offset + n_parameters) = &
+                local_theta_hvp + local_theta_bar
+            if (i > 1) then
+                current_u = local_x_bar_fixed
+                current_u_dot = local_x_hvp + local_x_bar
+            else
+                x_hvp = local_x_hvp + local_x_bar
+            end if
+            deallocate(local_theta_dot, local_theta_hvp, local_theta_bar, &
+                local_x_hvp, local_x_bar, local_x_bar_fixed)
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine sequential_pipeline_hvp
 
     integer function sequential_pipeline_input_count(self) result(count)
         class(sequential_basis_pipeline_t), intent(in) :: self

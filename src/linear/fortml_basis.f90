@@ -33,6 +33,7 @@ module fortml_basis
         procedure, public :: evaluate => basis_evaluate
         procedure, public :: jvp => basis_jvp
         procedure, public :: vjp => basis_vjp
+        procedure, public :: hvp => basis_hvp
         procedure, public :: valid => basis_valid
         procedure, public :: static_lowering_eligible => &
             basis_static_lowering_eligible
@@ -315,6 +316,43 @@ contains
         if (self%include_intercept) column = column + 1
         call self%implementation%vjp(x, u(:, column:), theta_bar, x_bar, status)
     end subroutine basis_vjp
+
+    subroutine basis_hvp(self, x, u, theta_dot, x_dot, theta_hvp, x_hvp, status)
+        !! Hessian-vector product of `sum(u*evaluate(x))`.
+        !!
+        !! The output cotangent `u` is held fixed.  `theta_hvp` and `x_hvp`
+        !! are the parameter and input blocks of the differentiated VJP in
+        !! the joint direction `(theta_dot, x_dot)`.
+        class(basis_map_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), u(:, :), theta_dot(:), x_dot(:, :)
+        real(dp), intent(out) :: theta_hvp(:), x_hvp(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        integer :: column
+
+        if (.not. valid_shapes(self, x, u)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "basis hvp: model or cotangent shape is invalid")
+            return
+        end if
+        if (any(shape(x_dot) /= shape(x)) .or. &
+                any(shape(x_hvp) /= shape(x))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "basis hvp: input direction or output shape is invalid")
+            return
+        end if
+        if (size(theta_dot) /= self%parameter_count() .or. &
+                size(theta_hvp) /= self%parameter_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "basis hvp: parameter direction or output shape is invalid")
+            return
+        end if
+        theta_hvp = 0.0_dp
+        x_hvp = 0.0_dp
+        column = 1
+        if (self%include_intercept) column = column + 1
+        call self%implementation%hvp(x, u(:, column:), theta_dot, x_dot, &
+            theta_hvp, x_hvp, status)
+    end subroutine basis_hvp
 
     logical function basis_static_lowering_eligible(self) result(eligible)
         class(basis_map_t), intent(in) :: self

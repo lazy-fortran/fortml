@@ -1,7 +1,7 @@
 module fortml_basis_impl
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
-        FORTNUM_DOMAIN_ERROR
+        FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED
     use fortnum_bspline, only: bspline_workspace_t, bspline_init, &
         bspline_set_knots, bspline_eval_basis, bspline_eval_deriv
     implicit none
@@ -41,6 +41,11 @@ module fortml_basis_impl
         procedure(basis_impl_evaluate), deferred :: evaluate
         procedure(basis_impl_jvp), deferred :: jvp
         procedure(basis_impl_vjp), deferred :: vjp
+        ! HVP is a scalar-contraction Hessian-vector product.  Implementations
+        ! that have a smooth analytic second derivative override the default;
+        ! callbacks retain an explicit typed refusal instead of silently using
+        ! finite differences.
+        procedure :: hvp => basis_impl_hvp
         procedure(basis_impl_valid), deferred :: valid
         procedure :: static_lowering_eligible => basis_impl_static_eligible
     end type basis_impl_t
@@ -116,6 +121,7 @@ module fortml_basis_impl
         procedure :: evaluate => polynomial_evaluate
         procedure :: jvp => polynomial_jvp
         procedure :: vjp => polynomial_vjp
+        procedure :: hvp => polynomial_hvp
         procedure :: valid => polynomial_valid
     end type polynomial_basis_impl_t
 
@@ -132,6 +138,7 @@ module fortml_basis_impl
         procedure :: evaluate => fourier_evaluate
         procedure :: jvp => fourier_jvp
         procedure :: vjp => fourier_vjp
+        procedure :: hvp => fourier_hvp
         procedure :: valid => fourier_valid
     end type fourier_basis_impl_t
 
@@ -149,6 +156,7 @@ module fortml_basis_impl
         procedure :: evaluate => radial_evaluate
         procedure :: jvp => radial_jvp
         procedure :: vjp => radial_vjp
+        procedure :: hvp => radial_hvp
         procedure :: valid => radial_valid
     end type radial_basis_impl_t
 
@@ -164,6 +172,7 @@ module fortml_basis_impl
         procedure :: evaluate => spline_evaluate
         procedure :: jvp => spline_jvp
         procedure :: vjp => spline_vjp
+        procedure :: hvp => spline_hvp
         procedure :: valid => spline_valid
     end type spline_basis_impl_t
 
@@ -192,6 +201,34 @@ module fortml_basis_impl
     public :: create_spline_impl, create_callback_impl
 
 contains
+
+    subroutine basis_impl_hvp(self, x, u, theta_dot, x_dot, theta_hvp, &
+            x_hvp, status)
+        !! Default second-order product for basis implementations.
+        !!
+        !! `hvp` differentiates the VJP of the scalar contraction
+        !! `sum(u*phi)` in the joint direction `(theta_dot, x_dot)`.  A
+        !! callback cannot provide this product through the first-order
+        !! callback ABI, so it fails explicitly rather than introducing a
+        !! noisy finite-difference fallback.
+        class(basis_impl_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), u(:, :), theta_dot(:), x_dot(:, :)
+        real(dp), intent(out) :: theta_hvp(:), x_hvp(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (size(theta_dot) /= self%parameter_count() .or. &
+                size(theta_hvp) /= self%parameter_count() .or. &
+                any(shape(x_dot) /= shape(x)) .or. &
+                any(shape(x_hvp) /= shape(x))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "basis hvp: direction or output shape is invalid")
+            return
+        end if
+        theta_hvp = 0.0_dp
+        x_hvp = 0.0_dp
+        call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+            "basis hvp: second derivatives are unavailable for this map")
+    end subroutine basis_impl_hvp
 
     subroutine create_polynomial_impl(n_inputs, degree, impl, status)
         integer, intent(in) :: n_inputs, degree
@@ -433,6 +470,39 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine polynomial_vjp
 
+    subroutine polynomial_hvp(self, x, u, theta_dot, x_dot, theta_hvp, &
+            x_hvp, status)
+        class(polynomial_basis_impl_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), u(:, :), theta_dot(:), x_dot(:, :)
+        real(dp), intent(out) :: theta_hvp(:), x_hvp(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        integer :: i, j, p, column
+
+        if (size(u, 2) /= self%feature_count() .or. &
+                size(theta_dot) /= 0 .or. size(theta_hvp) /= 0 .or. &
+                any(shape(x_dot) /= shape(x)) .or. &
+                any(shape(x_hvp) /= shape(x))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "basis polynomial hvp: array shape is invalid")
+            return
+        end if
+        theta_hvp = 0.0_dp
+        x_hvp = 0.0_dp
+        column = 1
+        do j = 1, self%n_inputs
+            do p = 1, self%degree
+                if (p > 1) then
+                    do i = 1, size(x, 1)
+                        x_hvp(i, j) = x_hvp(i, j) + u(i, column)* &
+                            real(p*(p - 1), dp)*x(i, j)**(p - 2)*x_dot(i, j)
+                    end do
+                end if
+                column = column + 1
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine polynomial_hvp
+
     logical function polynomial_valid(self) result(valid)
         class(polynomial_basis_impl_t), intent(in) :: self
         valid = self%n_inputs > 0 .and. self%degree > 0
@@ -570,6 +640,55 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine fourier_vjp
+
+    subroutine fourier_hvp(self, x, u, theta_dot, x_dot, theta_hvp, x_hvp, &
+            status)
+        class(fourier_basis_impl_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), u(:, :), theta_dot(:), x_dot(:, :)
+        real(dp), intent(out) :: theta_hvp(:), x_hvp(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        integer :: i, j, h, column, parameter_index
+        real(dp) :: frequency, frequency_dot
+        real(dp) :: argument, argument_dot, z_bar, z_bar_dot
+        real(dp) :: u_sine, u_cosine
+
+        if (size(u, 2) /= self%feature_count() .or. &
+                size(theta_dot) /= self%parameter_count() .or. &
+                size(theta_hvp) /= self%parameter_count() .or. &
+                any(shape(x_dot) /= shape(x)) .or. &
+                any(shape(x_hvp) /= shape(x))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "basis Fourier hvp: array shape is invalid")
+            return
+        end if
+        theta_hvp = 0.0_dp
+        x_hvp = 0.0_dp
+        column = 1
+        parameter_index = 1
+        do j = 1, self%n_inputs
+            do h = 1, self%n_harmonics
+                frequency = exp(self%log_frequencies(h, j))
+                frequency_dot = frequency*theta_dot(parameter_index)
+                do i = 1, size(x, 1)
+                    argument = frequency*x(i, j)
+                    argument_dot = frequency*x_dot(i, j) + &
+                        frequency_dot*x(i, j)
+                    u_sine = u(i, column)
+                    u_cosine = u(i, column + 1)
+                    z_bar = u_sine*cos(argument) - u_cosine*sin(argument)
+                    z_bar_dot = (-u_sine*sin(argument) - u_cosine*cos(argument))* &
+                        argument_dot
+                    x_hvp(i, j) = x_hvp(i, j) + &
+                        frequency_dot*z_bar + frequency*z_bar_dot
+                    theta_hvp(parameter_index) = theta_hvp(parameter_index) + &
+                        argument_dot*z_bar + argument*z_bar_dot
+                end do
+                column = column + 2
+                parameter_index = parameter_index + 1
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine fourier_hvp
 
     logical function fourier_valid(self) result(valid)
         class(fourier_basis_impl_t), intent(in) :: self
@@ -735,6 +854,66 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine radial_vjp
 
+    subroutine radial_hvp(self, x, u, theta_dot, x_dot, theta_hvp, x_hvp, &
+            status)
+        class(radial_basis_impl_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), u(:, :), theta_dot(:), x_dot(:, :)
+        real(dp), intent(out) :: theta_hvp(:), x_hvp(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        integer :: i, j, p, column, center_index, n
+        real(dp) :: q, q_dot, radial_value, radial_value_dot
+        real(dp) :: inverse_scale, inverse_scale_dot, log_value_dot
+
+        if (size(u, 2) /= self%feature_count() .or. &
+                size(theta_dot) /= self%parameter_count() .or. &
+                size(theta_hvp) /= self%parameter_count() .or. &
+                any(shape(x_dot) /= shape(x)) .or. &
+                any(shape(x_hvp) /= shape(x))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "basis radial hvp: array shape is invalid")
+            return
+        end if
+        theta_hvp = 0.0_dp
+        x_hvp = 0.0_dp
+        n = self%n_inputs*self%n_centers
+        do p = 1, self%n_centers
+            column = p
+            do i = 1, size(x, 1)
+                radial_value = 0.0_dp
+                log_value_dot = 0.0_dp
+                do j = 1, self%n_inputs
+                    center_index = (p - 1)*self%n_inputs + j
+                    inverse_scale = exp(-self%log_scales(j, p))
+                    inverse_scale_dot = -inverse_scale*theta_dot(n + center_index)
+                    q = (x(i, j) - self%centers(j, p))*inverse_scale
+                    q_dot = inverse_scale*(x_dot(i, j) - theta_dot(center_index)) + &
+                        inverse_scale_dot*(x(i, j) - self%centers(j, p))
+                    radial_value = radial_value + q*q
+                    log_value_dot = log_value_dot - q*q_dot
+                end do
+                radial_value = exp(-0.5_dp*radial_value)
+                radial_value_dot = radial_value*log_value_dot
+                do j = 1, self%n_inputs
+                    center_index = (p - 1)*self%n_inputs + j
+                    inverse_scale = exp(-self%log_scales(j, p))
+                    inverse_scale_dot = -inverse_scale*theta_dot(n + center_index)
+                    q = (x(i, j) - self%centers(j, p))*inverse_scale
+                    q_dot = inverse_scale*(x_dot(i, j) - theta_dot(center_index)) + &
+                        inverse_scale_dot*(x(i, j) - self%centers(j, p))
+                    x_hvp(i, j) = x_hvp(i, j) - u(i, column)* &
+                        (radial_value_dot*q*inverse_scale + radial_value*q_dot*inverse_scale + &
+                         radial_value*q*inverse_scale_dot)
+                    theta_hvp(center_index) = theta_hvp(center_index) + u(i, column)* &
+                        (radial_value_dot*q*inverse_scale + radial_value*q_dot*inverse_scale + &
+                         radial_value*q*inverse_scale_dot)
+                    theta_hvp(n + center_index) = theta_hvp(n + center_index) + &
+                        u(i, column)*(radial_value_dot*q*q + 2.0_dp*radial_value*q*q_dot)
+                end do
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine radial_hvp
+
     logical function radial_valid(self) result(valid)
         class(radial_basis_impl_t), intent(in) :: self
         valid = self%n_inputs > 0 .and. self%n_centers > 0
@@ -883,6 +1062,48 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine spline_vjp
+
+    subroutine spline_hvp(self, x, u, theta_dot, x_dot, theta_hvp, x_hvp, &
+            status)
+        !! Spline HVP is analytic within a fixed knot span.  Crossing a knot
+        !! is a non-smooth event and is rejected by the underlying evaluator.
+        class(spline_basis_impl_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), u(:, :), theta_dot(:), x_dot(:, :)
+        real(dp), intent(out) :: theta_hvp(:), x_hvp(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        integer :: i, j, column, ncoef
+        real(dp), allocatable :: dvalues(:, :)
+
+        if (size(u, 2) /= self%feature_count() .or. &
+                size(theta_dot) /= 0 .or. size(theta_hvp) /= 0 .or. &
+                any(shape(x_dot) /= shape(x)) .or. &
+                any(shape(x_hvp) /= shape(x))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "basis spline hvp: array shape is invalid")
+            return
+        end if
+        if (.not. self%valid()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "basis spline hvp: model is not initialized")
+            return
+        end if
+        theta_hvp = 0.0_dp
+        x_hvp = 0.0_dp
+        column = 1
+        ncoef = self%spline(1)%ncoef
+        allocate(dvalues(0:2, ncoef))
+        do j = 1, self%n_inputs
+            do i = 1, size(x, 1)
+                call bspline_eval_deriv(self%spline(j), x(i, j), 2, dvalues, &
+                    status)
+                if (status%code /= FORTNUM_OK) return
+                x_hvp(i, j) = sum(u(i, column:column + ncoef - 1)* &
+                    dvalues(2, :))*x_dot(i, j)
+            end do
+            column = column + ncoef
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine spline_hvp
 
     logical function spline_valid(self) result(valid)
         class(spline_basis_impl_t), intent(in) :: self
