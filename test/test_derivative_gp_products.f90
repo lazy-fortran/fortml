@@ -17,6 +17,7 @@ program test_derivative_gp_products
 
     failures = 0
     call test_likelihood_products(failures)
+    call test_value_only_hvp(failures)
     call test_matern_parameter_products(failures)
     call test_periodic_rational_parameter_products(failures)
     call test_cosine_parameter_products(failures)
@@ -35,6 +36,44 @@ program test_derivative_gp_products
     write (*, '(a)') "PASS: derivative GP likelihood products"
 
 contains
+
+    subroutine test_value_only_hvp(failures)
+        !! Value-only observations take the analytic kernel-HVP branch.  The
+        !! reference below rebuilds the covariance and Cholesky solve in the
+        !! independent oracle rather than calling the production derivative
+        !! covariance routines.
+        integer, intent(inout) :: failures
+        type(gp_derivative_regression_t) :: model
+        type(kernel_t) :: kernel
+        type(fortnum_status_t) :: status
+        real(dp) :: x(3, 1), y(3, 1), theta(3), direction(3), hvp(3)
+        real(dp) :: gradient_plus(3), gradient_minus(3), fd_hvp(3), h
+
+        x(:, 1) = [-0.2_dp, 0.35_dp, 0.95_dp]
+        y(:, 1) = [0.7_dp, -0.1_dp, 0.5_dp]
+        kernel = make_rbf_kernel(1, 1.3_dp, 0.8_dp, status)
+        call model%fit(x, [0, 0, 0], y, kernel, 0.09_dp, status, jitter=1.0e-10_dp)
+        if (.not. status_ok(status)) then
+            write (error_unit, '(a)') "FAIL [value-only derivative GP] fit"
+            failures = failures + 1
+            return
+        end if
+        theta = model%parameters()
+        direction = [0.17_dp, -0.11_dp, 0.08_dp]
+        call model%hyperparameter_hvp(direction, hvp, status)
+        h = 2.0e-4_dp
+        gradient_plus = oracle_gradient(theta + h*direction, x, [0, 0, 0], y, &
+            0.09_dp, 1.0e-10_dp)
+        gradient_minus = oracle_gradient(theta - h*direction, x, [0, 0, 0], y, &
+            0.09_dp, 1.0e-10_dp)
+        fd_hvp = (gradient_plus - gradient_minus)/(2.0_dp*h)
+        if (.not. status_ok(status) .or. maxval(abs(hvp - fd_hvp)) > 2.0e-5_dp) then
+            write (error_unit, '(a,es12.4)') &
+                "FAIL [value-only derivative GP] analytic HVP oracle ", &
+                maxval(abs(hvp - fd_hvp))
+            failures = failures + 1
+        end if
+    end subroutine test_value_only_hvp
 
     subroutine test_likelihood_products(failures)
         integer, intent(inout) :: failures

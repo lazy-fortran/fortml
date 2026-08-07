@@ -28,9 +28,12 @@ the requested pair is smooth and finite. A refusal is a typed
 
 The exact derivative-GP likelihood gradient is analytic for every smooth
 built-in leaf listed above, including the four logarithmic polynomial
-parameters. Its
-`hyperparameter_hvp` is intentionally a deterministic central difference of
-that gradient. It is not advertised as an analytic third-order product.
+parameters. For value-only observation lists, `hyperparameter_hvp` uses the
+analytic kernel parameter-HVP and differentiated Cholesky solve. Mixed
+value/first-derivative observation lists retain a deterministic central
+difference of the analytic gradient until input-parameter second products
+are available for every supported kernel; this boundary is explicit and is
+not advertised as a fully analytic mixed-observation HVP.
 Second-derivative observations, operator-valued outputs, sparse/variational
 derivative inference, and resident CUDA covariance/factorization kernels are
 not implemented. `device_supported(FORTML_DEVICE_CUDA)` is false and the

@@ -897,6 +897,17 @@ contains
                 "derivative GP hyperparameter_hvp: parameter shape is invalid")
             return
         end if
+
+        ! A value-only derivative-GP fit has the same covariance geometry as
+        ! an exact value GP.  Use the kernel's analytic parameter HVP and the
+        ! differentiated Cholesky solve in that case; mixed value/derivative
+        ! observation blocks still use the existing structured finite-
+        ! difference fallback until input-parameter second products are
+        ! available for every supported kernel.
+        if (all(self%components == 0)) then
+            call derivative_gp_value_only_hvp(self, direction, parameter_hvp, status)
+            return
+        end if
         parameters = self%parameters()
         scale = max(1.0_dp, maxval(abs(direction)))
         step = 3.0e-5_dp/scale
@@ -910,6 +921,78 @@ contains
         parameter_hvp = (gradient_plus - gradient_minus)/(2.0_dp*step)
         call status_set(status, FORTNUM_OK, "")
     end subroutine gp_derivative_hyperparameter_hvp
+
+    subroutine derivative_gp_value_only_hvp(self, direction, parameter_hvp, status)
+        class(gp_derivative_regression_t), intent(in) :: self
+        real(dp), intent(in) :: direction(:)
+        real(dp), intent(out) :: parameter_hvp(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: covariance(:, :), covariance_dot(:, :)
+        real(dp), allocatable :: alpha_dot(:, :), identity(:, :), inverse(:, :)
+        real(dp), allocatable :: inverse_dot(:, :), matrix_bar(:, :)
+        real(dp), allocatable :: matrix_bar_dot(:, :), local_bar(:), local_bar_dot(:)
+        real(dp) :: noise_dot, trace_matrix_bar, trace_matrix_bar_dot
+        integer :: i, kernel_count
+
+        kernel_count = self%kernel%parameter_count()
+        allocate(covariance(self%n_observations, self%n_observations))
+        allocate(covariance_dot, mold=covariance)
+        allocate(alpha_dot, mold=self%alpha)
+        allocate(identity, mold=covariance)
+        allocate(inverse, mold=covariance)
+        allocate(inverse_dot, mold=covariance)
+        allocate(matrix_bar, mold=covariance)
+        allocate(matrix_bar_dot, mold=covariance)
+        allocate(local_bar(kernel_count), local_bar_dot(kernel_count))
+
+        call self%kernel%matrix_jvp(self%x_train, self%x_train, &
+            direction(:kernel_count), covariance, covariance_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        noise_dot = self%noise_variance*direction(kernel_count + 1)
+        do i = 1, self%n_observations
+            covariance_dot(i, i) = covariance_dot(i, i) + noise_dot
+        end do
+
+        alpha_dot = -matmul(covariance_dot, self%alpha)
+        call self%factorization%solve(alpha_dot, status)
+        if (status%code /= FORTNUM_OK) return
+
+        identity = 0.0_dp
+        do i = 1, self%n_observations
+            identity(i, i) = 1.0_dp
+        end do
+        inverse = identity
+        call self%factorization%solve(inverse, status)
+        if (status%code /= FORTNUM_OK) return
+        inverse_dot = -matmul(inverse, matmul(covariance_dot, inverse))
+
+        matrix_bar = 0.5_dp*(matmul(self%alpha, transpose(self%alpha)) - &
+            real(self%n_outputs, dp)*inverse)
+        matrix_bar_dot = 0.5_dp*( &
+            matmul(alpha_dot, transpose(self%alpha)) + &
+            matmul(self%alpha, transpose(alpha_dot)) - &
+            real(self%n_outputs, dp)*inverse_dot)
+
+        parameter_hvp = 0.0_dp
+        call self%kernel%parameter_hvp( &
+            self%x_train, self%x_train, matrix_bar, direction(:kernel_count), &
+            local_bar, local_bar_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        call self%kernel%parameter_vjp( &
+            self%x_train, self%x_train, matrix_bar_dot, local_bar, status)
+        if (status%code /= FORTNUM_OK) return
+        parameter_hvp(:kernel_count) = local_bar + local_bar_dot
+
+        trace_matrix_bar = 0.0_dp
+        trace_matrix_bar_dot = 0.0_dp
+        do i = 1, self%n_observations
+            trace_matrix_bar = trace_matrix_bar + matrix_bar(i, i)
+            trace_matrix_bar_dot = trace_matrix_bar_dot + matrix_bar_dot(i, i)
+        end do
+        parameter_hvp(kernel_count + 1) = self%noise_variance*( &
+            direction(kernel_count + 1)*trace_matrix_bar + trace_matrix_bar_dot)
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine derivative_gp_value_only_hvp
 
     integer function gp_derivative_observation_count(self) result(count)
         class(gp_derivative_regression_t), intent(in) :: self
