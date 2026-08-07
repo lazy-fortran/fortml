@@ -14,6 +14,7 @@ program test_xgboost
     call test_logistic_second_order_oracle(failures)
     call test_regularisation_and_determinism(failures)
     call test_missing_value_routing(failures)
+    call test_missing_logistic_routing(failures)
     call test_refusals(failures)
     if (failures /= 0) then
         write (error_unit, '(i0,a)') failures, " xgboost test(s) failed"
@@ -97,6 +98,38 @@ contains
             failures = failures + 1
         end if
     end subroutine test_missing_value_routing
+
+    subroutine test_missing_logistic_routing(failures)
+        integer, intent(inout) :: failures
+        type(xgboost_t) :: model
+        type(xgboost_options_t) :: options
+        type(fortnum_status_t) :: status
+        real(dp) :: x(6, 1), labels(6), probabilities(6), expected(6)
+        real(dp) :: negative, positive
+
+        x(:, 1) = [0.0_dp, 1.0_dp, 2.0_dp, 3.0_dp, 4.0_dp, &
+            ieee_value(0.0_dp, ieee_quiet_nan)]
+        labels = [0.0_dp, 0.0_dp, 1.0_dp, 1.0_dp, 1.0_dp, 0.0_dp]
+        options%n_estimators = 1
+        options%max_depth = 1
+        options%min_samples_leaf = 1
+        options%learning_rate = 1.0_dp
+        options%l2 = 0.0_dp
+        options%min_child_weight = 0.0_dp
+        options%missing_policy = "learn"
+        call model%fit_binary(x, labels, status, options)
+        call model%predict(x, probabilities, status)
+        negative = 1.0_dp/(1.0_dp + exp(2.0_dp))
+        positive = 1.0_dp - negative
+        expected = [negative, negative, positive, positive, positive, negative]
+        if (status%code /= FORTNUM_OK .or. maxval(abs(probabilities - expected)) > &
+            2.0e-13_dp) then
+            write (error_unit, '(a,es12.4)') &
+                "FAIL [xgb missing] logistic default-direction oracle ", &
+                maxval(abs(probabilities - expected))
+            failures = failures + 1
+        end if
+    end subroutine test_missing_logistic_routing
 
     subroutine test_deeper_tree_oracle(failures)
         integer, intent(inout) :: failures
