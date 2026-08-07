@@ -105,6 +105,30 @@ The work packages below define the parity target. An item is complete when its
 API, implementation, documentation, independent oracle, and refusal tests are
 present.
 
+### Production parity acceptance matrix
+
+The release gate is capability-based. A model name is not a closed feature when
+only its simplest fit path exists. Each row below needs the same state,
+derivative, device, persistence, and benchmark treatment as its reference
+workflow. Unsupported coordinates and nonsmooth boundaries are explicit typed
+refusals. They are never implemented with hidden finite differences or a host
+fallback from a CUDA request.
+
+| Surface | Required production variants |
+| --- | --- |
+| Classification | Binary and multinomial linear logits; OVR and OVO coupling policies; multilabel and multioutput heads; ordinal cumulative-logit heads; Gaussian, Bernoulli, Multinomial, Complement, and Categorical Naive Bayes; LDA/QDA; linear, kernel, and one-class SVM; exact kNN and radius neighbors; CART, random/extra forests, bagging, AdaBoost, histogram boosting, XGBoost/LightGBM policies; Platt, temperature, isotonic, calibration curves; Laplace and variational GP classifiers; neural heads for binary, multiclass, multilabel, ordinal, calibrated, and physics-aware predictions. |
+| Regression and transforms | OLS, weighted/ridge/lasso/elastic-net, linear and kernel SVR, robust/Huber, quantile, Gaussian/Poisson/Gamma/Tweedie GLMs, multioutput and partial-fit streams; polynomial, spline, Fourier, radial, GP, categorical, missing-value, scaling, and DAG basis/pipeline transforms with routed parameters. |
+| Gaussian processes | Every shipped kernel must define value, input JVP/VJP, parameter JVP/VJP/HVP, and derivative-observation products where mathematically defined. The inference matrix covers exact dense, derivative observations, sparse/inducing, variational whitened and unwhitened, SKI/structured/lazy, local experts, batch/multitask, operator-valued and physics/symplectic GPs. Likelihoods cover Gaussian, Student-t, Bernoulli, categorical, Poisson/count, heteroskedastic, and derivative-noise blocks. |
+| Neural training | Functional nested module and buffer trees; train/eval state; dense, convolutional, recurrent/GRU/LSTM, attention, graph, autoencoder/VAE, BNN, HNN/LNN, symplectic, PINN, and physics-consistent modules; complete smooth and nonsmooth loss/activation catalog; SGD, momentum/Nesterov, Adam/AdamW, Adagrad, RMSprop, Lion-like research optimizers where specified, schedules, clipping, EMA, validation, early stopping, checkpoint/resume, mixed precision, distributed reduction, and exact stochastic/device hypergradients. |
+| Boosting and ensembles | Exact and histogram growth; squared, logistic, Poisson, Gamma/Tweedie, squared-log, Huber, quantile, pairwise/listwise ranking, survival/AFT where supported; monotonic, categorical, interaction, missing-value, DART/GOSS/EFB, warm-start, staged/sliced model, feature sampling, row sampling, model dumps, SHAP-compatible contributions, and resident GPU histogram paths. |
+| Cross-cutting contracts | Parameter registries and transforms, FortOpt bounded L-BFGS-B and multistart, implicit differentiation through solves and optima, deterministic seeded RNG/cursors, compiler-independent state dictionaries, streaming/partial-fit data, metric/splitter/model-selection APIs, CPU/OpenACC/CUDA residency and transfer accounting, and matched scikit-learn/PyTorch/JAX/GPyTorch/Flux/Lux/XGBoost benchmark matrices. |
+
+The matrix is a planning contract, not an implementation claim. The capability
+tables and closure ledger below record which rows have evidence today and which
+remain open. New work must select one bounded row, add its behavioral oracle,
+and update the corresponding benchmark and provenance record in the same
+change.
+
 The external feature inventory is maintained in
 [`docs/PARITY_REFERENCE.md`](docs/PARITY_REFERENCE.md). It tracks the current
 scikit-learn, PyTorch, JAX, GPyTorch, GPflow, XGBoost, LightGBM, Flux, and Lux
