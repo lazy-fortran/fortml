@@ -44,6 +44,10 @@ module fortml_gp_multiclass_classification
             gp_multiclass_classification_predict_proba
         procedure, public :: predict_proba_jvp => &
             gp_multiclass_classification_predict_proba_jvp
+        procedure, public :: decision_function => &
+            gp_multiclass_classification_decision_function
+        procedure, public :: decision_function_jvp => &
+            gp_multiclass_classification_decision_function_jvp
         procedure, public :: predict => gp_multiclass_classification_predict
         procedure, public :: classes => gp_multiclass_classification_classes
         procedure, public :: class_count => gp_multiclass_classification_class_count
@@ -60,6 +64,8 @@ module fortml_gp_multiclass_classification
     public :: gp_multiclass_classification_fit
     public :: gp_multiclass_classification_predict_proba
     public :: gp_multiclass_classification_predict_proba_jvp
+    public :: gp_multiclass_classification_decision_function
+    public :: gp_multiclass_classification_decision_function_jvp
     public :: gp_multiclass_classification_predict
 
 contains
@@ -219,6 +225,70 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine gp_multiclass_classification_predict_proba_jvp
+
+    !> Return the one-vs-rest latent posterior means for every class.
+    !>
+    !> The columns follow ``classes()`` and are the binary GP latent means
+    !> before the probability-simplex normalization.  This is the multiclass
+    !> analogue of a classifier ``decision_function`` and is useful for
+    !> margins, calibration, and downstream differentiable composition.
+    subroutine gp_multiclass_classification_decision_function(self, x, margins, &
+            status)
+        class(gp_multiclass_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: margins(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: mean(:), variance(:)
+        integer :: i
+
+        if (.not. prediction_input_valid(self, x, status)) return
+        if (any(shape(margins) /= [size(x, 1), self%n_classes])) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP multiclass decision_function: output shape is invalid")
+            return
+        end if
+        allocate(mean(size(x, 1)), variance(size(x, 1)))
+        do i = 1, self%n_classes
+            call self%models(i)%predict_latent(x, mean, variance, status)
+            if (status%code /= FORTNUM_OK) return
+            margins(:, i) = mean
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_multiclass_classification_decision_function
+
+    !> JVP of ``decision_function`` with respect to the query features.
+    subroutine gp_multiclass_classification_decision_function_jvp(self, x, x_dot, &
+            margins, margins_dot, status)
+        class(gp_multiclass_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), x_dot(:, :)
+        real(dp), intent(out) :: margins(:, :), margins_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: mean(:), mean_dot(:), variance(:), variance_dot(:)
+        integer :: i
+
+        if (.not. prediction_input_valid(self, x, status)) return
+        if (any(shape(x_dot) /= shape(x)) .or. any(.not. ieee_is_finite(x_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP multiclass decision_function JVP: input tangent is invalid")
+            return
+        end if
+        if (any(shape(margins) /= [size(x, 1), self%n_classes]) .or. &
+            any(shape(margins_dot) /= shape(margins))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP multiclass decision_function JVP: output shape is invalid")
+            return
+        end if
+        allocate(mean(size(x, 1)), mean_dot(size(x, 1)), &
+            variance(size(x, 1)), variance_dot(size(x, 1)))
+        do i = 1, self%n_classes
+            call self%models(i)%predict_latent_jvp(x, x_dot, mean, mean_dot, &
+                variance, variance_dot, status)
+            if (status%code /= FORTNUM_OK) return
+            margins(:, i) = mean
+            margins_dot(:, i) = mean_dot
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_multiclass_classification_decision_function_jvp
 
     subroutine gp_multiclass_classification_predict(self, x, labels, status)
         class(gp_multiclass_classification_t), intent(in) :: self

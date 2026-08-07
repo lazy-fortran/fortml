@@ -76,7 +76,7 @@ not supplied through a hidden generic interface.
 | `gp_regression_t` | Mean, variance, LML | Prediction and LML parameters | Prediction and LML parameters | Mean and LML parameters |
 | `gp_derivative_regression_t` | Mean, variance, and LML | Prediction and LML parameter JVP | Prediction parameter VJP and analytic LML hyperparameter gradient | Directional HVP (finite difference of the analytic gradient) |
 | `gp_classification_t` | Latent and observed probabilities | Input JVP | Laplace-mode kernel hyperparameter gradient | No |
-| `gp_multiclass_classification_t` | Normalized observed probabilities | Input JVP | Packed one-vs-rest Laplace-mode kernel hyperparameter gradient | No |
+| `gp_multiclass_classification_t` | Latent one-vs-rest margins and normalized observed probabilities | Input JVP for margins and probabilities | Packed one-vs-rest Laplace-mode kernel hyperparameter gradient | No |
 | `multi_output_gp_t` | Correlated mean and LML | No | No | No |
 | Approximate GP types | Mean, variance, or ELBO as listed below | No | No | No |
 
@@ -1089,7 +1089,10 @@ sorted integer class, normalizes their positive probabilities onto a simplex,
 and exposes `classes`, `class_count`, `feature_count`, `predict_proba`,
 `predict`, and `fitted`. `parameter_count()` and `parameters()` concatenate
 the read-only kernel metadata for each one-vs-rest model in sorted class order.
-`hyperparameter_gradient` concatenates the exact binary envelope gradients in
+`decision_function` returns the one-vs-rest latent posterior means in sorted
+class order, before probability-simplex normalization; its
+`decision_function_jvp` propagates query-feature tangents through every binary
+GP. `hyperparameter_gradient` concatenates the exact binary envelope gradients in
 sorted-class order. It is the gradient of the sum of the independent
 one-vs-rest Laplace-mode log posteriors; a shared coupled categorical objective
 remains a separate contract. The wrapper inherits the selected logistic or probit likelihood and

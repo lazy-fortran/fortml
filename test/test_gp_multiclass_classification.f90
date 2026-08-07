@@ -20,6 +20,8 @@ program test_gp_multiclass_classification
     real(dp) :: x(9, 2), query(6, 2), query_dot(6, 2), query_plus(6, 2)
     real(dp) :: query_minus(6, 2), probabilities(6, 3), probabilities_dot(6, 3)
     real(dp) :: probabilities_plus(6, 3), probabilities_minus(6, 3)
+    real(dp) :: margins(6, 3), margins_dot(6, 3), margins_plus(6, 3), &
+        margins_minus(6, 3)
     real(dp) :: repeat_probabilities(6, 3), probit_probabilities(6, 3)
     real(dp), allocatable :: kernel_parameters(:), model_parameters(:), gradient(:)
     real(dp), allocatable :: gradient_fd(:), theta_plus(:), theta_minus(:)
@@ -119,6 +121,16 @@ program test_gp_multiclass_classification
         (probabilities_plus - probabilities_minus)/(2.0e-5_dp))) < 3.0e-6_dp, &
         "normalized probability JVP finite difference", failures)
 
+    call model%decision_function(query, margins, status)
+    call model%decision_function_jvp(query, query_dot, margins, margins_dot, status)
+    query_plus = query + 1.0e-5_dp*query_dot
+    query_minus = query - 1.0e-5_dp*query_dot
+    call model%decision_function(query_plus, margins_plus, status)
+    call model%decision_function(query_minus, margins_minus, status)
+    call check(status_ok(status) .and. maxval(abs(margins_dot - &
+        (margins_plus - margins_minus)/(2.0e-5_dp))) < 3.0e-6_dp, &
+        "latent decision-function JVP finite difference", failures)
+
     call repeat_model%fit(x, labels, kernel, status, options, repeat_state)
     call repeat_model%predict_proba(query, repeat_probabilities, status)
     call check(status_ok(status) .and. repeat_state%converged .and. &
@@ -134,6 +146,8 @@ program test_gp_multiclass_classification
 
     call unfitted%predict_proba(query, probabilities, status)
     call check(.not. status_ok(status), "unfitted prediction refusal", failures)
+    call unfitted%decision_function(query, margins, status)
+    call check(.not. status_ok(status), "unfitted decision-function refusal", failures)
     call model%predict(query, predicted(:5), status)
     call check(.not. status_ok(status), "prediction label shape refusal", failures)
     call model%fit(x, [1, 1, 1, 1, 1, 1, 1, 1, 1], kernel, status, options)
