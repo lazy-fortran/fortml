@@ -157,6 +157,10 @@ provide exact fixed-state products over packed coefficients and continuous
 inputs. The nonsmooth coordinate fit, active-set decisions, solver tolerance,
 and regularization hyperparameters are not differentiated; those fit-time
 boundaries are explicit rather than hidden finite-difference fallbacks.
+`device_supported(kind)` reports CPU support for a fitted model and refuses
+CUDA until a resident elastic-net prediction kernel exists. `predict_device`
+dispatches only to a selected CPU context; a selected CUDA context returns
+`FORTNUM_NOT_IMPLEMENTED` rather than silently executing on the host.
 
 ### `fortml_pca`
 
@@ -471,6 +475,10 @@ Input and packed-parameter products are available through
 aggregation is linear, so every product propagates the binary logistic
 products with a fixed opponent-count factor. Finite, shape, zero-support, and
 unfitted violations return status errors.
+`device_supported(kind)` and `predict_device`/`predict_proba_device` expose the
+same explicit backend boundary: CPU dispatch is supported for fitted models,
+while CUDA returns `FORTNUM_NOT_IMPLEMENTED` because no resident pairwise
+logistic kernel is linked.
 
 ### `fortml_knn_classifier`
 
@@ -836,6 +844,9 @@ update and returns a finite positive rate; `rate_with_derivatives` additionally
 returns exact products with respect to the base rate, minimum-rate fraction,
 and decay factor. The schedule receives an explicit update index rather than
 owning hidden mutable state, so a replayed training run uses the same rates.
+`device_supported(kind)` reports CPU-only support in this release: schedules
+have no resident CUDA optimizer lowering yet, so they must not be timed as GPU
+workloads or used to imply device-resident trajectory hypergradients.
 See [`docs/MLP_SCHEDULES.md`](MLP_SCHEDULES.md) for constructors and a
 callback adapter.
 
@@ -1222,7 +1233,12 @@ respect to those margins for both `GP_LIKELIHOOD_LOGISTIC` and
 tail. Finite inputs and tangent/cotangent shapes are checked explicitly.
 This primitive is separate from fitted Laplace state so it can be composed
 into variational or minibatch objectives; its presence does not imply a
-complete resident-GPU GP training path.
+complete resident-GPU GP training path. `device_supported(kind)` reports
+CPU-only support for fitted models, and `predict_latent_device`/
+`predict_proba_device` return `FORTNUM_NOT_IMPLEMENTED` for CUDA until a
+resident covariance/Laplace kernel exists. The likelihood helper's
+`gp_classification_likelihood_device_supported` function likewise refuses
+CUDA value/JVP/VJP products, preserving the no-hidden-host-fallback contract.
 
 ### `fortml_gp_classification_training`
 

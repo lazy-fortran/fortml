@@ -157,6 +157,13 @@ end program exact_gp_example
 | Lazy inference | `fortml_linear_operator`, `fortml_kernel_operator`, `fortml_sparse_operator`, `fortml_structured_operator`, `fortml_toeplitz_operator`, `fortml_banded_precision` | Toeplitz products are host-resident |
 | Supporting contracts | `fortml_kernel_formula`, `fortml_lanczos`, `fortml_multilevel_grid`, `fortml_inference_policy`, `fortml_parameter_registry`, `fortml_parameter_products`, `fortml_device` | Product availability depends on the wrapped model. `fortml_device` records explicit CPU/CUDA capability, residency ownership, and transfer events; it does not allocate buffers or claim complete GPU execution. |
 
+The newly added elastic-net, OVO, Laplace-GP classification, and typed
+schedule APIs expose explicit CPU/CUDA capability/refusal methods. They are
+CPU-only until resident model kernels exist: selected CUDA contexts return
+`FORTNUM_NOT_IMPLEMENTED`, and no benchmark may report GPU timing for these
+paths. The resident native-CUDA micro-kernels documented in
+[`docs/DEVICE.md`](docs/DEVICE.md) remain separate no-autodiff building blocks.
+
 Validated user kernel formulas are lowered into the same postfix program as
 built-in kernels. The generic kernel operator can run that program through its
 OpenACC path or native CUDA plan. Arbitrary basis callbacks remain host-only.
