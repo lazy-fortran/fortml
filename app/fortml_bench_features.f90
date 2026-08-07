@@ -18,6 +18,7 @@ program fortml_bench_features
     use fortml_tree, only: decision_stump_t, gradient_boosting_regressor_t, &
         cart_regressor_t
     use fortml_cart_classifier, only: cart_classifier_t
+    use fortml_gaussian_naive_bayes, only: gaussian_naive_bayes_t
     use fortnum_status, only: fortnum_status_t, status_ok
     implicit none
 
@@ -27,6 +28,7 @@ program fortml_bench_features
     call benchmark_tree_models()
     call benchmark_regression_metrics()
     call benchmark_cart_classifier()
+    call benchmark_gaussian_naive_bayes()
 
 contains
 
@@ -190,9 +192,9 @@ contains
         real(dp) :: x(n_samples, n_inputs), x_dot(n_samples, n_inputs)
         real(dp) :: y(n_samples, n_outputs), prediction(n_samples, n_outputs)
         real(dp) :: prediction_dot(n_samples, n_outputs)
-        real(dp), allocatable :: theta_dot(:)
         real(dp) :: frequency, elapsed_fit, elapsed_predict, elapsed_jvp
         real(dp) :: mse, elapsed, jvp_sum
+        real(dp), allocatable :: theta_dot(:)
         integer(int64) :: clock_start, clock_end, clock_rate
         integer :: i, repetition
         type(basis_map_t) :: fourier
@@ -442,5 +444,65 @@ contains
             real(correct, dp)/real(n_samples, dp), ",", elapsed, ",", &
             classifier%node_count()
     end subroutine benchmark_cart_classifier
+
+    subroutine benchmark_gaussian_naive_bayes()
+        integer, parameter :: n_samples = 192, n_features = 2, n_classes = 3
+        integer, parameter :: fit_repetitions = 8, prediction_repetitions = 64
+        real(dp) :: x(n_samples, n_features), x_dot(n_samples, n_features)
+        real(dp) :: log_probabilities(n_samples, n_classes)
+        real(dp) :: log_probabilities_dot(n_samples, n_classes)
+        real(dp) :: elapsed_fit, elapsed_predict, elapsed_jvp, elapsed
+        integer :: labels(n_samples), class_index
+        integer(int64) :: clock_start, clock_end, clock_rate
+        integer :: i, repetition
+        type(gaussian_naive_bayes_t) :: classifier
+        type(fortnum_status_t) :: status
+
+        do i = 1, n_samples
+            class_index = mod(i - 1, n_classes)
+            labels(i) = merge(-4, merge(7, 19, class_index == 1), class_index == 0)
+            x(i, 1) = 3.0_dp*real(class_index, dp) + &
+                0.1_dp*sin(0.11_dp*real(i, dp))
+            x(i, 2) = -2.0_dp*real(class_index, dp) + &
+                0.1_dp*cos(0.07_dp*real(i, dp))
+            x_dot(i, 1) = cos(0.013_dp*real(i, dp))
+            x_dot(i, 2) = sin(0.017_dp*real(i, dp))
+        end do
+        call system_clock(clock_start, clock_rate)
+        do repetition = 1, fit_repetitions
+            call classifier%fit(x, labels, status, var_smoothing=1.0e-9_dp)
+            if (.not. status_ok(status)) error stop "GaussianNB fit failed"
+        end do
+        call system_clock(clock_end)
+        elapsed_fit = real(clock_end - clock_start, dp)/real(clock_rate, dp) &
+            /real(fit_repetitions, dp)
+        call classifier%predict_log_proba(x, log_probabilities, status)
+        if (.not. status_ok(status)) error stop "GaussianNB prediction failed"
+        call classifier%predict_log_proba_jvp(x, x_dot, log_probabilities, &
+            log_probabilities_dot, status)
+        if (.not. status_ok(status)) error stop "GaussianNB JVP failed"
+        elapsed = sum(log_probabilities)
+        call system_clock(clock_start, clock_rate)
+        do repetition = 1, prediction_repetitions
+            call classifier%predict_log_proba(x, log_probabilities, status)
+            if (.not. status_ok(status)) error stop "GaussianNB prediction timing failed"
+        end do
+        call system_clock(clock_end)
+        elapsed_predict = real(clock_end - clock_start, dp)/real(clock_rate, dp) &
+            /real(prediction_repetitions, dp)
+        call system_clock(clock_start, clock_rate)
+        do repetition = 1, prediction_repetitions
+            call classifier%predict_log_proba_jvp(x, x_dot, log_probabilities, &
+                log_probabilities_dot, status)
+            if (.not. status_ok(status)) error stop "GaussianNB JVP timing failed"
+        end do
+        call system_clock(clock_end)
+        elapsed_jvp = real(clock_end - clock_start, dp)/real(clock_rate, dp) &
+            /real(prediction_repetitions, dp)
+        write (*, '(a,i0,a,i0,a,i0,a,es24.16,a,es24.16,a,es24.16,a,es24.16,a,es24.16)') &
+            "gaussian_nb,", n_samples, ",", n_features, ",", n_classes, ",", &
+            elapsed_fit, ",", elapsed_predict, ",", elapsed_jvp, ",", elapsed, ",", &
+            sum(log_probabilities_dot)
+    end subroutine benchmark_gaussian_naive_bayes
 
 end program fortml_bench_features
