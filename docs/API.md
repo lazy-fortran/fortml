@@ -59,6 +59,7 @@ not supplied through a hidden generic interface.
 | `linear_regression_t` | `predict` | Free `linear_predict_jvp` | Free `linear_predict_vjp` | No |
 | `ridge_regression_t` | Weighted `predict` | Packed-parameter and continuous-input JVP | Packed-parameter and continuous-input VJP | No |
 | `elastic_net_regression_t` | Weighted `predict` | Packed-parameter and continuous-input JVP | Packed-parameter and continuous-input VJP | No |
+| `glm_regression_t` | Weighted positive-response Poisson/Gamma log-link `predict` | Packed-parameter and continuous-input JVP | Packed-parameter and continuous-input VJP; value/gradient objective | No |
 | `pca_t` | Centered projection and reconstruction | Input JVP for a fixed fitted state | Input VJP for a fixed fitted state | Fit-time SVD derivatives are not exposed |
 | `logistic_regression_t` | Decision score and probabilities | Parameter/input JVP, probability JVP | Parameter/input VJP, probability VJP | No |
 | `softmax_regression_t` | Multiclass decision scores and probabilities | Parameter/input JVP, probability JVP | Parameter/input VJP, probability VJP | No |
@@ -71,7 +72,9 @@ not supplied through a hidden generic interface.
 | `basis_map_t` | `evaluate` | Parameters and inputs | Parameters and inputs | No |
 | `one_hot_encoder_t` | Dense one-hot `transform` | Refused: integer categories have no canonical tangent space | Refused: integer categories have no canonical cotangent space | No |
 | `mlp_t` | `predict` | Parameters and inputs | Parameters and inputs | Weighted-output HVP |
+| `mlp_chain_t` | Sequential composition of named MLP stages | Packed all-stage parameters and inputs | Packed all-stage parameters and inputs | Differentiated reverse chain rule for parameters and inputs |
 | `mlp_training_objective_t` | MSE+L2 scalar objective | Packed network/L2 JVP | Packed network/L2 gradient and scalar VJP | Joint network/L2 HVP |
+| `mlp_chain_objective_t` | MSE+L2 scalar objective over a sequential MLP tree | Packed all-stage/L2 JVP | Packed all-stage/L2 gradient and scalar VJP | Exact all-stage/L2 HVP |
 | `mlp_hypergradient_objective_t` | Validation MSE after fixed full-batch GD trajectory | Outer `[log(learning_rate),log(l2)]` JVP | Exact trajectory value gradient and scalar VJP | Reverse trajectory products; inner MLP HVP |
 | `mlp_adamw_full_hypergradient_objective_t` | Validation MSE after fixed full-batch AdamW trajectory | Packed `[log(learning_rate),log(l2),log(weight_decay),logit(beta1),logit(beta2)]` JVP | Exact trajectory value gradient and scalar VJP | Forward state sensitivities through moments, bias correction, and decoupled decay |
 | `mlp_rmsprop_hypergradient_objective_t` | Validation MSE after fixed full-batch RMSprop trajectory | Packed `[log(learning_rate),log(l2),decay,log(epsilon),momentum]` JVP | Exact trajectory value gradient and scalar VJP | Forward state sensitivities; inner MLP HVP |
@@ -164,6 +167,46 @@ boundaries are explicit rather than hidden finite-difference fallbacks.
 CUDA until a resident elastic-net prediction kernel exists. `predict_device`
 dispatches only to a selected CPU context; a selected CUDA context returns
 `FORTNUM_NOT_IMPLEMENTED` rather than silently executing on the host.
+
+### `fortml_glm_regression`
+
+`glm_regression_t%fit(x,y,status[,family,alpha,fit_intercept,sample_weight,
+max_iterations,tolerance,dispersion,lower_bound,upper_bound])` fits a weighted
+positive-response generalized linear model. `family` is
+`GLM_FAMILY_POISSON` (nonnegative targets) or `GLM_FAMILY_GAMMA` (strictly
+positive targets); both use the stable canonical log link
+`GLM_LINK_LOG`. The normalized negative log likelihood is
+
+```text
+Poisson:  sum_i w_i [ exp(eta_i) - y_i eta_i ] / sum_i w_i
+Gamma:    sum_i w_i [ y_i exp(-eta_i) + eta_i ] / (dispersion sum_i w_i)
+```
+
+where `eta` is the intercept-plus-feature linear predictor. `alpha` adds an
+L2 penalty only to feature coefficients. Fits use bounded FortOpt L-BFGS-B;
+the default finite coefficient bounds are `[-30,30]` to keep the exponential
+link in a numerically safe domain and can be replaced by finite ordered
+`lower_bound`/`upper_bound` values. `dispersion` is positive and affects only
+the Gamma likelihood. Sample weights must be finite, nonnegative, and have
+positive mass. The fit-time optimizer and stopping decisions are discrete;
+the returned products hold the fitted coefficient state fixed.
+
+`predict(x,y,status)` has vector and matrix forms and returns strictly
+positive means. `coefficients()` stores an intercept in row 1 followed by
+feature rows; `parameters()` flattens this matrix in Fortran column-major
+order, and `set_parameters` validates the configured bounds. Metadata methods
+include `family`, `link`, `regularization`, `dispersion`, `feature_count`,
+`output_count`, `fit_intercept`, `lower_bound`, `upper_bound`, and `fitted`.
+
+`predict_jvp`/`jvp` and `predict_vjp`/`vjp` are exact analytic log-link products
+over packed coefficients and continuous inputs. `objective_value_gradient`
+exposes the weighted likelihood and its analytic coefficient gradient for
+hyperparameter/search adapters; optional `alpha_gradient` and
+`dispersion_gradient` outputs provide exact L2 and Gamma-dispersion
+derivatives. It does not finite-difference the objective.
+`device_supported(kind)` reports CPU support for a fitted model. A selected
+CUDA context is refused with `FORTNUM_NOT_IMPLEMENTED` until a resident GLM
+kernel exists, so the device API never hides a host fallback.
 
 ### `fortml_pca`
 
@@ -834,6 +877,35 @@ first and second derivatives through these products, so `jvp`, `vjp`, and
 at the kink; leaky ReLU uses its fixed negative-side slope and zero second
 derivative away from the kink.
 
+### `fortml_mlp_chain`
+
+`mlp_chain_t` is the composable neural-module seam. Initialize it with the
+input width and append initialized `mlp_t` stages with unique names:
+
+```text
+chain%initialize(n_features,status)
+chain%append(encoder,status,name="encoder")
+chain%append(head,status,name="head")
+```
+
+Each stage's input width must equal the preceding stage's output width. The
+chain owns copies of the children and exposes `stage_count`, `input_count`,
+`output_count`, `parameter_count`, `parameters`, `set_parameters`, and
+`parameter_range`. The packed tree is insertion ordered, with each named stage
+occupying one contiguous range; this is the stable routing contract for
+optimizers and checkpoints.
+
+`predict`, `jvp`, `vjp`, and `hvp` apply the exact sequential chain rule. The
+HVP differentiates the reverse cotangent recurrence, including the tangent of
+downstream cotangents, so it covers both stage parameters and input
+directions. `mlp_chain_objective_t` adds mean MSE plus an optional L2 block,
+scalar JVP/VJP, a joint parameter/L2 HVP, and a `fortopt` callback. The
+convenience `mlp_chain_optimize_lbfgsb` consumes this same analytic
+value/gradient callback with explicit parameter and L2 bounds. The chain
+currently reports CPU-only; CUDA objective and optimizer requests return
+`FORTNUM_NOT_IMPLEMENTED` rather than executing a hidden host fallback. A
+resident fused chain kernel is a separate GPU work package.
+
 ### `fortml_hamiltonian_mlp`
 
 `hamiltonian_mlp_t%initialize(n_coordinates,potential_layers,kinetic_layers,
@@ -1296,12 +1368,15 @@ make_matern52_kernel(input_dim, variance, lengthscale, status)
 make_linear_kernel(input_dim, variance, status)
 make_constant_kernel(input_dim, variance, status)
 make_white_noise_kernel(input_dim, variance, status)
+make_periodic_kernel(input_dim, variance, lengthscale, period, status)
+make_rational_quadratic_kernel(input_dim, variance, lengthscale, alpha, status)
 make_user_kernel(input_dim, variance, formula, status)
 ```
 
 The corresponding kind constants are `KERNEL_RBF`, `KERNEL_MATERN12`,
 `KERNEL_MATERN32`, `KERNEL_MATERN52`, `KERNEL_LINEAR`, `KERNEL_CONSTANT`,
-`KERNEL_WHITE_NOISE`, `KERNEL_SUM`, `KERNEL_PRODUCT`, and `KERNEL_USER`.
+`KERNEL_WHITE_NOISE`, `KERNEL_PERIODIC`, `KERNEL_RATIONAL_QUADRATIC`,
+`KERNEL_SUM`, `KERNEL_PRODUCT`, and `KERNEL_USER`.
 Combine initialized kernels with `kernel_add(left,right,status)` or
 `kernel_multiply(left,right,status)`.
 `clone_kernel(kernel)` makes an independent copy of the complete expression
@@ -1309,21 +1384,34 @@ tree, including composite children. Use it for temporary optimizer or
 derivative probes instead of intrinsic assignment, which aliases pointer
 children.
 
-Leaf parameters are stored as logarithms. Radial leaves have
-`[log_variance,log_lengthscale]`. Linear, constant, white-noise, and user leaves
-have `[log_variance]`. Composite vectors concatenate the complete left vector
-and then the complete right vector.
+Leaf parameters are stored as logarithms. RBF and Matérn leaves have
+`[log_variance,log_lengthscale]`. Periodic leaves use
+`[log_variance,log_lengthscale,log_period]`; rational-quadratic leaves use
+`[log_variance,log_lengthscale,log_alpha]`. Linear, constant, white-noise, and
+user leaves have `[log_variance]`. Composite vectors concatenate the complete
+left vector and then the complete right vector.
 
 `kernel_t` exposes `parameter_count`, `parameters`, `set_parameters`, `value`,
 `matrix`, `matrix_jvp`, `parameter_vjp`, `parameter_hvp`, and
 `input_derivatives`. Input derivatives return the value, gradients with respect
-to both arguments, and the mixed Hessian. Matérn 1/2 input derivatives are
-undefined at coincident points. White-noise derivative observations are
-rejected. Validated user formulas use the same forward derivative stack for
-their value, both gradients, and mixed Hessian. A `push_distance` formula
-refuses coincident points where its derivative is singular. The free
-`kernel_input_derivatives` procedure has the same arguments as the type-bound
-method with the kernel supplied first.
+to both arguments, and the mixed Hessian. Periodic and rational-quadratic
+leaves provide smooth coincident-point limits for these products. Their
+parameter JVP/VJP/HVP products are analytic in the logarithmic parameters;
+the periodic scale is the Euclidean period and the rational-quadratic tail is
+controlled by positive `alpha`. Matérn 1/2 input derivatives remain undefined
+at coincident points, and white-noise derivative observations are rejected.
+Validated user formulas use the same forward derivative stack for their value,
+both gradients, and mixed Hessian. A `push_distance` formula refuses coincident
+points where its derivative is singular. The free `kernel_input_derivatives`
+procedure has the same arguments as the type-bound method with the kernel
+supplied first.
+
+`kernel_operator_t` currently refuses periodic and rational-quadratic leaves at
+initialization: the static host/operator program and resident CUDA ABI do not
+yet carry their third positive parameter. This is a typed refusal, not a host
+fallback. Dense `kernel_t%matrix` and all declared derivative products remain
+available, and a resident device implementation will be added only when the
+operator ABI can evaluate the complete expression without hidden transfers.
 
 ### `fortml_kernel_formula`
 
@@ -1734,7 +1822,9 @@ also exposes `name`, `size`, `get`, `set`, and `initialized`.
 `parameter_registry_t` exposes `clear`, `add`, `block_count`,
 `parameter_count`, `pack`, `unpack`, and `range`. Names must be nonempty and <!-- slop-ok -->
 unique. Blocks retain insertion order. The public callback contracts are
-`parameter_get_proc` and `parameter_set_proc`.
+`parameter_get_proc` and `parameter_set_proc`. `parameter_block_from_mlp_chain`
+binds one named range to a live `mlp_chain_t`, so a composed network can share
+the same flat registry as MLPs, kernels, and estimators.
 
 ### `fortml_parameter_products`
 
