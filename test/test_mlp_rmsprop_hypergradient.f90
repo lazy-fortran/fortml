@@ -8,7 +8,7 @@ program test_mlp_rmsprop_hypergradient
     use fortml_mlp_hypergradient, only: &
         mlp_rmsprop_hypergradient_objective_t, &
         mlp_rmsprop_hypergradient_options_t, mlp_rmsprop_hypergradient_result_t, &
-        mlp_rmsprop_hyperparameter_metadata_t, mlp_optimize_rmsprop_hyperparameters, &
+        mlp_rmsprop_hypergradient_metadata_t, mlp_optimize_rmsprop_hyperparameters, &
         MLP_RMSPROP_HYPERPARAMETER_COUNT, MLP_RMSPROP_LOG_LEARNING_RATE, &
         MLP_RMSPROP_LOG_L2, MLP_RMSPROP_DECAY, MLP_RMSPROP_LOG_EPSILON, &
         MLP_RMSPROP_MOMENTUM
@@ -18,7 +18,7 @@ program test_mlp_rmsprop_hypergradient
     type(mlp_rmsprop_hypergradient_objective_t) :: objective
     type(mlp_rmsprop_hypergradient_options_t) :: options, bad_options
     type(mlp_rmsprop_hypergradient_result_t) :: result
-    type(mlp_rmsprop_hyperparameter_metadata_t) :: metadata
+    type(mlp_rmsprop_hypergradient_metadata_t) :: metadata
     type(fortnum_status_t) :: status
     real(dp) :: train_x(5, 1), train_target(5, 1)
     real(dp) :: validation_x(3, 1), validation_target(3, 1)

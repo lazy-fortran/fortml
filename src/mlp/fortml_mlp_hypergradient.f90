@@ -133,7 +133,7 @@ module fortml_mlp_hypergradient
         real(dp) :: weight_decay = 0.0_dp
     end type mlp_adamw_hypergradient_result_t
 
-    type, public :: mlp_rmsprop_hyperparameter_metadata_t
+    type, public :: mlp_rmsprop_hypergradient_metadata_t
         !! Stable packed layout for the RMSprop outer search variable.
         integer :: parameter_count = MLP_RMSPROP_HYPERPARAMETER_COUNT
         integer :: log_learning_rate_index = MLP_RMSPROP_LOG_LEARNING_RATE
@@ -143,7 +143,7 @@ module fortml_mlp_hypergradient
         integer :: momentum_index = MLP_RMSPROP_MOMENTUM
         integer :: inner_steps = 0
         logical :: centered = .false.
-    end type mlp_rmsprop_hyperparameter_metadata_t
+    end type mlp_rmsprop_hypergradient_metadata_t
 
     type, public :: mlp_rmsprop_hypergradient_options_t
         !! Fixed full-batch RMSprop trajectory configuration.
@@ -253,7 +253,7 @@ module fortml_mlp_hypergradient
         real(dp), allocatable :: train_x(:, :), train_target(:, :)
         real(dp), allocatable :: validation_x(:, :), validation_target(:, :)
         real(dp), allocatable :: initial_parameters(:)
-        type(mlp_rmsprop_hyperparameter_metadata_t) :: layout
+        type(mlp_rmsprop_hypergradient_metadata_t) :: layout
         real(dp) :: initial_log_learning_rate = 0.0_dp
         real(dp) :: initial_log_l2 = 0.0_dp
         real(dp) :: initial_decay = 0.99_dp
@@ -542,7 +542,7 @@ contains
         type(fortnum_status_t), intent(out) :: status
 
         self%initialized = .false.
-        self%layout = mlp_rmsprop_hyperparameter_metadata_t()
+        self%layout = mlp_rmsprop_hypergradient_metadata_t()
         if (.not. valid_rmsprop_options(options)) then
             if (options%optimizer /= MLP_OPTIMIZER_RMSPROP .or. &
                 options%device_kind /= FORTML_DEVICE_CPU) then
@@ -592,7 +592,7 @@ contains
 
     function mlp_rmsprop_hypergradient_metadata(self) result(layout)
         class(mlp_rmsprop_hypergradient_objective_t), intent(in) :: self
-        type(mlp_rmsprop_hyperparameter_metadata_t) :: layout
+        type(mlp_rmsprop_hypergradient_metadata_t) :: layout
 
         layout = self%layout
     end function mlp_rmsprop_hypergradient_metadata
