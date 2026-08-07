@@ -27,6 +27,17 @@ Most checked procedures return `type(fortnum_status_t)`. Test it with
 `linear_operator_t` return `fortnum_krylov` information codes for CG instead of
 a status object.
 
+`fortml_device` provides the explicit backend and residency control-plane
+contract. Select `FORTML_DEVICE_CPU` or `FORTML_DEVICE_CUDA` with
+`fortml_device_t%select`; query availability with `fortml_query_device` or
+`fortml_device_available`. CUDA is refused with `FORTNUM_NOT_IMPLEMENTED` when
+the current build exposes only the CUDA stubs. The context records backend
+identity, declared resident bytes, ownership metadata, and host/device
+transfer counters through `begin_residency`, `record_host_to_device`,
+`record_device_to_host`, and `end_residency`. These methods do not allocate or
+copy arrays, and they never turn a CPU execution into a GPU claim. See
+[`docs/DEVICE.md`](DEVICE.md) for the ownership and refusal contract.
+
 Several modules export a procedure both as a type-bound method and as a free
 procedure. This reference uses the type-bound spelling. Free `mlp_jvp`,
 `mlp_vjp`, `mlp_hvp`, `gp_fit`, `gp_predict`, `gp_predict_jvp`,
@@ -50,6 +61,7 @@ not supplied through a hidden generic interface.
 | `softmax_regression_t` | Multiclass decision scores and probabilities | Parameter/input JVP, probability JVP | Parameter/input VJP, probability VJP | No |
 | `gaussian_naive_bayes_t` | Log probabilities and probabilities | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
 | `bernoulli_naive_bayes_t` | Log probabilities and probabilities | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
+| `multinomial_naive_bayes_t` | Log probabilities and probabilities | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
 | `basis_map_t` | `evaluate` | Parameters and inputs | Parameters and inputs | No |
 | `mlp_t` | `predict` | Parameters and inputs | Parameters and inputs | Weighted-output HVP |
 | `bnn_t` | `elbo` | ELBO | ELBO | ELBO |
@@ -207,6 +219,30 @@ Input and packed-parameter JVP/VJP products cover both log probabilities and
 probabilities, including the log-softmax and normalized-prior projections.
 Nonfinite values, out-of-range features, nonpositive alpha, malformed packs,
 unfitted models, and nonpositive effective class mass are refused explicitly.
+
+### `fortml_multinomial_naive_bayes`
+
+`multinomial_naive_bayes_t%fit(x,labels,status[,alpha,priors,sample_weight,
+class_weight])` fits a finite Multinomial Naive Bayes model. Rows contain
+nonnegative real-valued feature counts; real counts are accepted so the
+prediction map remains smooth for input products. Classes are sorted integer
+labels. `alpha` is strictly positive additive smoothing, and optional
+nonnegative sample weights and positive sorted-class weights scale class and
+feature masses before probabilities and empirical priors are formed. Explicit
+priors are normalized in sorted class order.
+
+`predict_log_proba`, `predict_proba`, and `predict` use stable shifted
+log-likelihood normalization and deterministic first-class ties.
+`feature_probabilities`, `feature_counts`, `weighted_class_counts`, `classes`,
+`class_prior`, `alpha_value`, `parameter_count`, `parameters`, and
+`set_parameters` expose the fitted state. Packed parameters contain the
+feature-probability matrix in Fortran column-major order followed by the
+normalized class-prior block.
+
+Input and packed-parameter JVP/VJP products cover log probabilities and
+probabilities, including the simplex and log-softmax projections. Negative or
+nonfinite counts, nonpositive smoothing, malformed packs, nonpositive class
+mass, unfitted models, and nonfinite prediction inputs are refused.
 
 ### `fortml_classification_metrics`
 
