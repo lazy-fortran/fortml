@@ -32,6 +32,23 @@ isolated to array construction; lint and all behavioral tests pass. NVIDIA
 compiler coverage remains an
 explicit older-build result.
 
+### 2026-08-07 objective-trainer and tree-contribution slice
+
+The model-agnostic `fortml_trainer` core is now a shared full-batch state
+machine for any FortOpt objective. It owns explicit SGD, Adam, AdamW,
+Adagrad, RMSprop, and bounded L-BFGS-B state, gradient clipping, optional
+projection bounds, EMA parameters, convergence/history records, typed step
+callbacks, and cloneable in-memory checkpoints. The independent quadratic
+oracle is `test_trainer`; this closes the reusable objective-training seam but
+does not claim mini-batch data loading, validation streams, distributed state,
+mixed precision, or resident GPU execution.
+
+The XGBoost tree contribution API now exposes additive base-margin and
+per-tree contributions for regression and logistic models, with staged-margin
+equivalence, shape/refusal checks, and typed CUDA refusal. Its independent
+oracle is `test_xgboost_contributions`; the contribution vector is fixed-tree
+and therefore remains nondifferentiable through split routing.
+
 Behavioral oracles include dense or analytic references, finite differences,
 adjoint identities, convergence checks, and seeded known-answer cases.
 Repository-state checks do not count.
@@ -443,6 +460,10 @@ when a lower-level primitive already exists.
 - [x] Binary and one-vs-rest XGBoost-style staged predictions, cumulative
   margins, gain/weight/cover feature-importance diagnostics, and fixed-tree
   input JVP/VJP products with split-boundary refusals.
+- [x] Add additive XGBoost base-margin and per-tree contribution predictions
+  for regression and logistic objectives, staged-margin equivalence, explicit
+  CPU/CUDA dispatch, and malformed-shape refusals. Split-routing and tree
+  structure derivatives remain the declared nondifferentiable boundary.
 - [ ] XGBoost and LightGBM parity beyond exact growth: quantile sketches,
   histogram bins, leaf-wise growth, ranking objectives, DART/GOSS/EFB,
   categorical partitions, interaction constraints, distributed
@@ -1396,6 +1417,12 @@ trials remain visible in the result schema.
   still need the same logits/probability and empty-batch contracts.
 - [x] Add a deterministic batch iterator with seeded shuffling and final-batch
   behavior. Separate training and validation streams remain open.
+- [x] Add the model-agnostic `trainer_t` objective seam with explicit
+  full-batch SGD, Adam, AdamW, Adagrad, RMSprop, and bounded L-BFGS-B state,
+  clipping, projection bounds, EMA, convergence histories, callbacks, and
+  cloneable in-memory checkpoints. The independent quadratic oracle is
+  `test_trainer`; data-loader, validation, distributed, mixed-precision, and
+  resident-device adapters remain separate contracts.
 - [ ] Add a trainer that owns optimizer state, learning-rate schedules, gradient
   clipping, accumulation, validation intervals, early stopping, and callbacks.
   The current MLP trainer now covers deterministic accumulation, schedules,

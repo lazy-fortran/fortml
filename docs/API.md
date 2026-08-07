@@ -138,6 +138,7 @@ resident-batch evidence.
 | `mlp_adamw_full_hypergradient_objective_t` | Validation MSE after fixed full-batch AdamW trajectory | Packed `[log(learning_rate),log(l2),log(weight_decay),logit(beta1),logit(beta2)]` JVP | Exact trajectory value gradient and scalar VJP | Forward state sensitivities through moments, bias correction, and decoupled decay |
 | `mlp_rmsprop_hypergradient_objective_t` | Validation MSE after fixed full-batch RMSprop trajectory | Packed `[log(learning_rate),log(l2),decay,log(epsilon),momentum]` JVP | Exact trajectory value gradient and scalar VJP | Forward state sensitivities; inner MLP HVP |
 | `mlp_schedule_hypergradient_objective_t` | Validation MSE after a typed scheduled full-batch trajectory | Packed `[log(base_rate),log(l2),logit(min_fraction),logit(decay_factor)]` JVP | Exact schedule/trajectory value gradient and scalar VJP | Inner MLP HVP; outer hyper-HVP is not approximated |
+| `trainer_t` | Any `fortopt_objective::objective_t` with explicit full-batch training state | Optimizer updates are stateful; the objective supplies exact products | The same objective value/gradient callback is used for every update | L-BFGS-B consumes the objective gradient; no hidden HVP or finite-difference fallback |
 | `bnn_t` | `elbo` | ELBO | ELBO | ELBO |
 | `vae_t` | `elbo`, `reconstruct` | No | ELBO gradient | No |
 | `rnn_t` | `forward`, squared-error `loss` | No | Loss gradient by BPTT | No |
@@ -164,6 +165,33 @@ Truncated, unknown, duplicate, or structurally unsafe records return
 
 `parameter_products_t` gives `mlp_t` and fitted `gp_regression_t` one common
 packed value/JVP/VJP/HVP interface. Inputs remain fixed in that interface.
+
+## `fortml_trainer`
+
+`trainer_t` is the model-agnostic training state machine for objectives that
+already implement `fortopt_objective::objective_t`. This is the shared seam
+for basis/pipeline, linear, GP, classifier, neural-tree, and future
+physics-informed adapters; it does not reinterpret a model-specific callback
+or hide a data transfer. `initialize(objective,initial,status,options)`
+validates a finite packed parameter vector and evaluates the initial scalar
+value/gradient. `step(status)` performs one deterministic full-batch update;
+`fit(status)` runs to the declared limit or convergence. The available
+optimizers are `FORTML_TRAIN_SGD`, `FORTML_TRAIN_ADAM`, `FORTML_TRAIN_ADAMW`,
+`FORTML_TRAIN_ADAGRAD`, `FORTML_TRAIN_RMSPROP`, and
+`FORTML_TRAIN_LBFGSB` (the last is a fit-level bounded solve).
+
+`trainer_options_t` owns optimizer coefficients, gradient clipping, optional
+parameter bounds, EMA decay, convergence tolerances, and an optional typed
+step callback. `trainer_state_t` reports counters, objective and gradient
+histories, clipping, convergence, final parameters, and EMA parameters.
+`state_copy()` is an in-memory checkpoint and `clone(copy,status)` copies the
+complete optimizer and objective state, including moments and L-BFGS-B
+parameters, so an interrupted run can resume without process-global state.
+`parameters()` and `value_gradient()` return copies/products for deployment and
+outer hyperparameter search. The core is CPU objective execution; a device
+adapter must supply a resident objective or return `FORTNUM_NOT_IMPLEMENTED`.
+Mini-batching, validation streams, and stochastic data-loader state belong to
+the owning objective/trainer adapter and are never silently emulated here.
 
 `mlp_t%parameter_layout()` exposes the same packed vector as a deterministic
 named parameter tree. Each dense layer contributes `layer_n.weight` followed by
