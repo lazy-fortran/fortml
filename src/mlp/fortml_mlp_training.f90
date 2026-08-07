@@ -119,16 +119,22 @@ module fortml_mlp_training
         integer :: adam_step_count = 0
         integer :: stale_epochs = 0
         integer :: gradient_clipped_updates = 0
+        integer :: validation_interval = 1
+        integer :: patience = 0
         logical :: shuffle = .false.
         logical :: has_validation = .false.
         logical :: converged = .false.
         logical :: early_stopped = .false.
+        logical :: restore_best = .true.
         integer(int64) :: shuffle_state = 1_int64
         real(dp) :: learning_rate = 1.0e-3_dp
         real(dp) :: beta1 = 0.9_dp
         real(dp) :: beta2 = 0.999_dp
         real(dp) :: epsilon = 1.0e-8_dp
         real(dp) :: l2 = 0.0_dp
+        real(dp) :: tolerance = 1.0e-8_dp
+        real(dp) :: min_delta = 0.0_dp
+        real(dp) :: gradient_clip_norm = 0.0_dp
         real(dp) :: last_learning_rate = 0.0_dp
         real(dp) :: initial_loss = huge(1.0_dp)
         real(dp) :: final_loss = huge(1.0_dp)
@@ -408,16 +414,22 @@ contains
         self%adam_step_count = 0
         self%stale_epochs = 0
         self%gradient_clipped_updates = 0
+        self%validation_interval = 1
+        self%patience = 0
         self%shuffle = .false.
         self%has_validation = .false.
         self%converged = .false.
         self%early_stopped = .false.
+        self%restore_best = .true.
         self%shuffle_state = 1_int64
         self%learning_rate = 1.0e-3_dp
         self%beta1 = 0.9_dp
         self%beta2 = 0.999_dp
         self%epsilon = 1.0e-8_dp
         self%l2 = 0.0_dp
+        self%tolerance = 1.0e-8_dp
+        self%min_delta = 0.0_dp
+        self%gradient_clip_norm = 0.0_dp
         self%last_learning_rate = 0.0_dp
         self%initial_loss = huge(1.0_dp)
         self%final_loss = huge(1.0_dp)
@@ -445,6 +457,8 @@ contains
             self%active_microbatches <= self%accumulation_steps .and. &
             self%batch_size > 0 .and. self%accumulation_steps > 0 .and. &
             self%shuffle_seed > 0 .and. self%adam_step_count >= 0 .and. &
+            self%validation_interval > 0 .and. self%patience >= 0 .and. &
+            self%gradient_clipped_updates >= 0 .and. &
             allocated(self%parameters) .and. allocated(self%first_moment) .and. &
             allocated(self%second_moment) .and. allocated(self%best_parameters) &
             .and. allocated(self%accumulated_gradient) .and. &
@@ -484,7 +498,12 @@ contains
             ieee_is_finite(self%epsilon) .and. ieee_is_finite(self%l2) .and. &
             ieee_is_finite(self%last_learning_rate) .and. &
             ieee_is_finite(self%initial_loss) .and. ieee_is_finite(self%final_loss) &
-            .and. ieee_is_finite(self%best_loss)
+            .and. ieee_is_finite(self%best_loss) .and. &
+            ieee_is_finite(self%tolerance) .and. &
+            ieee_is_finite(self%min_delta) .and. &
+            ieee_is_finite(self%gradient_clip_norm) .and. &
+            self%tolerance >= 0.0_dp .and. self%min_delta >= 0.0_dp .and. &
+            self%gradient_clip_norm >= 0.0_dp
         if (self%has_validation) valid = valid .and. &
             ieee_is_finite(self%initial_validation_loss) .and. &
             ieee_is_finite(self%final_validation_loss) .and. &
@@ -983,6 +1002,18 @@ contains
             if (checkpoint%beta2 /= config%beta2) incompatible_checkpoint = .true.
             if (checkpoint%epsilon /= config%epsilon) incompatible_checkpoint = .true.
             if (checkpoint%l2 /= config%l2) incompatible_checkpoint = .true.
+            if (checkpoint%validation_interval /= config%validation_interval) then
+                incompatible_checkpoint = .true.
+            end if
+            if (checkpoint%patience /= config%patience) incompatible_checkpoint = .true.
+            if (checkpoint%restore_best .neqv. config%restore_best) then
+                incompatible_checkpoint = .true.
+            end if
+            if (checkpoint%tolerance /= config%tolerance) incompatible_checkpoint = .true.
+            if (checkpoint%min_delta /= config%min_delta) incompatible_checkpoint = .true.
+            if (checkpoint%gradient_clip_norm /= config%gradient_clip_norm) then
+                incompatible_checkpoint = .true.
+            end if
             if (checkpoint%epoch > config%max_epochs) incompatible_checkpoint = .true.
             if (incompatible_checkpoint) then
                 call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -1029,8 +1060,8 @@ contains
             result%updates = checkpoint%updates
             result%microbatches = checkpoint%microbatches
             result%gradient_clipped_updates = checkpoint%gradient_clipped_updates
-            result%converged = checkpoint%converged
-            result%early_stopped = checkpoint%early_stopped
+            result%converged = .false.
+            result%early_stopped = .false.
             result%best_epoch = checkpoint%best_epoch
             result%best_validation_epoch = checkpoint%best_validation_epoch
             result%initial_loss = checkpoint%initial_loss
@@ -1374,16 +1405,22 @@ contains
         checkpoint%shuffle_seed = config%shuffle_seed
         checkpoint%adam_step_count = optimizer%step_count
         checkpoint%stale_epochs = stale_epochs
+        checkpoint%validation_interval = config%validation_interval
+        checkpoint%patience = config%patience
         checkpoint%shuffle = config%shuffle
         checkpoint%has_validation = has_validation
         checkpoint%converged = result%converged
         checkpoint%early_stopped = result%early_stopped
+        checkpoint%restore_best = config%restore_best
         checkpoint%shuffle_state = iterator%shuffle_state
         checkpoint%learning_rate = config%learning_rate
         checkpoint%beta1 = config%beta1
         checkpoint%beta2 = config%beta2
         checkpoint%epsilon = config%epsilon
         checkpoint%l2 = config%l2
+        checkpoint%tolerance = config%tolerance
+        checkpoint%min_delta = config%min_delta
+        checkpoint%gradient_clip_norm = config%gradient_clip_norm
         checkpoint%last_learning_rate = result%last_learning_rate
         checkpoint%initial_loss = result%initial_loss
         checkpoint%final_loss = result%final_loss
