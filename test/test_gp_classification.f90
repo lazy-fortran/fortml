@@ -20,6 +20,8 @@ program test_gp_classification
     real(dp) :: mean_plus(5), mean_minus(5), variance_plus(5), variance_minus(5)
     real(dp) :: probabilities(5, 2), probabilities_dot(5, 2)
     real(dp) :: probabilities_plus(5, 2), probabilities_minus(5, 2)
+    real(dp) :: mean_bar(5), variance_bar(5), x_bar(5, 1)
+    real(dp) :: probabilities_bar(5, 2), probabilities_x_bar(5, 1)
     real(dp), allocatable :: kernel_parameters(:), model_parameters(:), gradient(:)
     real(dp), allocatable :: gradient_fd(:), theta_plus(:), theta_minus(:)
     integer :: labels(8), predicted(8), classes(2), failures, k
@@ -107,6 +109,21 @@ program test_gp_classification
     call check(status_ok(status) .and. maxval(abs(probabilities_dot - &
         (probabilities_plus - probabilities_minus)/(2.0_dp*h))) < 2.0e-6_dp, &
         "probability input JVP finite difference", failures)
+
+    ! Reverse products satisfy the dot-product identity against the JVPs.
+    mean_bar = [0.4_dp, -0.2_dp, 0.7_dp, -0.1_dp, 0.3_dp]
+    variance_bar = [-0.3_dp, 0.6_dp, -0.4_dp, 0.2_dp, 0.5_dp]
+    call model%predict_latent_vjp(x_test, mean_bar, variance_bar, x_bar, status)
+    call check(status_ok(status) .and. abs(sum(x_bar(:, 1)*x_dot(:, 1)) - &
+        (sum(mean_bar*mean_dot) + sum(variance_bar*variance_dot))) < 3.0e-6_dp, &
+        "latent input VJP dot-product identity", failures)
+    probabilities_bar(:, 1) = [-0.2_dp, 0.4_dp, 0.1_dp, -0.5_dp, 0.3_dp]
+    probabilities_bar(:, 2) = [0.6_dp, -0.1_dp, 0.8_dp, 0.2_dp, -0.4_dp]
+    call model%predict_proba_vjp(x_test, probabilities_bar, probabilities_x_bar, &
+        status)
+    call check(status_ok(status) .and. abs(sum(probabilities_x_bar(:, 1)* &
+        x_dot(:, 1)) - sum(probabilities_bar*probabilities_dot)) < 3.0e-6_dp, &
+        "probability input VJP dot-product identity", failures)
 
     options%likelihood = GP_LIKELIHOOD_PROBIT
     call probit_model%fit(x, labels, kernel, status, options, state)

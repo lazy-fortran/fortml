@@ -22,6 +22,8 @@ program test_gp_multiclass_classification
     real(dp) :: probabilities_plus(6, 3), probabilities_minus(6, 3)
     real(dp) :: margins(6, 3), margins_dot(6, 3), margins_plus(6, 3), &
         margins_minus(6, 3)
+    real(dp) :: margins_bar(6, 3), margins_x_bar(6, 2), probabilities_bar(6, 3), &
+        probabilities_x_bar(6, 2)
     real(dp) :: repeat_probabilities(6, 3), probit_probabilities(6, 3)
     real(dp), allocatable :: kernel_parameters(:), model_parameters(:), gradient(:)
     real(dp), allocatable :: gradient_fd(:), theta_plus(:), theta_minus(:)
@@ -130,6 +132,22 @@ program test_gp_multiclass_classification
     call check(status_ok(status) .and. maxval(abs(margins_dot - &
         (margins_plus - margins_minus)/(2.0e-5_dp))) < 3.0e-6_dp, &
         "latent decision-function JVP finite difference", failures)
+    margins_bar = 0.0_dp
+    margins_bar(:, 1) = [0.2_dp, -0.4_dp, 0.7_dp, -0.1_dp, 0.5_dp, -0.3_dp]
+    margins_bar(:, 2) = [-0.6_dp, 0.1_dp, 0.2_dp, 0.8_dp, -0.2_dp, 0.4_dp]
+    margins_bar(:, 3) = [0.3_dp, 0.5_dp, -0.3_dp, 0.2_dp, 0.6_dp, -0.7_dp]
+    call model%decision_function_vjp(query, margins_bar, margins_x_bar, status)
+    call check(status_ok(status) .and. abs(sum(margins_x_bar*query_dot) - &
+        sum(margins_bar*margins_dot)) < 4.0e-6_dp, &
+        "latent decision-function VJP dot-product identity", failures)
+    probabilities_bar(:, 1) = [0.2_dp, -0.4_dp, 0.7_dp, -0.1_dp, 0.5_dp, -0.3_dp]
+    probabilities_bar(:, 2) = [-0.6_dp, 0.1_dp, 0.2_dp, 0.8_dp, -0.2_dp, 0.4_dp]
+    probabilities_bar(:, 3) = [0.3_dp, 0.5_dp, -0.3_dp, 0.2_dp, 0.6_dp, -0.7_dp]
+    call model%predict_proba_vjp(query, probabilities_bar, probabilities_x_bar, &
+        status)
+    call check(status_ok(status) .and. abs(sum(probabilities_x_bar*query_dot) - &
+        sum(probabilities_bar*probabilities_dot)) < 4.0e-6_dp, &
+        "multiclass probability VJP dot-product identity", failures)
 
     call repeat_model%fit(x, labels, kernel, status, options, repeat_state)
     call repeat_model%predict_proba(query, repeat_probabilities, status)

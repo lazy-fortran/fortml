@@ -57,8 +57,10 @@ module fortml_gp_classification
         procedure, public :: fit => gp_classification_fit
         procedure, public :: predict_latent => gp_classification_predict_latent
         procedure, public :: predict_latent_jvp => gp_classification_predict_latent_jvp
+        procedure, public :: predict_latent_vjp => gp_classification_predict_latent_vjp
         procedure, public :: predict_proba => gp_classification_predict_proba
         procedure, public :: predict_proba_jvp => gp_classification_predict_proba_jvp
+        procedure, public :: predict_proba_vjp => gp_classification_predict_proba_vjp
         procedure, public :: predict => gp_classification_predict
         procedure, public :: classes => gp_classification_classes
         procedure, public :: feature_count => gp_classification_feature_count
@@ -73,8 +75,10 @@ module fortml_gp_classification
     public :: gp_classification_fit
     public :: gp_classification_predict_latent
     public :: gp_classification_predict_latent_jvp
+    public :: gp_classification_predict_latent_vjp
     public :: gp_classification_predict_proba
     public :: gp_classification_predict_proba_jvp
+    public :: gp_classification_predict_proba_vjp
     public :: gp_classification_predict
 
 contains
@@ -269,6 +273,70 @@ contains
         call clamp_variance(variance, status)
     end subroutine gp_classification_predict_latent_jvp
 
+    !> Reverse-mode product of the latent posterior prediction with respect
+    !> to query features.  The fitted state is held fixed.
+    subroutine gp_classification_predict_latent_vjp(self, x, mean_bar, &
+            variance_bar, x_bar, status)
+        class(gp_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), mean_bar(:), variance_bar(:)
+        real(dp), intent(out) :: x_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: cross(:, :), work(:, :), lambda(:, :)
+        real(dp), allocatable :: gradient_x1(:), gradient_x2(:), mixed_hessian(:, :)
+        real(dp) :: value, variance_weight
+        real(dp), allocatable :: cross_bar(:)
+        integer :: i, j
+
+        x_bar = 0.0_dp
+        if (.not. prediction_input_valid(self, x, status)) return
+        if (size(mean_bar) /= size(x, 1) .or. size(variance_bar) /= size(x, 1) .or. &
+            any(shape(x_bar) /= shape(x))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP classification latent VJP: input or cotangent shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(mean_bar)) .or. &
+            any(.not. ieee_is_finite(variance_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP classification latent VJP: cotangents must be finite")
+            return
+        end if
+
+        allocate(cross(self%n_samples, size(x, 1)), work(self%n_samples, size(x, 1)), &
+            lambda(self%n_samples, size(x, 1)))
+        allocate(cross_bar(self%n_samples))
+        call self%kernel%matrix(self%x_train, x, cross, status)
+        if (status%code /= FORTNUM_OK) return
+        do j = 1, size(x, 1)
+            work(:, j) = self%sqrt_w*cross(:, j)
+        end do
+        call self%posterior_factorization%solve(work, status)
+        if (status%code /= FORTNUM_OK) return
+        lambda = work
+        do j = 1, size(x, 1)
+            call self%posterior_factorization%solve(lambda(:, j), status)
+            if (status%code /= FORTNUM_OK) return
+        end do
+        allocate(gradient_x1(self%n_features), gradient_x2(self%n_features), &
+            mixed_hessian(self%n_features, self%n_features))
+        do j = 1, size(x, 1)
+            cross_bar = self%alpha*mean_bar(j) - 2.0_dp*self%sqrt_w*lambda(:, j)* &
+                variance_bar(j)
+            do i = 1, self%n_samples
+                call self%kernel%input_derivatives(self%x_train(i, :), x(j, :), &
+                    value, gradient_x1, gradient_x2, mixed_hessian, status)
+                if (status%code /= FORTNUM_OK) return
+                x_bar(j, :) = x_bar(j, :) + cross_bar(i)*gradient_x2
+            end do
+            call self%kernel%input_derivatives(x(j, :), x(j, :), value, &
+                gradient_x1, gradient_x2, mixed_hessian, status)
+            if (status%code /= FORTNUM_OK) return
+            variance_weight = variance_bar(j)
+            x_bar(j, :) = x_bar(j, :) + variance_weight*(gradient_x1 + gradient_x2)
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_classification_predict_latent_vjp
+
     subroutine gp_classification_predict_proba(self, x, probabilities, status)
         class(gp_classification_t), intent(in) :: self
         real(dp), intent(in) :: x(:, :)
@@ -331,6 +399,53 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine gp_classification_predict_proba_jvp
+
+    !> Reverse-mode product of observed probabilities with respect to query
+    !> features.  Probability columns are ordered as ``classes()``.
+    subroutine gp_classification_predict_proba_vjp(self, x, probabilities_bar, &
+            x_bar, status)
+        class(gp_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), probabilities_bar(:, :)
+        real(dp), intent(out) :: x_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: mean(:), variance(:), mean_bar(:), variance_bar(:)
+        real(dp) :: probability, p_mu, p_variance, scale, z, density, cotangent
+        integer :: i
+
+        x_bar = 0.0_dp
+        if (.not. prediction_probability_shapes(self, x, probabilities_bar, status)) then
+            return
+        end if
+        if (any(.not. ieee_is_finite(probabilities_bar)) .or. &
+            any(shape(x_bar) /= shape(x))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP classification probability VJP: input or cotangent is invalid")
+            return
+        end if
+        allocate(mean(size(x, 1)), variance(size(x, 1)), mean_bar(size(x, 1)), &
+            variance_bar(size(x, 1)))
+        call self%predict_latent(x, mean, variance, status)
+        if (status%code /= FORTNUM_OK) return
+        do i = 1, size(x, 1)
+            probability = predictive_probability(self%likelihood, mean(i), variance(i))
+            if (self%likelihood == GP_LIKELIHOOD_LOGISTIC) then
+                scale = sqrt(1.0_dp + PI*variance(i)/8.0_dp)
+                p_mu = probability*(1.0_dp - probability)/scale
+                p_variance = probability*(1.0_dp - probability)*(-mean(i)*PI/ &
+                    (16.0_dp*scale**3))
+            else
+                scale = sqrt(1.0_dp + variance(i))
+                z = mean(i)/scale
+                density = exp(-0.5_dp*z*z)/SQRT_TWO_PI
+                p_mu = density/scale
+                p_variance = density*(-mean(i)/(2.0_dp*scale**3))
+            end if
+            cotangent = probabilities_bar(i, 2) - probabilities_bar(i, 1)
+            mean_bar(i) = cotangent*p_mu
+            variance_bar(i) = cotangent*p_variance
+        end do
+        call self%predict_latent_vjp(x, mean_bar, variance_bar, x_bar, status)
+    end subroutine gp_classification_predict_proba_vjp
 
     subroutine gp_classification_predict(self, x, labels, status)
         class(gp_classification_t), intent(in) :: self

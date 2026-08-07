@@ -76,8 +76,8 @@ not supplied through a hidden generic interface.
 | `kernel_t` | Scalar value and matrix | Parameter JVP | Parameter VJP | Parameter HVP |
 | `gp_regression_t` | Mean, variance, LML | Prediction and LML parameters | Prediction and LML parameters | Mean and LML parameters |
 | `gp_derivative_regression_t` | Mean, variance, and LML | Prediction and LML parameter JVP | Prediction parameter VJP and analytic LML hyperparameter gradient | Directional HVP (finite difference of the analytic gradient) |
-| `gp_classification_t` | Latent and observed probabilities | Input JVP | Laplace-mode kernel hyperparameter gradient | No |
-| `gp_multiclass_classification_t` | Latent one-vs-rest margins and normalized observed probabilities | Input JVP for margins and probabilities | Packed one-vs-rest Laplace-mode kernel hyperparameter gradient | No |
+| `gp_classification_t` | Latent and observed probabilities | Input JVP | Input VJP and Laplace-mode kernel hyperparameter gradient | No |
+| `gp_multiclass_classification_t` | Latent one-vs-rest margins and normalized observed probabilities | Input JVP for margins and probabilities | Input VJP for margins and probabilities; packed one-vs-rest Laplace-mode kernel hyperparameter gradient | No |
 | `multi_output_gp_t` | Correlated mean and LML | No | No | No |
 | Approximate GP types | Mean, variance, or ELBO as listed below | No | No | No |
 
@@ -1074,7 +1074,7 @@ integral. `GP_LIKELIHOOD_PROBIT` uses the analytic probit predictive map.
 `gp_classification_options_t` controls Newton iterations, damping, tolerance,
 and jitter. `predict_latent` returns posterior latent mean and variance.
 `predict_proba` returns two observed-probability columns. Both have input-JVP
-variants, and `predict` returns the stored integer labels. Every kernel that
+and input-VJP variants, and `predict` returns the stored integer labels. Every kernel that
 supplies the existing matrix and input-derivative contracts is supported.
 `parameter_count()` and `parameters()` expose read-only kernel-log-parameter
 metadata in the fitted model. `hyperparameter_gradient` returns the exact
@@ -1094,8 +1094,10 @@ and exposes `classes`, `class_count`, `feature_count`, `predict_proba`,
 the read-only kernel metadata for each one-vs-rest model in sorted class order.
 `decision_function` returns the one-vs-rest latent posterior means in sorted
 class order, before probability-simplex normalization; its
-`decision_function_jvp` propagates query-feature tangents through every binary
-GP. `hyperparameter_gradient` concatenates the exact binary envelope gradients in
+`decision_function_jvp` and `decision_function_vjp` propagate query-feature
+tangents and cotangents through every binary GP. `predict_proba_vjp` applies
+the simplex normalization adjoint before accumulating binary GP input bars.
+`hyperparameter_gradient` concatenates the exact binary envelope gradients in
 sorted-class order. It is the gradient of the sum of the independent
 one-vs-rest Laplace-mode log posteriors; a shared coupled categorical objective
 remains a separate contract. The wrapper inherits the selected logistic or probit likelihood and

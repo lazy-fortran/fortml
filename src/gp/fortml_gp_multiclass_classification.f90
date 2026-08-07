@@ -44,10 +44,14 @@ module fortml_gp_multiclass_classification
             gp_multiclass_classification_predict_proba
         procedure, public :: predict_proba_jvp => &
             gp_multiclass_classification_predict_proba_jvp
+        procedure, public :: predict_proba_vjp => &
+            gp_multiclass_classification_predict_proba_vjp
         procedure, public :: decision_function => &
             gp_multiclass_classification_decision_function
         procedure, public :: decision_function_jvp => &
             gp_multiclass_classification_decision_function_jvp
+        procedure, public :: decision_function_vjp => &
+            gp_multiclass_classification_decision_function_vjp
         procedure, public :: predict => gp_multiclass_classification_predict
         procedure, public :: classes => gp_multiclass_classification_classes
         procedure, public :: class_count => gp_multiclass_classification_class_count
@@ -64,8 +68,10 @@ module fortml_gp_multiclass_classification
     public :: gp_multiclass_classification_fit
     public :: gp_multiclass_classification_predict_proba
     public :: gp_multiclass_classification_predict_proba_jvp
+    public :: gp_multiclass_classification_predict_proba_vjp
     public :: gp_multiclass_classification_decision_function
     public :: gp_multiclass_classification_decision_function_jvp
+    public :: gp_multiclass_classification_decision_function_vjp
     public :: gp_multiclass_classification_predict
 
 contains
@@ -226,6 +232,57 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine gp_multiclass_classification_predict_proba_jvp
 
+    !> Reverse-mode product of normalized multiclass probabilities with
+    !> respect to query features.
+    subroutine gp_multiclass_classification_predict_proba_vjp(self, x, &
+            probabilities_bar, x_bar, status)
+        class(gp_multiclass_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), probabilities_bar(:, :)
+        real(dp), intent(out) :: x_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: raw(:, :), raw_bar(:, :), binary_bar(:, :), &
+            binary_x_bar(:, :)
+        real(dp), allocatable :: totals(:), raw_cotangent(:)
+        real(dp) :: weighted
+        integer :: i, j
+
+        x_bar = 0.0_dp
+        if (.not. prediction_input_valid(self, x, status)) return
+        if (any(shape(probabilities_bar) /= [size(x, 1), self%n_classes]) .or. &
+            any(shape(x_bar) /= shape(x)) .or. &
+            any(.not. ieee_is_finite(probabilities_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP multiclass probability VJP: input or cotangent is invalid")
+            return
+        end if
+        allocate(raw(size(x, 1), self%n_classes), raw_bar(size(x, 1), self%n_classes), &
+            totals(size(x, 1)), binary_bar(size(x, 1), 2), &
+            binary_x_bar(size(x, 1), size(x, 2)), raw_cotangent(self%n_classes))
+        call self%predict_proba(x, raw, status)
+        if (status%code /= FORTNUM_OK) return
+        ! Recover the positive one-vs-rest probabilities before normalization.
+        do i = 1, self%n_classes
+            call self%models(i)%predict_proba(x, binary_bar, status)
+            if (status%code /= FORTNUM_OK) return
+            raw(:, i) = binary_bar(:, 2)
+        end do
+        totals = sum(raw, dim=2)
+        do j = 1, size(x, 1)
+            weighted = dot_product(probabilities_bar(j, :), raw(j, :))
+            raw_cotangent = probabilities_bar(j, :)/totals(j) - weighted/ &
+                (totals(j)*totals(j))
+            raw_bar(j, :) = raw_cotangent
+        end do
+        do i = 1, self%n_classes
+            binary_bar = 0.0_dp
+            binary_bar(:, 2) = raw_bar(:, i)
+            call self%models(i)%predict_proba_vjp(x, binary_bar, binary_x_bar, status)
+            if (status%code /= FORTNUM_OK) return
+            x_bar = x_bar + binary_x_bar
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_multiclass_classification_predict_proba_vjp
+
     !> Return the one-vs-rest latent posterior means for every class.
     !>
     !> The columns follow ``classes()`` and are the binary GP latent means
@@ -289,6 +346,39 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine gp_multiclass_classification_decision_function_jvp
+
+    !> Reverse-mode product of the one-vs-rest latent margins with respect to
+    !> query features.
+    subroutine gp_multiclass_classification_decision_function_vjp(self, x, &
+            margins_bar, x_bar, status)
+        class(gp_multiclass_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), margins_bar(:, :)
+        real(dp), intent(out) :: x_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: mean_bar(:), variance_bar(:), binary_x_bar(:, :)
+        integer :: i
+
+        x_bar = 0.0_dp
+        if (.not. prediction_input_valid(self, x, status)) return
+        if (any(shape(margins_bar) /= [size(x, 1), self%n_classes]) .or. &
+            any(shape(x_bar) /= shape(x)) .or. &
+            any(.not. ieee_is_finite(margins_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP multiclass decision_function VJP: input or cotangent is invalid")
+            return
+        end if
+        allocate(mean_bar(size(x, 1)), variance_bar(size(x, 1)), &
+            binary_x_bar(size(x, 1), size(x, 2)))
+        variance_bar = 0.0_dp
+        do i = 1, self%n_classes
+            mean_bar = margins_bar(:, i)
+            call self%models(i)%predict_latent_vjp(x, mean_bar, variance_bar, &
+                binary_x_bar, status)
+            if (status%code /= FORTNUM_OK) return
+            x_bar = x_bar + binary_x_bar
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_multiclass_classification_decision_function_vjp
 
     subroutine gp_multiclass_classification_predict(self, x, labels, status)
         class(gp_multiclass_classification_t), intent(in) :: self
