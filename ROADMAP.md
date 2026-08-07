@@ -41,6 +41,69 @@ The work packages below define the parity target. An item is complete when its
 API, implementation, documentation, independent oracle, and refusal tests are
 present.
 
+## Scope, architecture, and release rules
+
+The target is a clean, Fortran-native estimator stack rather than a thin
+wrapper around Python. The pre-1.0 API may change without a compatibility
+shim: when a contract is wrong, replace it and update all in-tree callers,
+examples, and benchmark fixtures in the same change. Once the first production
+release is cut, schema and public-interface changes require an explicit
+versioned migration. Every new public type must have one owning module, one
+documented parameter layout, and one independent behavioral oracle.
+
+The implementation is layered as follows:
+
+1. **Data and array layer.** Typed row-major-at-the-API data views, masks,
+   sample weights, sparse views, deterministic RNG streams, and host/device
+   residency descriptors. A view never silently copies or changes the sample
+   axis.
+2. **Transform and basis layer.** Stateless and fitted transformers, basis
+   maps, feature-name/category metadata, and composable sequential, parallel,
+   and column-wise graphs. Each transform exposes value and, where supported,
+   parameter/input JVP, VJP, and HVP products.
+3. **Estimator layer.** Regressors, classifiers, density estimators,
+   decompositions, clusterers, trees, GPs, and neural modules implement shared
+   `fit`, `partial_fit`, `predict`/`transform`, `score`, `get/set_parameters`,
+   clone/reset, fitted-state, and status contracts. The contract records
+   whether a method is exact, stochastic, approximate, or refused.
+4. **Objective and derivative layer.** A scalar objective owns reduction,
+   weights, regularization, constraints, diagnostics, and a flat parameter
+   registry. A derivative product is selected by capability (analytic,
+   `fortsym`-generated, `fortad`, or an explicitly refused path), never by an
+   accidental finite-difference fallback in production.
+5. **Training and search layer.** Trainers own batches, optimizer state,
+   schedules, validation, callbacks, checkpoints, and distributed reduction.
+   Hyperparameter search treats model, preprocessing, and optimizer settings as
+   named differentiable or nondifferentiable blocks and can call bounded
+   L-BFGS-B when a complete gradient/HVP contract exists.
+6. **Backend and deployment layer.** CPU, OpenACC, CUDA, and later accelerator
+   backends share the same numerical contract. A device path must cover the
+  complete operation graph or return a precise refusal. Hidden host transfers
+   and silent precision changes are errors.
+
+The target is intentionally broader than the currently implemented subset.
+The capability matrix below is the source of truth for what is implemented,
+partial, planned, or explicitly refused. A checked box never means that
+one happy-path method exists: it means the public contract, independent oracle,
+documentation, refusal behavior, and benchmark evidence are all present.
+
+### Capability matrix (target versus current state)
+
+| Area | Current state | Production target |
+| --- | --- | --- |
+| Linear regression and generalized linear models | Linear regression is implemented. Logistic and softmax are partial | OLS, weighted/ridge/lasso/elastic-net, robust, quantile, Poisson/Gamma/Tweedie, multinomial, calibrated and regularized classifiers with shared solver and derivative contracts |
+| Feature transforms and basis maps | Polynomial, Fourier, radial, B-spline, callback bases are implemented | Fitted preprocessing, sparse/categorical features, feature names, unions, DAG pipelines, leakage-safe cross-validation, differentiable basis hyperparameters |
+| Nearest-neighbor and margin methods | Missing | kNN/KD-tree or ball-tree search, kernel/radius neighbors, linear/kernel SVM and SVR, calibrated probabilities, deterministic tie and missing-value policies |
+| Trees and ensembles | Missing | CART, random/extra trees, random forests, histogram gradient boosting, XGBoost/LightGBM-style boosting, ranking, monotonic and interaction constraints |
+| Clustering and unsupervised learning | Missing | k-means/minibatch k-means, Gaussian mixtures/EM, density and graph clustering, manifold methods, outlier detection, decomposition, matrix factorization, and density metrics |
+| Neural networks | MLP/BNN/VAE/RNN primitives and selected products exist | A production module/parameter tree, all common activations and losses, convolution/attention/sequence/graph extensions, mixed precision, distributed training, compile/fusion, and resumable trainers |
+| Gaussian processes | Exact, derivative, sparse, structured and local variants are partial-to-implemented | GPyTorch/GPflow-style kernels, likelihoods, multitask/batch shapes, exact/variational/lazy inference, derivative operators, constraints, calibration, and trainable hyperparameters |
+| Derivatives | Exact GP and selected neural/kernel products exist | Value/JVP/VJP/HVP and implicit/hypergradients for every declared parameter/input path, including preprocessing, likelihood, optimizer/search variables, and device kernels |
+| Model selection and metrics | Benchmark-specific checks exist | Shared metrics, splitters, cross-validation, calibration, grid/random/Bayesian/differentiable search, nested validation, and leakage/refusal checks |
+| Persistence and serving | Missing public contract | Versioned state dictionaries, safe model/trainer serialization, compiler-independent metadata, streaming inference, batching, and reproducible deployment manifests |
+| GPU and scale-out | Operator-specific OpenACC/CUDA paths | Complete resident CPU/CUDA/OpenACC training and inference for supported estimators, mixed precision, multi-GPU/MPI sharding, transfer accounting, and deterministic reductions |
+| Performance evidence | Several model/GP lanes exist | Matched correctness-gated comparisons with scikit-learn, XGBoost/LightGBM, PyTorch/JAX, GPyTorch/GPflow, and published hardware/toolchain provenance |
+
 ## Current baseline
 
 ### Package and public contracts
@@ -209,6 +272,26 @@ The source inventory is dated 2026-08-07.
 - [ ] Add classifier adapters for `mlp_t` and variational GP classification.
   Each adapter owns its likelihood and training objective instead of treating a
   raw network or GP mean as a probability.
+- [ ] Add one-vs-rest and one-vs-one wrappers with deterministic class
+  ordering, tie handling, shared preprocessing, and a clear distinction
+  between independent binary probabilities and a normalized multiclass
+  probability simplex.
+- [ ] Add multilabel-indicator and multioutput classification contracts,
+  including per-output class metadata, sparse target support, threshold
+  policies, micro/macro/samples averaging, and refusal of ambiguous target
+  shapes.
+- [ ] Add ordinal classification and ranking losses as separate contracts.
+  do not reinterpret nominal softmax probabilities as ordered outcomes.
+- [ ] Add tree and boosted-tree classifier adapters once WP3 establishes the
+  shared class, missing-value, monotonic-constraint, and probability contract.
+- [ ] Add Bernoulli, probit, robust, and multiclass variational GP likelihoods,
+  quadrature or variational objectives, predictive probability products, and
+  calibrated latent-to-observed uncertainty. All GP classifiers share the
+  same label and metric machinery as linear and neural classifiers.
+- [ ] Add neural classifier heads for binary, multinomial, multilabel, ordinal,
+  and calibrated outputs. Heads expose loss, logits, probabilities, and
+  derivative products separately so a user can train on logits without losing
+  a stable deployment probability path.
 - [ ] Add accuracy, balanced accuracy, confusion matrix, log loss, precision,
   recall, F1, and binary ROC AUC with explicit zero-division and sample-weight
   behavior.
@@ -216,11 +299,15 @@ The source inventory is dated 2026-08-07.
   classifier API is stable.
 
 Acceptance: hand-computed separable and nonseparable fixtures cover labels,
-weights, ties, and probabilities. Objective gradients agree with central finite
-differences. A pinned scikit-learn harness compares coefficients or decision
-scores where the objectives match and compares probabilities and metrics for all
-public classifiers. Invalid labels, nonfinite data, empty classes, and mismatched
-weights return status errors.
+weights, ties, probabilities, multilabel thresholds, and ordinal cut points.
+Objective gradients agree with central finite differences and, where available,
+`fortad` or `fortsym` products. A pinned scikit-learn harness compares
+coefficients or decision scores where the objectives match and compares
+probabilities and metrics for all public classifiers. A separate XGBoost or
+LightGBM fixture covers boosted probabilities. GP and neural fixtures compare
+latent and observed probabilities under matched likelihoods. Invalid labels,
+nonfinite data, empty classes, ambiguous target shapes, and mismatched weights
+return status errors.
 
 ### WP2: estimator contracts, pipelines, and feature bases
 
@@ -231,21 +318,43 @@ weights return status errors.
 - [ ] Define fitted transformer, predictor, regressor, and classifier contracts.
   The contracts cover feature counts, fitted state, reset or clone behavior,
   parameter names, and status propagation.
+- [ ] Define estimator tags and capability queries for supervised versus
+  unsupervised targets, sparse/dense inputs, missing values, sample weights,
+  partial fitting, derivatives, device support, and probabilistic outputs.
+  Search and pipeline code must query capabilities instead of guessing from a
+  dynamic type.
 - [ ] Add standard and min-max scaling, constant and mean imputation, one-hot
   encoding with a stored category order, and column selection.
+- [ ] Add robust scaling, quantile and power transforms, normalization,
+  missing-indicator features, ordinal encoding, target encoding with leakage
+  guards, polynomial interactions, hashing, and sparse CSR/CSC feature views.
+  Every fitted transform records statistics, feature names, dtypes, and the
+  treatment of unseen or missing categories.
 - [ ] Add sequential pipelines, parallel feature unions, and column-wise
   transformers. Basis maps must work as fitted or fixed pipeline stages.
+- [ ] Add named DAG composition with fan-out/fan-in, residual branches,
+  conditional stages, and a cycle refusal. Pipeline nodes expose local
+  parameter blocks so hyperparameter derivatives and optimizer routing remain
+  composable through the graph.
+- [ ] Add feature-name propagation, schema validation, metadata routing,
+  train-only fitting, `fit_transform`, `transform`, `inverse_transform` where
+  mathematically defined, and partial-fit propagation for streaming data.
 - [ ] Add deterministic train/test, K-fold, stratified K-fold, and grouped split
   iterators plus cross-validation scoring and routed parameters.
 - [ ] Add grid and seeded random parameter search after estimator cloning and
   scoring are stable.
+- [ ] Add successive-halving, Bayesian, and differentiable hyperparameter
+  search. Differentiable search must distinguish validation objectives from
+  training objectives and expose implicit differentiation through the fitted
+  estimator only when its linear solves and stopping policy are differentiable.
 
 Acceptance: pipeline predictions equal a manually composed reference for each
 stage. Cross-validation tests prove that transformer statistics use training
 folds only. Split indices have seeded known answers. Parameter routing reaches
 exactly one named stage, and a stage failure preserves its original status.
 Examples cover regression and classification pipelines with mixed numeric and
-categorical columns.
+categorical columns, sparse features, basis maps, and one differentiable
+hyperparameter block. A deliberate train/validation leakage fixture must fail.
 
 ### WP3: trees and histogram boosting
 
@@ -260,6 +369,24 @@ categorical columns.
 - [ ] Add learning-rate shrinkage, row and feature subsampling, L1 and L2 leaf
   penalties, validation-based early stopping, warm starts, and deterministic
   feature importance.
+- [ ] Add random forest, extra-trees, bagging, random-subspace, and
+  isolation-forest ensembles with seeded bootstrap semantics, out-of-bag
+  diagnostics, class-balanced sampling, and permutation or split importance.
+- [ ] Add XGBoost-style second-order boosting: per-leaf gradient/Hessian
+  aggregation, regularized split gain, weighted quantile sketch, exact and
+  histogram algorithms, sparse-aware default directions, monotonic and
+  interaction constraints, column blocks, and deterministic feature ordering.
+- [ ] Add LightGBM-style histogram and leaf-wise growth as a separately named
+  policy. Cover exclusive-feature bundling, gradient-based one-sided sampling,
+  categorical target statistics with leakage guards, and a bounded-memory
+  external-data iterator only after independent small-data oracles exist.
+- [ ] Add DART/dropout boosting, class- and query-weighted ranking objectives
+  (pairwise logistic and Lambda-style NDCG), survival/count objectives,
+  quantile and Tweedie losses, custom objective callbacks, and custom
+  evaluation metrics. Unsupported objectives must return a structured refusal.
+- [ ] Add warm-start continuation, monotone prediction checks, staged
+  predictions, partial dependence, SHAP-like additive contribution products,
+  and model-size/tree export diagnostics.
 - [ ] Add categorical split support only after numeric and missing-value
   behavior has independent oracles and benchmark evidence.
 
@@ -267,8 +394,91 @@ Acceptance: small trees reproduce exhaustive hand-enumerated split searches,
 including weighted and missing-value cases. Training loss is nonincreasing for
 the exact line-search fixtures. Fixed seeds reproduce tree structures and
 predictions. Pinned scikit-learn or XGBoost workloads compare probabilities and
-regression predictions under matched objectives. Release benchmarks record fit
-and predict time, peak memory, tree count, depth, and histogram size.
+regression predictions under matched objectives. Pinned XGBoost and LightGBM
+workloads additionally compare growth policy, quantile approximation, missing
+value routing, constraints, and staged predictions. Release benchmarks record
+fit and predict time, peak memory, tree count, depth, histogram size, split
+count, early-stopping iteration, feature importance, and (where applicable)
+ranking quality. Differences caused by regularization, quantile approximation,
+or tie ordering are reported rather than hidden.
+
+### WP3a: scikit-learn estimator-family parity
+
+The following families are the concrete scikit-learn parity inventory. They are
+separate from the differentiable GP and neural work because each has different
+state, scoring, and refusal rules.
+
+- [ ] Add weighted OLS, ridge, lasso, elastic-net, positive-constrained,
+  Bayesian ridge, ARD regression, Huber, Theil-Sen, RANSAC, quantile,
+  Poisson, Gamma, and Tweedie regression. Solvers expose convergence status,
+  regularization scaling, warm starts, and coefficient covariance where it is
+  defined.
+- [ ] Add linear SGD/regression and classification with deterministic minibatch
+  schedules, averaging, penalties, and `partial_fit` semantics. Keep its
+  stochastic objective separate from the exact logistic/softmax objective.
+- [ ] Add nearest-neighbor regression/classification, radius neighbors,
+  kernel-density estimation, and large-data exact/brute, KD-tree, and ball-tree
+  search with deterministic ties, metric callbacks, and missing-value policy.
+- [ ] Add linear and kernel SVM/SVR, one-class SVM, and kernel approximation
+  (Nyström and random Fourier features), with probability calibration and
+  explicit solver/feature-memory limits.
+- [ ] Add Gaussian/Multinomial/Bernoulli/Complement/Categorical naive Bayes,
+  LDA/QDA, and discriminant shrinkage with stable log-probability products.
+- [ ] Add k-means/minibatch k-means, Gaussian mixtures, Bayesian mixtures,
+  spectral and agglomerative clustering, DBSCAN/OPTICS, affinity propagation,
+  BIRCH, and graph-connected components where dependencies and memory limits
+  are explicit.
+- [ ] Add PCA, incremental/randomized PCA, sparse PCA, kernel PCA, ICA, NMF,
+  dictionary learning, truncated SVD, random projection, and covariance
+  estimators with reconstruction, whitening, rank, and sign conventions.
+- [ ] Add manifold and embedding methods (t-SNE/UMAP-like experimental lanes),
+  novelty/outlier detectors (isolation forest, local outlier factor, robust
+  covariance, one-class methods), and density metrics only after reproducible
+  seeded behavior is specified.
+- [ ] Add multioutput, multiclass, multilabel, regressor/classifier chains,
+  voting, stacking, bagging, and calibrated meta-estimators with nested
+  parameter routing and leakage-safe fitting.
+
+Acceptance: every estimator family has a hand-computable fixture, a refusal
+matrix, and a pinned scikit-learn comparison for values, shapes, fitted state,
+and metrics. Approximate or stochastic methods additionally compare seeded
+distributions and report algorithmic differences. `partial_fit`, warm-start,
+clone, reset, and sample-weight behavior are tested independently of the
+mathematical objective.
+
+### WP3b: metrics, validation, and model selection
+
+- [ ] Implement regression metrics (R2, explained variance, MSE, RMSE, MAE,
+  median absolute error, max error, MSLE, MAPE, pinball, Poisson/Gamma/Tweedie
+  deviance), classification metrics (accuracy, top-k, balanced accuracy,
+  precision/recall/F-beta, Jaccard, Hamming, log loss, ROC/PR AUC, Brier,
+  calibration error), ranking metrics (DCG/NDCG, MAP, MRR), clustering metrics
+  (silhouette, Calinski-Harabasz, Davies-Bouldin, adjusted rand, mutual
+  information), and probabilistic metrics (NLL, CRPS, interval coverage,
+  sharpness, calibration).
+- [ ] Define finite, NaN, masked, zero-support, zero-division, multiclass,
+  multilabel, and sample-weight behavior for every metric. Metrics return a
+  value plus diagnostics rather than silently dropping invalid rows.
+- [ ] Add train/test, K-fold, repeated K-fold, stratified, grouped,
+  time-series/blocked, and Monte Carlo splitters. Index generation is seeded,
+  independent of estimator state, and safe for empty or uneven folds.
+- [ ] Add cross-validation prediction, learning curves, validation curves,
+  permutation tests, bootstrap confidence intervals, calibration curves, and
+  statistical comparison reports. Every transform is fitted inside each fold.
+- [ ] Add grid, random, successive-halving, Bayesian, multi-fidelity, and
+  differentiable search with parallel trials, pruning, seeded resume, failure
+  recording, and nested CV. Search results include all parameter blocks,
+  training state, resource budget, and validation split provenance.
+- [ ] Add an Optuna-like trial interface without requiring Python, plus a
+  bounded adapter for FortOpt L-BFGS-B when the model provides a complete
+  hyperparameter gradient. The adapter must never finite-difference a noisy or
+  early-stopped objective without an explicit user opt-in and warning status.
+
+Acceptance: metrics agree with direct formulas and pinned scikit-learn or
+specialist references on dense, sparse, weighted, masked, and degenerate
+fixtures. Cross-validation catches a deliberately leaky transformer. Search
+resumption reproduces trial order and best state, while failed or refused
+trials remain visible in the result schema.
 
 ### WP4: training infrastructure
 
@@ -278,23 +488,61 @@ and predict time, peak memory, tree count, depth, and histogram size.
   or `fortopt` update seams for Gaussian variational families.
 - [ ] Define objective and loss contracts with sum and mean reductions, sample
   weights, regularization terms, and named scalar diagnostics.
+- [ ] Define a module tree and parameter-tree API for nested neural networks.
+  Parameters, buffers, frozen blocks, tied/shared weights, masks, and stateful
+  layers have stable paths and can be flattened without losing aliases.
+- [ ] Add common neural losses and metrics: MSE/MAE/Huber/quantile,
+  cross-entropy and focal losses, multilabel and ordinal losses, Gaussian and
+  count likelihoods, contrastive and triplet losses, KL terms, and sequence
+  masking. Every loss has explicit reduction, weighting, logits/probability,
+  and empty-batch semantics.
 - [ ] Add a deterministic batch iterator with seeded shuffling, final-batch
   behavior, and separate training and validation streams.
 - [ ] Add a trainer that owns optimizer state, learning-rate schedules, gradient
   clipping, accumulation, validation intervals, early stopping, and callbacks.
+- [ ] Add production optimizers and schedules: SGD with momentum/Nesterov,
+  Adam/AdamW, RMSprop, Adagrad, L-BFGS/L-BFGS-B, natural gradient, cosine,
+  one-cycle, warmup/decay, plateau, and user callbacks. Optimizer state is
+  dtype/device aware and rejects incompatible parameter trees.
+- [ ] Add automatic mixed precision with loss scaling, overflow detection,
+  master weights, deterministic accumulation modes, and explicit fp16/bf16/fp32
+  capability reports. A mixed-precision result must pass a full-precision
+  accuracy oracle before it can enter a performance report.
+- [ ] Add gradient accumulation, microbatching, activation checkpointing,
+  truncated BPTT, gradient centralization/noise, norm/value clipping, and
+  anomaly detection with parameter-path diagnostics.
+- [ ] Add callback and event contracts for logging, progress, validation,
+  checkpoint, early stop, learning-rate changes, and recoverable failures.
+  Callback order and failure propagation are deterministic and testable.
+- [ ] Add data-loader workers or asynchronous prefetch only when the ownership
+  and RNG contract is explicit. Worker count must not silently change the
+  sampled batches for a deterministic run.
 - [ ] Add trainer adapters for linear classifiers, MLPs, BNNs, VAEs, RNNs, exact
   GPs, derivative GPs, and sparse variational GPs. Each adapter requires a scalar
   objective, parameter gradient, reduction rule, and complete train-state update.
+- [ ] Add adapters for convolutional, recurrent/attention, graph, autoencoder,
+  probabilistic, and tree/boosting objectives as their model contracts land.
+- [ ] Add compile/fusion planning for static expression graphs and batched
+  kernels, with a cache key containing architecture, dtype, device, and shape.
+  Compilation may be optional, but a stale or incompatible plan must refuse
+  rather than execute with wrong strides.
 - [ ] Define in-memory train state independently of file serialization. It must
   include parameters, optimizer accumulators, epoch and batch positions, RNG
   streams, schedules, and early-stopping state.
+- [ ] Add distributed data/model parallel state, all-reduce precision policy,
+  gradient bucketing, elastic rank refusal, and deterministic checkpoint
+  barriers. A single-rank path remains the reference implementation.
 
 Acceptance: each adapter has an independent gradient oracle and a fixture whose
 objective decreases under a documented optimizer configuration. Two runs with
 the same seeds produce the same batches and parameter history. Saving train
 state in memory at a batch boundary and resuming it reproduces the uninterrupted
 CPU run. Callback order, early stopping, clipping, and failed optimizer steps
-have known-answer tests.
+have known-answer tests. Pinned PyTorch and JAX fixtures compare loss curves,
+gradient norms, parameter updates, checkpoint-resumed outputs, and throughput
+under matched dtype, batch, seed, and compiler settings. A result is a
+performance claim only when compilation, warmup, input transfer, and steady-
+state phases are reported separately.
 
 ### WP5: GP derivatives and hyperparameter training
 
@@ -309,6 +557,35 @@ have known-answer tests.
   likelihood, and optional inducing-location blocks in a documented order.
 - [ ] Add bounded hyperparameter optimization with multiple seeded restarts,
   priors, jitter escalation, convergence diagnostics, and retained best state.
+- [ ] Define a derivative capability table for every estimator, transform,
+  objective, and backend. It must list supported value, input JVP/VJP/HVP,
+  parameter JVP/VJP/HVP, stochastic-path derivative, and refusal conditions.
+  an absent product is never inferred to be zero.
+- [ ] Add a unified hyperparameter registry covering preprocessing statistics,
+  basis frequencies/knots, model weights, kernel and likelihood parameters,
+  inducing locations, regularization, optimizer schedules, and differentiable
+  validation weights. Registry entries carry bounds, transforms, priors,
+  trainability, device residency, and provenance.
+- [ ] Route complete hyperparameter gradients and HVPs through bounded
+  FortOpt L-BFGS-B, with projected-gradient stopping, active-bound diagnostics,
+  line-search status, seeded multistart, and best-finite-state retention.
+  Optimization must use the same derivative products as training and expose
+  an independent finite-difference or dense oracle for each objective.
+- [ ] Add implicit differentiation through linear solves, fixed-point
+  iterations, variational optima, early-stopped training, and cross-validation
+  only when convergence and solver tolerances are part of the declared
+  contract. Otherwise return a refusal rather than differentiate an unstated
+  approximation.
+- [ ] Add mixed-partial and symmetry checks for Hessians, adjoint identities
+  for VJPs, directional finite differences for JVPs, and randomized property
+  tests over parameter blocks. Check input, parameter, hyperparameter, and
+  pipeline derivatives independently so a shared packing bug cannot pass all
+  tests.
+- [ ] Generate analytic kernels with `fortsym` when it proves a smaller
+  expression, preserve the proof/operation-count/source hash, and compare the
+  generated product against current FortAD `main` and an independent oracle.
+  Generated code is accepted only with a fallback or a documented structured
+  refusal for unsupported shapes and smoothness.
 - [ ] Add likelihood gradients and HVPs for derivative-observation GPs, including
   noise parameters for each observation type.
 - [ ] Add joint posterior covariance for value and derivative queries, plus
@@ -327,18 +604,68 @@ reproduce seeded trajectories and retain the best finite objective. Pinned
 GPyTorch or GPflow comparisons cover posterior means, variances, derivative
 covariances, likelihoods, and optimized parameters under matched kernels and
 jitter. Boundary tests cover smoothness, duplicate inputs, nonfinite parameters,
-and failed factorizations.
+and failed factorizations. Hyperparameter-search fixtures compare the selected
+state and validation objective against a high-accuracy dense oracle, not merely
+against FortOpt's own callback output.
+
+### WP5a: GPyTorch and GPflow parity matrix
+
+The GP target is a capability-for-capability comparison, not a claim that every
+approximation has identical floating-point instruction order. A parity fixture
+pins the kernel, likelihood, mean, batch shape, train/eval mode, jitter, solver
+tolerance, quadrature rule, and random stream before comparing results.
+
+- [ ] Match the common kernel families: RBF/SE, Matérn, linear, constant,
+  polynomial, periodic, spectral mixture, cosine, piecewise-polynomial,
+  locally periodic, additive, product, and user-composed kernels. Include
+  priors, constraints, ARD, batch-shaped parameters, and active dimensions.
+- [ ] Match Gaussian, Bernoulli/probit, categorical, Student-t, Poisson,
+  negative-binomial, heteroskedastic, multitask, and likelihood-noise models
+  that have a stable FortML objective. Record quadrature or variational
+  approximations instead of silently substituting a different likelihood.
+- [ ] Match exact Cholesky, conjugate-gradient lazy inference, LOVE variance,
+  SKI/KISS-GP, inducing-point variational inference, stochastic variational
+  inference, deep-kernel and multi-output/LMC paths. Deep GP and unsupported
+  non-Gaussian approximations remain explicit experimental/refusal lanes.
+- [ ] Match module state, priors, constraints, batch shapes, train/eval mode,
+  fantasy or online updates, posterior sampling, and state-dict round trips.
+  Fortran-native serialization may use a different file format, but it must
+  preserve the same semantic state and prediction.
+- [ ] Match derivative information for function values, input derivatives,
+  mixed derivatives, parameter derivatives, and derivative covariance blocks.
+  Compare both latent and observed predictive distributions, including noise
+  on each derivative-observation type.
+- [ ] Add cross-library fixtures for exact small problems, variational small
+  problems, and matrix-free large problems. Compare posterior mean, variance,
+  covariance slices, log likelihood, gradients, HVPs, optimizer trajectories,
+  and calibrated intervals within declared tolerance bands.
+
+GPyTorch-style lazy operators and batched shapes are considered complete only
+when the same operation graph can run without materializing a dense covariance
+on the target workload. A dense fallback is useful as an oracle but does not
+count as a production lazy implementation.
 
 ### WP6: GPU and device execution
 
 - [x] Provide correctness-gated OpenACC kernel, structured, and sparse products,
   resident kernel-operator CG, and an opaque CUDA plan for postfix kernels.
-- [x] Verify the full host test suite with `nvfortran`; this is compiler coverage,
+- [x] Verify the full host test suite with `nvfortran`. This is compiler coverage,
   not end-to-end GPU coverage.
 - [ ] Define a public device selector and ownership contract for host and CUDA
   allocations, streams, synchronization, and recoverable backend refusal.
 - [ ] Keep batches, parameters, gradients, optimizer accumulators, and workspaces
   resident through complete MLP and variational training steps.
+- [ ] Extend residency to basis/pipeline transforms, tree histograms, classifier
+  likelihoods, neural forward/backward products, GP solves, derivative
+  operators, and L-BFGS-B objective/gradient evaluations. A mixed CPU/GPU graph
+  must expose every transfer and cannot claim full-device execution.
+- [ ] Add CUDA kernels for common dense primitives, reductions, activations,
+  normalization, scatter/gather, segmented histogramming, sparse products, and
+  batched factorizations. Each kernel has a scalar CPU oracle and a noncontiguous
+  stride test.
+- [ ] Add OpenACC implementations or structured refusals for the same operation
+  graph. Backend selection is explicit and does not infer CUDA from compiler
+  identity alone.
 - [ ] Add resident exact or matrix-free GP prediction and hyperparameter-gradient
   paths, including preconditioned CG and batched LOVE work.
 - [ ] Add device Toeplitz transforms, SKI interpolation, sparse variational
@@ -384,6 +711,34 @@ checkpoint. One-rank and two-rank runs agree within a documented reduction
 tolerance, and fixed process counts reproduce results. MPI tests cover empty
 shards, uneven final batches, and one-rank failure propagation.
 
+### WP7a: interoperability, serving, and operations
+
+- [ ] Define a stable C ABI for prediction, probability, transformation,
+  derivative products, error/status retrieval, and explicit buffer ownership.
+  The ABI supports row-major callers without changing the Fortran-native
+  internal sample convention.
+- [ ] Add import/export adapters for interoperable linear, tree, and neural
+  models (ONNX or a documented subset) with a refusal for unsupported operators,
+  dtypes, dynamic shapes, custom callbacks, or stochastic state.
+- [ ] Add streaming and online inference with bounded workspaces, batch-size
+  independent outputs, input schema/version validation, and backpressure or
+  refusal when a request cannot fit the configured device memory.
+- [ ] Add model cards and training manifests containing data schema hashes,
+  feature statistics, class order, objective, seed streams, compiler/toolchain,
+  dependency revisions, precision, hardware, and known refusal boundaries.
+- [ ] Add reproducibility audit tooling that rebuilds a manifest, replays a
+  saved seed/checkpoint, and reports the first divergent parameter, batch,
+  derivative, or prediction rather than only a final mismatch.
+- [ ] Add security limits for model files, callback registration, dimensions,
+  allocation sizes, and integer overflow. Untrusted files are data-only and
+  never execute arbitrary Fortran callbacks.
+
+Acceptance: C-ABI and imported models agree with native predictions and
+derivatives on independent fixtures. A versioned model can be loaded by a
+different supported compiler, and malformed or oversized files fail before
+allocation. A serving smoke test measures cold start, warm latency, throughput,
+peak memory, and batch-size scaling with the same correctness gate as training.
+
 ### WP8: benchmark and parity evidence
 
 - [x] Provide correctness-gated applications for linear regression, MLP, exact
@@ -396,6 +751,22 @@ shards, uneven final batches, and one-rank failure propagation.
 - [ ] Add pinned external oracle harnesses for every completed classifier,
   transformer pipeline, boosted tree, trainer, GP derivative, and serialization
   package.
+- [ ] Add matched benchmark lanes for scikit-learn preprocessing and
+  estimators, XGBoost and LightGBM trees, PyTorch and JAX neural training, and
+  GPyTorch/GPflow exact and variational GPs. Each lane uses the same data,
+  objective, precision, initialization, stopping rule, and correctness gate.
+- [ ] Cover small analytic fixtures, dense tabular data, sparse/categorical
+  data, wide features, long sequences, image-like tensors, graph batches,
+  derivative observations, and physics trajectories. Record the shape and
+  memory footprint rather than comparing only one convenient workload.
+- [ ] Add scaling sweeps over samples, features, output count, network width and
+  depth, GP inducing points, tree count/depth, batch size, device, and MPI rank.
+  Report throughput, latency percentiles, peak host/device memory, transfers,
+  compile/warmup time, and energy where a reliable counter is available.
+- [ ] Add derivative and hyperparameter-search lanes measuring value, gradient,
+  HVP, optimizer evaluation count, convergence, and selected-state quality.
+  Compare generated `fortsym`, FortAD, and reference-framework paths with
+  operation count and numerical error.
 - [ ] Add workload tiers for unit-size correctness, CI smoke runs, single-node
   release measurements, accelerator runs, and multi-rank scaling.
 - [ ] Store median and dispersion across repetitions, separate compile and warmup
@@ -621,28 +992,30 @@ performance evidence.
 Benchmark and documentation work ships with each implementation slice. The
 dependency order for the remaining code is:
 
-1. Complete the classification contract around the binary logistic baseline:
-   shared stable losses, sample and class weights, accuracy, confusion matrix,
-   and log loss. Then add multinomial softmax regression. These rules establish
-   the probability and weighting conventions used by pipelines, neural
-   classifiers, GP classification, and boosted trees.
-2. Add the fitted estimator and transformer contracts, standard scaling, and a
-   sequential pipeline. Adapt linear regression and binary logistic regression
-   before adding feature unions or parameter search.
-3. Add deterministic batches, the common objective contract, trainer state, and
-   one MLP trainer adapter. Define the checkpoint schema once the in-memory state
-   has a resumption oracle.
-4. Implement exact CART fixtures, then the numeric histogram builder and
-   regression boosting. Add classification losses after WP1 metrics and
-   probabilities are stable.
-5. Add GP mean functions, automatic relevance determination, and bounded exact
-   GP hyperparameter training. Derivative-GP likelihood products and sparse
-   training follow on the same optimizer contract.
-6. Move complete trainer and GP steps onto the existing CUDA residency layer.
-   Add MPI reduction only after train state and checkpoint ownership are fixed.
-7. Add the physics contracts, Hamiltonian/symplectic models, and operator-GP
-   prototypes behind independent residual and structure oracles.
-8. Add GP-limit, PCA, and physics-consistent initialization experiments before
-   making them default training behavior. Expand external and release benchmark
-   lanes with every slice. Run the `ifx` compiler lane when an installation is
-   available.
+1. Freeze the clean-break data, status, parameter-tree, estimator, transform,
+   objective, and derivative contracts. Update all in-tree callers together.
+   do not create compatibility aliases for a superseded layout.
+2. Finish shared classification labels, weights, metrics, probabilities, and
+   validation. Add binary/multinomial linear, neural, GP, tree, multilabel, and
+   ordinal adapters against those contracts.
+3. Implement fitted preprocessing, basis/pipeline DAGs, sparse/categorical
+   views, leakage-safe splitters, and metrics/search. Adapt linear models before
+   using the pipeline in every later benchmark.
+4. Build the production trainer and parameter-tree infrastructure: deterministic
+   batches, complete optimizer/schedule set, derivatives, mixed precision,
+   callbacks, checkpoints, and one MLP/GP adapter with a resumption oracle.
+5. Implement scikit-learn estimator families in small independent slices, then
+   exact CART, random/extra forests, histogram boosting, and XGBoost/LightGBM-
+   style growth policies with external correctness and performance lanes.
+6. Add GP mean/ARD/likelihood families, full hyperparameter and implicit
+   derivatives, GPyTorch/GPflow parity, and bounded FortOpt L-BFGS-B training.
+   Extend every completed objective to resident GPU products before claiming
+   device parity.
+7. Add model schemas, C ABI, serving, MPI/sharded execution, and reproducibility
+   manifests once in-memory trainer state and ownership rules are stable.
+8. Add physics constraints, Hamiltonian/Lagrangian/symplectic models, operator
+   GPs, and Ghosttasking/Monge-GP prototypes behind residual and structure
+   oracles. Use current FortAD main and FortSym-generated kernels where proven.
+9. Add NNGP, PCA, autoencoder, and physics-consistent initializers as explicit
+   experiments before making any initializer a default. Expand release
+   benchmarks after every slice, and run the `ifx` compiler lane when available.
