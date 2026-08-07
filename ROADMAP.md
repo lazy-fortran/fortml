@@ -280,7 +280,7 @@ only listed as gaps:
 
 The FortBO and FortMC companion pins were rechecked against their remote
 `main` branches on 2026-08-08: FortBO
-`3d3bf950e671357e3b584bebce07e7cdb75d5ac8` and FortMC
+`1f3b97b6d04bc31c2099c8e2e5030ad07232d07e` and FortMC
 `4dde0ccdc37b4c331126605406b08e1f3bda4f59`. Their roadmaps remain authoritative
 for acquisition and sampling algorithms; FortML owns the posterior/log-density
 protocols and does not embed sampler or acquisition state. FortBO additionally
@@ -288,9 +288,12 @@ provides analytic EI/PI/UCB/log-EI products and marginal Monte-Carlo EI/PI with
 common random numbers, antithetic draws, and pathwise gradients, Sobol TuRBO
 candidate generation with deterministic Thompson selection, and a FortML
 adapter that chooses value-only versus derivative-observation GPs from the
-history contract. These are companion foundations: DTuRBO, full batch and
-knowledge/entropy/noisy acquisitions, device execution, and wider sparse,
-variational, and multi-output adapters remain open. Any future adapter must add
+history contract. FortBO now also runs its gradient-based DTuRBO in-region
+acquisition search end to end with Sobol multistarts and FortOpt L-BFGS-B,
+beating random search on the Branin fixture at equal budget. Posterior-
+derivative DTuRBO mode 2, full batch and knowledge/entropy/noisy acquisitions,
+device execution, and wider sparse, variational, and multi-output adapters
+remain open. Any future adapter must add
 a focused oracle, typed GPU/refusal row, and a benchmark record in the companion
 harness.
 
@@ -327,8 +330,9 @@ roadmap. FortBO now exposes a capability-gated posterior protocol, durable
 gradient-aware history, and normalized continuous/integer/categorical/mixed/
 conditional search spaces, analytic EI/PI/UCB/log-EI, and marginal Monte-Carlo
 EI/PI with CRN, antithetic, and pathwise-gradient products. It also supplies
-Sobol TuRBO candidates, discrete Thompson selection, and a tested FortML
-value-only/derivative-observation GP adapter. DTuRBO, full batch and
+Sobol TuRBO candidates, discrete Thompson selection, a tested FortML
+value-only/derivative-observation GP adapter, and a tested gradient-based
+DTuRBO in-region optimizer. Posterior-derivative DTuRBO mode 2, full batch and
 knowledge/entropy/noisy acquisitions, device execution, and sparse/variational/
 multi-output adapters remain in its roadmap. Adapters map FortML posterior
 moments and derivative observations into those contracts without adding sampler
@@ -354,13 +358,14 @@ acquisition work packages:
 
 The companion repositories were checked on 2026-08-08 at FortMC
 `4dde0ccdc37b4c331126605406b08e1f3bda4f59` and FortBO
-`3d3bf950e671357e3b584bebce07e7cdb75d5ac8`, both on their `main` branches. The
+`1f3b97b6d04bc31c2099c8e2e5030ad07232d07e`, both on their `main` branches. The
 FortBO pin now includes a versioned capability-gated posterior contract,
 gradient-aware observation history/checkpointing, normalized continuous/integer/
 categorical/mixed/conditional search spaces, a differentiable-coordinate mask,
 analytic EI/PI/UCB/log-EI, and marginal Monte-Carlo EI/PI with CRN, antithetic
-draws and pathwise gradients, Sobol TuRBO candidates, Thompson selection, and
-FortML value/derivative-GP adapters; refresh these pins when
+draws and pathwise gradients, Sobol TuRBO candidates, Thompson selection,
+gradient-based DTuRBO in-region acquisition search, and FortML
+value/derivative-GP adapters; refresh these pins when
 their protocol or device contracts change.
 
 Both pinned companion revisions also clarify that FortSym is a generation-time
