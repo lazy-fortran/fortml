@@ -11,4 +11,4 @@ fo test [--------------------] 0/96 0%
 fo test [####################] 96/96 100%
 Tests: OK
 Lint: OK
-All stages passed (4.7s)
+All stages passed (8.0s)
