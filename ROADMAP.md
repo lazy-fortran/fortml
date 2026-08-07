@@ -26,9 +26,10 @@ products, XGBoost sampling, XGBoost serialization, and the transform-aware
 hyperparameter registry and the differentiable basis-pipeline training
 objective. The independent CUDA gate additionally covers the resident
 dense-affine value/JVP path. The build emits GNU
-array-temporary warnings in existing GP benchmark call boundaries. They are
-non-fatal and isolated to benchmark argument construction; lint and all
-behavioral tests pass. NVIDIA compiler coverage remains an
+array-temporary warnings in existing GP benchmark call boundaries and in the
+new basis-pipeline objective's shape conversions. They are non-fatal and
+isolated to array construction; lint and all behavioral tests pass. NVIDIA
+compiler coverage remains an
 explicit older-build result.
 
 Behavioral oracles include dense or analytic references, finite differences,
