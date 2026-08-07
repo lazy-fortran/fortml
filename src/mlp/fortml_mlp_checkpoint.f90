@@ -107,6 +107,7 @@ contains
         if (ios == 0) call write_r(unit, "min_delta", checkpoint%min_delta, ios)
         if (ios == 0) call write_r(unit, "gradient_clip_norm", &
             checkpoint%gradient_clip_norm, ios)
+        if (ios == 0) call write_r(unit, "ema_decay", checkpoint%ema_decay, ios)
         if (ios == 0) call write_r(unit, "last_learning_rate", &
             checkpoint%last_learning_rate, ios)
         if (ios == 0) call write_r(unit, "initial_loss", checkpoint%initial_loss, ios)
@@ -137,6 +138,8 @@ contains
             checkpoint%learning_rate_history, ios)
         if (ios == 0) call write_optional_r_array(unit, "validation_loss_history", &
             checkpoint%validation_loss_history, ios)
+        if (ios == 0) call write_optional_r_array(unit, "ema_parameters", &
+            checkpoint%ema_parameters, ios)
 
         close_ios = 0
         close(unit, iostat=close_ios)
@@ -232,6 +235,7 @@ contains
         if (ios == 0) call read_r(unit, "min_delta", candidate%min_delta, ios)
         if (ios == 0) call read_r(unit, "gradient_clip_norm", &
             candidate%gradient_clip_norm, ios)
+        if (ios == 0) call read_r(unit, "ema_decay", candidate%ema_decay, ios)
         if (ios == 0) call read_r(unit, "last_learning_rate", &
             candidate%last_learning_rate, ios)
         if (ios == 0) call read_r(unit, "initial_loss", candidate%initial_loss, ios)
@@ -273,6 +277,10 @@ contains
             "validation_loss_history_present", "validation_loss_history_count", &
             "validation_loss_history_item", candidate%epoch, &
             candidate%validation_loss_history, ios)
+        if (ios == 0) call read_optional_r_array(unit, &
+            "ema_parameters_present", "ema_parameters_count", &
+            "ema_parameters_item", candidate%n_parameters, &
+            candidate%ema_parameters, ios)
         if (ios /= 0) goto 900
 
         read(unit, "(A)", iostat=ios) line

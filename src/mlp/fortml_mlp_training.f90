@@ -92,6 +92,9 @@ module fortml_mlp_training
         real(dp) :: tolerance = 1.0e-8_dp
         real(dp) :: min_delta = 0.0_dp
         real(dp) :: gradient_clip_norm = 0.0_dp
+        !! Exponential moving average of post-update parameters.  A value of
+        !! zero disables EMA; otherwise the decay must lie in [0,1).
+        real(dp) :: ema_decay = 0.0_dp
         procedure(mlp_epoch_callback_proc), pointer, nopass :: callback => null()
         procedure(mlp_learning_rate_schedule_proc), pointer, nopass :: &
             learning_rate_schedule => null()
@@ -117,6 +120,8 @@ module fortml_mlp_training
         real(dp) :: best_validation_loss = huge(1.0_dp)
         real(dp) :: gradient_norm = huge(1.0_dp)
         real(dp) :: last_learning_rate = 0.0_dp
+        logical :: has_ema = .false.
+        real(dp), allocatable :: ema_parameters(:)
         real(dp), allocatable :: loss_history(:)
         real(dp), allocatable :: learning_rate_history(:)
         real(dp), allocatable :: validation_loss_history(:)
@@ -134,7 +139,7 @@ module fortml_mlp_training
         !! best-state bookkeeping are all copied.  Procedure pointers (custom
         !! schedules and callbacks) are intentionally not copied: the caller
         !! must install deterministic procedures again on the resumed options.
-        integer :: format_version = 3
+        integer :: format_version = 4
         logical :: initialized = .false.
         logical :: resume_safe = .true.
         integer :: n_samples = 0
@@ -179,6 +184,7 @@ module fortml_mlp_training
         real(dp) :: tolerance = 1.0e-8_dp
         real(dp) :: min_delta = 0.0_dp
         real(dp) :: gradient_clip_norm = 0.0_dp
+        real(dp) :: ema_decay = 0.0_dp
         real(dp) :: last_learning_rate = 0.0_dp
         real(dp) :: initial_loss = huge(1.0_dp)
         real(dp) :: final_loss = huge(1.0_dp)
@@ -192,6 +198,7 @@ module fortml_mlp_training
         real(dp), allocatable :: first_moment(:)
         real(dp), allocatable :: second_moment(:)
         real(dp), allocatable :: rmsprop_buffer(:)
+        real(dp), allocatable :: ema_parameters(:)
         real(dp), allocatable :: best_parameters(:)
         real(dp), allocatable :: accumulated_gradient(:)
         integer, allocatable :: iterator_order(:)
@@ -429,6 +436,7 @@ contains
         if (allocated(self%first_moment)) deallocate(self%first_moment)
         if (allocated(self%second_moment)) deallocate(self%second_moment)
         if (allocated(self%rmsprop_buffer)) deallocate(self%rmsprop_buffer)
+        if (allocated(self%ema_parameters)) deallocate(self%ema_parameters)
         if (allocated(self%best_parameters)) deallocate(self%best_parameters)
         if (allocated(self%accumulated_gradient)) then
             deallocate(self%accumulated_gradient)
@@ -441,7 +449,7 @@ contains
         if (allocated(self%validation_loss_history)) then
             deallocate(self%validation_loss_history)
         end if
-        self%format_version = 3
+        self%format_version = 4
         self%initialized = .false.
         self%resume_safe = .true.
         self%n_samples = 0
@@ -486,6 +494,7 @@ contains
         self%tolerance = 1.0e-8_dp
         self%min_delta = 0.0_dp
         self%gradient_clip_norm = 0.0_dp
+        self%ema_decay = 0.0_dp
         self%last_learning_rate = 0.0_dp
         self%initial_loss = huge(1.0_dp)
         self%final_loss = huge(1.0_dp)
@@ -500,7 +509,7 @@ contains
     logical function mlp_checkpoint_valid(self) result(valid)
         class(mlp_training_checkpoint_t), intent(in) :: self
 
-        valid = self%initialized .and. self%format_version == 3 .and. &
+        valid = self%initialized .and. self%format_version == 4 .and. &
             self%n_samples > 0 .and. self%n_features > 0 .and. &
             self%n_outputs > 0 .and. self%n_parameters > 0 .and. &
             self%epoch >= 0 .and. self%updates >= 0 .and. &
@@ -551,6 +560,19 @@ contains
             valid = .false.
             return
         end if
+        if (self%ema_decay > 0.0_dp) then
+            if (.not. allocated(self%ema_parameters)) then
+                valid = .false.
+                return
+            end if
+            if (size(self%ema_parameters) /= self%n_parameters) then
+                valid = .false.
+                return
+            end if
+        else if (allocated(self%ema_parameters)) then
+            valid = .false.
+            return
+        end if
         if (self%has_validation) then
             valid = allocated(self%validation_loss_history) .and. &
                 size(self%validation_loss_history) == self%epoch
@@ -567,6 +589,8 @@ contains
             all(ieee_is_finite(self%learning_rate_history))
         if (self%optimizer == MLP_OPTIMIZER_RMSPROP) valid = valid .and. &
             all(ieee_is_finite(self%rmsprop_buffer))
+        if (self%ema_decay > 0.0_dp) valid = valid .and. &
+            all(ieee_is_finite(self%ema_parameters))
         if (self%has_validation) valid = valid .and. &
             all(ieee_is_finite(self%validation_loss_history))
         valid = valid .and. ieee_is_finite(self%learning_rate) .and. &
@@ -583,7 +607,9 @@ contains
             ieee_is_finite(self%min_delta) .and. &
             ieee_is_finite(self%gradient_clip_norm) .and. &
             self%tolerance >= 0.0_dp .and. self%min_delta >= 0.0_dp .and. &
-            self%gradient_clip_norm >= 0.0_dp
+            self%gradient_clip_norm >= 0.0_dp .and. &
+            ieee_is_finite(self%ema_decay) .and. self%ema_decay >= 0.0_dp .and. &
+            self%ema_decay < 1.0_dp
         valid = valid .and. self%momentum >= 0.0_dp .and. self%momentum < 1.0_dp
         valid = valid .and. self%rmsprop_decay >= 0.0_dp .and. &
             self%rmsprop_decay < 1.0_dp .and. self%rmsprop_momentum >= 0.0_dp .and. &
@@ -1138,6 +1164,7 @@ contains
         type(mlp_batch_iterator_t) :: iterator
         real(dp), allocatable :: theta(:), best_theta(:), gradient(:)
         real(dp), allocatable :: accumulated_gradient(:)
+        real(dp), allocatable :: ema_parameters(:)
         real(dp), allocatable :: x_batch(:, :), target_batch(:, :)
         integer, allocatable :: batch_indices(:)
         real(dp) :: loss, l2_gradient, gradient_norm, improvement
@@ -1227,6 +1254,7 @@ contains
             if (checkpoint%gradient_clip_norm /= config%gradient_clip_norm) then
                 incompatible_checkpoint = .true.
             end if
+            if (checkpoint%ema_decay /= config%ema_decay) incompatible_checkpoint = .true.
             if (checkpoint%epoch > config%max_epochs) incompatible_checkpoint = .true.
             if (incompatible_checkpoint) then
                 call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -1252,10 +1280,18 @@ contains
                 return
             end if
             allocate(best_theta, source=checkpoint%best_parameters)
+            if (config%ema_decay > 0.0_dp) then
+                allocate(ema_parameters, source=checkpoint%ema_parameters)
+            end if
         else
             theta = model%parameters()
             allocate(best_theta, source=theta)
+            if (config%ema_decay > 0.0_dp) then
+                allocate(ema_parameters, source=theta)
+            end if
         end if
+        result%has_ema = config%ema_decay > 0.0_dp
+        if (result%has_ema) allocate(result%ema_parameters, source=ema_parameters)
         allocate(gradient(n_parameters))
         allocate(accumulated_gradient(n_parameters))
         history_length = config%max_epochs
@@ -1523,6 +1559,11 @@ contains
                             if (present(state)) state = result
                             return
                         end if
+                        if (config%ema_decay > 0.0_dp) then
+                            ema_parameters = config%ema_decay*ema_parameters + &
+                                (1.0_dp-config%ema_decay)*theta
+                            result%ema_parameters = ema_parameters
+                        end if
                         result%updates = result%updates + 1
                         call emit_training_event(config, MLP_EVENT_UPDATE, epoch, &
                             result%updates, loss, validation_loss, &
@@ -1544,7 +1585,7 @@ contains
                         sgd_optimizer, theta, &
                         best_theta, stale_epochs, &
                         epoch, microbatch_count, accumulated_samples, &
-                        accumulated_gradient, present(validation_x), status)
+                        accumulated_gradient, ema_parameters, present(validation_x), status)
                     if (status%code /= FORTNUM_OK) then
                         if (present(state)) state = result
                         return
@@ -1642,7 +1683,7 @@ contains
                     sgd_optimizer, theta, &
                     best_theta, stale_epochs, &
                     epoch, microbatch_count, accumulated_samples, &
-                    accumulated_gradient, present(validation_x), status)
+                    accumulated_gradient, ema_parameters, present(validation_x), status)
                 if (status%code /= FORTNUM_OK) then
                     if (present(state)) state = result
                     return
@@ -1708,7 +1749,7 @@ contains
             sgd_optimizer, theta, best_theta, &
             stale_epochs, active_epoch, &
             active_microbatches, accumulated_samples, accumulated_gradient, &
-            has_validation, status)
+            ema_parameters, has_validation, status)
         type(mlp_training_checkpoint_t), intent(inout) :: checkpoint
         real(dp), intent(in) :: x(:, :), target(:, :)
         type(mlp_training_options_t), intent(in) :: config
@@ -1723,6 +1764,7 @@ contains
         integer, intent(in) :: stale_epochs
         integer, intent(in) :: active_epoch, active_microbatches, accumulated_samples
         real(dp), intent(in) :: accumulated_gradient(:)
+        real(dp), allocatable, intent(in) :: ema_parameters(:)
         logical, intent(in) :: has_validation
         type(fortnum_status_t), intent(out) :: status
         integer :: n
@@ -1732,6 +1774,15 @@ contains
             size(accumulated_gradient) /= size(theta) .or. &
             active_epoch < result%epochs .or. active_microbatches < 0 .or. &
             accumulated_samples < 0 .or. .not. iterator%initialized()
+        if (config%ema_decay > 0.0_dp) then
+            if (.not. allocated(ema_parameters)) then
+                invalid_state = .true.
+            else if (size(ema_parameters) /= size(theta)) then
+                invalid_state = .true.
+            end if
+        else if (allocated(ema_parameters)) then
+            invalid_state = .true.
+        end if
         if (config%optimizer == MLP_OPTIMIZER_ADAM) then
             if (.not. allocated(optimizer%first_moment)) invalid_state = .true.
             if (.not. allocated(optimizer%second_moment)) invalid_state = .true.
@@ -1796,7 +1847,7 @@ contains
             return
         end if
         call checkpoint%clear()
-        checkpoint%format_version = 3
+        checkpoint%format_version = 4
         checkpoint%initialized = .true.
         checkpoint%resume_safe = .true.
         checkpoint%n_samples = size(x, 1)
@@ -1851,6 +1902,7 @@ contains
         checkpoint%tolerance = config%tolerance
         checkpoint%min_delta = config%min_delta
         checkpoint%gradient_clip_norm = config%gradient_clip_norm
+        checkpoint%ema_decay = config%ema_decay
         checkpoint%last_learning_rate = result%last_learning_rate
         checkpoint%initial_loss = result%initial_loss
         checkpoint%final_loss = result%final_loss
@@ -1879,6 +1931,9 @@ contains
             allocate(checkpoint%first_moment, source=rmsprop_optimizer%square_average)
             allocate(checkpoint%second_moment, source=rmsprop_optimizer%gradient_average)
             allocate(checkpoint%rmsprop_buffer, source=rmsprop_optimizer%momentum_buffer)
+        end if
+        if (config%ema_decay > 0.0_dp) then
+            allocate(checkpoint%ema_parameters, source=ema_parameters)
         end if
         allocate(checkpoint%best_parameters, source=best_theta)
         allocate(checkpoint%accumulated_gradient, source=accumulated_gradient)
@@ -1939,6 +1994,7 @@ contains
             options%momentum >= 0.0_dp .and. options%momentum < 1.0_dp .and. &
             options%tolerance >= 0.0_dp .and. options%min_delta >= 0.0_dp .and. &
             options%gradient_clip_norm >= 0.0_dp .and. &
+            options%ema_decay >= 0.0_dp .and. options%ema_decay < 1.0_dp .and. &
             options%validation_interval >= 1
         valid = valid .and. ieee_is_finite(options%learning_rate) .and. &
             ieee_is_finite(options%beta1) .and. ieee_is_finite(options%beta2) .and. &
@@ -1949,7 +2005,8 @@ contains
             ieee_is_finite(options%weight_decay) .and. &
             ieee_is_finite(options%tolerance) .and. &
             ieee_is_finite(options%min_delta) .and. &
-            ieee_is_finite(options%gradient_clip_norm)
+            ieee_is_finite(options%gradient_clip_norm) .and. &
+            ieee_is_finite(options%ema_decay)
         valid = valid .and. options%weight_decay >= 0.0_dp
         valid = valid .and. options%rmsprop_decay >= 0.0_dp .and. &
             options%rmsprop_decay < 1.0_dp .and. options%rmsprop_momentum >= 0.0_dp .and. &

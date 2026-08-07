@@ -1213,6 +1213,19 @@ after the last optimizer state and therefore marks that snapshot
 `checkpoint%valid()` validates allocation, dimensions, finite values, and the
 format version, while `checkpoint%clear()` releases its arrays.
 
+Set `mlp_training_options_t%ema_decay` to a finite value in `[0,1)` to track
+an exponential moving average of post-update network parameters. Zero (the
+default) disables the extra state. The initialized average starts at the
+initial parameter vector and is updated after every optimizer step as
+`ema <- decay*ema + (1-decay)*parameters`. The resulting
+`mlp_training_state_t%ema_parameters` is a diagnostic/export surface; training
+does not silently replace the live model with the averaged parameters. EMA
+state, decay, and resume validation are included in checkpoints and the
+versioned text schema, so interrupted and uninterrupted deterministic runs
+produce identical averages. If best-state restoration is enabled, the model
+may be restored after the final EMA update and the checkpoint is marked
+non-resumable as for any other parameter/state mismatch.
+
 `fortml_mlp_checkpoint` adds the file boundary without exposing compiler
 runtime state. `mlp_checkpoint_save(checkpoint,path,status)` writes a valid
 snapshot as versioned formatted text with the magic

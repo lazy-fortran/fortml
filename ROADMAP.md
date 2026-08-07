@@ -1210,6 +1210,13 @@ trials remain visible in the result schema.
   accuracy oracle before it can enter a performance report.
 - [x] Add sample-weighted MLP microbatch accumulation with an explicit flush
   boundary and exact full-batch equivalence for the MSE+L2 objective.
+- [x] Add deterministic parameter exponential moving averages to the MLP
+  trainer. `ema_decay` validates the closed-open decay domain, starts from
+  the initial packed parameters, updates after every optimizer step, and
+  persists the averaged vector through in-memory and versioned file
+  checkpoints. Independent recurrence and interrupted/serialized-resume
+  tests cover the state; EMA is an explicit export surface and never hides a
+  model-parameter replacement.
 - [ ] Add activation checkpointing, truncated BPTT, gradient
   centralization/noise, value clipping, and anomaly detection with
   parameter-path diagnostics.
