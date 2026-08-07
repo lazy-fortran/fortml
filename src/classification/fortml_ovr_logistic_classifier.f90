@@ -376,7 +376,14 @@ contains
             raw(:, j) = binary_probabilities(:, 2)
         end do
         do i = 1, size(x, 1)
-            probabilities(i, :) = raw(i, :)/sum(raw(i, :))
+            dot_product_bar = sum(raw(i, :))
+            if (.not. ieee_is_finite(dot_product_bar) .or. &
+                dot_product_bar <= tiny(1.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "OVR logistic probability VJP: invalid normalization")
+                return
+            end if
+            probabilities(i, :) = raw(i, :)/dot_product_bar
         end do
         allocate(binary_probabilities_bar(size(x, 1), 2), &
             binary_x_bar(size(x, 1), self%n_features))

@@ -130,6 +130,12 @@ program test_ovr_logistic_classifier
     call check(status_ok(status) .and. all(query_predicted == -7), &
         "deterministic first-class probability tie", failures)
 
+    parameters = -1000.0_dp
+    call model%set_parameters(parameters, status)
+    call model%predict_proba_vjp(query, probabilities_bar, x_bar, status)
+    call check(.not. status_ok(status), &
+        "VJP refuses underflowed probability normalization", failures)
+
     call unfitted%predict_proba(query, probabilities, status)
     call check(.not. status_ok(status), "unfitted prediction refusal", failures)
     call model%fit(x, labels, status, class_weight=[1.0_dp, 2.0_dp])
