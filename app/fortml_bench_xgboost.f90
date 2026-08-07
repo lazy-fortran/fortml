@@ -4,6 +4,7 @@ program fortml_bench_xgboost
     !! NumPy reconstructs this fixture and the split formulas independently.
     !! This executable reports only values and release-build timings.
     use, intrinsic :: iso_fortran_env, only: dp => real64, int64
+    use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_quiet_nan
     use fortml_xgboost, only: xgboost_t, xgboost_options_t
     use fortml_xgboost_multiclass, only: xgboost_multiclass_t
     use fortnum_status, only: fortnum_status_t, status_ok
@@ -12,6 +13,7 @@ program fortml_bench_xgboost
     call benchmark_regression()
     call benchmark_logistic()
     call benchmark_multiclass()
+    call benchmark_missing()
 
 contains
 
@@ -199,6 +201,61 @@ contains
             n_estimators, ",", elapsed_predict, ",", accuracy, ",", &
             sum(probabilities)
     end subroutine benchmark_multiclass
+
+    subroutine benchmark_missing()
+        integer, parameter :: n_samples = 6, n_features = 1
+        integer, parameter :: n_estimators = 1, repetitions = 16
+        integer, parameter :: prediction_repetitions = 128
+        real(dp) :: x(n_samples, n_features), y(n_samples), prediction(n_samples)
+        real(dp) :: elapsed_fit, elapsed_predict, split_gain
+        integer(int64) :: clock_start, clock_end, clock_rate
+        integer :: repetition, i
+        type(xgboost_t) :: model
+        type(xgboost_options_t) :: options
+        type(fortnum_status_t) :: status
+
+        x(:, 1) = [0.0_dp, 1.0_dp, 2.0_dp, 3.0_dp, 4.0_dp, &
+            ieee_value(0.0_dp, ieee_quiet_nan)]
+        y = [0.0_dp, 0.0_dp, 10.0_dp, 10.0_dp, 10.0_dp, 0.0_dp]
+        options%n_estimators = n_estimators
+        options%max_depth = 1
+        options%min_samples_leaf = 1
+        options%learning_rate = 1.0_dp
+        options%l2 = 0.0_dp
+        options%min_child_weight = 0.0_dp
+        options%missing_policy = "learn"
+
+        call system_clock(clock_start, clock_rate)
+        do repetition = 1, repetitions
+            call model%fit_regression(x, y, status, options)
+            if (.not. status_ok(status)) error stop "XGBoost missing fit failed"
+        end do
+        call system_clock(clock_end)
+        elapsed_fit = real(clock_end - clock_start, dp)/real(clock_rate, dp) &
+            /real(repetitions, dp)
+        call model%fit_regression(x, y, status, options)
+        if (.not. status_ok(status)) error stop "XGBoost missing reference fit failed"
+        call model%predict(x, prediction, status)
+        if (.not. status_ok(status)) error stop "XGBoost missing prediction failed"
+        split_gain = model%split_gain(1)
+        write (*, '(a,i0,a,i0,a,i0,a,es24.16,a,es24.16,a,es24.16,6(a,es24.16))') &
+            "xgb_missing_fit,", n_samples, ",", n_features, ",", n_estimators, &
+            ",", elapsed_fit, ",", sum(prediction), ",", split_gain, &
+            (",", prediction(i), i = 1, n_samples)
+
+        call system_clock(clock_start, clock_rate)
+        do repetition = 1, prediction_repetitions
+            call model%predict(x, prediction, status)
+            if (.not. status_ok(status)) error stop "XGBoost missing timing failed"
+        end do
+        call system_clock(clock_end)
+        elapsed_predict = real(clock_end - clock_start, dp)/real(clock_rate, dp) &
+            /real(prediction_repetitions, dp)
+        write (*, '(a,i0,a,i0,a,i0,a,es24.16,a,es24.16,a,es24.16,6(a,es24.16))') &
+            "xgb_missing_predict,", n_samples, ",", n_features, ",", &
+            n_estimators, ",", elapsed_predict, ",", sum(prediction), ",", &
+            split_gain, (",", prediction(i), i = 1, n_samples)
+    end subroutine benchmark_missing
 
     subroutine make_fixture(x, y)
         real(dp), intent(out) :: x(:, :), y(:)

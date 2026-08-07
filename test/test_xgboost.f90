@@ -1,5 +1,6 @@
 program test_xgboost
     use, intrinsic :: iso_fortran_env, only: dp => real64, error_unit
+    use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_quiet_nan
     use fortml_xgboost, only: xgboost_t, xgboost_options_t
     use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_OK, &
         FORTNUM_DOMAIN_ERROR
@@ -12,6 +13,7 @@ program test_xgboost
     call test_deeper_tree_oracle(failures)
     call test_logistic_second_order_oracle(failures)
     call test_regularisation_and_determinism(failures)
+    call test_missing_value_routing(failures)
     call test_refusals(failures)
     if (failures /= 0) then
         write (error_unit, '(i0,a)') failures, " xgboost test(s) failed"
@@ -20,6 +22,81 @@ program test_xgboost
     write (*, '(a)') "PASS"
 
 contains
+
+    subroutine test_missing_value_routing(failures)
+        integer, intent(inout) :: failures
+        type(xgboost_t) :: learned, forced_right, forced_left, rejected
+        type(xgboost_options_t) :: options
+        type(fortnum_status_t) :: status
+        real(dp) :: x(6, 1), y(6), prediction(6), x_dot(6, 1), prediction_dot(6)
+        real(dp) :: expected(6), boundary(1, 1), boundary_dot(1, 1), boundary_value(1)
+
+        x(:, 1) = [0.0_dp, 1.0_dp, 2.0_dp, 3.0_dp, 4.0_dp, &
+            ieee_value(0.0_dp, ieee_quiet_nan)]
+        y = [0.0_dp, 0.0_dp, 10.0_dp, 10.0_dp, 10.0_dp, 0.0_dp]
+        options%n_estimators = 1
+        options%max_depth = 1
+        options%min_samples_leaf = 1
+        options%learning_rate = 1.0_dp
+        options%l2 = 0.0_dp
+        options%min_child_weight = 0.0_dp
+
+        call rejected%fit_regression(x, y, status, options)
+        if (status%code /= FORTNUM_DOMAIN_ERROR) then
+            write (error_unit, '(a)') &
+                "FAIL [xgb missing] default policy must reject NaN fit input"
+            failures = failures + 1
+        end if
+
+        options%missing_policy = "learn"
+        call learned%fit_regression(x, y, status, options)
+        call learned%predict(x, prediction, status)
+        expected = [0.0_dp, 0.0_dp, 10.0_dp, 10.0_dp, 10.0_dp, 0.0_dp]
+        x_dot = 0.0_dp
+        call learned%predict_jvp(x, x_dot, prediction, prediction_dot, status)
+        if (status%code /= FORTNUM_OK .or. trim(learned%missing_policy()) /= "learn" .or. &
+            .not. learned%accepts_missing() .or. maxval(abs(prediction - expected)) > &
+            2.0e-13_dp .or. maxval(abs(prediction_dot)) > 2.0e-14_dp) then
+            write (error_unit, '(a,es12.4)') &
+                "FAIL [xgb missing] learned default-direction oracle ", &
+                maxval(abs(prediction - expected))
+            failures = failures + 1
+        end if
+
+        options%missing_policy = "right"
+        call forced_right%fit_regression(x, y, status, options)
+        call forced_right%predict(x, prediction, status)
+        expected = [0.0_dp, 0.0_dp, 7.5_dp, 7.5_dp, 7.5_dp, 7.5_dp]
+        if (status%code /= FORTNUM_OK .or. maxval(abs(prediction - expected)) > &
+            2.0e-13_dp) then
+            write (error_unit, '(a,es12.4)') &
+                "FAIL [xgb missing] forced-right oracle ", &
+                maxval(abs(prediction - expected))
+            failures = failures + 1
+        end if
+
+        options%missing_policy = "left"
+        call forced_left%fit_regression(x, y, status, options)
+        call forced_left%predict(x, prediction, status)
+        expected = [0.0_dp, 0.0_dp, 10.0_dp, 10.0_dp, 10.0_dp, 0.0_dp]
+        if (status%code /= FORTNUM_OK .or. maxval(abs(prediction - expected)) > &
+            2.0e-13_dp) then
+            write (error_unit, '(a,es12.4)') &
+                "FAIL [xgb missing] forced-left oracle ", &
+                maxval(abs(prediction - expected))
+            failures = failures + 1
+        end if
+
+        boundary(1, 1) = 1.5_dp
+        boundary_dot(1, 1) = 1.0_dp
+        call learned%predict_jvp(boundary, boundary_dot, boundary_value, &
+            prediction_dot(:1), status)
+        if (status%code /= FORTNUM_DOMAIN_ERROR) then
+            write (error_unit, '(a)') &
+                "FAIL [xgb missing] split boundary derivative refusal"
+            failures = failures + 1
+        end if
+    end subroutine test_missing_value_routing
 
     subroutine test_deeper_tree_oracle(failures)
         integer, intent(inout) :: failures

@@ -1,6 +1,6 @@
 !> A deterministic, exact-split second-order boosting foundation.
 module fortml_xgboost
-    use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+    use, intrinsic :: ieee_arithmetic, only: ieee_is_finite, ieee_is_nan
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
         FORTNUM_DOMAIN_ERROR
@@ -9,14 +9,20 @@ module fortml_xgboost
 
     integer, parameter, public :: XGB_OBJECTIVE_SQUARED = 1
     integer, parameter, public :: XGB_OBJECTIVE_LOGISTIC = 2
+    integer, parameter, public :: XGB_MISSING_ERROR = 0
+    integer, parameter, public :: XGB_MISSING_LEARN = 1
+    integer, parameter, public :: XGB_MISSING_LEFT = 2
+    integer, parameter, public :: XGB_MISSING_RIGHT = 3
 
     !> Options for the deterministic exact-split XGBoost-style estimator.
     !>
     !> Numeric splits are enumerated exhaustively.  Trees may grow to
     !> `max_depth` and use the full second-order leaf and split formulas,
     !> including L1/L2 regularisation, gamma, min-child-Hessian and shrinkage.
-    !> Histogram construction, missing-value policies, and GPU training are
-    !> separate backends and are not implied by this exact CPU path.
+    !> The exact CPU path accepts IEEE NaNs when `missing_policy` is `learn`,
+    !> `left`, or `right`.  `learn` evaluates both default directions for every
+    !> candidate split and stores the direction with the best gain, while the
+    !> fixed policies route all missing values to the requested child.
     type, public :: xgboost_options_t
         integer :: n_estimators = 50
         integer :: max_depth = 1
@@ -27,6 +33,7 @@ module fortml_xgboost
         real(dp) :: gamma = 0.0_dp
         real(dp) :: min_child_weight = 1.0e-3_dp
         character(len=16) :: objective = "squared"
+        character(len=16) :: missing_policy = "error"
     end type xgboost_options_t
 
     type :: xgb_tree_t
@@ -46,6 +53,7 @@ module fortml_xgboost
         integer, allocatable :: feature(:), left_child(:), right_child(:)
         real(dp), allocatable :: node_threshold(:), weight(:), node_gain(:)
         logical, allocatable :: leaf(:)
+        logical, allocatable :: missing_left(:)
     end type xgb_tree_t
 
     !> Exact-split second-order boosting for squared and binary logistic
@@ -58,6 +66,7 @@ module fortml_xgboost
         integer :: objective_code = 0
         real(dp) :: learning_rate = 0.0_dp
         real(dp) :: base_score = 0.0_dp
+        integer :: missing_code = XGB_MISSING_ERROR
         type(xgb_tree_t), allocatable :: estimators(:)
         logical :: initialized = .false.
     contains
@@ -82,6 +91,8 @@ module fortml_xgboost
         procedure, public :: estimator_count => xgb_estimator_count
         procedure, public :: base_margin => xgb_base_margin
         procedure, public :: objective_name => xgb_objective_name
+        procedure, public :: missing_policy => xgb_missing_policy
+        procedure, public :: accepts_missing => xgb_accepts_missing
         procedure, public :: fitted => xgb_fitted
     end type xgboost_t
 
@@ -96,7 +107,7 @@ contains
         real(dp), allocatable :: prediction(:), gradient(:), hessian(:)
         real(dp), allocatable :: correction(:)
         real(dp) :: mean_target, rate
-        integer :: objective_code, i, n_samples, n_features
+        integer :: objective_code, missing_code, i, n_samples, n_features
 
         settings = xgboost_options_t()
         if (present(options)) settings = options
@@ -104,6 +115,12 @@ contains
         if (objective_code == 0) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "xgboost fit: objective must be squared or logistic")
+            return
+        end if
+        missing_code = parse_missing_policy(settings%missing_policy)
+        if (missing_code < XGB_MISSING_ERROR) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost fit: missing_policy must be error, learn, left, or right")
             return
         end if
 
@@ -125,9 +142,15 @@ contains
                 "xgboost fit: invalid dimensions or hyperparameters")
             return
         end if
-        if (any(.not. ieee_is_finite(x)) .or. any(.not. ieee_is_finite(y))) then
+        if (any((.not. ieee_is_finite(x)) .and. (.not. ieee_is_nan(x))) .or. &
+            any(.not. ieee_is_finite(y))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
-                "xgboost fit: inputs and targets must be finite")
+                "xgboost fit: inputs must be finite or IEEE NaN and targets finite")
+            return
+        end if
+        if (missing_code == XGB_MISSING_ERROR .and. any(ieee_is_nan(x))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost fit: NaN inputs require a missing-value policy")
             return
         end if
         if (objective_code == XGB_OBJECTIVE_LOGISTIC) then
@@ -165,6 +188,7 @@ contains
         self%n_estimators = settings%n_estimators
         self%objective_code = objective_code
         self%learning_rate = rate
+        self%missing_code = missing_code
         self%initialized = .true.
         call status_set(status, FORTNUM_OK, "")
     end subroutine xgb_fit
@@ -264,9 +288,14 @@ contains
         integer :: i
 
         if (.not. self%initialized .or. size(x, 2) /= self%n_inputs .or. &
-            size(margin) /= size(x, 1) .or. any(.not. ieee_is_finite(x))) then
+            size(margin) /= size(x, 1)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "xgboost predict_margin: model, input, or output shape is invalid")
+            return
+        end if
+        if (.not. valid_query_values(self%missing_code, x)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost predict_margin: input has unsupported nonfinite values")
             return
         end if
         allocate(correction(size(x, 1)))
@@ -319,16 +348,23 @@ contains
 
         if (.not. self%initialized .or. size(x, 2) /= self%n_inputs .or. &
             any(shape(x_dot) /= shape(x)) .or. size(y) /= size(x, 1) .or. &
-            size(y_dot) /= size(y) .or. any(.not. ieee_is_finite(x))) then
+            size(y_dot) /= size(y)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "xgboost predict_jvp: model, input, or output shape is invalid")
+            return
+        end if
+        if (.not. valid_query_values(self%missing_code, x) .or. &
+            any(.not. ieee_is_finite(x_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost predict_jvp: input or tangent has unsupported values")
             return
         end if
         do j = 1, self%n_estimators
             do node = 1, self%estimators(j)%n_nodes
                 if (self%estimators(j)%leaf(node)) cycle
                 do i = 1, size(x, 1)
-                    if (x(i, self%estimators(j)%feature(node)) == &
+                    if (.not. ieee_is_nan(x(i, self%estimators(j)%feature(node))) .and. &
+                        x(i, self%estimators(j)%feature(node)) == &
                         self%estimators(j)%node_threshold(node)) then
                         call status_set(status, FORTNUM_DOMAIN_ERROR, &
                             "xgboost predict_jvp: derivative is undefined on split")
@@ -448,6 +484,29 @@ contains
         end select
     end function xgb_objective_name
 
+    character(len=16) function xgb_missing_policy(self) result(name)
+        class(xgboost_t), intent(in) :: self
+
+        select case (self%missing_code)
+        case (XGB_MISSING_ERROR)
+            name = "error"
+        case (XGB_MISSING_LEARN)
+            name = "learn"
+        case (XGB_MISSING_LEFT)
+            name = "left"
+        case (XGB_MISSING_RIGHT)
+            name = "right"
+        case default
+            name = "unfitted"
+        end select
+    end function xgb_missing_policy
+
+    logical function xgb_accepts_missing(self) result(value)
+        class(xgboost_t), intent(in) :: self
+
+        value = self%initialized .and. self%missing_code /= XGB_MISSING_ERROR
+    end function xgb_accepts_missing
+
     logical function xgb_fitted(self) result(fitted)
         class(xgboost_t), intent(in) :: self
         fitted = self%initialized
@@ -519,7 +578,7 @@ contains
         allocate(tree%feature(max_nodes), tree%left_child(max_nodes), &
             tree%right_child(max_nodes), tree%node_threshold(max_nodes), &
             tree%weight(max_nodes), tree%node_gain(max_nodes), &
-            tree%leaf(max_nodes))
+            tree%leaf(max_nodes), tree%missing_left(max_nodes))
         tree%feature = 0
         tree%left_child = 0
         tree%right_child = 0
@@ -527,6 +586,7 @@ contains
         tree%weight = 0.0_dp
         tree%node_gain = 0.0_dp
         tree%leaf = .true.
+        tree%missing_left = .true.
         allocate(sample_index(n_samples))
         do i = 1, n_samples
             sample_index(i) = i
@@ -560,12 +620,16 @@ contains
         integer, intent(out) :: node_id
         type(fortnum_status_t), intent(out) :: status
         integer, allocatable :: order(:), left_index(:), right_index(:)
-        real(dp), allocatable :: feature_values(:)
+        integer, allocatable :: finite_index(:)
+        real(dp), allocatable :: feature_values(:), finite_values(:)
         integer :: n_local, n_features, feature, k, i, left_count
+        integer :: n_finite, n_missing, direction, n_directions
         integer :: best_feature, left_node, right_node
         real(dp) :: total_gradient, total_hessian, left_gradient, left_hessian
         real(dp) :: right_gradient, right_hessian, candidate_gain, best_gain
         real(dp) :: best_threshold, candidate_threshold, value
+        real(dp) :: missing_gradient, missing_hessian
+        logical :: best_missing_left, missing_left
 
         n_local = size(sample_index)
         n_features = size(x, 2)
@@ -578,6 +642,7 @@ contains
         tree%weight(node_id) = value
         tree%node_gain(node_id) = 0.0_dp
         tree%leaf(node_id) = .true.
+        tree%missing_left(node_id) = .true.
 
         ! No split is possible at the depth limit or when both children would
         ! violate the minimum leaf size.  Returning a regularized leaf here is
@@ -588,38 +653,95 @@ contains
             return
         end if
 
-        allocate(order(n_local), feature_values(n_local))
+        allocate(order(n_local), feature_values(n_local), finite_index(n_local), &
+            finite_values(n_local))
         best_gain = 0.0_dp
         best_feature = 0
         best_threshold = 0.0_dp
+        best_missing_left = .true.
         do feature = 1, n_features
+            n_finite = 0
+            n_missing = 0
+            missing_gradient = 0.0_dp
+            missing_hessian = 0.0_dp
             do i = 1, n_local
                 feature_values(i) = x(sample_index(i), feature)
+                if (ieee_is_nan(feature_values(i))) then
+                    n_missing = n_missing + 1
+                    missing_gradient = missing_gradient + &
+                        gradient(sample_index(i))
+                    missing_hessian = missing_hessian + hessian(sample_index(i))
+                else
+                    n_finite = n_finite + 1
+                    finite_index(n_finite) = sample_index(i)
+                    finite_values(n_finite) = feature_values(i)
+                end if
             end do
-            call sort_feature_indices(feature_values, order)
+            if (n_finite < 2) cycle
+            call sort_feature_indices(finite_values(:n_finite), order(:n_finite))
             left_gradient = 0.0_dp
             left_hessian = 0.0_dp
-            do k = 1, n_local - 1
+            n_directions = 1
+            if (missing_code_for_options(options) == XGB_MISSING_LEARN) then
+                n_directions = 2
+            end if
+            do k = 1, n_finite - 1
                 i = order(k)
-                left_gradient = left_gradient + gradient(sample_index(i))
-                left_hessian = left_hessian + hessian(sample_index(i))
+                left_gradient = left_gradient + gradient(finite_index(i))
+                left_hessian = left_hessian + hessian(finite_index(i))
                 if (k < options%min_samples_leaf .or. &
-                    n_local - k < options%min_samples_leaf) cycle
-                if (feature_values(order(k)) >= feature_values(order(k + 1))) cycle
-                right_gradient = total_gradient - left_gradient
-                right_hessian = total_hessian - left_hessian
-                if (left_hessian < options%min_child_weight .or. &
-                    right_hessian < options%min_child_weight) cycle
-                candidate_gain = 0.5_dp*(regularized_leaf_score(left_gradient, &
-                    left_hessian, options) + regularized_leaf_score(right_gradient, &
-                    right_hessian, options) - regularized_leaf_score(total_gradient, &
-                    total_hessian, options)) - options%gamma
-                if (candidate_gain > best_gain) then
-                    best_gain = candidate_gain
-                    best_feature = feature
-                    best_threshold = 0.5_dp*(feature_values(order(k)) + &
-                        feature_values(order(k + 1)))
-                end if
+                    n_finite - k + n_missing < options%min_samples_leaf) cycle
+                if (finite_values(order(k)) >= finite_values(order(k + 1))) cycle
+                candidate_threshold = 0.5_dp*(finite_values(order(k)) + &
+                    finite_values(order(k + 1)))
+                do direction = 1, n_directions
+                    missing_left = direction == 1
+                    if (missing_code_for_options(options) == XGB_MISSING_RIGHT) then
+                        missing_left = .false.
+                    else if (missing_code_for_options(options) == XGB_MISSING_LEFT) then
+                        missing_left = .true.
+                    end if
+                    if (missing_left) then
+                        if (k + n_missing < options%min_samples_leaf .or. &
+                            n_finite - k < options%min_samples_leaf) cycle
+                    else
+                        if (k < options%min_samples_leaf .or. &
+                            n_finite - k + n_missing < options%min_samples_leaf) cycle
+                    end if
+                    if (missing_left) then
+                        left_gradient = left_gradient + missing_gradient
+                        left_hessian = left_hessian + missing_hessian
+                        right_gradient = total_gradient - left_gradient
+                        right_hessian = total_hessian - left_hessian
+                    else
+                        right_gradient = total_gradient - left_gradient - &
+                            missing_gradient
+                        right_hessian = total_hessian - left_hessian - &
+                            missing_hessian
+                    end if
+                    if (left_hessian < options%min_child_weight .or. &
+                        right_hessian < options%min_child_weight) then
+                        if (missing_left) then
+                            left_gradient = left_gradient - missing_gradient
+                            left_hessian = left_hessian - missing_hessian
+                        end if
+                        cycle
+                    end if
+                    candidate_gain = 0.5_dp*(regularized_leaf_score(left_gradient, &
+                        left_hessian, options) + regularized_leaf_score(right_gradient, &
+                        right_hessian, options) - regularized_leaf_score(total_gradient, &
+                        total_hessian, options)) - options%gamma
+                    if (candidate_gain > best_gain) then
+                        best_gain = candidate_gain
+                        best_feature = feature
+                        best_threshold = candidate_threshold
+                        best_missing_left = missing_left
+                    end if
+                    if (missing_left) then
+                        left_gradient = left_gradient - missing_gradient
+                        left_hessian = left_hessian - missing_hessian
+                    end if
+                end do
             end do
         end do
 
@@ -630,7 +752,8 @@ contains
 
         left_count = 0
         do i = 1, n_local
-            if (x(sample_index(i), best_feature) < best_threshold) then
+            if (go_left(x(sample_index(i), best_feature), best_threshold, &
+                best_missing_left)) then
                 left_count = left_count + 1
             end if
         end do
@@ -644,7 +767,8 @@ contains
         left_count = 0
         k = 0
         do i = 1, n_local
-            if (x(sample_index(i), best_feature) < best_threshold) then
+            if (go_left(x(sample_index(i), best_feature), best_threshold, &
+                best_missing_left)) then
                 left_count = left_count + 1
                 left_index(left_count) = sample_index(i)
             else
@@ -656,6 +780,7 @@ contains
         tree%feature(node_id) = best_feature
         tree%node_threshold(node_id) = best_threshold
         tree%node_gain(node_id) = best_gain
+        tree%missing_left(node_id) = best_missing_left
         call build_tree_node(x, gradient, hessian, options, left_index, depth + 1, &
             tree, next_node, left_node, status)
         if (status%code /= FORTNUM_OK) return
@@ -692,7 +817,8 @@ contains
         do i = 1, size(x, 1)
             node = 1
             do while (.not. tree%leaf(node))
-                if (x(i, tree%feature(node)) < tree%node_threshold(node)) then
+                if (go_left(x(i, tree%feature(node)), &
+                    tree%node_threshold(node), tree%missing_left(node))) then
                     node = tree%left_child(node)
                 else
                     node = tree%right_child(node)
@@ -741,6 +867,51 @@ contains
             code = 0
         end select
     end function parse_objective
+
+    integer function parse_missing_policy(name) result(code)
+        character(len=*), intent(in) :: name
+        character(len=:), allocatable :: normalized
+
+        normalized = trim(adjustl(name))
+        select case (normalized)
+        case ("error", "finite-only", "reject")
+            code = XGB_MISSING_ERROR
+        case ("learn", "learned", "default")
+            code = XGB_MISSING_LEARN
+        case ("left", "missing-left")
+            code = XGB_MISSING_LEFT
+        case ("right", "missing-right")
+            code = XGB_MISSING_RIGHT
+        case default
+            code = -1
+        end select
+    end function parse_missing_policy
+
+    integer function missing_code_for_options(options) result(code)
+        type(xgboost_options_t), intent(in) :: options
+
+        code = parse_missing_policy(options%missing_policy)
+    end function missing_code_for_options
+
+    logical function valid_query_values(missing_code, x) result(valid)
+        integer, intent(in) :: missing_code
+        real(dp), intent(in) :: x(:, :)
+
+        valid = .not. any((.not. ieee_is_finite(x)) .and. (.not. ieee_is_nan(x)))
+        if (.not. valid) return
+        valid = missing_code /= XGB_MISSING_ERROR .or. .not. any(ieee_is_nan(x))
+    end function valid_query_values
+
+    logical function go_left(value, threshold, missing_left) result(value_is_left)
+        real(dp), intent(in) :: value, threshold
+        logical, intent(in) :: missing_left
+
+        if (ieee_is_nan(value)) then
+            value_is_left = missing_left
+        else
+            value_is_left = value < threshold
+        end if
+    end function go_left
 
     real(dp) function stable_logit(probability) result(value)
         real(dp), intent(in) :: probability

@@ -1,6 +1,7 @@
 program test_xgboost_multiclass
     !! Independent behavior and input-JVP checks for OVR XGBoost classification.
     use, intrinsic :: iso_fortran_env, only: error_unit
+    use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_quiet_nan
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_ok
     use fortml_xgboost, only: xgboost_options_t
@@ -12,6 +13,7 @@ program test_xgboost_multiclass
     failures = 0
     call test_probability_and_labels(failures)
     call test_probability_jvp(failures)
+    call test_missing_value_routing(failures)
     call test_refusals(failures)
     if (failures > 0) then
         write (error_unit, '(i0,a)') failures, &
@@ -21,6 +23,33 @@ program test_xgboost_multiclass
     write (*, '(a)') "PASS XGBoost multiclass independent behavioral oracles"
 
 contains
+
+    subroutine test_missing_value_routing(failures)
+        integer, intent(inout) :: failures
+        type(xgboost_multiclass_t) :: model, rejected
+        type(xgboost_options_t) :: options
+        type(fortnum_status_t) :: status
+        real(dp) :: x(6, 1), query(2, 1), probabilities(2, 3)
+        integer :: labels(6)
+
+        x(:, 1) = [-2.0_dp, -1.0_dp, 0.0_dp, 1.0_dp, 2.0_dp, &
+            ieee_value(0.0_dp, ieee_quiet_nan)]
+        labels = [-8, -8, 2, 2, 11, 11]
+        options%n_estimators = 1
+        options%max_depth = 1
+        options%learning_rate = 1.0_dp
+        options%l2 = 1.0_dp
+        options%min_child_weight = 0.0_dp
+        call rejected%fit(x, labels, status, options)
+        call check(.not. status_ok(status), "default missing policy refusal", failures)
+        options%missing_policy = "learn"
+        call model%fit(x, labels, status, options)
+        query(:, 1) = [ieee_value(0.0_dp, ieee_quiet_nan), 0.5_dp]
+        call model%predict_proba(query, probabilities, status)
+        call check(status_ok(status), "missing-value probability prediction", failures)
+        call check(maxval(abs(sum(probabilities, dim=2) - 1.0_dp)) < 3.0e-14_dp, &
+            "missing-value probability normalization", failures)
+    end subroutine test_missing_value_routing
 
     subroutine test_probability_and_labels(failures)
         integer, intent(inout) :: failures

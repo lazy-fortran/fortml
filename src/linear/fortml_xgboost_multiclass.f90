@@ -1,7 +1,7 @@
 !> One-vs-rest multiclass classification over the exact XGBoost-style binary
 !> logistic estimator.
 module fortml_xgboost_multiclass
-    use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+    use, intrinsic :: ieee_arithmetic, only: ieee_is_finite, ieee_is_nan
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
         FORTNUM_DOMAIN_ERROR
@@ -55,12 +55,6 @@ contains
                 "XGBoost multiclass fit: input dimensions are invalid")
             return
         end if
-        if (any(.not. ieee_is_finite(x))) then
-            call status_set(status, FORTNUM_DOMAIN_ERROR, &
-                "XGBoost multiclass fit: inputs must be finite")
-            return
-        end if
-
         call unique_sorted_labels(labels, classes)
         n_classes = size(classes)
         if (n_classes < 2) then
@@ -269,7 +263,14 @@ contains
         if (.not. valid) return
         valid = size(x, 1) > 0 .and. size(x, 2) == self%n_inputs
         if (.not. valid) return
-        valid = all(ieee_is_finite(x))
+        valid = all(ieee_is_finite(x) .or. ieee_is_nan(x))
+        if (.not. valid) return
+        if (allocated(self%one_vs_rest)) then
+            valid = self%one_vs_rest(1)%accepts_missing() .or. &
+                .not. any(ieee_is_nan(x))
+        else
+            valid = .false.
+        end if
     end function valid_query
 
     subroutine unique_sorted_labels(labels, classes)
