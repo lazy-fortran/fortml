@@ -66,6 +66,7 @@ not supplied through a hidden generic interface.
 | `bernoulli_naive_bayes_t` | Log probabilities and probabilities | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
 | `multinomial_naive_bayes_t` | Log probabilities and probabilities | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
 | `complement_naive_bayes_t` | Log probabilities and probabilities | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
+| `multilabel_logistic_classifier_t` | Independent positive probabilities for an indicator matrix | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
 | `basis_map_t` | `evaluate` | Parameters and inputs | Parameters and inputs | No |
 | `one_hot_encoder_t` | Dense one-hot `transform` | Refused: integer categories have no canonical tangent space | Refused: integer categories have no canonical cotangent space | No |
 | `mlp_t` | `predict` | Parameters and inputs | Parameters and inputs | Weighted-output HVP |
@@ -481,6 +482,40 @@ the packed fitted-parameter products. All normalized products include the
 quotient rule. Tangents and cotangents must be finite and shape-compatible.
 Hyperparameter derivatives through the discrete optimizer fit remain a
 separate trainer contract.
+
+### `fortml_multilabel_logistic_classifier`
+
+`multilabel_logistic_classifier_t%fit(x,indicators,status[,l2,fit_intercept,
+max_iterations,tolerance,sample_weight,class_weight,thresholds])` fits one
+independent binary logistic head for every column of an integer indicator
+matrix. `x` has shape `(n_samples,n_features)` and `indicators` has shape
+`(n_samples,n_labels)`; each entry must be exactly zero or one, and every
+column must contain both values. `sample_weight` is shared by all heads.
+`class_weight`, when present, has shape `(2,n_labels)` in negative/positive
+order. The optional `thresholds` vector controls hard prediction and defaults
+to `0.5` for every head.
+
+`decision_function` returns one score column per label. `predict_proba` returns
+the positive probability matrix with shape `(n_samples,n_labels)`, rather than
+a list of two-column matrices. `predict` applies the per-label thresholds and
+returns an integer indicator matrix. `label_count`, `feature_count`,
+`parameter_count`, `parameters`, `set_parameters`, `thresholds`,
+`set_thresholds`, and `fitted` expose the packed state. Parameter blocks are
+concatenated by label, with each block using the underlying logistic
+coefficient/intercept order.
+
+`predict_proba_jvp`/`predict_proba_vjp` differentiate the fixed fitted model
+with respect to the continuous input batch. The corresponding
+`predict_proba_parameter_jvp`/`predict_proba_parameter_vjp` methods use the
+packed parameter vector. Integer target and hard-threshold prediction paths
+are intentionally not differentiated. All products validate finite values and
+exact shapes.
+
+`device_supported(kind)` reports CPU support for fitted models and no CUDA
+support in the current build. `decision_function_device`,
+`predict_proba_device`, and `predict_device` dispatch selected CPU contexts;
+CUDA requests return `FORTNUM_NOT_IMPLEMENTED` until a resident multi-head
+kernel is linked, with no hidden host fallback.
 
 ### `fortml_ovo_logistic_classifier`
 
