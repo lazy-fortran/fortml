@@ -11,13 +11,15 @@ program test_ovr_logistic_classifier
     real(dp) :: x(9, 2), query(4, 2), query_dot(4, 2)
     real(dp) :: probabilities(4, 3), probabilities_dot(4, 3)
     real(dp) :: probabilities_plus(4, 3), probabilities_minus(4, 3)
-    real(dp) :: weighted_x(1, 2), weighted_probabilities(1, 3)
+    real(dp) :: weighted_x(1, 2), weighted_fit_x(6, 2), weighted_probabilities(1, 3)
+    real(dp) :: weighted_expected(3)
     real(dp) :: probabilities_bar(4, 3), x_bar(4, 2)
     real(dp), allocatable :: parameters(:)
     real(dp), allocatable :: parameters_dot(:), parameters_plus(:), parameters_minus(:)
     real(dp), allocatable :: parameters_bar(:)
     real(dp) :: parameter_probabilities_dot(4, 3)
-    integer :: labels(9), weighted_labels(6), classes(3), predicted(9), query_predicted(4)
+    integer :: labels(9), weighted_labels(6)
+    integer :: classes(3), predicted(9), query_predicted(4)
     integer :: failures, i
     real(dp) :: lhs, rhs
 
@@ -41,6 +43,7 @@ program test_ovr_logistic_classifier
     query_dot(3, :) = [0.2_dp, 0.1_dp]
     query_dot(4, :) = [-0.1_dp, 0.3_dp]
     failures = 0
+    weighted_expected = [1.0_dp/7.0_dp, 2.0_dp/7.0_dp, 4.0_dp/7.0_dp]
 
     call model%fit(x, labels, status, l2=0.1_dp, max_iterations=1000, &
         tolerance=1.0e-7_dp)
@@ -64,14 +67,13 @@ program test_ovr_logistic_classifier
         "training predictions", failures)
 
     weighted_x = 0.0_dp
-    call weighted_model%fit(reshape([0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, &
-        0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp], &
-        [6, 2]), weighted_labels, status, l2=0.0_dp, &
+    weighted_fit_x = 0.0_dp
+    call weighted_model%fit(weighted_fit_x, weighted_labels, status, l2=0.0_dp, &
         class_weight=[1.0_dp, 2.0_dp, 4.0_dp], max_iterations=1000, &
-        tolerance=1.0e-9_dp)
+        tolerance=1.0e-7_dp)
     call weighted_model%predict_proba(weighted_x, weighted_probabilities, status)
     call check(status_ok(status) .and. maxval(abs(weighted_probabilities - &
-        reshape([1.0_dp/7.0_dp, 2.0_dp/7.0_dp, 4.0_dp/7.0_dp], [1, 3]))) < &
+        reshape(weighted_expected, [1, 3]))) < &
         2.0e-7_dp, "class-weighted OVR probability oracle", failures)
 
     call model%predict_proba_jvp(query, query_dot, probabilities, &
