@@ -495,6 +495,19 @@ implement mean pinball loss for `0 < quantile < 1`; JVP/VJP calls refuse a zero
 residual because that loss is nondifferentiable there. Both families treat
 targets as constants and differentiate predictions only.
 
+The facade also exposes Hessian-vector products for the smooth portions of
+these objectives: `binary_cross_entropy_with_logits_hvp`,
+`softmax_cross_entropy_hvp`, and `weighted_mse_loss_hvp` return the exact
+prediction-space curvature product. `huber_loss_hvp` returns the piecewise
+quadratic curvature (zero in the linear branch) and refuses an exact
+`abs(prediction-targets)==delta` transition instead of inventing a second
+derivative. `weighted_mse_loss_value` and its JVP/VJP/HVP products accept a
+finite nonnegative row-weight vector and `LOSS_REDUCTION_MEAN` or
+`LOSS_REDUCTION_SUM`; mean reduction divides by positive weight mass, while sum
+reduction leaves the weighted sum unnormalised. The weighted-MSE products are
+the implementation used by `mlp_loss_value_gradient` and `mlp_loss_hvp`, so
+standalone checks and MLP objectives share one reduction and derivative oracle.
+
 ### `fortml_softmax_regression`
 
 `softmax_regression_t%fit(x,labels,status[,l2,fit_intercept,max_iterations,
@@ -970,6 +983,10 @@ checked against independent central differences for linear and nonlinear MLP
 fixtures. The fixed full-batch learning-rate/L2 trajectory contract is provided
 by `fortml_mlp_hypergradient`; stochastic optimizer trajectories, schedules,
 and Adam-beta hypergradients remain separate contracts.
+
+The data term is evaluated through the shared `fortml_losses` weighted-MSE
+value/VJP/HVP kernels. Optional row weights and mean/sum reduction therefore
+have the same semantics in standalone loss calls and in the MLP objective.
 
 The same loss entry point accepts optional `sample_weight`, `reduction`, and
 `diagnostics` arguments. `MLP_REDUCTION_MEAN` divides the weighted data loss

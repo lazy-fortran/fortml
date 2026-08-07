@@ -13,6 +13,7 @@ module fortml_hyperparameter_search
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
         FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED
+    use fortnum_rng, only: rng_t, rng_seed, rng_uniform
     use fortml_device, only: FORTML_DEVICE_CPU, FORTML_DEVICE_CUDA, &
         fortml_device_t
     use fortopt_objective, only: objective_t
@@ -35,9 +36,11 @@ module fortml_hyperparameter_search
 
     integer, parameter, public :: HYPERPARAMETER_SEARCH_GRID = 1
     integer, parameter, public :: HYPERPARAMETER_SEARCH_LBFGSB = 2
+    integer, parameter, public :: HYPERPARAMETER_SEARCH_RANDOM = 3
 
     public :: hyperparameter_grid_search
     public :: hyperparameter_lbfgsb_search
+    public :: hyperparameter_random_search
     public :: hyperparameter_search_device_supported
 
 contains
@@ -114,6 +117,61 @@ contains
         result%converged = .true.
         call status_set(status, FORTNUM_OK, "")
     end subroutine hyperparameter_grid_search
+
+    subroutine hyperparameter_random_search(objective, lower, upper, samples, &
+            seed, result, status, options, device)
+        type(objective_t), intent(in) :: objective
+        real(dp), intent(in) :: lower(:), upper(:)
+        integer, intent(in) :: samples
+        integer(int64), intent(in) :: seed
+        type(hyperparameter_search_result_t), intent(out) :: result
+        type(fortnum_status_t), intent(out) :: status
+        type(hyperparameter_search_options_t), intent(in), optional :: options
+        type(fortml_device_t), intent(in), optional :: device
+
+        type(hyperparameter_search_options_t) :: settings
+        type(rng_t) :: generator
+        real(dp), allocatable :: candidate(:), gradient(:)
+        real(dp) :: value, uniform
+        integer :: i, j
+
+        result = hyperparameter_search_result_t()
+        result%method = HYPERPARAMETER_SEARCH_RANDOM
+        settings = hyperparameter_search_options_t()
+        if (present(options)) settings = options
+        call validate_search_inputs(objective, lower, upper, status, device)
+        if (status%code /= FORTNUM_OK) return
+        if (samples < 1 .or. samples > settings%max_evaluations) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "hyperparameter random: samples exceed the evaluation budget")
+            return
+        end if
+        allocate(candidate(size(lower)), gradient(size(lower)), &
+            result%best_parameters(size(lower)))
+        call rng_seed(generator, seed, status)
+        if (status%code /= FORTNUM_OK) return
+        do i = 1, samples
+            do j = 1, size(lower)
+                call rng_uniform(generator, uniform)
+                candidate(j) = lower(j) + (upper(j) - lower(j))*uniform
+            end do
+            call objective%value_gradient(candidate, value, gradient, status)
+            result%evaluations = result%evaluations + 1_int64
+            if (status%code /= FORTNUM_OK) return
+            if (.not. ieee_is_finite(value) .or. &
+                any(.not. ieee_is_finite(gradient))) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "hyperparameter random: objective returned a nonfinite product")
+                return
+            end if
+            if (i == 1 .or. value < result%best_value) then
+                result%best_value = value
+                result%best_parameters = candidate
+            end if
+        end do
+        result%converged = .true.
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine hyperparameter_random_search
 
     subroutine hyperparameter_lbfgsb_search(objective, initial, lower, upper, &
             result, status, options, device)
@@ -196,8 +254,8 @@ contains
             end if
         end if
         if (objective%n_parameters < 1 .or. size(lower) /= objective%n_parameters .or. &
-                size(upper) /= size(lower) .or. any(.not. ieee_is_finite(lower)) .or. &
-                any(.not. ieee_is_finite(upper)) .or. any(lower > upper)) then
+            size(upper) /= size(lower) .or. any(.not. ieee_is_finite(lower)) .or. &
+            any(.not. ieee_is_finite(upper)) .or. any(lower > upper)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "hyperparameter search: objective or bounds are invalid")
             return
