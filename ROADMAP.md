@@ -772,6 +772,10 @@ peak memory, and batch-size scaling with the same correctness gate as training.
   GP, GP feature products, and approximate or matrix-free GP methods.
 - [x] Record release timings, peak RSS, build provenance, external Python
   comparisons, raw CSV files, and plots through `../fortml-bench`.
+- [x] Add the MLP-training, basis-pipeline, decision-stump, and residual-stump
+  boosting lane with independent NumPy oracles, contextual scikit-learn rows,
+  and explicit PyTorch/JAX/XGBoost availability or refusal rows. The release
+  record is [`results/FEATURES.md`](../fortml-bench/results/FEATURES.md).
 - [ ] Define one versioned result schema for correctness, train time, predict
   time, peak host and device memory, compiler, flags, dependency revisions,
   hardware, seed, warmup, repetitions, and refusal reason.
