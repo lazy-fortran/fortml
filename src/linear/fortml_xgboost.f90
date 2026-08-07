@@ -1,6 +1,7 @@
 !> A deterministic, exact-split second-order boosting foundation.
 module fortml_xgboost
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite, ieee_is_nan
+    use, intrinsic :: iso_fortran_env, only: int64
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
         FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED
@@ -63,6 +64,14 @@ module fortml_xgboost
         integer :: early_stopping_rounds = 0
         real(dp) :: early_stopping_min_delta = 0.0_dp
         logical :: restore_best = .true.
+        !! Fraction of training rows retained independently for each tree.
+        !! Sampling is without replacement and uses the local `seed` stream.
+        real(dp) :: subsample = 1.0_dp
+        !! Fraction of input features considered independently for each tree.
+        !! Selected feature indices are traversed in ascending order.
+        real(dp) :: colsample_bytree = 1.0_dp
+        !! Positive local stream seed for deterministic row/feature sampling.
+        integer(int64) :: seed = 104729_int64
         integer, allocatable :: monotone_constraints(:)
     end type xgboost_options_t
 
@@ -179,6 +188,9 @@ contains
         integer :: objective_code, missing_code, tree_method_code, i, n_samples
         integer :: n_features, n_validation, completed_estimators
         integer :: best_iteration, stale_rounds
+        integer(int64) :: sampling_state
+        integer, allocatable :: sample_index(:)
+        logical, allocatable :: feature_mask(:)
         logical :: have_validation, improved
 
         settings = xgboost_options_t()
@@ -247,6 +259,11 @@ contains
             .not. ieee_is_finite(settings%gamma) .or. settings%gamma < 0.0_dp .or. &
             .not. ieee_is_finite(settings%min_child_weight) .or. &
             settings%min_child_weight < 0.0_dp .or. &
+            .not. ieee_is_finite(settings%subsample) .or. settings%subsample <= 0.0_dp .or. &
+            settings%subsample > 1.0_dp .or. &
+            .not. ieee_is_finite(settings%colsample_bytree) .or. &
+            settings%colsample_bytree <= 0.0_dp .or. &
+            settings%colsample_bytree > 1.0_dp .or. settings%seed <= 0_int64 .or. &
             (tree_method_code == XGB_TREE_HIST .and. settings%max_bin < 2)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "xgboost fit: invalid dimensions or hyperparameters")
@@ -425,14 +442,19 @@ contains
         end if
 
         completed_estimators = 0
+        sampling_state = settings%seed
         do i = 1, settings%n_estimators
             call objective_derivatives(objective_code, prediction, y, gradient, &
                 hessian, settings%huber_delta, settings%quantile_alpha, status)
             if (status%code /= FORTNUM_OK) return
             gradient = observation_weight*gradient
             hessian = observation_weight*hessian
+            call sample_training_rows(n_samples, settings%subsample, sampling_state, &
+                sample_index)
+            call sample_training_features(n_features, settings%colsample_bytree, &
+                sampling_state, feature_mask)
             call build_tree(x, gradient, hessian, observation_weight, settings, &
-                self%estimators(i), status)
+                sample_index, feature_mask, self%estimators(i), status)
             if (status%code /= FORTNUM_OK) return
             call tree_predict(self%estimators(i), x, correction, status)
             if (status%code /= FORTNUM_OK) return
@@ -1598,20 +1620,111 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine objective_derivatives
 
-    subroutine build_tree(x, gradient, hessian, observation_weight, options, tree, &
-            status)
+    subroutine sample_training_rows(n_samples, fraction, state, sample_index)
+        !! Draw a deterministic without-replacement row subset.  The output
+        !! is sorted by original row index so feature-value ties retain the
+        !! same stable ordering as the full-data path.
+        integer, intent(in) :: n_samples
+        real(dp), intent(in) :: fraction
+        integer(int64), intent(inout) :: state
+        integer, allocatable, intent(out) :: sample_index(:)
+        integer, allocatable :: permutation(:)
+        logical, allocatable :: selected(:)
+        integer :: n_selected, i, j, k, temporary
+
+        if (fraction >= 1.0_dp) then
+            allocate(sample_index(n_samples))
+            do i = 1, n_samples
+                sample_index(i) = i
+            end do
+            return
+        end if
+        n_selected = max(1, min(n_samples, int(ceiling(fraction*real(n_samples, dp)))))
+        allocate(permutation(n_samples), selected(n_samples), sample_index(n_selected))
+        do i = 1, n_samples
+            permutation(i) = i
+        end do
+        do i = 1, n_selected
+            j = i + int(mod(next_sampling_integer(state), int(n_samples - i + 1, int64)))
+            temporary = permutation(i)
+            permutation(i) = permutation(j)
+            permutation(j) = temporary
+        end do
+        selected = .false.
+        do i = 1, n_selected
+            selected(permutation(i)) = .true.
+        end do
+        k = 0
+        do i = 1, n_samples
+            if (selected(i)) then
+                k = k + 1
+                sample_index(k) = i
+            end if
+        end do
+    end subroutine sample_training_rows
+
+    subroutine sample_training_features(n_features, fraction, state, feature_mask)
+        !! Draw a deterministic without-replacement feature subset.  The
+        !! mask is consumed in ascending feature order by tree growth.
+        integer, intent(in) :: n_features
+        real(dp), intent(in) :: fraction
+        integer(int64), intent(inout) :: state
+        logical, allocatable, intent(out) :: feature_mask(:)
+        integer, allocatable :: permutation(:)
+        integer :: n_selected, i, j, k, temporary
+
+        allocate(feature_mask(n_features))
+        feature_mask = .false.
+        if (fraction >= 1.0_dp) then
+            feature_mask = .true.
+            return
+        end if
+        n_selected = max(1, min(n_features, int(ceiling(fraction*real(n_features, dp)))))
+        allocate(permutation(n_features))
+        do i = 1, n_features
+            permutation(i) = i
+        end do
+        do i = 1, n_selected
+            j = i + int(mod(next_sampling_integer(state), int(n_features - i + 1, int64)))
+            temporary = permutation(i)
+            permutation(i) = permutation(j)
+            permutation(j) = temporary
+        end do
+        do k = 1, n_selected
+            feature_mask(permutation(k)) = .true.
+        end do
+    end subroutine sample_training_features
+
+    integer(int64) function next_sampling_integer(state) result(value)
+        integer(int64), intent(inout) :: state
+        integer(int64), parameter :: modulus = 2147483647_int64
+        integer(int64), parameter :: multiplier = 48271_int64
+
+        ! Reduce arbitrary positive user seeds before the multiply so the
+        ! fixed-width product cannot overflow int64.
+        state = modulo(state, modulus)
+        if (state <= 0_int64) state = 1_int64
+        state = mod(multiplier*state, modulus)
+        if (state <= 0_int64) state = 1_int64
+        value = state
+    end function next_sampling_integer
+
+    subroutine build_tree(x, gradient, hessian, observation_weight, options, &
+            sample_index, feature_mask, tree, status)
         real(dp), intent(in) :: x(:, :), gradient(:), hessian(:)
         real(dp), intent(in) :: observation_weight(:)
         type(xgboost_options_t), intent(in) :: options
+        integer, intent(in) :: sample_index(:)
+        logical, intent(in) :: feature_mask(:)
         type(xgb_tree_t), intent(out) :: tree
         type(fortnum_status_t), intent(out) :: status
-        integer, allocatable :: sample_index(:)
-        integer :: n_samples, n_features, max_nodes, next_node, root, i
+        integer :: n_samples, n_features, max_nodes, next_node, root
 
         n_samples = size(x, 1)
         n_features = size(x, 2)
-        if (size(gradient) /= n_samples .or. size(hessian) /= n_samples .or. &
-            size(observation_weight) /= n_samples) then
+        if (size(gradient) /= size(x, 1) .or. size(hessian) /= size(x, 1) .or. &
+            size(observation_weight) /= size(x, 1) .or. size(sample_index) < 1 .or. &
+            size(feature_mask) /= n_features .or. .not. any(feature_mask)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "xgboost tree: derivative array shape is invalid")
             return
@@ -1625,6 +1738,7 @@ contains
         ! A binary tree containing n leaves has at most 2*n-1 nodes.  This
         ! bound avoids integer exponentiation and is also a hard memory bound
         ! independent of a user-supplied depth.
+        n_samples = size(sample_index)
         max_nodes = 2*n_samples - 1
         allocate(tree%feature(max_nodes), tree%left_child(max_nodes), &
             tree%right_child(max_nodes), tree%node_threshold(max_nodes), &
@@ -1640,14 +1754,10 @@ contains
         tree%node_cover = 0.0_dp
         tree%leaf = .true.
         tree%missing_left = .true.
-        allocate(sample_index(n_samples))
-        do i = 1, n_samples
-            sample_index(i) = i
-        end do
         next_node = 0
         tree%depth = 0
         call build_tree_node(x, gradient, hessian, observation_weight, options, &
-            sample_index, 0, tree, next_node, root, status, -huge(1.0_dp), &
+            sample_index, feature_mask, 0, tree, next_node, root, status, -huge(1.0_dp), &
             huge(1.0_dp))
         if (status%code /= FORTNUM_OK) return
         tree%n_nodes = next_node
@@ -1665,12 +1775,13 @@ contains
     end subroutine build_tree
 
     recursive subroutine build_tree_node(x, gradient, hessian, observation_weight, &
-            options, sample_index, depth, tree, next_node, node_id, status, &
+            options, sample_index, feature_mask, depth, tree, next_node, node_id, status, &
             lower_bound, upper_bound)
         real(dp), intent(in) :: x(:, :), gradient(:), hessian(:)
         real(dp), intent(in) :: observation_weight(:)
         type(xgboost_options_t), intent(in) :: options
         integer, intent(in) :: sample_index(:), depth
+        logical, intent(in) :: feature_mask(:)
         type(xgb_tree_t), intent(inout) :: tree
         integer, intent(inout) :: next_node
         integer, intent(out) :: node_id
@@ -1731,6 +1842,7 @@ contains
         best_right_lower = lower_bound
         best_right_upper = upper_bound
         do feature = 1, n_features
+            if (.not. feature_mask(feature)) cycle
             n_finite = 0
             n_missing = 0
             missing_gradient = 0.0_dp
@@ -1907,11 +2019,11 @@ contains
         tree%node_gain(node_id) = best_gain
         tree%missing_left(node_id) = best_missing_left
         call build_tree_node(x, gradient, hessian, observation_weight, options, &
-            left_index, depth + 1, tree, next_node, left_node, status, &
+            left_index, feature_mask, depth + 1, tree, next_node, left_node, status, &
             best_left_lower, best_left_upper)
         if (status%code /= FORTNUM_OK) return
         call build_tree_node(x, gradient, hessian, observation_weight, options, &
-            right_index, depth + 1, tree, next_node, right_node, status, &
+            right_index, feature_mask, depth + 1, tree, next_node, right_node, status, &
             best_right_lower, best_right_upper)
         if (status%code /= FORTNUM_OK) return
         tree%left_child(node_id) = left_node

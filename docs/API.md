@@ -1754,6 +1754,18 @@ must be supplied together and are shape-, weight-, target-, and NaN-checked.
 This is deterministic validation-based stopping. Warm-start continuation and
 serialized tree state remain separate contracts.
 
+Set `subsample` to a positive fraction no greater than one to draw a
+without-replacement training-row subset independently for each boosting
+round. Set `colsample_bytree` similarly to select the feature subset used by
+each tree. Both streams use the positive `integer(int64)` `seed` in
+`xgboost_options_t`; repeated fits with the same options are bitwise
+deterministic, and selected rows/features retain ascending original ordering
+for stable tie handling. The defaults (`subsample=1`,
+`colsample_bytree=1`) take the full-data path and preserve the historical
+model exactly. Fractions outside `(0,1]` and nonpositive seeds are refused
+with `FORTNUM_DOMAIN_ERROR`. This sampling is a fit-time discrete policy;
+prediction and the existing split-boundary derivative refusal are unchanged.
+
 For `fit_squared_log`, margins are the transformed coordinate
 `log(1 + prediction)` and the public inverse link is `exp(margin) - 1`. The
 constant base margin is the weighted mean of `log(1 + target)`, which is the
