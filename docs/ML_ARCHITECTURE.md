@@ -56,6 +56,44 @@ differentiated independent gradient. Probabilistic inference uses a trusted
 dense or high-precision solve. Repository-state checks never substitute for
 these.
 
+## Composition, training, and backend boundaries
+
+The production path has one ownership chain:
+
+```text
+data view -> fitted transform/basis graph -> estimator parameter registry
+          -> objective and derivative products -> FortOpt trainer/search
+          -> checkpoint and device plan -> benchmark oracle
+```
+
+Each arrow carries an explicit shape, parameter offset, reduction, status, and
+residency contract. A basis or preprocessing graph owns child registries and
+maps their offsets into the estimator registry. A trainer owns batches,
+optimizer state, schedules, validation, callbacks, and checkpoints. The model
+owns topology and trainable values. No layer reaches into another layer's
+private arrays.
+
+The derivative capability record for every public product states the mode
+(`analytic`, `fortsym`, `fortad`, `finite_difference`, or `refused`), the
+parameter/input blocks it covers, the smoothness boundary, and the independent
+oracle. FortOpt consumes the same registry and derivative callback used by
+hyperparameter search, so an L-BFGS-B run cannot optimize a parameter that a
+model silently omitted from its gradient.
+
+Device execution has three separately measured layers:
+
+1. The Fortran CPU reference, which supplies the behavioral oracle.
+2. A resident OpenACC or native-CUDA plan, which owns model, optimizer, batch,
+   and workspace allocations.
+3. A transfer-inclusive workload measurement with compiler, device, precision,
+   transfer counters, and peak memory.
+
+An operation with no resident plan reports a typed device refusal. The current
+elastic-net, OVO, Laplace-GP, GP-likelihood, and typed-schedule APIs follow
+this rule. Fixed no-autodiff reductions may use CUDA kernels when FortSym or a
+hand-derived oracle proves the same semantics. Autodiff-bearing paths retain
+FortAD/FortSym reference products until their device graph is complete.
+
 ## Regression and basis maps
 
 `linear_regression_t` is the stable dense baseline: sample rows, feature

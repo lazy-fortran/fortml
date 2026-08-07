@@ -93,6 +93,42 @@ partial, planned, or explicitly refused. A checked box never means that
 one happy-path method exists: it means the public contract, independent oracle,
 documentation, refusal behavior, and benchmark evidence are all present.
 
+### Production architecture contract
+
+The clean-break API is organized around five composable contracts. Every new
+estimator, basis, likelihood, or network must implement the contracts that its
+algorithm supports and must expose a typed refusal for the rest.
+
+| Contract | Required state | Required products | Device rule |
+| --- | --- | --- | --- |
+| Data and preprocessing | row-oriented arrays, masks, weights, category metadata, fitted statistics | `fit`, `transform`, inverse transform where defined, input JVP/VJP, leakage and shape checks | host callbacks remain host-only; static maps lower through the device plan |
+| Estimator and parameter tree | immutable topology, flat trainable registry, buffers, fitted state, clone/reset metadata | fit or partial-fit, predict/score, packed parameters, status, deterministic serialization seam | model, buffers, and batches must be resident for a GPU claim |
+| Objective and derivatives | reduction, regularization, constraints, active-set/split boundary, state snapshot | value, gradient, JVP, VJP, HVP or a named refusal; adjoint and finite-difference oracles | derivative kernels use FortSym/FortAD products or a typed device refusal |
+| Training and search | batches, RNG cursor, optimizer moments, schedules, validation, callbacks, checkpoints | resumable step, hyperparameter products, bounded FortOpt L-BFGS-B when gradients are complete | optimizer state and transfer counters are part of the device contract |
+| Backend and evidence | CPU reference, OpenACC/native-CUDA plan, compiler/device metadata | resident and transfer-inclusive execution, memory counters, reproducible benchmark record | OpenACC is preferred when it preserves semantics; fixed no-autodiff hot loops may use CUDA C++ |
+
+The parameter registry is the only route between models, pipelines, derivative
+products, and FortOpt. A pipeline owns named child registries and maps their
+offsets into one deterministic vector. A trainer owns optimizer state but never
+reaches into private model arrays. A device plan owns residency and exposes
+every transfer. This prevents a benchmark from measuring a hidden host copy
+and prevents a hypergradient from silently omitting a schedule or validation
+variable.
+
+### Variant coverage matrix
+
+The parity target includes the following independent model variants. The matrix
+is intentionally explicit so a binary implementation cannot be mistaken for
+multiclass, weighted, probabilistic, derivative, or GPU coverage.
+
+| Family | Required variants | Current FortML baseline | Missing production gates |
+| --- | --- | --- | --- |
+| Classification | binary, multinomial/softmax, OVR, OVO, Naive Bayes, tree, neural, Laplace GP, variational GP, calibrated, multilabel, ordinal | binary/softmax/OVR/OVO, five Naive Bayes variants, CART, MLP, binary/OVR Laplace GP, exact and histogram boosted trees | calibration, multilabel/ordinal, variational/coupled GP likelihoods, resident GPU training, shared preprocessing/search |
+| Regression | OLS, weighted/ridge/lasso/elastic-net, robust, quantile, GLM, multi-output, partial-fit | dense OLS, weighted ridge, weighted elastic-net/lasso, multi-output fixed-fit products | Huber/quantile/Poisson/Gamma/Tweedie, positive/Bayesian/ARD, partial-fit, complete hyperparameter products |
+| Ensembles | CART, random/extra forests, bagging, AdaBoost, histogram boosting, XGBoost/LightGBM ranking/categorical/DART | weighted CART, squared boosting, exact and bounded histogram second-order XGBoost-style binary/OVR | forests/bagging, ranking/categorical/constraints/DART/GOSS/EFB, distributed and resident GPU histograms |
+| Gaussian processes | exact, derivative observations, multitask, sparse/variational, SKI/lazy, local experts, classification | exact and derivative GPs, sparse/local/SKI/structured operators, binary/OVR Laplace classification | full likelihood/kernel catalog, batch/multitask/variational classification, implicit derivatives, resident GPU solves |
+| Neural and physics models | MLP, CNN, RNN/GRU/LSTM, attention, autoencoder/VAE, BNN, HNN/LNN/symplectic/PINN | MLP/MLP classifier, BNN, VAE, vanilla RNN, Hamiltonian MLP, selected optimizer hypergradients | module tree, recurrent/attention/convolution families, full products, GP/linear initialization, physics residual and long-horizon GPU gates |
+
 ### Capability matrix (target versus current state)
 
 | Area | Current state | Production target |
@@ -119,7 +155,7 @@ derivatives, refusal behavior, and an independent benchmark oracle all exist.
 
 | Reference family | FortML coverage today | Remaining release gate |
 | --- | --- | --- |
-| scikit-learn linear/GLM | Dense linear regression, logistic/softmax, bounded logistic and MLP L-BFGS-B | Ridge/lasso/elastic-net/robust/quantile/Poisson/Gamma/Tweedie, SGD estimators, solver parity, calibration, multioutput and partial-fit contracts |
+| scikit-learn linear/GLM | Dense linear regression, weighted ridge/lasso/elastic-net, logistic/softmax, bounded logistic and MLP L-BFGS-B | Robust/quantile/Poisson/Gamma/Tweedie, SGD estimators, solver parity, calibration, complete multioutput and partial-fit contracts |
 | scikit-learn Naive Bayes | GaussianNB, BernoulliNB, MultinomialNB, ComplementNB, CategoricalNB with weighted sorted categories and unknown-category policy | sparse counts, calibrated and incremental variants |
 | scikit-learn neighbors/margins | Dense exact `fortml_knn_classifier` with deterministic ties and explicit discrete-derivative refusal | Radius search, KD/ball trees, sparse inputs, linear/kernel SVM/SVR, one-class SVM, and smooth input/parameter products |
 | scikit-learn trees/ensembles | Stumps, weighted CART, squared boosting, exact and histogram XGBoost-style second-order binary/multiclass lanes | Random/extra forests, bagging, AdaBoost, leaf-wise growth, categorical/ranking/monotonic/interaction constraints, staged and warm-start APIs |
