@@ -1184,6 +1184,26 @@ explicit smoothness contract, not a hidden finite-difference approximation;
 the sparse-view and device-resident indicator kernels remain separate
 follow-up work.
 
+### `fortml_sparse_preprocessing`
+
+`sparse_standard_scaler_t` is the sparse-safe `StandardScaler` branch for
+`fortsparse` real CSC matrices. `fit(input,status[,with_mean,with_std])`
+counts implicit zero entries when computing each feature mean and population
+variance. Sparse centering is rejected with `FORTSPARSE_INVALID_MATRIX`
+because subtracting a nonzero mean would change the storage class; callers
+must select `with_mean=.false.` (the default). Zero-variance features use unit
+scale, matching the dense scaler convention.
+
+`transform`, `inverse_transform`, `means`, `scales`, `feature_count`,
+`sample_count`, `with_std`, and `fitted` expose the fitted state. Transform
+and inverse transform copy the CSC structure and scale only stored values,
+so no implicit zeros are materialized. `transform_jvp` and
+`transform_vjp` accept CSC cotangent/tangent matrices with the same structure
+contract and apply the exact diagonal value map. Invalid CSC structure,
+unfitted state, and feature-count mismatches return a typed
+`FORTSPARSE_INVALID_MATRIX` status. The independent dense expansion oracle is
+`test_sparse_preprocessing`.
+
 ### `fortml_one_hot_encoder`
 
 `one_hot_encoder_t%fit(x,status[,handle_unknown,missing_value,handle_missing,drop_first])`
@@ -2644,6 +2664,14 @@ white-noise refusal rules as `predict`. `joint_covariance_device(device,x,
 components,covariance,status)` dispatches selected CPU contexts exactly and
 returns `FORTNUM_NOT_IMPLEMENTED` for CUDA until the resident derivative-GP
 covariance graph is linked. No hidden host fallback is used.
+`joint_covariance_jvp(x,components,direction,covariance,covariance_dot,status)`
+and `joint_covariance_vjp(x,components,covariance_bar,parameter_bar,status)`
+differentiate that dense latent posterior with respect to the packed
+kernel-log/noise-log parameters. The JVP differentiates the prior, cross
+covariance, and Cholesky solve exactly; the VJP uses the symmetric covariance
+cotangent and is adjoint to the JVP. These parameter products are CPU-only
+until the resident covariance graph is linked and never silently finite-
+difference.
 `log_marginal_likelihood`, `log_marginal_likelihood_jvp`,
 `log_marginal_likelihood_vjp`, `hyperparameter_gradient`,
 `hyperparameter_vjp`, and `hyperparameter_hvp` provide likelihood products.
