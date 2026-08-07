@@ -13,6 +13,8 @@ module fortml_mlp
     integer, parameter, public :: MLP_ELU = 6
     integer, parameter, public :: MLP_SOFTPLUS = 7
     integer, parameter, public :: MLP_LEAKY_RELU = 8
+    integer, parameter, public :: MLP_SIGMOID = 9
+    integer, parameter, public :: MLP_MISH = 10
     real(dp), parameter :: gelu_c = 0.797884560802865355879_dp
     real(dp), parameter :: gelu_k = 0.044715_dp
     real(dp), parameter :: leaky_relu_slope = 0.01_dp
@@ -569,7 +571,8 @@ contains
 
         valid = kind == MLP_LINEAR .or. kind == MLP_TANH .or. kind == MLP_RELU .or. &
             kind == MLP_GELU .or. kind == MLP_SILU .or. kind == MLP_ELU .or. &
-            kind == MLP_SOFTPLUS .or. kind == MLP_LEAKY_RELU
+            kind == MLP_SOFTPLUS .or. kind == MLP_LEAKY_RELU .or. &
+            kind == MLP_SIGMOID .or. kind == MLP_MISH
     end function valid_activation
 
     subroutine apply_activation(input, output, kind)
@@ -602,6 +605,10 @@ contains
                 case (MLP_LEAKY_RELU)
                     output(i, j) = merge(input(i, j), leaky_relu_slope*input(i, j), &
                         input(i, j) >= 0.0_dp)
+                case (MLP_SIGMOID)
+                    output(i, j) = sigmoid_value(input(i, j))
+                case (MLP_MISH)
+                    output(i, j) = mish_value(input(i, j))
                 end select
             end do
         end do
@@ -640,6 +647,11 @@ contains
                 case (MLP_LEAKY_RELU)
                     output(i, j) = merge(1.0_dp, leaky_relu_slope, &
                         input(i, j) >= 0.0_dp)
+                case (MLP_SIGMOID)
+                    value = sigmoid_value(input(i, j))
+                    output(i, j) = value*(1.0_dp - value)
+                case (MLP_MISH)
+                    output(i, j) = mish_first_derivative(input(i, j))
                 end select
             end do
         end do
@@ -675,6 +687,11 @@ contains
                 case (MLP_SOFTPLUS)
                     value = sigmoid_value(input(i, j))
                     output(i, j) = value*(1.0_dp - value)
+                case (MLP_SIGMOID)
+                    value = sigmoid_value(input(i, j))
+                    output(i, j) = value*(1.0_dp - value)*(1.0_dp - 2.0_dp*value)
+                case (MLP_MISH)
+                    output(i, j) = mish_second_derivative(input(i, j))
                 end select
             end do
         end do
@@ -731,5 +748,33 @@ contains
         u_second = gelu_c*6.0_dp*gelu_k*x
         value = q*u_prime + 0.5_dp*x*q*(u_second - 2.0_dp*t*u_prime*u_prime)
     end function gelu_second_derivative
+
+    pure real(dp) function mish_value(x) result(value)
+        real(dp), intent(in) :: x
+
+        value = x*tanh(softplus_value(x))
+    end function mish_value
+
+    pure real(dp) function mish_first_derivative(x) result(value)
+        real(dp), intent(in) :: x
+        real(dp) :: softplus, tangent, sigmoid
+
+        softplus = softplus_value(x)
+        tangent = tanh(softplus)
+        sigmoid = sigmoid_value(x)
+        value = tangent + x*(1.0_dp - tangent*tangent)*sigmoid
+    end function mish_first_derivative
+
+    pure real(dp) function mish_second_derivative(x) result(value)
+        real(dp), intent(in) :: x
+        real(dp) :: softplus, tangent, sigmoid, first_factor
+
+        softplus = softplus_value(x)
+        tangent = tanh(softplus)
+        sigmoid = sigmoid_value(x)
+        first_factor = (1.0_dp - tangent*tangent)*sigmoid
+        value = 2.0_dp*first_factor + x*first_factor* &
+            (1.0_dp - sigmoid - 2.0_dp*tangent*sigmoid)
+    end function mish_second_derivative
 
 end module fortml_mlp

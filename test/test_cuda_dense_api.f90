@@ -5,7 +5,7 @@ program test_cuda_dense_api
     use fortnum_status, only: fortnum_status_t, FORTNUM_DOMAIN_ERROR, &
         FORTNUM_NOT_IMPLEMENTED, FORTNUM_OK
     use fortml_cuda_dense_api, only: cuda_dense_plan_t
-    use fortml_mlp, only: MLP_TANH
+    use fortml_mlp, only: MLP_TANH, MLP_SIGMOID, MLP_MISH
     implicit none
 
     type(cuda_dense_plan_t) :: plan
@@ -44,6 +44,15 @@ program test_cuda_dense_api
     call check(status%code == FORTNUM_DOMAIN_ERROR, &
         "negative device index is rejected", failures)
     call check(.not. plan%fitted(), "invalid creation leaves plan unfitted", failures)
+
+    call plan%create(weights, bias, MLP_SIGMOID, 0, status)
+    call check(status%code == FORTNUM_DOMAIN_ERROR, &
+        "CPU-only sigmoid activation is refused by CUDA control plane", failures)
+    call check(.not. plan%fitted(), "sigmoid refusal leaves plan unfitted", failures)
+    call plan%create(weights, bias, MLP_MISH, 0, status)
+    call check(status%code == FORTNUM_DOMAIN_ERROR, &
+        "CPU-only Mish activation is refused by CUDA control plane", failures)
+    call check(.not. plan%fitted(), "Mish refusal leaves plan unfitted", failures)
 
     call plan%create(weights, bias, MLP_TANH, 0, status)
     call check(status%code == FORTNUM_NOT_IMPLEMENTED, &

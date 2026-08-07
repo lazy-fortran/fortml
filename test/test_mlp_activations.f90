@@ -1,18 +1,19 @@
 program test_mlp_activations
     use, intrinsic :: iso_fortran_env, only: dp => real64, error_unit
     use fortml_mlp, only: mlp_t, MLP_LINEAR, MLP_TANH, MLP_RELU, MLP_GELU, &
-        MLP_SILU, MLP_ELU, MLP_SOFTPLUS, MLP_LEAKY_RELU
+        MLP_SILU, MLP_ELU, MLP_SOFTPLUS, MLP_LEAKY_RELU, MLP_SIGMOID, MLP_MISH
     use fortnum_status, only: fortnum_status_t, status_ok
     implicit none
 
     integer :: failures, i
-    integer, parameter :: kinds(8) = [MLP_LINEAR, MLP_TANH, MLP_RELU, MLP_GELU, &
-        MLP_SILU, MLP_ELU, MLP_SOFTPLUS, MLP_LEAKY_RELU]
+    integer, parameter :: kinds(10) = [MLP_LINEAR, MLP_TANH, MLP_RELU, MLP_GELU, &
+        MLP_SILU, MLP_ELU, MLP_SOFTPLUS, MLP_LEAKY_RELU, MLP_SIGMOID, MLP_MISH]
 
     failures = 0
     do i = 1, size(kinds)
         call test_activation(kinds(i), failures)
     end do
+    call test_sigmoid_extremes(failures)
     if (failures /= 0) then
         write (error_unit, '(i0,a)') failures, " MLP activation test(s) failed"
         error stop 1
@@ -94,6 +95,39 @@ contains
         end if
     end subroutine test_activation
 
+    subroutine test_sigmoid_extremes(failures)
+        integer, intent(inout) :: failures
+        type(mlp_t) :: model
+        type(fortnum_status_t) :: status
+        real(dp) :: theta(2), x(3, 1), y(3, 1), dy(3, 1)
+
+        theta = [1.0_dp, 0.0_dp]
+        x(:, 1) = [-1000.0_dp, 0.0_dp, 1000.0_dp]
+        call model%initialize([1, 1], status, output_activation=MLP_SIGMOID)
+        call model%set_parameters(theta, status)
+        call model%predict(x, y, status)
+        if (.not. status_ok(status) .or. .not. is_finite(y) .or. &
+            y(1, 1) /= 0.0_dp .or. y(2, 1) /= 0.5_dp .or. &
+            y(3, 1) /= 1.0_dp) then
+            write (error_unit, '(a)') "FAIL [sigmoid extreme values]"
+            failures = failures + 1
+            return
+        end if
+        call model%jvp(x, [0.0_dp, 1.0_dp], 0.0_dp*x, y, dy, status)
+        if (.not. status_ok(status) .or. .not. is_finite(dy) .or. &
+            dy(1, 1) /= 0.0_dp .or. abs(dy(2, 1) - 0.25_dp) > 2.0e-15_dp .or. &
+            dy(3, 1) /= 0.0_dp) then
+            write (error_unit, '(a)') "FAIL [sigmoid extreme derivatives]"
+            failures = failures + 1
+        end if
+    end subroutine test_sigmoid_extremes
+
+    logical function is_finite(values) result(valid)
+        real(dp), intent(in) :: values(:, :)
+
+        valid = all(values == values) .and. all(abs(values) < huge(1.0_dp))
+    end function is_finite
+
     real(dp) function reference_activation(x, kind) result(value)
         real(dp), intent(in) :: x
         integer, intent(in) :: kind
@@ -129,6 +163,18 @@ contains
             end if
         case (MLP_LEAKY_RELU)
             value = merge(x, 0.01_dp*x, x >= 0.0_dp)
+        case (MLP_SIGMOID)
+            if (x >= 0.0_dp) then
+                value = 1.0_dp/(1.0_dp + exp(-x))
+            else
+                value = exp(x)/(1.0_dp + exp(x))
+            end if
+        case (MLP_MISH)
+            if (x > 0.0_dp) then
+                value = x*tanh(x + log(1.0_dp + exp(-x)))
+            else
+                value = x*tanh(log(1.0_dp + exp(x)))
+            end if
         end select
     end function reference_activation
 
