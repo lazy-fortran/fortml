@@ -147,6 +147,16 @@ layer contract. Dense layers, activations, batched products, and explicit
 backpropagation remain the reference beside the `fortad`-generated scalar
 fixture. The VAE uses the same MLP type for its encoder and decoder.
 
+The MLP parameter vector has a named structural view. `parameter_layout()`
+returns stable `layer_1.weight`, `layer_1.bias`, and subsequent layer paths
+with one-based ranges, matrix shapes, and trainable or buffer roles.
+`parameter_range(path,...)` resolves one block without exposing private layer
+storage. Grouped objectives and external trainers can therefore select or
+freeze a block by name while retaining the single packed registry used by
+FortOpt. The current dense MLP has trainable weight and bias blocks only.
+Buffers, aliases, tied parameters, and stateful module modes remain explicit
+extensions of this tree contract.
+
 `mlp_training` separates deterministic data traversal from optimizer updates.
 `mlp_batch_iterator_t` owns the one-based permutation, epoch boundary, and
 Park--Miller state. It returns an unpadded final batch and never silently starts
@@ -189,6 +199,21 @@ weight mass for the mean reduction, while the sum reduction remains
 unnormalized. Named diagnostics expose data and regularization components and
 the effective weight mass. This keeps reduction semantics visible to an outer
 optimizer instead of hiding them in a trainer callback.
+
+## Tree boosting lifecycle
+
+`xgboost_t` keeps split topology, leaf values, objective metadata, and
+validation state separate. Exact and weighted-histogram CPU growth share the
+same objective derivative contract. A validation set is optional. When
+`early_stopping_rounds` is positive, the fit loop evaluates the selected
+objective after each round, retains the lowest finite weighted loss, and either
+trims the ensemble to that round or preserves all completed rounds according
+to `restore_best`. The fitted object reports `best_iteration`,
+`best_validation_loss`, and `early_stopped`. Validation data, weights, NaN
+routing, and objective domains are validated before growth. This lifecycle is
+deterministic and has an independent stage-by-stage oracle. Warm-start
+continuation, serialized tree state, categorical and interaction constraints,
+and resident GPU histograms remain separate contracts.
 
 The VAE is a composition of two MLPs and an explicit diagonal Gaussian
 reparameterization:
