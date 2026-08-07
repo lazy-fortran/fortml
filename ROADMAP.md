@@ -60,6 +60,31 @@ surfaces that drive the gap register. The reference links are part of the
 roadmap evidence and should be refreshed when a package changes its public
 workflow or device contract.
 
+### External parity expansion
+
+The gap register covers the following release surfaces. Each row is a separate
+implementation, derivative, refusal, and benchmark contract. A wrapper around
+an existing CPU estimator does not close a row when the reference package has a
+different state, likelihood, split policy, or device graph.
+
+| Reference surface | Closure work |
+| --- | --- |
+| scikit-learn | Estimator and transformer cloning, fitted-state tags, sparse CSR/CSC views, metadata routing, partial-fit and online updates, calibration-aware cross-validation, kernel and one-class SVMs, clustering and mixtures, decomposition, outlier detection, inspection, and model-selection reports. |
+| PyTorch | Nested module and buffer trees, train/eval state, parameter selection, complete loss and activation catalog, AMP with loss scaling, compiled static graphs, distributed reduction, deterministic data loading, and portable optimizer checkpoints. |
+| JAX | Functional pytrees, `jit`-eligible static graphs, `vmap` batching, forward/reverse products, donation and ownership rules, explicit sharding and collectives, and deterministic multi-device reductions. |
+| GPyTorch and GPflow | Batch and multitask shapes, ARD and active dimensions, priors and constraints, likelihood families, exact lazy inference, LOVE/CIQ variance, inducing-point and stochastic variational objectives, natural gradients, deep-kernel adapters, posterior sampling, and semantic state-dict round trips. |
+| XGBoost and LightGBM | Quantile sketches, validation and early stopping, warm starts and model slicing, ranking objectives, categorical and interaction constraints, DART, leaf-wise growth, GOSS, EFB, distributed histogram reduction, model dumps, and resident GPU histograms. |
+| Flux and Lux | Composable nested module trees, named parameter and buffer selectors, immutable or functional training state, callback/checkpoint protocols, optimizer-state routing, and GPU array execution with the same derivative and residency evidence as the MLP trainer. |
+
+The first implementation slices prioritize contracts that unlock several rows:
+softmax and OVR objective adapters feed classification and differentiable
+search, named MLP parameter blocks feed Flux/Lux-style selection and grouped
+hypergradients, and booster validation state feeds early stopping, staged
+prediction, model slicing, and reproducible benchmarks. Physics-informed,
+Hamiltonian, symplectic, and GP-initialized models remain separate work
+packages because their residual and structure certificates require additional
+oracles.
+
 ## Bayesian ecosystem split
 
 FortML remains the owner of probabilistic ML objects. The probability layer is
