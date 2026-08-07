@@ -67,19 +67,18 @@ can reject an incompatible estimator before consuming a fold.
 
 The companion repositories are optional consumers of FortML model and
 probability objects; FortML does not import either package. At the pinned
-2026-08-07 revisions (FortBO
-`0141e227a4af86cb6a088757d4e83dab5b353403`, FortMC
+2026-08-08 revisions (FortBO
+`e272c27db4a840aabffe7ae0c3e5c5e9ec9a6154`, FortMC
 `4dde0ccdc37b4c331126605406b08e1f3bda4f59`), their public modules contain
-protocol boundaries rather than samplers or acquisition implementations:
+versioned contracts and state foundations, but not sampler or acquisition
+algorithms:
 
 | Companion | Current public protocol | Not yet supplied by the companion boundary |
 | --- | --- | --- |
 | FortMC `fortmc` | `fortmc_log_density_t%value(position,status)` and `%gradient(position,gradient,status)`, plus version constants and a default divergence threshold | Samplers, chain state, transforms, packed parameter registries, HVPs, checkpoints, diagnostics, and device execution |
-| FortBO `fortbo` | `fortbo_posterior_t%sample(points,samples,status)` and `%mean_variance(points,mean,variance,status)`, plus version constants | Acquisition functions, candidate search, constraints, covariance/input-derivative products, and device execution |
+| FortBO `fortbo` | Versioned `fortbo_posterior_t` with capability-gated moments, covariance, joint/reparameterized samples, predictive log density, moment gradients/Hessians, plus `fortbo_history_t` gradient-observation/checkpoint state and `fortbo_space_t` normalized continuous/integer/categorical/mixed/conditional spaces with differentiable masks | Acquisition functions, candidate search/trust-region policies, FortML surrogate adapters, and device execution |
 
-The richer packed log-density and posterior contracts described in the
-companion roadmaps are planned adapter targets, not currently available
-FortML-to-companion integrations. Do not claim HMC/NUTS, Bayesian-optimization,
+FortML does not yet ship adapters to these contracts. Do not claim HMC/NUTS, Bayesian-optimization,
 or GPU parity for a FortML model until the corresponding companion adapter has
 an independent behavioral oracle, explicit refusal behavior, and a benchmark
 record.
@@ -190,6 +189,7 @@ repeated resident-batch evidence.
 | `kernel_t` | Scalar value and matrix | Parameter JVP | Parameter VJP | Parameter HVP |
 | `xgboost_t` | Squared/squared-log (RMSLE)/logistic/Poisson/Huber/quantile/absolute/rank:pairwise margins, predictions, and additive tree contributions | Fixed-tree input JVP away from split boundaries | Fixed-tree input VJP away from split boundaries | No |
 | `xgboost_classifier_t` | Binary integer labels, logistic `(n,2)` probabilities, staged margins, and feature diagnostics | Fixed-tree probability/input JVP away from split boundaries | Fixed-tree probability/input VJP away from split boundaries | No |
+| `lightgbm_t` | Weighted numeric regression/binary logistic histogram boosting with deterministic globally best-leaf growth | Fixed-tree input JVP away from split boundaries | Fixed-tree input VJP away from split boundaries | No |
 | `random_forest_classifier_t` | Bootstrap-ensemble probabilities and labels | Refused: split routing is discrete | Refused: split routing is discrete | No |
 | `extra_trees_classifier_t` | Randomized-threshold ensemble probabilities and labels | Refused: split routing is discrete | Refused: split routing is discrete | No |
 | `gp_regression_t` | Mean, variance, LML | Prediction and LML parameters | Prediction and LML parameters | Mean and LML parameters |
@@ -3103,3 +3103,23 @@ mean and packs kernel parameters followed by log noise variance. Both current
 adapters return true from `has_hvp`. The callback contracts
 `parameter_value_proc`, `parameter_jvp_proc`, `parameter_vjp_proc`, and
 `parameter_hvp_proc` define the extension seam.
+### `fortml_lightgbm`
+
+`lightgbm_t` is a separately named, bounded LightGBM-style numeric boosting
+policy. It does not change `xgboost_t`: each tree uses the shared deterministic
+weighted-quantile histogram cut primitive, then repeatedly splits the current
+leaf with the largest regularized second-order gain until `num_leaves` (or the
+optional `max_depth`) is reached. `fit_regression` and `fit_binary` accept
+positive sample weights and support squared regression and binary logistic
+losses. `predict_margin`, `predict`, and binary `predict_proba` expose the
+identity or sigmoid link, while `num_leaves`, `tree_node_count`, and
+`tree_depth` expose the growth policy.
+
+The finite numeric contract is explicit: NaN and infinity inputs are refused,
+and categorical, missing-value-default, GOSS, EFB, and distributed policies are
+not silently approximated. Fixed-tree input JVP/VJP products are zero away from
+learned split surfaces and return `FORTNUM_DOMAIN_ERROR` exactly on a split
+boundary. CPU dispatch is supported; `predict_device` on a selected CUDA
+device returns `FORTNUM_NOT_IMPLEMENTED` until resident leaf-wise histogram
+state is available. The independent oracle is `test_lightgbm`, and the release
+benchmark is `lightgbm_leafwise.csv` in `../fortml-bench`.

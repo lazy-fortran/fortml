@@ -30,6 +30,7 @@ module fortml_xgboost
     integer, parameter :: XGB_MAX_SERIALIZED_NODES = 1000000
 
     public :: xgb_pairwise_loss, xgb_pairwise_derivatives
+    public :: xgb_histogram_cut_positions
 
     !> Options for the deterministic exact- or histogram-split
     !> XGBoost-style estimator.
@@ -3169,6 +3170,20 @@ contains
             end if
         end do
     end subroutine histogram_cut_positions
+
+    !> Public internal histogram primitive shared by separately named growth
+    !> policies.  The XGBoost estimator keeps its historical implementation
+    !> private; this narrow wrapper lets LightGBM-style leaf-wise growth use
+    !> exactly the same deterministic weighted-quantile cut policy.
+    subroutine xgb_histogram_cut_positions(values, order, sample_index, &
+            observation_weight, max_bin, positions, n_positions)
+        real(dp), intent(in) :: values(:), observation_weight(:)
+        integer, intent(in) :: order(:), sample_index(:), max_bin
+        integer, intent(out) :: positions(:), n_positions
+
+        call histogram_cut_positions(values, order, sample_index, observation_weight, &
+            max_bin, positions, n_positions)
+    end subroutine xgb_histogram_cut_positions
 
     logical function go_left(value, threshold, missing_left) result(value_is_left)
         real(dp), intent(in) :: value, threshold

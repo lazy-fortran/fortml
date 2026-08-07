@@ -1,0 +1,77 @@
+program fortml_bench_lightgbm
+    use, intrinsic :: iso_fortran_env, only: real64
+    use fortml_lightgbm, only: lightgbm_t, lightgbm_options_t
+    use fortml_device, only: fortml_device_t, FORTML_DEVICE_CUDA
+    use fortnum_status, only: fortnum_status_t, FORTNUM_OK
+    implicit none
+
+    integer, parameter :: n = 192, d = 3
+    real(real64) :: x(n, d), target(n), labels(n), weight(n), prediction(n)
+    real(real64) :: sx(6, 1), sy(6), expected(6), tiny_prediction(6)
+    type(lightgbm_t) :: regression, binary, tiny
+    type(lightgbm_options_t) :: options, tiny_options
+    type(fortnum_status_t) :: status
+    type(fortml_device_t) :: cuda
+    real(real64) :: started, finished, mse, accuracy, oracle_error
+    integer :: i
+
+    do i = 1, n
+        x(i, 1) = -1.0_real64 + 2.0_real64*real(i-1, real64)/real(n-1, real64)
+        x(i, 2) = sin(0.09_real64*real(i, real64))
+        x(i, 3) = cos(0.04_real64*real(i, real64))
+        target(i) = merge(1.5_real64 + 0.25_real64*x(i, 2), &
+            -0.7_real64 + 0.12_real64*x(i, 3), x(i, 1) >= 0.08_real64)
+        labels(i) = merge(1.0_real64, 0.0_real64, x(i, 1) + 0.2_real64*x(i, 2) >= 0.0_real64)
+        weight(i) = 1.0_real64 + real(mod(i, 4), real64)
+    end do
+    options = lightgbm_options_t()
+    options%n_estimators = 8
+    options%num_leaves = 8
+    options%min_data_in_leaf = 3
+    options%max_bin = 16
+    options%learning_rate = 0.2_real64
+    options%l2 = 1.0_real64
+    call cpu_time(started)
+    call regression%fit_regression(x, target, status, options, weight)
+    call cpu_time(finished)
+    if (status%code /= FORTNUM_OK) error stop "lightgbm regression fit failed"
+    write (*, '(a,i0,a,i0,a,es24.16,a,es24.16)') "lightgbm_fit,", n, ",", d, ",", &
+        real(regression%estimator_count(), real64), ",", max(0.0_real64, finished-started)
+    call cpu_time(started)
+    call regression%predict(x, prediction, status)
+    call cpu_time(finished)
+    if (status%code /= FORTNUM_OK) error stop "lightgbm regression predict failed"
+    mse = sum(weight*(prediction-target)**2)/sum(weight)
+    write (*, '(a,i0,a,i0,a,es24.16,a,es24.16,a,es24.16)') "lightgbm_predict,", n, ",", d, ",", &
+        real(regression%tree_depth(1), real64), ",", max(0.0_real64, finished-started), ",", mse
+
+    call binary%fit_binary(x, labels, status, options, weight)
+    if (status%code /= FORTNUM_OK) error stop "lightgbm binary fit failed"
+    call binary%predict(x, prediction, status)
+    if (status%code /= FORTNUM_OK) error stop "lightgbm binary predict failed"
+    accuracy = real(count((prediction >= 0.5_real64) .eqv. (labels >= 0.5_real64)), real64)/real(n, real64)
+    write (*, '(a,i0,a,i0,a,es24.16,a,es24.16)') "lightgbm_binary,", n, ",", d, ",", &
+        real(binary%estimator_count(), real64), ",", accuracy
+
+    sx(:, 1) = [0.0_real64, 1.0_real64, 2.0_real64, 3.0_real64, 4.0_real64, 5.0_real64]
+    sy = [0.0_real64, 0.0_real64, 0.0_real64, 10.0_real64, 10.0_real64, 100.0_real64]
+    expected = [0.0_real64, 0.0_real64, 0.0_real64, 10.0_real64, 10.0_real64, 100.0_real64]
+    tiny_options = lightgbm_options_t()
+    tiny_options%n_estimators = 1
+    tiny_options%num_leaves = 3
+    tiny_options%min_data_in_leaf = 1
+    tiny_options%max_bin = 16
+    tiny_options%learning_rate = 1.0_real64
+    tiny_options%l2 = 0.0_real64
+    call tiny%fit_regression(sx, sy, status, tiny_options)
+    call tiny%predict(sx, tiny_prediction, status)
+    if (status%code /= FORTNUM_OK) error stop "lightgbm oracle fit failed"
+    oracle_error = maxval(abs(tiny_prediction-expected))
+    write (*, '(a,es24.16)') "lightgbm_oracle,", oracle_error
+
+    cuda%kind = FORTML_DEVICE_CUDA
+    cuda%selected = .true.
+    cuda%available = .true.
+    call regression%predict_device(cuda, x, prediction, status)
+    write (*, '(a,i0)') "lightgbm_cuda,", status%code
+end program fortml_bench_lightgbm
