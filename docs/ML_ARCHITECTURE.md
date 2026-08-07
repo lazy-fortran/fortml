@@ -114,7 +114,8 @@ history and best/final values. This remains an in-memory boundary. Serialized
 snapshots packed parameters, Adam moments and step, iterator permutation/RNG,
 active microbatch accumulation, schedule position/history, validation
 counters, and best-state metadata. Adam/AdamW moments, Adagrad accumulated
-squares, or SGD velocity are stored in the same explicit checkpoint blocks. A
+squares, RMSprop running-square/centered-mean/momentum state, or SGD velocity
+are stored in the same explicit checkpoint blocks. A
 resumed call validates the training
 contract before restoring the snapshot. Procedure pointers remain caller-owned
 and checkpoints whose best-state restoration changed parameters are marked
@@ -202,6 +203,7 @@ intrinsic coregionalization type with an explicit output axis.
 
 `fortopt` defines procedure interfaces for objective value, gradient, JVP, VJP,
 and HVP plus a convergence/status record. It implements Adam, AdamW, Adagrad,
+RMSprop,
 L-BFGS-B,
 Levenberg-Marquardt/Gauss-Newton, trust-region, and Newton-Krylov in that
 order. Bound constraints, line searches, damping, stopping rules, and failure

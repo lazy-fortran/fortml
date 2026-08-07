@@ -404,6 +404,23 @@ quotient rule. Tangents and cotangents must be finite and shape-compatible.
 Hyperparameter derivatives through the discrete optimizer fit remain a
 separate trainer contract.
 
+### `fortml_knn_classifier`
+
+`knn_classifier_t%fit(x,labels,status[,n_neighbors,weights,sample_weight])`
+stores a dense training matrix and sorted integer class labels. `predict_proba`
+uses the `k` nearest rows under squared Euclidean distance. Uniform voting and
+inverse-distance voting (`KNN_WEIGHTS_UNIFORM` and `KNN_WEIGHTS_DISTANCE`) are
+available; exact zero-distance matches receive the normalized weight of the
+matching rows. Optional sample weights are finite, nonnegative, and must have
+positive mass. Ties are stable in original training-row order, and `predict`
+maps the first maximum probability back to `classes`.
+
+`predict_proba_jvp` and `predict_proba_vjp` are explicit discrete-boundary
+contracts: they return `FORTNUM_NOT_IMPLEMENTED` because a perturbation can
+change the selected neighbor set. KD/ball-tree, radius, sparse, and soft
+neighbor variants are separate roadmap items. Unfitted models, nonfinite data,
+invalid `k`, and malformed weights are refused with a domain status.
+
 ### `fortml_preprocessing`
 
 `standard_scaler_t%fit` stores column means and population standard deviations.
@@ -591,15 +608,21 @@ structures, and implicit integrators remain separate research contracts.
 ### `fortml_mlp_training`
 
 `mlp_train(model,x,target,status,options,state[,validation_x,validation_target,checkpoint])`
-trains an existing `mlp_t` with deterministic Adam, AdamW, Adagrad, or FortOpt-backed SGD. A zero `batch_size`
+trains an existing `mlp_t` with deterministic Adam, AdamW, Adagrad, RMSprop, or FortOpt-backed SGD. A zero `batch_size`
 selects full-batch updates.
 Mini-batch shuffling uses an explicit Park-Miller stream controlled by
 `shuffle_seed`, and does not mutate process-global random state. The options
 also provide optimizer selection (`MLP_OPTIMIZER_ADAM`, `MLP_OPTIMIZER_SGD`,
-`MLP_OPTIMIZER_ADAMW`, or `MLP_OPTIMIZER_ADAGRAD`), learning-rate and Adam
+`MLP_OPTIMIZER_ADAMW`, `MLP_OPTIMIZER_ADAGRAD`, or `MLP_OPTIMIZER_RMSPROP`), learning-rate and Adam
 coefficients, optional SGD
 momentum/Nesterov acceleration, L2 regularization, gradient tolerance,
 patience, best-state restoration, and an epoch callback.
+`MLP_OPTIMIZER_RMSPROP` uses the canonical FortOpt running squared-gradient
+recurrence. Set `rmsprop_centered` to use the centered variance estimate and
+`rmsprop_momentum` for optional classical momentum. The running square,
+optional running gradient mean, momentum buffer, optimizer kind, and step
+counter are checkpointed and restored exactly; optimizer-trajectory RMSprop
+derivatives remain explicitly refused.
 `MLP_OPTIMIZER_ADAMW` uses the same bias-corrected moments as Adam and applies
 decoupled multiplicative `weight_decay` after each update. Weight decay is
 validated as finite and non-negative, is checkpointed with the optimizer
@@ -645,8 +668,8 @@ uninitialized checkpoint to `mlp_train` to capture it after each completed
 epoch (and at every microbatch boundary). Pass the initialized checkpoint back
 to a later call to resume. `options%max_epochs` is the total target epoch, not
 an additional count. The snapshot includes packed model parameters,
-Adam/AdamW first and second moments (or Adagrad accumulated squares or SGD
-velocity) plus optimizer step and configuration,
+Adam/AdamW first and second moments (or Adagrad accumulated squares, RMSprop
+running statistics, or SGD velocity) plus optimizer step and configuration,
 permutation/order and Park--Miller state, active epoch/microbatch cursor and accumulated gradient, learning-rate
 schedule position/history, validation and early-stopping counters, and the
 best-parameter state. Procedure pointers are not serializable: install the
@@ -811,6 +834,14 @@ consistently by prediction and JVP; a NaN query has zero local input JVP, while
 a finite query exactly on a split still returns the structured boundary
 refusal. `missing_policy()` and `accepts_missing()` report the fitted policy.
 
+`predict_staged` returns cumulative predictions after every fitted tree. For
+regression, `predict_staged_margin` returns the same cumulative margins; for
+binary classification, `predict_proba_staged` returns an
+`(sample,class,stage)` probability tensor and `decision_function_staged`
+returns cumulative margins. `feature_importance(kind,normalize)` reports
+deterministic gain, split-count (`weight`), or cover totals. These diagnostics
+are fitted-state queries and preserve the selected NaN routing policy.
+
 `xgboost_multiclass_t` wraps the binary logistic estimator in a deterministic
 one-vs-rest classifier. `fit(x,labels,status[,options])` sorts arbitrary
 integer labels, fits one depth-limited booster per class, and normalizes the
@@ -823,6 +854,12 @@ finite-input scope unless its options select `missing_policy="learn"`,
 `"left"`, or `"right"`; the selected default branch is retained independently
 in every one-vs-rest tree and is used for NaN prediction. Infinities and an
 invalid policy are always refused.
+
+`predict_proba_staged` and `decision_function_staged` expose the normalized
+one-vs-rest probabilities and summed margins after each boosting stage.
+`feature_importance(kind,normalize)` aggregates the per-class binary gain,
+weight, or cover diagnostics. A final staged slice is identical to the
+corresponding ordinary prediction within floating-point rounding.
 
 ### `fortml_bnn`
 
