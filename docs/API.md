@@ -38,6 +38,31 @@ transfer counters through `begin_residency`, `record_host_to_device`,
 copy arrays, and they never turn a CPU execution into a GPU claim. See
 [`docs/DEVICE.md`](DEVICE.md) for the ownership and refusal contract.
 
+## Estimator capability contracts
+
+`fortml_estimator_capabilities` provides one value-object contract for generic
+model-selection, pipeline, and validation code. `estimator_capability_t`
+records the estimator role (`FORTML_ROLE_TRANSFORMER`, `PREDICTOR`,
+`REGRESSOR`, or `CLASSIFIER`), fitted state and feature/target/class counts,
+accepted dense/sparse/missing/sample-weight inputs, partial-fit support,
+transform/predict/probability methods, input/parameter/hyperparameter
+JVP/VJP/HVP products, and CPU/OpenACC/CUDA/resident-device support. A false
+tag is an explicit refusal; generic callers must not infer support from a
+method name.
+
+Use `make_transformer_capabilities`, `make_predictor_capabilities`,
+`make_regressor_capabilities`, or `make_classifier_capabilities` for common
+defaults, then set additional products supplied by a concrete model. Query
+with `has_role`, `supports_input`, `supports_derivative`, and
+`supports_device`; call `validate` before publishing a record. A requested
+record can be checked with `satisfies` or `require_estimator_capability`.
+The horizontal, sequential, and column-selecting basis pipelines expose
+`%capabilities(report,status)` and report their fitted state, feature shape,
+analytic input/parameter products, dense CPU support, and explicit sparse,
+missing, sample-weight, and CUDA refusals. `fortml_validation` re-exports
+`validate_estimator_capability` and its requirement check so split/search code
+can reject an incompatible estimator before consuming a fold.
+
 ## FortBO and FortMC interoperability boundary
 
 The companion repositories are optional consumers of FortML model and

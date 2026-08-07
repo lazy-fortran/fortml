@@ -453,7 +453,7 @@ reliability diagrams, and calibration-aware cross-validation remain open.
 | Neural networks | MLP/BNN/VAE/RNN primitives, a separable Hamiltonian MLP, a named sequential `mlp_chain_t` parameter tree, dense MLP linear/`tanh`/ReLU/GELU/SiLU/ELU/softplus/leaky-ReLU/sigmoid/Mish products, deterministic MLP Adam/AdamW/Adagrad/RMSprop/SGD training, exact fixed full-batch SGD momentum/Nesterov trajectory hypergradients, weighted binary BCE FortOpt/L-BFGS-B with exact mixed HVPs, bounded full-batch MLP and composed-chain L-BFGS-B paths, named group-wise log-L2 hyperparameters with exact mixed HVPs, portable trainer checkpoints, and resident dense-affine CUDA value/JVP/VJP plus single-layer MSE-update primitives exist | Alias-aware module/buffer tree, the remaining activation/loss/module catalog, convolution/attention/sequence/graph extensions, mixed precision, distributed training, compile/fusion, serialized/distributed trainers, and resident multi-layer neural training |
 | Gaussian processes | Exact, derivative, sparse, structured and local variants are partial-to-implemented. Exact fitted GPs and binary/shared-kernel one-vs-rest Laplace classifiers have bounded FortOpt L-BFGS-B adapters; bounded Bernoulli variational classification has deterministic logistic/probit ELBO, packed gradients, prediction JVPs/VJPs, minibatch scaling, and typed CUDA refusal | GPyTorch/GPflow-style kernels, likelihoods, multitask/batch shapes, exact/variational/lazy inference, derivative operators, constraints, calibration, coupled multiclass GP classification, natural gradients, evidence-corrected and likelihood-parameter training |
 | Derivatives | Exact GP, analytic polynomial/Fourier/radial/spline basis and pipeline HVPs, and selected neural/kernel products exist | Value/JVP/VJP/HVP and implicit/hypergradients for every declared parameter/input path, including preprocessing, likelihood, optimizer/search variables, and device kernels |
-| Model selection and metrics | Benchmark-specific checks exist | Shared metrics, splitters, cross-validation, calibration, grid/random/Bayesian/differentiable search, nested validation, and leakage/refusal checks |
+| Model selection and metrics | Benchmark-specific checks exist; `fortml_validation` now accepts the shared `estimator_capability_t` contract for pre-flight validation | Shared metrics, splitters, cross-validation, calibration, grid/random/Bayesian/differentiable search, nested validation, and leakage/refusal checks |
 | Persistence and serving | Missing public contract | Versioned state dictionaries, safe model/trainer serialization, compiler-independent metadata, streaming inference, batching, and reproducible deployment manifests |
 | GPU and scale-out | Operator-specific OpenACC/CUDA paths; kNN has a resident native-CUDA plan, dense-affine value/JVP/VJP and single-layer MSE update have resident CUDA C plans, and direct RMSprop/AdamW state has resident CUDA C plans. Elastic-net, OVO, LDA/QDA, random forest, MLP-classifier prediction products, basis/pipeline HVPs, Laplace-GP (binary and OVR multiclass), probability calibration, neural losses, XGBoost (binary/OVR and robust objectives), and typed schedules expose explicit CPU/CUDA capability and typed CUDA refusals; complete RMSprop training, staged XGBoost, robust/discriminant/forest training, basis transforms, and GP-classification-training release rows remain CPU-only | Complete resident CPU/CUDA/OpenACC training and inference for supported estimators, mixed precision, multi-GPU/MPI sharding, transfer accounting, and deterministic reductions |
 | Performance evidence | Several model/GP lanes exist | Matched correctness-gated comparisons with scikit-learn, XGBoost/LightGBM, PyTorch/JAX, GPyTorch/GPflow, and published hardware/toolchain provenance |
@@ -1119,11 +1119,18 @@ return status errors.
 - [ ] Define fitted transformer, predictor, regressor, and classifier contracts.
   The contracts cover feature counts, fitted state, reset or clone behavior,
   parameter names, and status propagation.
-- [ ] Define estimator tags and capability queries for supervised versus
-  unsupervised targets, sparse/dense inputs, missing values, sample weights,
-  partial fitting, derivatives, device support, and probabilistic outputs.
-  Search and pipeline code must query capabilities instead of guessing from a
-  dynamic type.
+- [x] Add the first shared estimator capability contract in
+  `fortml_estimator_capabilities`. `estimator_capability_t` records role,
+  fitted state, feature/target/class counts, dense/sparse/missing/sample-weight
+  and partial-fit tags, transform/predict/probability methods,
+  input/parameter/hyperparameter JVP/VJP/HVP products, and CPU/OpenACC/CUDA/
+  resident-device support. It has typed role/input/derivative/device queries,
+  validation and requirement checks. Horizontal, sequential, and
+  column-selecting basis pipelines expose `%capabilities`; validation exposes
+  `validate_estimator_capability` and `require_estimator_capability`, so generic
+  split/search code can reject an incompatible estimator before consuming a
+  fold. Reset/clone, parameter-name, metadata-routing, and full model-wide
+  adoption remain open follow-up contracts.
 - [x] Add `simple_imputer_t` with mean, median, and constant strategies,
   explicit IEEE-NaN missingness, all-missing-column policy, fitted statistics,
   and independent transform/JVP/VJP tests.
