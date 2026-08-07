@@ -60,6 +60,12 @@ program test_multilabel_metrics
         abs(recall - 0.5_dp) < 1.0e-14_dp .and. abs(fbeta - 0.5_dp) < 1.0e-14_dp, &
         "F-beta micro hand oracle", failures)
 
+    call classification_multilabel_precision_recall_fbeta(labels, predictions, 1.0e150_dp, &
+        precision, recall, fbeta, status, CLASSIFICATION_AVERAGE_MICRO)
+    call check(status_ok(status), "large F-beta status", failures)
+    call check(abs(fbeta - 0.5_dp) < 1.0e-14_dp, &
+        "large F-beta overflow-safe oracle", failures)
+
     call classification_multilabel_precision_recall_fbeta(labels, predictions, 2.0_dp, &
         precision, recall, fbeta, status, CLASSIFICATION_AVERAGE_SAMPLES)
     call check(status_ok(status), "F-beta samples status", failures)

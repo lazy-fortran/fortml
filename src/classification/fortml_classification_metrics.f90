@@ -553,8 +553,7 @@ contains
             end do
             precision = safe_multilabel_ratio(tp, tp + fp, zero_value)
             recall = safe_multilabel_ratio(tp, tp + fn, zero_value)
-            fbeta = safe_multilabel_ratio((1.0_dp + beta_squared)*tp, &
-                (1.0_dp + beta_squared)*tp + beta_squared*fn + fp, zero_value)
+            fbeta = safe_multilabel_fbeta(tp, fp, fn, beta_squared, zero_value)
         case (CLASSIFICATION_AVERAGE_MACRO)
             do j = 1, size(labels, 2)
                 tp = 0.0_dp
@@ -573,8 +572,7 @@ contains
                 end do
                 precision = precision + safe_multilabel_ratio(tp, tp + fp, zero_value)
                 recall = recall + safe_multilabel_ratio(tp, tp + fn, zero_value)
-                fbeta = fbeta + safe_multilabel_ratio((1.0_dp + beta_squared)*tp, &
-                    (1.0_dp + beta_squared)*tp + beta_squared*fn + fp, zero_value)
+                fbeta = fbeta + safe_multilabel_fbeta(tp, fp, fn, beta_squared, zero_value)
             end do
             precision = precision/real(size(labels, 2), dp)
             recall = recall/real(size(labels, 2), dp)
@@ -597,9 +595,8 @@ contains
                 end do
                 label_precision = safe_multilabel_ratio(row_tp, row_tp + row_fp, zero_value)
                 label_recall = safe_multilabel_ratio(row_tp, row_tp + row_fn, zero_value)
-                label_fbeta = safe_multilabel_ratio((1.0_dp + beta_squared)*row_tp, &
-                    (1.0_dp + beta_squared)*row_tp + beta_squared*row_fn + row_fp, &
-                    zero_value)
+                label_fbeta = safe_multilabel_fbeta(row_tp, row_fp, row_fn, &
+                    beta_squared, zero_value)
                 precision = precision + weight*label_precision/denominator
                 recall = recall + weight*label_recall/denominator
                 fbeta = fbeta + weight*label_fbeta/denominator
@@ -1581,6 +1578,20 @@ contains
             value = real(zero_value, dp)
         end if
     end function safe_multilabel_ratio
+
+    real(dp) function safe_multilabel_fbeta(tp, fp, fn, beta_squared, zero_value) result(value)
+        !! Overflow-safe F-beta ratio for finite confusion-mass terms.
+        real(dp), intent(in) :: tp, fp, fn, beta_squared
+        integer, intent(in) :: zero_value
+        real(dp) :: scale, weighted_tp, weighted_fp, weighted_fn
+
+        scale = max(1.0_dp, beta_squared)
+        weighted_tp = (1.0_dp/scale + beta_squared/scale)*tp
+        weighted_fp = fp/scale
+        weighted_fn = (beta_squared/scale)*fn
+        value = safe_multilabel_ratio(weighted_tp, weighted_tp + weighted_fp + weighted_fn, &
+            zero_value)
+    end function safe_multilabel_fbeta
 
     integer function class_position(label, classes) result(position)
         integer, intent(in) :: label
