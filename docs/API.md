@@ -275,6 +275,9 @@ as `-1` and `+1` for the margin objective. The default
 `SVM_LOSS_SQUARED_HINGE` objective is the weighted mean of
 `max(0,1-y*score)**2` plus feature-only L2 regularization. The ordinary
 `SVM_LOSS_HINGE` loss is also available. Intercepts are not regularized.
+For ordinary-hinge fitting, the FortOpt callback uses a deterministic tiny
+epsilon-Huber continuation solely to make the nonsmooth Armijo line search
+well-defined; `objective_value_gradient` remains the exact hinge objective.
 
 `decision_function(x,scores,status)` returns the signed affine margin and
 `predict(x,labels,status)` maps nonnegative scores to the second stored class

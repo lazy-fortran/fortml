@@ -11,7 +11,9 @@ module fortml_linear_svm_classifier
     !!
     !! with the intercept excluded from the penalty.  Ordinary hinge loss is
     !! available as SVM_LOSS_HINGE.  Fit is a discrete FortOpt L-BFGS-B
-    !! boundary.  Prediction products keep the fitted state fixed and are
+    !! boundary.  Ordinary-hinge fitting uses a tiny epsilon-Huber
+    !! continuation inside the Armijo callback while the public objective
+    !! remains exact.  Prediction products keep the fitted state fixed and are
     !! exact for the smooth affine map.  The ordinary hinge objective has a
     !! split derivative at margin one; its public objective product returns a
     !! typed refusal at an exact split instead of silently choosing a side.
