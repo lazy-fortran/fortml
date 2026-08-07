@@ -1,8 +1,10 @@
 program test_gaussian_process
     use, intrinsic :: iso_fortran_env, only: dp => real64, error_unit
     use fortml_kernels, only: kernel_t, kernel_multiply, make_linear_kernel, &
+        make_constant_kernel, make_user_kernel, kernel_add, &
         make_matern12_kernel, make_matern32_kernel, make_matern52_kernel, &
         make_rbf_kernel, make_white_noise_kernel
+    use fortml_kernel_formula, only: kernel_formula_t
     use fortml_gaussian_process, only: gp_regression_t
     use fortml_derivative_gaussian_process, only: &
         gp_derivative_regression_t
@@ -16,6 +18,7 @@ program test_gaussian_process
     call test_prediction_products(failures)
     call test_multioutput(failures)
     call test_kernel_input_derivatives(failures)
+    call test_elementary_kernel_derivatives(failures)
     call test_matern_derivative_contract(failures)
     call test_mixed_observations(failures)
     call test_matern_observations(failures)
@@ -219,6 +222,100 @@ contains
             failures = failures + 1
         end if
     end subroutine test_kernel_input_derivatives
+
+    subroutine test_elementary_kernel_derivatives(failures)
+        !! Check analytic elementary and composition rules against closed-form
+        !! values.  This deliberately avoids a finite-difference oracle: the
+        !! derivative implementation itself is the object under test.
+        integer, intent(inout) :: failures
+        type(kernel_t) :: constant, linear, sum_kernel, product_kernel
+        type(kernel_t) :: white_noise, user_kernel
+        type(kernel_formula_t) :: formula
+        type(fortnum_status_t) :: status
+        real(dp) :: x1(2), x2(2), coincident(2), value
+        real(dp) :: gradient_x1(2), gradient_x2(2), mixed_hessian(2, 2)
+        real(dp) :: expected_value, expected_scale, squared_distance
+
+        x1 = [0.4_dp, -0.2_dp]
+        x2 = [-0.3_dp, 0.7_dp]
+        constant = make_constant_kernel(2, 2.3_dp, status)
+        gradient_x1 = 19.0_dp
+        gradient_x2 = -23.0_dp
+        mixed_hessian = 31.0_dp
+        call constant%input_derivatives( &
+            x1, x2, value, gradient_x1, gradient_x2, mixed_hessian, status)
+        if (.not. status_ok(status) .or. abs(value - 2.3_dp) > 2.0e-14_dp .or. &
+            maxval(abs(gradient_x1)) > 2.0e-14_dp .or. &
+            maxval(abs(gradient_x2)) > 2.0e-14_dp .or. &
+            maxval(abs(mixed_hessian)) > 2.0e-14_dp) then
+            write (error_unit, '(a)') "FAIL [constant] input derivative rule"
+            failures = failures + 1
+        end if
+
+        linear = make_linear_kernel(2, 0.8_dp, status)
+        product_kernel = kernel_multiply(linear, constant, status)
+        call product_kernel%input_derivatives( &
+            x1, x2, value, gradient_x1, gradient_x2, mixed_hessian, status)
+        expected_scale = 0.8_dp*2.3_dp
+        expected_value = expected_scale*dot_product(x1, x2)
+        if (.not. status_ok(status) .or. abs(value - expected_value) > 2.0e-14_dp .or. &
+            maxval(abs(gradient_x1 - expected_scale*x2)) > 2.0e-14_dp .or. &
+            maxval(abs(gradient_x2 - expected_scale*x1)) > 2.0e-14_dp .or. &
+            maxval(abs(mixed_hessian - reshape([expected_scale, 0.0_dp, &
+            0.0_dp, expected_scale], [2, 2]))) > 2.0e-14_dp) then
+            write (error_unit, '(a)') "FAIL [linear*constant] input derivative rule"
+            failures = failures + 1
+        end if
+
+        sum_kernel = kernel_add(linear, constant, status)
+        call sum_kernel%input_derivatives( &
+            x1, x2, value, gradient_x1, gradient_x2, mixed_hessian, status)
+        if (.not. status_ok(status) .or. &
+            abs(value - (0.8_dp*dot_product(x1, x2) + 2.3_dp)) > 2.0e-14_dp .or. &
+            maxval(abs(gradient_x1 - 0.8_dp*x2)) > 2.0e-14_dp .or. &
+            maxval(abs(gradient_x2 - 0.8_dp*x1)) > 2.0e-14_dp .or. &
+            maxval(abs(mixed_hessian - reshape([0.8_dp, 0.0_dp, &
+            0.0_dp, 0.8_dp], [2, 2]))) > 2.0e-14_dp) then
+            write (error_unit, '(a)') "FAIL [linear+constant] input derivative rule"
+            failures = failures + 1
+        end if
+
+        white_noise = make_white_noise_kernel(2, 0.4_dp, status)
+        call white_noise%input_derivatives( &
+            x1, x2, value, gradient_x1, gradient_x2, mixed_hessian, status)
+        if (status_ok(status) .or. index(status%msg, "white-noise") == 0) then
+            write (error_unit, '(a)') "FAIL [white_noise] derivative refusal contract"
+            failures = failures + 1
+        end if
+
+        call formula%reset()
+        call formula%push_squared_distance()
+        call formula%validate(status)
+        user_kernel = make_user_kernel(2, 0.5_dp, formula, status)
+        call user_kernel%input_derivatives( &
+            x1, x2, value, gradient_x1, gradient_x2, mixed_hessian, status)
+        squared_distance = sum((x1 - x2)**2)
+        if (.not. status_ok(status) .or. abs(value - 0.5_dp*squared_distance) > 2.0e-14_dp .or. &
+            maxval(abs(gradient_x1 - (x1 - x2))) > 2.0e-14_dp .or. &
+            maxval(abs(gradient_x2 + (x1 - x2))) > 2.0e-14_dp .or. &
+            maxval(abs(mixed_hessian - reshape([-1.0_dp, 0.0_dp, &
+            0.0_dp, -1.0_dp], [2, 2]))) > 2.0e-14_dp) then
+            write (error_unit, '(a)') "FAIL [user r2] input derivative rule"
+            failures = failures + 1
+        end if
+
+        call formula%reset()
+        call formula%push_distance()
+        call formula%validate(status)
+        user_kernel = make_user_kernel(2, 0.5_dp, formula, status)
+        coincident = x1
+        call user_kernel%input_derivatives( &
+            coincident, coincident, value, gradient_x1, gradient_x2, mixed_hessian, status)
+        if (status_ok(status) .or. index(status%msg, "distance derivative") == 0) then
+            write (error_unit, '(a)') "FAIL [user distance] derivative refusal contract"
+            failures = failures + 1
+        end if
+    end subroutine test_elementary_kernel_derivatives
 
     subroutine test_matern_derivative_contract(failures)
         integer, intent(inout) :: failures

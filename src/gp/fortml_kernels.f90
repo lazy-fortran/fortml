@@ -1,12 +1,16 @@
 module fortml_kernels
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
-        FORTNUM_DOMAIN_ERROR
+        FORTNUM_DOMAIN_ERROR, FORTNUM_CONVERGENCE_ERROR
+    use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     use fortml_generated_matern_products, only: fortml_matern12_hvp, &
         fortml_matern32_hvp, fortml_matern52_hvp
     use fortml_generated_rbf_products, only: fortml_rbf_hvp, fortml_rbf_jvp, &
         fortml_rbf_vjp
-    use fortml_kernel_formula, only: kernel_formula_t
+    use fortml_kernel_formula, only: kernel_formula_t, MAX_FORMULA_STACK, &
+        OPCODE_PUSH_R2, OPCODE_PUSH_R, OPCODE_PUSH_DOT, OPCODE_PUSH_CONST, &
+        OPCODE_ADD, OPCODE_SUBTRACT, OPCODE_MULTIPLY, OPCODE_NEGATE, &
+        OPCODE_EXP, OPCODE_DIVIDE_CONST
     implicit none
     private
 
@@ -700,6 +704,15 @@ contains
         real(dp) :: squared_distance, difference
         integer :: i, j
 
+        !! Composite callers allocate the child output arrays before entering
+        !! this routine.  Initialize every output here as well as in the
+        !! public wrapper so constant and refused leaves cannot leak
+        !! uninitialized values into a product rule.
+        value = 0.0_dp
+        gradient_x1 = 0.0_dp
+        gradient_x2 = 0.0_dp
+        mixed_hessian = 0.0_dp
+
         select case (self%kind)
         case (KERNEL_SUM, KERNEL_PRODUCT)
             allocate(left_gradient_x1(size(x1)), right_gradient_x1(size(x1)))
@@ -766,14 +779,162 @@ contains
             variance = exp(self%log_parameters(1))
             value = variance
             call status_set(status, FORTNUM_OK, "")
+        case (KERNEL_WHITE_NOISE)
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "kernel input_derivatives: white-noise kernel is nonsmooth")
         case (KERNEL_MATERN12, KERNEL_MATERN32, KERNEL_MATERN52)
             call matern_input_derivatives( &
+                self, x1, x2, value, gradient_x1, gradient_x2, mixed_hessian, status)
+        case (KERNEL_USER)
+            call user_input_derivatives( &
                 self, x1, x2, value, gradient_x1, gradient_x2, mixed_hessian, status)
         case default
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "kernel input_derivatives: this kernel has no smooth input rule")
         end select
     end subroutine kernel_input_derivatives_impl
+
+    subroutine user_input_derivatives(self, x1, x2, value, gradient_x1, &
+            gradient_x2, mixed_hessian, status)
+        !! Forward-mode derivatives of a validated user formula.
+        !!
+        !! The formula is a postfix expression in squared distance, distance,
+        !! and inner product.  Carrying the value, both input gradients, and
+        !! the mixed Hessian through the same stack gives derivative-observation
+        !! GPs the same contract as built-in kernels without procedure-pointer
+        !! callbacks or a finite-difference fallback.
+        class(kernel_t), intent(in) :: self
+        real(dp), intent(in) :: x1(:), x2(:)
+        real(dp), intent(out) :: value, gradient_x1(:), gradient_x2(:)
+        real(dp), intent(out) :: mixed_hessian(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: values(MAX_FORMULA_STACK)
+        real(dp) :: gradients_x1(MAX_FORMULA_STACK, size(x1))
+        real(dp) :: gradients_x2(MAX_FORMULA_STACK, size(x2))
+        real(dp) :: hessians(MAX_FORMULA_STACK, size(x1), size(x2))
+        real(dp) :: difference(size(x1)), squared_distance, distance, inner_product
+        real(dp) :: left_value, right_value, left_gradient, right_gradient
+        real(dp) :: left_hessian, right_hessian, factor
+        integer :: i, j, top, opcode
+
+        value = 0.0_dp
+        gradient_x1 = 0.0_dp
+        gradient_x2 = 0.0_dp
+        mixed_hessian = 0.0_dp
+        if (.not. allocated(self%formula) .or. .not. self%formula%static_lowering_eligible()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "kernel user derivatives: formula is not validated")
+            return
+        end if
+
+        difference = x1 - x2
+        squared_distance = sum(difference**2)
+        distance = sqrt(squared_distance)
+        inner_product = dot_product(x1, x2)
+        top = 0
+        do i = 1, self%formula%length
+            opcode = self%formula%opcode(i)
+            select case (opcode)
+            case (OPCODE_PUSH_R2)
+                top = top + 1
+                values(top) = squared_distance
+                gradients_x1(top, :) = 2.0_dp*difference
+                gradients_x2(top, :) = -2.0_dp*difference
+                hessians(top, :, :) = 0.0_dp
+                do j = 1, size(x1)
+                    hessians(top, j, j) = -2.0_dp
+                end do
+            case (OPCODE_PUSH_R)
+                if (distance <= 0.0_dp) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "kernel user derivatives: distance derivative is undefined at coincidence")
+                    return
+                end if
+                top = top + 1
+                values(top) = distance
+                gradients_x1(top, :) = difference/distance
+                gradients_x2(top, :) = -gradients_x1(top, :)
+                hessians(top, :, :) = 0.0_dp
+                do j = 1, size(x1)
+                    hessians(top, j, j) = -1.0_dp/distance
+                    hessians(top, j, :) = hessians(top, j, :) + &
+                        difference(j)*difference/distance**3
+                end do
+            case (OPCODE_PUSH_DOT)
+                top = top + 1
+                values(top) = inner_product
+                gradients_x1(top, :) = x2
+                gradients_x2(top, :) = x1
+                hessians(top, :, :) = 0.0_dp
+                do j = 1, size(x1)
+                    hessians(top, j, j) = 1.0_dp
+                end do
+            case (OPCODE_PUSH_CONST)
+                top = top + 1
+                values(top) = self%formula%operand(i)
+                gradients_x1(top, :) = 0.0_dp
+                gradients_x2(top, :) = 0.0_dp
+                hessians(top, :, :) = 0.0_dp
+            case (OPCODE_ADD, OPCODE_SUBTRACT, OPCODE_MULTIPLY)
+                left_value = values(top - 1)
+                right_value = values(top)
+                if (opcode == OPCODE_ADD) then
+                    values(top - 1) = left_value + right_value
+                    gradients_x1(top - 1, :) = gradients_x1(top - 1, :) + gradients_x1(top, :)
+                    gradients_x2(top - 1, :) = gradients_x2(top - 1, :) + gradients_x2(top, :)
+                    hessians(top - 1, :, :) = hessians(top - 1, :, :) + hessians(top, :, :)
+                else if (opcode == OPCODE_SUBTRACT) then
+                    values(top - 1) = left_value - right_value
+                    gradients_x1(top - 1, :) = gradients_x1(top - 1, :) - gradients_x1(top, :)
+                    gradients_x2(top - 1, :) = gradients_x2(top - 1, :) - gradients_x2(top, :)
+                    hessians(top - 1, :, :) = hessians(top - 1, :, :) - hessians(top, :, :)
+                else
+                    values(top - 1) = left_value*right_value
+                    hessians(top - 1, :, :) = hessians(top - 1, :, :)*right_value + &
+                        hessians(top, :, :)*left_value + &
+                        spread(gradients_x1(top - 1, :), dim=2, ncopies=size(x2))* &
+                        spread(gradients_x2(top, :), dim=1, ncopies=size(x1)) + &
+                        spread(gradients_x1(top, :), dim=2, ncopies=size(x2))* &
+                        spread(gradients_x2(top - 1, :), dim=1, ncopies=size(x1))
+                    gradients_x1(top - 1, :) = gradients_x1(top - 1, :)*right_value + &
+                        gradients_x1(top, :)*left_value
+                    gradients_x2(top - 1, :) = gradients_x2(top - 1, :)*right_value + &
+                        gradients_x2(top, :)*left_value
+                end if
+                top = top - 1
+            case (OPCODE_NEGATE)
+                values(top) = -values(top)
+                gradients_x1(top, :) = -gradients_x1(top, :)
+                gradients_x2(top, :) = -gradients_x2(top, :)
+                hessians(top, :, :) = -hessians(top, :, :)
+            case (OPCODE_EXP)
+                factor = exp(values(top))
+                hessians(top, :, :) = factor*(hessians(top, :, :) + &
+                    spread(gradients_x1(top, :), dim=2, ncopies=size(x2))* &
+                    spread(gradients_x2(top, :), dim=1, ncopies=size(x1)))
+                gradients_x1(top, :) = factor*gradients_x1(top, :)
+                gradients_x2(top, :) = factor*gradients_x2(top, :)
+                values(top) = factor
+            case (OPCODE_DIVIDE_CONST)
+                factor = 1.0_dp/self%formula%operand(i)
+                values(top) = values(top)*factor
+                gradients_x1(top, :) = gradients_x1(top, :)*factor
+                gradients_x2(top, :) = gradients_x2(top, :)*factor
+                hessians(top, :, :) = hessians(top, :, :)*factor
+            end select
+        end do
+        value = exp(self%log_parameters(1))*values(top)
+        gradient_x1 = exp(self%log_parameters(1))*gradients_x1(top, :)
+        gradient_x2 = exp(self%log_parameters(1))*gradients_x2(top, :)
+        mixed_hessian = exp(self%log_parameters(1))*hessians(top, :, :)
+        if (.not. ieee_is_finite(value) .or. any(.not. ieee_is_finite(gradient_x1)) .or. &
+            any(.not. ieee_is_finite(gradient_x2)) .or. any(.not. ieee_is_finite(mixed_hessian))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "kernel user derivatives: nonfinite result")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine user_input_derivatives
 
     subroutine matern_input_derivatives( &
             self, x1, x2, value, gradient_x1, gradient_x2, mixed_hessian, status)
