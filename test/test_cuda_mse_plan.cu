@@ -18,6 +18,10 @@ int main() {
   const double prediction[n_samples * n_outputs] = {
       0.0, -1.0, 1.5, 2.0, 1.0, 2.0, -0.5, 4.0};
   const double weight[n_samples] = {1.0, 2.0, 0.5, 3.0};
+  void* invalid_plan = nullptr;
+  if (fortml_cuda_mse_plan_create(target, prediction, weight, 0, n_outputs,
+                                  0, &invalid_plan) == 0 || invalid_plan != nullptr)
+    return 1;
   double expected = 0.0;
   double denominator = 0.0;
   for (int row = 0; row < n_samples; ++row) {
