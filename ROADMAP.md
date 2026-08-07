@@ -107,7 +107,7 @@ documentation, refusal behavior, and benchmark evidence are all present.
 | Derivatives | Exact GP and selected neural/kernel products exist | Value/JVP/VJP/HVP and implicit/hypergradients for every declared parameter/input path, including preprocessing, likelihood, optimizer/search variables, and device kernels |
 | Model selection and metrics | Benchmark-specific checks exist | Shared metrics, splitters, cross-validation, calibration, grid/random/Bayesian/differentiable search, nested validation, and leakage/refusal checks |
 | Persistence and serving | Missing public contract | Versioned state dictionaries, safe model/trainer serialization, compiler-independent metadata, streaming inference, batching, and reproducible deployment manifests |
-| GPU and scale-out | Operator-specific OpenACC/CUDA paths | Complete resident CPU/CUDA/OpenACC training and inference for supported estimators, mixed precision, multi-GPU/MPI sharding, transfer accounting, and deterministic reductions |
+| GPU and scale-out | Operator-specific OpenACC/CUDA paths; the new kNN, RMSprop, XGBoost staged, and GP-classification-training release rows are CPU-only until resident kernels are added | Complete resident CPU/CUDA/OpenACC training and inference for supported estimators, mixed precision, multi-GPU/MPI sharding, transfer accounting, and deterministic reductions |
 | Performance evidence | Several model/GP lanes exist | Matched correctness-gated comparisons with scikit-learn, XGBoost/LightGBM, PyTorch/JAX, GPyTorch/GPflow, and published hardware/toolchain provenance |
 
 ### Parity inventory and release gates
@@ -128,7 +128,7 @@ derivatives, refusal behavior, and an independent benchmark oracle all exist.
 | GPyTorch/GPflow | Exact, derivative-observation, sparse/local/SKI/structured GP primitives; Laplace binary/OVR GP classification | Kernel/likelihood/constraint/batch-shape parity, variational categorical/count likelihoods, multitask, operator-valued derivatives, implicit hypergradients, serialization and resident GPU training |
 | XGBoost/LightGBM | Exact depth-limited squared/logistic Newton trees, binary/OVR multiclass staged predictions, margins, and gain/weight/cover diagnostics with explicit NaN policies (`error`, learned, forced-left/right) | Histogram quantiles, categorical/quantile/ranking objectives, DART, monotonic/interaction constraints, and distributed training |
 | Differentiability and search | Capability-specific JVP/VJP/HVP products, FortOpt L-BFGS-B for selected objectives, and an exact fixed-trajectory MLP hypergradient over log learning rate/L2 | Complete derivative matrix for every declared parameter/input/hyperparameter, stochastic/device optimizer hypergradients, implicit differentiation, and refusal rather than hidden finite differences |
-| Device and performance | OpenACC/native CUDA operator lanes plus explicit device control-plane contract | Resident model/optimizer/batch state for every supported estimator, CPU parity, transfer/memory accounting, mixed precision, and matched PyTorch/JAX/GPyTorch/XGBoost evidence |
+| Device and performance | OpenACC/native CUDA operator lanes plus explicit device control-plane contract; kNN, RMSprop, staged boosting, and GP-classification training still report CPU-only benchmark rows | Resident model/optimizer/batch state for every supported estimator, CPU parity, transfer/memory accounting, mixed precision, and matched PyTorch/JAX/GPyTorch/XGBoost evidence |
 
 The inventory deliberately distinguishes an implemented algorithm from an
 implemented *workflow*. For example, an XGBoost-style Newton tree without
@@ -448,8 +448,17 @@ The benchmark VFE lane constructs its variational distribution with dense
 linear algebra. It is not a minibatch stochastic-variational implementation.
 Toeplitz FFT products remain host-resident.
 
-Accelerator support is operator-specific. OpenACC and native CUDA paths cover
-the kernel, structured, and sparse operations documented above. The historical
+Accelerator support is operator-specific, and CPU-only rows in the benchmark
+reports are provisional rather than parity evidence. Every estimator and
+trainer accepted into the production matrix must have a resident GPU path for
+its model, optimizer, batches, and derivative products, or a machine-readable
+device refusal. OpenACC is the first implementation route when it preserves
+the numerical contract. For operations where OpenACC cannot express the
+required launch, memory residency, synchronization, or performance contract,
+and no autodiff-generated code is required, the implementation moves to a
+native CUDA kernel with the same host oracle and explicit transfer accounting.
+Autodiff-sensitive paths retain a FortAD/FortSym-compatible reference and are
+not silently replaced by a nondifferentiable CUDA shortcut. The historical
 `nvfortran` verification establishes compiler compatibility for the older
 30-test snapshot. The newer tests, including Bernoulli Naive Bayes, are covered
 by the GNU run only in this environment.
