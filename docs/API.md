@@ -1356,15 +1356,18 @@ directional HVP finite differences, and the typed CUDA refusal.
 
 ### `fortml_validation`
 
-`kfold_splitter_t` and `stratified_kfold_splitter_t` are index-only, seeded
-cross-validation iterators. Initialize with `n_samples` (or integer labels)
-and `n_splits`, then call `next_split(train_indices,test_indices,has_split,
-status)` until `has_split` is false. `reset()` replays the same sequence.
-Shuffled iterators use a local positive seed and never touch process-global RNG
-state. Test folds are balanced. Stratified folds distribute each class
-round-robin. Invalid fold counts, seeds, and pre-initialization calls return
-status errors. The splitters do not fit or store transformers, so callers must
-fit preprocessing on each training index set explicitly.
+`kfold_splitter_t`, `stratified_kfold_splitter_t`, and
+`group_kfold_splitter_t` are index-only, seeded cross-validation iterators.
+Initialize with `n_samples` (or integer labels/groups) and `n_splits`, then
+call `next_split(train_indices,test_indices,has_split,status)` until
+`has_split` is false. `reset()` replays the same sequence. Shuffled iterators
+use a local positive seed and never touch process-global RNG state. Test folds
+are balanced; stratified folds distribute each class round-robin; grouped
+folds keep each group entirely in one fold and greedily balance uneven group
+sizes. Invalid fold counts, seeds, and pre-initialization calls return status
+errors. The splitters do not fit or store transformers, so callers must fit
+preprocessing on each training index set explicitly. Group splitting is a CPU
+index operation with no derivative or resident-device capability.
 
 ### `fortml_hyperparameter_search`
 

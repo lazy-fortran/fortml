@@ -45,6 +45,31 @@ module fortml_validation
         procedure, public :: shuffled => stratified_shuffled
     end type stratified_kfold_splitter_t
 
+    type, public :: group_kfold_splitter_t
+        !! Deterministic group-isolated K-fold iterator.
+        !!
+        !! Every sample carrying the same group identifier is assigned to one
+        !! fold.  Groups are greedily packed from largest to smallest into
+        !! the currently lightest fold, which keeps test-row counts balanced
+        !! without ever splitting a group.  The optional seed only changes
+        !! equal-size group tie ordering.
+        private
+        integer :: n_samples = 0
+        integer :: n_groups = 0
+        integer :: n_splits = 0
+        integer :: next_fold = 1
+        logical :: do_shuffle = .false.
+        integer, allocatable :: fold_assignment(:)
+    contains
+        procedure, public :: initialize => group_initialize
+        procedure, public :: reset => group_reset
+        procedure, public :: next_split => group_next_split
+        procedure, public :: sample_count => group_sample_count
+        procedure, public :: group_count => group_group_count
+        procedure, public :: fold_count => group_fold_count
+        procedure, public :: shuffled => group_shuffled
+    end type group_kfold_splitter_t
+
     public :: validate_estimator_capability
     public :: require_estimator_capability
 
@@ -221,6 +246,184 @@ contains
 
         self%next_fold = 1
     end subroutine stratified_reset
+
+    subroutine group_initialize(self, groups, n_splits, status, shuffle, seed)
+        class(group_kfold_splitter_t), intent(out) :: self
+        integer, intent(in) :: groups(:), n_splits
+        type(fortnum_status_t), intent(out) :: status
+        logical, intent(in), optional :: shuffle
+        integer, intent(in), optional :: seed
+        integer, allocatable :: unique_groups(:), group_counts(:)
+        integer, allocatable :: first_index(:), order(:), tie_rank(:)
+        integer, allocatable :: fold_sizes(:)
+        integer :: i, j, k, n_unique, random_seed, group_id, best_fold
+        integer :: temporary, best_order
+
+        if (size(groups) < 2 .or. n_splits < 2) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "group kfold: sample and fold counts are incompatible")
+            return
+        end if
+        self%n_samples = size(groups)
+        self%n_splits = n_splits
+        self%next_fold = 1
+        self%do_shuffle = .false.
+        if (present(shuffle)) self%do_shuffle = shuffle
+        random_seed = 17
+        if (present(seed)) random_seed = seed
+        if (self%do_shuffle .and. random_seed <= 0) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "group kfold: shuffled splits require a positive seed")
+            return
+        end if
+
+        allocate(unique_groups(size(groups)), group_counts(size(groups)), &
+            first_index(size(groups)))
+        n_unique = 0
+        do i = 1, size(groups)
+            group_id = 0
+            do j = 1, n_unique
+                if (unique_groups(j) == groups(i)) then
+                    group_id = j
+                    exit
+                end if
+            end do
+            if (group_id == 0) then
+                n_unique = n_unique + 1
+                unique_groups(n_unique) = groups(i)
+                group_counts(n_unique) = 1
+                first_index(n_unique) = i
+            else
+                group_counts(group_id) = group_counts(group_id) + 1
+            end if
+        end do
+        if (n_splits > n_unique) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "group kfold: n_splits cannot exceed the number of groups")
+            return
+        end if
+
+        self%n_groups = n_unique
+        allocate(self%fold_assignment(size(groups)), order(n_unique), &
+            tie_rank(n_unique), fold_sizes(n_splits))
+        order = [(i, i=1, n_unique)]
+        tie_rank = first_index(:n_unique)
+        if (self%do_shuffle) then
+            call shuffle_indices(order, random_seed)
+            do i = 1, n_unique
+                tie_rank(order(i)) = i
+            end do
+        end if
+
+        ! Stable descending-size ordering, with first occurrence (or the
+        ! seeded permutation rank) as the deterministic tie breaker.
+        do i = 1, n_unique - 1
+            best_order = i
+            do j = i + 1, n_unique
+                if (group_counts(order(j)) > group_counts(order(best_order))) then
+                    best_order = j
+                else if (group_counts(order(j)) == group_counts(order(best_order))) then
+                    if (tie_rank(order(j)) < tie_rank(order(best_order))) then
+                        best_order = j
+                    end if
+                end if
+            end do
+            if (best_order /= i) then
+                temporary = order(i)
+                order(i) = order(best_order)
+                order(best_order) = temporary
+            end if
+        end do
+
+        fold_sizes = 0
+        self%fold_assignment = 0
+        do i = 1, n_unique
+            group_id = order(i)
+            best_fold = 1
+            do k = 2, n_splits
+                if (fold_sizes(k) < fold_sizes(best_fold)) best_fold = k
+            end do
+            do j = 1, size(groups)
+                if (groups(j) == unique_groups(group_id)) then
+                    self%fold_assignment(j) = best_fold
+                end if
+            end do
+            fold_sizes(best_fold) = fold_sizes(best_fold) + group_counts(group_id)
+        end do
+        deallocate(unique_groups, group_counts, first_index, order, tie_rank, &
+            fold_sizes)
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine group_initialize
+
+    subroutine group_reset(self)
+        class(group_kfold_splitter_t), intent(inout) :: self
+
+        self%next_fold = 1
+    end subroutine group_reset
+
+    subroutine group_next_split(self, train_indices, test_indices, has_split, &
+            status)
+        class(group_kfold_splitter_t), intent(inout) :: self
+        integer, allocatable, intent(out) :: train_indices(:), test_indices(:)
+        logical, intent(out) :: has_split
+        type(fortnum_status_t), intent(out) :: status
+        integer :: fold, test_count, train_count, i, train_position, test_position
+
+        has_split = .false.
+        allocate(train_indices(0), test_indices(0))
+        if (.not. allocated(self%fold_assignment)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "group kfold: splitter is not initialized")
+            return
+        end if
+        if (self%next_fold > self%n_splits) then
+            call status_set(status, FORTNUM_OK, "")
+            return
+        end if
+        fold = self%next_fold
+        test_count = count(self%fold_assignment == fold)
+        train_count = self%n_samples - test_count
+        deallocate(train_indices, test_indices)
+        allocate(train_indices(train_count), test_indices(test_count))
+        train_position = 0
+        test_position = 0
+        do i = 1, self%n_samples
+            if (self%fold_assignment(i) == fold) then
+                test_position = test_position + 1
+                test_indices(test_position) = i
+            else
+                train_position = train_position + 1
+                train_indices(train_position) = i
+            end if
+        end do
+        self%next_fold = self%next_fold + 1
+        has_split = .true.
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine group_next_split
+
+    integer function group_sample_count(self) result(count)
+        class(group_kfold_splitter_t), intent(in) :: self
+
+        count = self%n_samples
+    end function group_sample_count
+
+    integer function group_group_count(self) result(count)
+        class(group_kfold_splitter_t), intent(in) :: self
+
+        count = self%n_groups
+    end function group_group_count
+
+    integer function group_fold_count(self) result(count)
+        class(group_kfold_splitter_t), intent(in) :: self
+
+        count = self%n_splits
+    end function group_fold_count
+
+    logical function group_shuffled(self) result(value)
+        class(group_kfold_splitter_t), intent(in) :: self
+
+        value = self%do_shuffle
+    end function group_shuffled
 
     subroutine stratified_next_split(self, train_indices, test_indices, has_split, &
             status)

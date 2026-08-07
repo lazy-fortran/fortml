@@ -1147,6 +1147,13 @@ return status errors.
   seeded shuffling, balanced test folds, replayable cursors, and explicit
   invalid-fold refusals. Cross-validation scoring and separate train/validation
   batch streams remain open.
+- [x] Add a deterministic group-K-fold splitter. `group_kfold_splitter_t`
+  keeps every integer group in one fold and greedily balances uneven group
+  sizes; seeded shuffling only changes equal-size tie order. Independent
+  isolation, balance, replay, and invalid-input oracles are in
+  `test_group_kfold`. The iterator is deliberately index-only CPU behavior;
+  derivative/device routing and cross-validation scoring remain separate
+  contracts.
 - [ ] Define fitted transformer, predictor, regressor, and classifier contracts.
   The contracts cover feature counts, fitted state, reset or clone behavior,
   parameter names, and status propagation.
@@ -1216,8 +1223,10 @@ return status errors.
 - [ ] Add feature-name propagation, schema validation, metadata routing,
   train-only fitting, `fit_transform`, `transform`, `inverse_transform` where
   mathematically defined, and partial-fit propagation for streaming data.
-- [ ] Add deterministic train/test, K-fold, stratified K-fold, and grouped split
-  iterators plus cross-validation scoring and routed parameters.
+- [ ] Add deterministic train/test, repeated K-fold, time-series/blocked, and
+  Monte Carlo split iterators plus cross-validation scoring and routed
+  parameters. The ordinary, stratified, and group-K-fold iterators now exist
+  as independent index-only contracts.
 - [x] Add `fortml_hyperparameter_search` orchestration for deterministic bounded
   Cartesian grids, seeded random candidates, and FortOpt L-BFGS-B. The grid
   path guards product overflow, the random path uses a caller-provided
