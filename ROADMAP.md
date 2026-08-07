@@ -255,9 +255,9 @@ The source inventory is dated 2026-08-07.
 
 | Work package | State | Implemented baseline | Package exit |
 | --- | --- | --- | --- |
-| Classification | Partial | `fortml_logistic_regression` and `fortml_softmax_regression` provide binary and multinomial integer-label fitting with sample-weighted reductions, `fortml_mlp_classifier` adds deterministic multiclass logits training with Adam, `fortml_gp_classification` adds binary Laplace logistic/probit inference, `fortml_gp_multiclass_classification` adds one-vs-rest multiclass GP probabilities, and shared metrics cover accuracy, top-k, balanced accuracy, confusion, precision/recall/F1, Brier, binary Matthews, weighted accuracy, and log loss. | Binary and multiclass linear, neural, GP, and boosted-tree classifiers share label, probability, weighting, and metric conventions. |
+| Classification | Partial | `fortml_logistic_regression` and `fortml_softmax_regression` provide binary and multinomial integer-label fitting with sample-weighted reductions, `fortml_mlp_classifier` adds deterministic multiclass logits training with Adam, `fortml_gp_classification` adds binary Laplace logistic/probit inference, `fortml_gp_multiclass_classification` adds one-vs-rest multiclass GP probabilities, and shared metrics cover accuracy, top-k, balanced accuracy, confusion, precision/recall/F1, Brier, binary Matthews, weighted accuracy, log loss, and expected/maximum calibration error. | Binary and multiclass linear, neural, GP, and boosted-tree classifiers share label, probability, weighting, and metric conventions. |
 | Estimator contracts, pipelines, and bases | Partial | `basis_map_t`, horizontal and sequential basis pipelines, fitted standard/min-max scalers with input JVPs, row-oriented sample conventions, status objects, and the parameter registry are public. | Fitted transformers and estimators compose without data leakage, expose routed parameters, and run through cross-validation. |
-| Tree boosting | Partial | `decision_stump_t`, squared-loss `gradient_boosting_regressor_t`, `xgboost_t`, and `xgboost_multiclass_t` provide deterministic exhaustive split products. The XGBoost-style lane has exact depth-one squared/logistic gradients, Hessians, regularized gains, Newton leaves, diagnostics, binary probabilities, one-vs-rest multiclass probabilities, and piecewise input JVP/refusal behavior. | Regression and classification trees support deterministic histogram boosting, validation-based stopping, missing values, deeper growth, and model persistence. |
+| Tree boosting | Partial | `decision_stump_t`, weighted depth-limited `cart_regressor_t`, squared-loss `gradient_boosting_regressor_t`, `xgboost_t`, and `xgboost_multiclass_t` provide deterministic exhaustive split products. The CART regression lane has weighted squared-error criteria, depth and leaf constraints, fixed feature/threshold tie ordering, and piecewise input JVP/refusal behavior. The XGBoost-style lane has exact depth-one squared/logistic gradients, Hessians, regularized gains, Newton leaves, diagnostics, binary probabilities, and one-vs-rest multiclass probabilities. | Regression and classification trees support deterministic histogram boosting, validation-based stopping, missing values, deeper growth, and model persistence. |
 | Training infrastructure | Partial | Model-specific gradients, exact MSE+L2 neural HVPs including the L2 mixed hyperparameter block, `fortopt_adam` integration, deterministic seeded batch cursors, per-update learning-rate callbacks, norm clipping, sample-weighted gradient accumulation, natural-gradient seams, and seeded variational draws exist. | One trainer owns batches, optimizer state, schedules, clipping, validation, early stopping, callbacks, and resumable state for every model with a completed trainer adapter. |
 | GP derivatives and hyperparameters | Partial | Exact GP likelihood and prediction products include parameter gradients and HVPs. Mixed value and first-derivative observations can be fitted and predicted. | Exact, derivative, multi-output, sparse, and matrix-free GP families expose documented trainable parameters, scalar objectives, parameter gradients, and train-state adapters. |
 | GPU and device execution | Partial | Kernel, structured, and sparse operator products have selected OpenACC or CUDA paths, including resident CG for kernel operators. | Supported training and prediction workflows keep model, optimizer, and batch state resident on a selected device and have CPU parity tests. |
@@ -316,6 +316,10 @@ The source inventory is dated 2026-08-07.
   loss, Brier score, binary Matthews correlation, precision,
   recall, and F1 with explicit class ordering, zero-support behavior, and
   weighted accuracy/log-loss semantics. Binary ROC AUC remains open.
+- [x] Add deterministic multiclass expected and maximum calibration error
+  metrics with row normalization, first-maximum tie handling, equal-width
+  bins, optional sample weights, and explicit empty-bin and confidence-one
+  semantics. Sigmoid and isotonic calibrator estimators remain open.
 - [ ] Add probability calibration by sigmoid and isotonic fits after the base
   classifier API is stable.
 
@@ -421,9 +425,13 @@ hyperparameter block. A deliberate train/validation leakage fixture must fail.
   argmax prediction, decision margins, quotient-rule probability JVPs, and
   split-boundary refusals have independent behavioral and finite-difference
   tests.
-- [ ] Add deterministic CART regression and classification trees with weighted
-  squared-error, Gini, and entropy criteria, depth and leaf constraints, and a
-  specified tie rule.
+- [x] Add a deterministic depth-limited CART regression tree with weighted
+  squared-error splits, `max_depth` and `min_samples_leaf` constraints, fixed
+  feature/threshold tie ordering, finite-only/refusal behavior, and independent
+  prediction/JVP oracles.
+- [ ] Add deterministic CART classification with weighted Gini and entropy
+  criteria, class probabilities, depth and leaf constraints, and the same tie
+  rule.
 - [ ] Add weighted quantile binning and per-feature histograms. Store missing
   values in a dedicated bin and learn a default branch at every split.
 - [ ] Add gradient-boosted regression for squared, absolute, and Huber losses.
@@ -511,14 +519,19 @@ mathematical objective.
 
 ### WP3b: metrics, validation, and model selection
 
-- [ ] Implement regression metrics (R2, explained variance, MSE, RMSE, MAE,
-  median absolute error, max error, MSLE, MAPE, pinball, Poisson/Gamma/Tweedie
-  deviance), classification metrics (accuracy, top-k, balanced accuracy,
+- [x] Implement core regression metrics (R2, explained variance, MSE, RMSE,
+  MAE, weighted median absolute error, max error, MSLE, MAPE, and pinball)
+  with explicit finite, shape, weight, constant-target, and quantile refusal
+  contracts and independent hand-formula oracles. Poisson/Gamma/Tweedie
+  deviance remains open. Classification metrics (accuracy, top-k, balanced accuracy,
   precision/recall/F-beta, Jaccard, Hamming, log loss, ROC/PR AUC, Brier,
   calibration error), ranking metrics (DCG/NDCG, MAP, MRR), clustering metrics
   (silhouette, Calinski-Harabasz, Davies-Bouldin, adjusted rand, mutual
   information), and probabilistic metrics (NLL, CRPS, interval coverage,
   sharpness, calibration).
+- [x] Define multiclass expected and maximum calibration error as weighted
+  equal-width confidence-bin metrics with deterministic tie handling and
+  refusal of invalid rows, labels, weights, or bin counts.
 - [ ] Define finite, NaN, masked, zero-support, zero-division, multiclass,
   multilabel, and sample-weight behavior for every metric. Metrics return a
   value plus diagnostics rather than silently dropping invalid rows.
@@ -580,6 +593,10 @@ trials remain visible in the result schema.
   the equivalent full-batch Adam update and check update/microbatch accounting.
 - [ ] Define objective and loss contracts with sum and mean reductions, sample
   weights, regularization terms, and named scalar diagnostics.
+- [x] Define the MLP MSE objective's mean and sum reductions, finite
+  non-negative sample weights, L2 regularization component, and named scalar
+  diagnostics. The general loss and likelihood contract for other models and
+  reductions remains open.
 - [ ] Define a module tree and parameter-tree API for nested neural networks.
   Parameters, buffers, frozen blocks, tied/shared weights, masks, and stateful
   layers have stable paths and can be flattened without losing aliases.

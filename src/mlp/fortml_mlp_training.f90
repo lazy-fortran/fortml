@@ -20,6 +20,9 @@ module fortml_mlp_training
     implicit none
     private
 
+    integer, parameter, public :: MLP_REDUCTION_MEAN = 1
+    integer, parameter, public :: MLP_REDUCTION_SUM = 2
+
     abstract interface
         subroutine mlp_epoch_callback_proc(epoch, loss, gradient_norm, stop)
             import :: dp
@@ -80,6 +83,14 @@ module fortml_mlp_training
         real(dp), allocatable :: learning_rate_history(:)
         real(dp), allocatable :: validation_loss_history(:)
     end type mlp_training_state_t
+
+    type, public :: mlp_loss_diagnostics_t
+        !! Named scalar diagnostics for the MLP MSE objective.
+        real(dp) :: data_loss = 0.0_dp
+        real(dp) :: regularization_loss = 0.0_dp
+        real(dp) :: weight_mass = 0.0_dp
+        integer :: sample_count = 0
+    end type mlp_loss_diagnostics_t
 
     type, public :: mlp_batch_iterator_t
         !! Deterministic row-index batches with explicit epoch boundaries.
@@ -255,19 +266,31 @@ contains
     end function batch_iterator_initialized
 
     subroutine mlp_loss_value_gradient(model, x, target, l2, value, gradient, &
-            l2_gradient, status)
+            l2_gradient, status, sample_weight, reduction, diagnostics)
         !! MSE value, network-parameter gradient, and derivative with respect
-        !! to the scalar L2 coefficient.
+        !! to the scalar L2 coefficient.  The optional `sample_weight` and
+        !! `reduction` arguments make the data term's weighting explicit:
+        !! `MLP_REDUCTION_MEAN` divides by positive weight mass, while
+        !! `MLP_REDUCTION_SUM` leaves the weighted sum unnormalized.  L2 is
+        !! always added once as a parameter regularizer.  `diagnostics`, when
+        !! present, reports the two scalar objective components and weight
+        !! mass used by the reduction.
         class(mlp_t), intent(in) :: model
         real(dp), intent(in) :: x(:, :), target(:, :), l2
         real(dp), intent(out) :: value, gradient(:), l2_gradient
         type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
+        integer, intent(in), optional :: reduction
+        type(mlp_loss_diagnostics_t), intent(out), optional :: diagnostics
         real(dp), allocatable :: prediction(:, :), residual(:, :), x_bar(:, :)
+        real(dp), allocatable :: weighted_residual(:, :)
         real(dp), allocatable :: theta(:)
-        integer :: n_samples
+        integer :: n_samples, reduction_kind, i
+        real(dp) :: weight_mass, normalization, data_loss, regularization_loss
 
         value = 0.0_dp
         l2_gradient = 0.0_dp
+        if (present(diagnostics)) diagnostics = mlp_loss_diagnostics_t()
         if (.not. valid_data(model, x, target) .or. l2 < 0.0_dp .or. &
             size(gradient) /= model%parameter_count()) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -275,19 +298,60 @@ contains
             return
         end if
         n_samples = size(x, 1)
+        reduction_kind = MLP_REDUCTION_MEAN
+        if (present(reduction)) reduction_kind = reduction
+        if (reduction_kind /= MLP_REDUCTION_MEAN .and. &
+            reduction_kind /= MLP_REDUCTION_SUM) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP loss: reduction must be mean or sum")
+            return
+        end if
+        if (present(sample_weight)) then
+            if (size(sample_weight) /= n_samples .or. &
+                any(.not. ieee_is_finite(sample_weight)) .or. &
+                any(sample_weight < 0.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP loss: sample weights must be finite and non-negative")
+                return
+            end if
+            weight_mass = sum(sample_weight)
+        else
+            weight_mass = real(n_samples, dp)
+        end if
+        if (.not. ieee_is_finite(weight_mass) .or. weight_mass <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP loss: sample weights have zero support")
+            return
+        end if
+        normalization = 1.0_dp
+        if (reduction_kind == MLP_REDUCTION_MEAN) normalization = weight_mass
         allocate(prediction(size(target, 1), size(target, 2)))
         allocate(residual, mold=prediction)
+        allocate(weighted_residual, mold=prediction)
         allocate(x_bar, mold=x)
         call model%predict(x, prediction, status)
         if (status%code /= FORTNUM_OK) return
         residual = prediction - target
-        value = 0.5_dp*sum(residual*residual)/real(n_samples, dp)
-        call model%vjp(x, residual/real(n_samples, dp), gradient, x_bar, status)
+        weighted_residual = residual
+        if (present(sample_weight)) then
+            do i = 1, n_samples
+                weighted_residual(i, :) = sample_weight(i)*residual(i, :)
+            end do
+        end if
+        data_loss = 0.5_dp*sum(residual*weighted_residual)/normalization
+        call model%vjp(x, weighted_residual/normalization, gradient, x_bar, status)
         if (status%code /= FORTNUM_OK) return
         theta = model%parameters()
-        value = value + 0.5_dp*l2*sum(theta*theta)
+        regularization_loss = 0.5_dp*l2*sum(theta*theta)
+        value = data_loss + regularization_loss
         l2_gradient = 0.5_dp*sum(theta*theta)
         gradient = gradient + l2*theta
+        if (present(diagnostics)) then
+            diagnostics%data_loss = data_loss
+            diagnostics%regularization_loss = regularization_loss
+            diagnostics%weight_mass = weight_mass
+            diagnostics%sample_count = n_samples
+        end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine mlp_loss_value_gradient
 

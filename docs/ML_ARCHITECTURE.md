@@ -110,7 +110,12 @@ optimizer-update counts. Optional held-out arrays add a validation stream:
 validation is evaluated at a configurable epoch interval, patience and
 best-state restoration monitor it, and the state records the validation
 history and best/final values. This remains an in-memory boundary. Serialized
-optimizer/RNG checkpoint state is still open.
+optimizer/RNG checkpoint state is still open. The MSE objective has an explicit
+reduction boundary: optional finite non-negative sample weights use positive
+weight mass for the mean reduction, while the sum reduction remains
+unnormalized. Named diagnostics expose data and regularization components and
+the effective weight mass. This keeps reduction semantics visible to an outer
+optimizer instead of hiding them in a trainer callback.
 
 The VAE is a composition of two MLPs and an explicit diagonal Gaussian
 reparameterization:

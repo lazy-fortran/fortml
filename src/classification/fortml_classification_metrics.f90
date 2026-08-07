@@ -20,6 +20,8 @@ module fortml_classification_metrics
     public :: classification_top_k_accuracy
     public :: classification_brier_score
     public :: classification_binary_matthews
+    public :: classification_calibration_error
+    public :: classification_maximum_calibration_error
 
 contains
 
@@ -337,6 +339,104 @@ contains
         if (denominator > 0.0_dp) value = determinant/denominator
         call status_set(status, FORTNUM_OK, "")
     end subroutine classification_binary_matthews
+
+    subroutine classification_calibration_error(probabilities, labels, classes, &
+            bins, value, status, sample_weight)
+        !! Weighted expected calibration error of multiclass probabilities.
+        !!
+        !! Each row contributes its normalized maximum class probability as
+        !! confidence and the deterministic first-maximum class as its
+        !! prediction.  Equal-width confidence bins use a right-closed final
+        !! bin, so confidence one is always included.  Empty bins contribute
+        !! zero.  The result is the sample-weighted mean absolute gap between
+        !! bin accuracy and bin confidence.
+        real(dp), intent(in) :: probabilities(:, :)
+        integer, intent(in) :: labels(:), classes(:), bins
+        real(dp), intent(out) :: value
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
+        real(dp) :: maximum_error
+
+        call calibration_errors(probabilities, labels, classes, bins, value, &
+            maximum_error, status, sample_weight)
+    end subroutine classification_calibration_error
+
+    subroutine classification_maximum_calibration_error(probabilities, labels, &
+            classes, bins, value, status, sample_weight)
+        !! Maximum per-bin absolute confidence/accuracy gap.
+        real(dp), intent(in) :: probabilities(:, :)
+        integer, intent(in) :: labels(:), classes(:), bins
+        real(dp), intent(out) :: value
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
+        real(dp) :: expected_error
+
+        call calibration_errors(probabilities, labels, classes, bins, &
+            expected_error, value, status, sample_weight)
+    end subroutine classification_maximum_calibration_error
+
+    subroutine calibration_errors(probabilities, labels, classes, bins, expected, &
+            maximum, status, sample_weight)
+        real(dp), intent(in) :: probabilities(:, :)
+        integer, intent(in) :: labels(:), classes(:), bins
+        real(dp), intent(out) :: expected, maximum
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
+        real(dp), allocatable :: bin_weight(:), confidence_sum(:), correct_sum(:)
+        real(dp) :: denominator, row_sum, confidence, weight, gap
+        integer :: i, j, bin, predicted, class_index
+
+        expected = 0.0_dp
+        maximum = 0.0_dp
+        call validate_probability_inputs(probabilities, labels, classes, status, &
+            "calibration error")
+        if (status%code /= FORTNUM_OK) return
+        if (bins < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "calibration error: bin count must be positive")
+            return
+        end if
+        call validate_weights(size(labels), sample_weight, denominator, status, &
+            "calibration error")
+        if (status%code /= FORTNUM_OK) return
+        allocate(bin_weight(bins), confidence_sum(bins), correct_sum(bins))
+        bin_weight = 0.0_dp
+        confidence_sum = 0.0_dp
+        correct_sum = 0.0_dp
+        do i = 1, size(labels)
+            class_index = class_position(labels(i), classes)
+            if (class_index == 0) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "calibration error: label is not in classes")
+                return
+            end if
+            row_sum = sum(probabilities(i, :))
+            confidence = maxval(probabilities(i, :))/row_sum
+            predicted = 1
+            do j = 2, size(classes)
+                if (probabilities(i, j) > probabilities(i, predicted)) then
+                    predicted = j
+                end if
+            end do
+            bin = int(confidence*real(bins, dp)) + 1
+            if (bin > bins) bin = bins
+            weight = 1.0_dp
+            if (present(sample_weight)) weight = sample_weight(i)
+            bin_weight(bin) = bin_weight(bin) + weight
+            confidence_sum(bin) = confidence_sum(bin) + weight*confidence
+            if (predicted == class_index) correct_sum(bin) = &
+                correct_sum(bin) + weight
+        end do
+        do bin = 1, bins
+            if (bin_weight(bin) > 0.0_dp) then
+                gap = abs(correct_sum(bin)/bin_weight(bin) - &
+                    confidence_sum(bin)/bin_weight(bin))
+                expected = expected + bin_weight(bin)/denominator*gap
+                maximum = max(maximum, gap)
+            end if
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine calibration_errors
 
     subroutine validate_probability_inputs(probabilities, labels, classes, status, &
             context)

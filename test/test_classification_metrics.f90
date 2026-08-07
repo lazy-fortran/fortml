@@ -3,7 +3,8 @@ program test_classification_metrics
         classification_balanced_accuracy, classification_confusion_matrix, &
         classification_precision_recall_f1, classification_log_loss, &
         classification_top_k_accuracy, classification_brier_score, &
-        classification_binary_matthews
+        classification_binary_matthews, classification_calibration_error, &
+        classification_maximum_calibration_error
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_ok
     implicit none
@@ -14,6 +15,7 @@ program test_classification_metrics
     call test_metric_oracles(failures)
     call test_weighted_log_loss(failures)
     call test_extended_metrics(failures)
+    call test_calibration_oracle(failures)
     call test_refusals(failures)
     if (failures > 0) then
         write (*, '(a,i0)') "FAIL classification metric cases: ", failures
@@ -132,6 +134,43 @@ contains
             "binary Matthews oracle", failures)
     end subroutine test_extended_metrics
 
+    subroutine test_calibration_oracle(failures)
+        integer, intent(inout) :: failures
+        type(fortnum_status_t) :: status
+        integer, parameter :: labels(4) = [0, 1, 2, 2]
+        integer, parameter :: classes(3) = [0, 1, 2]
+        real(dp), parameter :: probabilities(4, 3) = reshape([ &
+            0.70_dp, 0.10_dp, 0.20_dp, 0.20_dp, &
+            0.20_dp, 0.60_dp, 0.30_dp, 0.50_dp, &
+            0.10_dp, 0.30_dp, 0.50_dp, 0.30_dp], [4, 3])
+        real(dp), parameter :: weights(4) = [1.0_dp, 2.0_dp, 1.0_dp, 2.0_dp]
+        real(dp) :: expected_error, maximum_error
+
+        call classification_calibration_error(probabilities, labels, classes, 2, &
+            expected_error, status)
+        call check(status_ok(status), "calibration error status", failures)
+        call check(abs(expected_error - 0.175_dp) < 1.0e-14_dp, &
+            "calibration error hand oracle", failures)
+        call classification_maximum_calibration_error(probabilities, labels, &
+            classes, 2, maximum_error, status)
+        call check(status_ok(status), "maximum calibration error status", failures)
+        call check(abs(maximum_error - 0.175_dp) < 1.0e-14_dp, &
+            "maximum calibration error hand oracle", failures)
+
+        call classification_calibration_error(probabilities, labels, classes, 2, &
+            expected_error, status, sample_weight=weights)
+        call check(status_ok(status), "weighted calibration error status", failures)
+        call check(abs(expected_error - 0.1_dp) < 1.0e-14_dp, &
+            "weighted calibration error hand oracle", failures)
+
+        call classification_calibration_error(reshape([0.5_dp, 1.0_dp, &
+            0.5_dp, 0.0_dp, 0.0_dp, 0.0_dp], [2, 3]), [1, 0], classes, 2, &
+            expected_error, status)
+        call check(status_ok(status), "tie calibration error status", failures)
+        call check(abs(expected_error - 0.25_dp) < 1.0e-14_dp, &
+            "tie and confidence-one calibration oracle", failures)
+    end subroutine test_calibration_oracle
+
     subroutine test_refusals(failures)
         integer, intent(inout) :: failures
         type(fortnum_status_t) :: status
@@ -151,6 +190,12 @@ contains
         call check(.not. status_ok(status), "invalid top-k refusal", failures)
         call classification_binary_matthews([0, 1], [0, 1], [0, 1, 2], value, status)
         call check(.not. status_ok(status), "nonbinary Matthews refusal", failures)
+        call classification_calibration_error(reshape([0.5_dp, 0.5_dp], [1, 2]), &
+            [1], [0, 1], 0, value, status)
+        call check(.not. status_ok(status), "invalid calibration bin refusal", failures)
+        call classification_calibration_error(reshape([0.5_dp, 0.5_dp], [1, 2]), &
+            [2], [0, 1], 2, value, status)
+        call check(.not. status_ok(status), "unknown calibration label refusal", failures)
     end subroutine test_refusals
 
 end program test_classification_metrics

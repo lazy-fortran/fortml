@@ -6,6 +6,7 @@ program test_mlp_training
     use fortml_mlp, only: mlp_t, MLP_LINEAR
     use fortml_mlp_training, only: mlp_training_options_t, &
         mlp_training_state_t, mlp_training_objective_t, &
+        mlp_loss_diagnostics_t, MLP_REDUCTION_MEAN, MLP_REDUCTION_SUM, &
         mlp_loss_value_gradient, mlp_loss_hvp, mlp_train
     implicit none
 
@@ -18,6 +19,7 @@ program test_mlp_training
     call test_loss_hvp_oracle(failures)
     call test_nonlinear_loss_hvp(failures)
     call test_optimizer_objective_adapter(failures)
+    call test_weighted_reductions_and_diagnostics(failures)
     if (failures > 0) then
         write (*, '(a,i0)') "FAIL MLP training cases: ", failures
         error stop 1
@@ -243,6 +245,77 @@ contains
             maxval(abs(fortopt_gradient - gradient)) < 1.0e-14_dp, &
             "FortOpt objective adapter", failures)
     end subroutine test_optimizer_objective_adapter
+
+    subroutine test_weighted_reductions_and_diagnostics(failures)
+        integer, intent(inout) :: failures
+        type(mlp_t) :: model
+        type(mlp_loss_diagnostics_t) :: diagnostics
+        type(fortnum_status_t) :: status
+        real(dp) :: x(3, 1), target(3, 1), weights(3), theta(2)
+        real(dp) :: gradient(2), gradient_mean(2), gradient_plus(2), gradient_minus(2)
+        real(dp) :: mean_value, sum_value, plus, minus, ignored, l2
+        real(dp) :: h, expected_mean, expected_sum, direct_data, direct_reg
+
+        x(:, 1) = [-1.0_dp, 0.5_dp, 2.0_dp]
+        target(:, 1) = [0.5_dp, -0.25_dp, 1.5_dp]
+        weights = [1.0_dp, 2.0_dp, 0.5_dp]
+        theta = [0.3_dp, -0.2_dp]
+        l2 = 0.4_dp
+        call model%initialize([1, 1], status, output_activation=MLP_LINEAR)
+        call model%set_parameters(theta, status)
+        call mlp_loss_value_gradient(model, x, target, l2, mean_value, gradient, &
+            ignored, status, sample_weight=weights, reduction=MLP_REDUCTION_MEAN, &
+            diagnostics=diagnostics)
+        call check(status_ok(status), "weighted mean status", failures)
+        gradient_mean = gradient
+        direct_data = 0.5_dp*sum(weights*(theta(1)*x(:, 1) + theta(2) - &
+            target(:, 1))**2)/sum(weights)
+        direct_reg = 0.5_dp*l2*sum(theta*theta)
+        expected_mean = direct_data + direct_reg
+        call check(abs(mean_value - expected_mean) < 1.0e-14_dp .and. &
+            abs(diagnostics%data_loss - direct_data) < 1.0e-14_dp .and. &
+            abs(diagnostics%regularization_loss - direct_reg) < 1.0e-14_dp .and. &
+            abs(diagnostics%weight_mass - sum(weights)) < 1.0e-14_dp .and. &
+            diagnostics%sample_count == 3, "named loss diagnostics", failures)
+
+        call mlp_loss_value_gradient(model, x, target, l2, sum_value, gradient, &
+            ignored, status, sample_weight=weights, reduction=MLP_REDUCTION_SUM)
+        expected_sum = (mean_value - 0.5_dp*l2*sum(theta*theta))*sum(weights) + &
+            0.5_dp*l2*sum(theta*theta)
+        call check(abs(sum_value - expected_sum) < 1.0e-14_dp, &
+            "weighted sum/mean reduction relation", failures)
+
+        h = 1.0e-6_dp
+        call model%set_parameters(theta + h*[1.0_dp, 0.0_dp], status)
+        call mlp_loss_value_gradient(model, x, target, l2, plus, gradient_plus, &
+            ignored, status, sample_weight=weights, reduction=MLP_REDUCTION_MEAN)
+        call model%set_parameters(theta - h*[1.0_dp, 0.0_dp], status)
+        call mlp_loss_value_gradient(model, x, target, l2, minus, gradient_minus, &
+            ignored, status, sample_weight=weights, reduction=MLP_REDUCTION_MEAN)
+        call check(abs(gradient_mean(1) - (plus - minus)/(2.0_dp*h)) < 2.0e-8_dp, &
+            "weighted gradient first-coordinate oracle", failures)
+        call model%set_parameters(theta + h*[0.0_dp, 1.0_dp], status)
+        call mlp_loss_value_gradient(model, x, target, l2, plus, gradient_plus, &
+            ignored, status, sample_weight=weights, reduction=MLP_REDUCTION_MEAN)
+        call model%set_parameters(theta - h*[0.0_dp, 1.0_dp], status)
+        call mlp_loss_value_gradient(model, x, target, l2, minus, gradient_minus, &
+            ignored, status, sample_weight=weights, reduction=MLP_REDUCTION_MEAN)
+        call model%set_parameters(theta, status)
+        call check(abs(gradient_mean(2) - (plus - minus)/(2.0_dp*h)) < 2.0e-8_dp, &
+            "weighted gradient second-coordinate oracle", failures)
+
+        weights = 0.0_dp
+        call mlp_loss_value_gradient(model, x, target, l2, mean_value, gradient, &
+            ignored, status, sample_weight=weights)
+        call check(.not. status_ok(status), "zero-support weight refusal", failures)
+        weights = [1.0_dp, -0.5_dp, 1.0_dp]
+        call mlp_loss_value_gradient(model, x, target, l2, mean_value, gradient, &
+            ignored, status, sample_weight=weights)
+        call check(.not. status_ok(status), "negative weight refusal", failures)
+        call mlp_loss_value_gradient(model, x, target, l2, mean_value, gradient, &
+            ignored, status, reduction=99)
+        call check(.not. status_ok(status), "invalid reduction refusal", failures)
+    end subroutine test_weighted_reductions_and_diagnostics
 
     function unit_direction(n, index) result(direction)
         integer, intent(in) :: n, index

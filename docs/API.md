@@ -128,8 +128,28 @@ optional sample weights. `classification_top_k_accuracy` uses deterministic
 class-order tie breaking. `classification_brier_score` normalizes each
 positive probability row before computing the multiclass squared error, and
 `classification_binary_matthews` provides the weighted binary Matthews
-correlation coefficient. Shape, duplicate-class, unknown-label, nonfinite,
-negative-weight, and zero-weight-mass cases return a domain status.
+correlation coefficient. `classification_calibration_error` and
+`classification_maximum_calibration_error` use normalized row confidence,
+deterministic first-maximum predictions, equal-width bins, and optional
+sample weights. Empty bins do not contribute, and confidence one belongs to
+the final bin. Shape, duplicate-class, unknown-label, nonfinite, negative-
+weight, invalid-bin, and zero-weight-mass cases return a domain status.
+
+### `fortml_regression_metrics`
+
+The regression metric procedures accept row-oriented target and prediction
+matrices with matching nonempty shapes. `regression_mean_squared_error`,
+`regression_root_mean_squared_error`, `regression_mean_absolute_error`,
+`regression_median_absolute_error`, `regression_max_error`,
+`regression_r2_score`, and `regression_explained_variance` cover the core
+continuous-target measures. `regression_mean_squared_log_error` requires
+nonnegative targets and predictions. `regression_mean_absolute_percentage_error`
+requires nonzero targets, and `regression_mean_pinball_loss` takes a quantile
+in `[0,1]`. Optional row weights are finite and nonnegative with positive
+total mass. All mean metrics use a uniform average over output columns. The
+median is a deterministic weighted median of flattened absolute errors. R2 and
+explained variance refuse constant target columns, making degenerate behavior
+visible to callers instead of silently applying a force-finite policy.
 
 ### `fortml_losses`
 
@@ -309,6 +329,15 @@ checked against independent central differences for linear and nonlinear MLP
 fixtures. Optimizer-trajectory, learning-rate, and Adam-beta hypergradients
 remain separate contracts.
 
+The same loss entry point accepts optional `sample_weight`, `reduction`, and
+`diagnostics` arguments. `MLP_REDUCTION_MEAN` divides the weighted data loss
+and gradient by positive weight mass, while `MLP_REDUCTION_SUM` leaves the
+weighted data sum unnormalized. Weights must be finite, non-negative, and have
+positive mass. L2 remains a single parameter regularizer in either reduction.
+`mlp_loss_diagnostics_t` reports `data_loss`, `regularization_loss`,
+`weight_mass`, and `sample_count`, so callers can log named scalar components
+without reconstructing the reduction.
+
 `mlp_training_objective_t` packages the same objective for FortOpt. Call
 `initialize(model,x,target,l2,status[,optimize_l2])`, then use `parameters`,
 `parameter_count`, `value_gradient`, and `hvp`. With `optimize_l2=.true.`, the
@@ -372,6 +401,17 @@ discrete fit operation, and it shares the finite-only/refusal policy. Thus
 differentiable split surrogates, histogram growth, missing-value routing,
 classification objectives, and XGBoost/LightGBM policy variants remain in the
 tree roadmap.
+
+`cart_regressor_t%fit(x,y,status[,max_depth,min_samples_leaf,sample_weight])`
+builds a deterministic numeric CART regression tree. Each node exhaustively
+searches sorted midpoints and minimizes weighted squared error. Feature order,
+threshold order, and strict-improvement ties are fixed. `max_depth` defaults to
+3 and `min_samples_leaf` to 1. The finite-only policy applies to fit data,
+weights, prediction inputs, and JVP tangents. `predict` traverses the fitted
+tree, while `predict_jvp` returns zero within leaves and refuses a query on a
+split boundary. `node_count`, `depth`, `input_count`, and `is_initialized`
+expose structural diagnostics. Missing-value routing, classification criteria,
+histogram growth, and differentiable split selection remain unsupported.
 
 ### `fortml_xgboost`
 
