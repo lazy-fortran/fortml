@@ -40,6 +40,7 @@ module fortml_mlp_training
         integer :: max_epochs = 1000
         integer :: batch_size = 0
         integer :: accumulation_steps = 1
+        integer :: validation_interval = 1
         integer :: patience = 0
         integer :: shuffle_seed = 17
         logical :: shuffle = .false.
@@ -63,16 +64,21 @@ module fortml_mlp_training
         integer :: microbatches = 0
         integer :: accumulation_steps = 1
         integer :: best_epoch = 0
+        integer :: best_validation_epoch = 0
         logical :: converged = .false.
         logical :: early_stopped = .false.
         integer :: gradient_clipped_updates = 0
         real(dp) :: initial_loss = huge(1.0_dp)
         real(dp) :: final_loss = huge(1.0_dp)
         real(dp) :: best_loss = huge(1.0_dp)
+        real(dp) :: initial_validation_loss = huge(1.0_dp)
+        real(dp) :: final_validation_loss = huge(1.0_dp)
+        real(dp) :: best_validation_loss = huge(1.0_dp)
         real(dp) :: gradient_norm = huge(1.0_dp)
         real(dp) :: last_learning_rate = 0.0_dp
         real(dp), allocatable :: loss_history(:)
         real(dp), allocatable :: learning_rate_history(:)
+        real(dp), allocatable :: validation_loss_history(:)
     end type mlp_training_state_t
 
     type, public :: mlp_batch_iterator_t
@@ -512,7 +518,8 @@ contains
         end select
     end subroutine mlp_objective_context_callback
 
-    subroutine mlp_train(model, x, target, status, options, state)
+    subroutine mlp_train(model, x, target, status, options, state, &
+            validation_x, validation_target)
         !! Train `model` with deterministic Adam updates.
         !!
         !! A zero batch size selects full-batch updates.  When shuffling is
@@ -524,6 +531,7 @@ contains
         type(fortnum_status_t), intent(out) :: status
         type(mlp_training_options_t), intent(in), optional :: options
         type(mlp_training_state_t), intent(out), optional :: state
+        real(dp), intent(in), optional :: validation_x(:, :), validation_target(:, :)
         type(mlp_training_options_t) :: config
         type(mlp_training_state_t) :: result
         type(adam_t) :: optimizer
@@ -534,6 +542,7 @@ contains
         integer, allocatable :: batch_indices(:)
         real(dp) :: loss, l2_gradient, gradient_norm, improvement
         real(dp) :: best_loss
+        real(dp) :: validation_loss, monitored_loss
         real(dp) :: effective_rate, raw_gradient_norm
         integer :: n_samples, n_outputs, n_parameters
         integer :: batch, epoch
@@ -543,11 +552,20 @@ contains
 
         if (present(options)) config = options
         if (.not. valid_options(config) .or. &
-            .not. valid_data(model, x, target)) then
+            .not. valid_data(model, x, target) .or. &
+            (present(validation_x) .neqv. present(validation_target))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "MLP train: invalid model, data, or options")
             if (present(state)) state = result
             return
+        end if
+        if (present(validation_x)) then
+            if (.not. valid_data(model, validation_x, validation_target)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP train: validation data is invalid")
+                if (present(state)) state = result
+                return
+            end if
         end if
 
         n_samples = size(x, 1)
@@ -563,6 +581,12 @@ contains
         allocate(accumulated_gradient(n_parameters))
         allocate(result%loss_history(config%max_epochs))
         allocate(result%learning_rate_history(config%max_epochs))
+        result%loss_history = huge(1.0_dp)
+        result%learning_rate_history = 0.0_dp
+        if (present(validation_x)) then
+            allocate(result%validation_loss_history(config%max_epochs))
+            result%validation_loss_history = huge(1.0_dp)
+        end if
         result%accumulation_steps = config%accumulation_steps
         call mlp_loss_value_gradient(model, x, target, config%l2, loss, &
             gradient, l2_gradient, status)
@@ -573,6 +597,19 @@ contains
         result%initial_loss = loss
         best_loss = loss
         result%best_loss = loss
+        monitored_loss = loss
+        if (present(validation_x)) then
+            call mlp_loss_value_gradient(model, validation_x, validation_target, &
+                config%l2, validation_loss, gradient, l2_gradient, status)
+            if (status%code /= FORTNUM_OK) then
+                if (present(state)) state = result
+                return
+            end if
+            result%initial_validation_loss = validation_loss
+            result%best_validation_loss = validation_loss
+            best_loss = validation_loss
+            monitored_loss = validation_loss
+        end if
         stale_epochs = 0
         call optimizer%initialize(n_parameters, status, &
             learning_rate=config%learning_rate, beta1=config%beta1, &
@@ -686,15 +723,40 @@ contains
             result%loss_history(epoch) = loss
             result%learning_rate_history(epoch) = result%last_learning_rate
             result%gradient_norm = gradient_norm
-            improvement = best_loss - loss
+            if (present(validation_x) .and. &
+                mod(epoch, config%validation_interval) == 0) then
+                call mlp_loss_value_gradient(model, validation_x, validation_target, &
+                    config%l2, validation_loss, gradient, l2_gradient, status)
+                if (status%code /= FORTNUM_OK) then
+                    if (present(state)) state = result
+                    return
+                end if
+                result%validation_loss_history(epoch) = validation_loss
+                monitored_loss = validation_loss
+            else
+                monitored_loss = loss
+            end if
+            if (present(validation_x) .and. &
+                mod(epoch, config%validation_interval) /= 0) then
+                improvement = -1.0_dp
+            else
+                improvement = best_loss - monitored_loss
+            end if
             if (improvement > config%min_delta) then
-                best_loss = loss
-                result%best_loss = loss
+                best_loss = monitored_loss
+                result%best_loss = monitored_loss
                 result%best_epoch = epoch
+                if (present(validation_x)) then
+                    result%best_validation_loss = monitored_loss
+                    result%best_validation_epoch = epoch
+                end if
                 best_theta = theta
                 stale_epochs = 0
             else
-                stale_epochs = stale_epochs + 1
+                if (.not. present(validation_x) .or. &
+                    mod(epoch, config%validation_interval) == 0) then
+                    stale_epochs = stale_epochs + 1
+                end if
             end if
             stop_now = .false.
             if (associated(config%callback)) then
@@ -716,6 +778,9 @@ contains
 
         call shrink_history(result%loss_history, result%epochs)
         call shrink_history(result%learning_rate_history, result%epochs)
+        if (present(validation_x)) then
+            call shrink_history(result%validation_loss_history, result%epochs)
+        end if
         if (config%restore_best .and. result%best_epoch < result%epochs) then
             theta = best_theta
             call model%set_parameters(theta, status)
@@ -732,6 +797,15 @@ contains
             result%gradient_norm = sqrt(sum(gradient*gradient))
         end if
         result%final_loss = loss
+        if (present(validation_x)) then
+            call mlp_loss_value_gradient(model, validation_x, validation_target, &
+                config%l2, validation_loss, gradient, l2_gradient, status)
+            if (status%code /= FORTNUM_OK) then
+                if (present(state)) state = result
+                return
+            end if
+            result%final_validation_loss = validation_loss
+        end if
         if (present(state)) state = result
         call status_set(status, FORTNUM_OK, "")
     end subroutine mlp_train
@@ -746,7 +820,8 @@ contains
             options%beta2 >= 0.0_dp .and. options%beta2 < 1.0_dp .and. &
             options%epsilon > 0.0_dp .and. options%l2 >= 0.0_dp .and. &
             options%tolerance >= 0.0_dp .and. options%min_delta >= 0.0_dp .and. &
-            options%gradient_clip_norm >= 0.0_dp
+            options%gradient_clip_norm >= 0.0_dp .and. &
+            options%validation_interval >= 1
         valid = valid .and. ieee_is_finite(options%learning_rate) .and. &
             ieee_is_finite(options%beta1) .and. ieee_is_finite(options%beta2) .and. &
             ieee_is_finite(options%epsilon) .and. ieee_is_finite(options%l2) .and. &

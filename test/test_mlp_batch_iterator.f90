@@ -14,6 +14,7 @@ program test_mlp_batch_iterator
     call test_iterator_oracle(failures)
     call test_gradient_accumulation_oracle(failures)
     call test_training_schedule_and_clipping(failures)
+    call test_validation_restore_oracle(failures)
     if (failures > 0) then
         write (*, '(a,i0)') "FAIL MLP batch/trainer cases: ", failures
         error stop 1
@@ -155,6 +156,55 @@ contains
         call check(state%final_loss < state%initial_loss, &
             "scheduled clipped objective decreases", failures)
     end subroutine test_training_schedule_and_clipping
+
+    subroutine test_validation_restore_oracle(failures)
+        integer, intent(inout) :: failures
+        type(mlp_t) :: model
+        type(mlp_training_options_t) :: options
+        type(mlp_training_state_t) :: state
+        type(fortnum_status_t) :: status
+        real(dp) :: x(1, 1), target(1, 1), validation_x(1, 1)
+        real(dp) :: validation_target(1, 1), theta(2)
+        real(dp) :: expected_loss(5)
+
+        x = 1.0_dp
+        target = 3.0_dp
+        validation_x = 1.0_dp
+        validation_target = 0.5_dp
+        call model%initialize([1, 1], status, output_activation=MLP_LINEAR)
+        call model%set_parameters([0.0_dp, 0.0_dp], status)
+        options%max_epochs = 5
+        options%batch_size = 1
+        options%learning_rate = 0.1_dp
+        options%tolerance = 0.0_dp
+        options%restore_best = .true.
+        call mlp_train(model, x, target, status, options, state, &
+            validation_x, validation_target)
+        theta = model%parameters()
+        expected_loss = 0.5_dp*([0.2_dp, 0.4_dp, 0.6_dp, 0.8_dp, 1.0_dp] - &
+            0.5_dp)**2
+        call check(status_ok(status), "validation trainer status", failures)
+        call check(size(state%validation_loss_history) == 5, &
+            "validation history length", failures)
+        if (size(state%validation_loss_history) == 5) then
+            call check(maxval(abs(state%validation_loss_history - &
+                expected_loss)) < 2.0e-8_dp, &
+                "validation loss independent affine oracle", failures)
+        end if
+        call check(state%best_epoch == 2 .and. &
+            state%best_validation_epoch == 2 .and. &
+            abs(state%best_validation_loss - 0.005_dp) < 2.0e-8_dp, &
+            "validation best-epoch selection", failures)
+        call check(maxval(abs(theta - [0.2_dp, 0.2_dp])) < 2.0e-8_dp .and. &
+            abs(state%final_validation_loss - state%best_validation_loss) < &
+            2.0e-8_dp, "restore-best validation checkpoint", failures)
+
+        options%validation_interval = 0
+        call mlp_train(model, x, target, status, validation_x=validation_x, &
+            validation_target=validation_target)
+        call check(.not. status_ok(status), &
+            "invalid validation interval refusal", failures)
+    end subroutine test_validation_restore_oracle
 
     subroutine halve_by_epoch(epoch, update, base_rate, rate)
         integer, intent(in) :: epoch, update
