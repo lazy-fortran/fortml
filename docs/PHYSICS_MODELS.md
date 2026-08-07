@@ -37,7 +37,6 @@ FortOpt. `term_values(theta, values, status)` exposes the four normalized
 weighted contributions in the fixed order `[data, residual, boundary,
 conservation]`; inactive slots are zero and the entries sum to the objective
 value. This makes residual balancing and conservation monitoring observable
-without coupling callers to private constraint storage. The affine independent oracle is
 without coupling callers to private constraint storage. A constraint may now
 also register `physics_residual_hvp_proc`, a reverse-over-forward callback
 that receives normalized residual and residual-JVP cotangents and returns the
