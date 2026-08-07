@@ -113,7 +113,9 @@ history and best/final values. This remains an in-memory boundary. Serialized
 `mlp_training_checkpoint_t` now makes the in-memory boundary explicit: it
 snapshots packed parameters, Adam moments and step, iterator permutation/RNG,
 active microbatch accumulation, schedule position/history, validation
-counters, and best-state metadata. A resumed call validates the training
+counters, and best-state metadata. Adam/AdamW moments, Adagrad accumulated
+squares, or SGD velocity are stored in the same explicit checkpoint blocks. A
+resumed call validates the training
 contract before restoring the snapshot. Procedure pointers remain caller-owned
 and checkpoints whose best-state restoration changed parameters are marked
 non-resumable. File serialization and distributed checkpoint coordination
@@ -199,7 +201,8 @@ intrinsic coregionalization type with an explicit output axis.
 ## Optimizer boundary
 
 `fortopt` defines procedure interfaces for objective value, gradient, JVP, VJP,
-and HVP plus a convergence/status record. It implements Adam, L-BFGS-B,
+and HVP plus a convergence/status record. It implements Adam, AdamW, Adagrad,
+L-BFGS-B,
 Levenberg-Marquardt/Gauss-Newton, trust-region, and Newton-Krylov in that
 order. Bound constraints, line searches, damping, stopping rules, and failure
 messages are optimizer state. `fortml` only supplies callbacks and parameter

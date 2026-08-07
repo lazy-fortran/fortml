@@ -568,12 +568,12 @@ structures, and implicit integrators remain separate research contracts.
 ### `fortml_mlp_training`
 
 `mlp_train(model,x,target,status,options,state[,validation_x,validation_target,checkpoint])`
-trains an existing `mlp_t` with deterministic Adam, AdamW, or FortOpt-backed SGD. A zero `batch_size`
+trains an existing `mlp_t` with deterministic Adam, AdamW, Adagrad, or FortOpt-backed SGD. A zero `batch_size`
 selects full-batch updates.
 Mini-batch shuffling uses an explicit Park-Miller stream controlled by
 `shuffle_seed`, and does not mutate process-global random state. The options
-also provide optimizer selection (`MLP_OPTIMIZER_ADAM` or
-`MLP_OPTIMIZER_SGD` or `MLP_OPTIMIZER_ADAMW`), learning-rate and Adam
+also provide optimizer selection (`MLP_OPTIMIZER_ADAM`, `MLP_OPTIMIZER_SGD`,
+`MLP_OPTIMIZER_ADAMW`, or `MLP_OPTIMIZER_ADAGRAD`), learning-rate and Adam
 coefficients, optional SGD
 momentum/Nesterov acceleration, L2 regularization, gradient tolerance,
 patience, best-state restoration, and an epoch callback.
@@ -583,6 +583,11 @@ validated as finite and non-negative, is checkpointed with the optimizer
 configuration, and is compared on resume. The update trajectory is analytic
 for fixed options; optimizer-trajectory hypergradients through learning rate,
 decay, moments, and stopping remain a separate capability.
+`MLP_OPTIMIZER_ADAGRAD` uses FortOpt's canonical accumulated-square
+recurrence, `G <- G + gradient**2`, followed by the epsilon-stabilized diagonal
+step. Its accumulator and step counter are checkpointed and restored exactly;
+optimizer-trajectory Adagrad derivatives are explicitly refused until a
+matching differentiable state product is added.
 
 `mlp_training_state_t` records epoch and update counts, the best epoch and
 loss, the final loss and gradient norm, convergence flags, a compact loss
@@ -616,8 +621,9 @@ without reconstructing the reduction.
 uninitialized checkpoint to `mlp_train` to capture it after each completed
 epoch (and at every microbatch boundary). Pass the initialized checkpoint back
 to a later call to resume. `options%max_epochs` is the total target epoch, not
-an additional count. The snapshot includes packed model parameters, Adam first
-and second moments (or SGD velocity) plus optimizer step and configuration,
+an additional count. The snapshot includes packed model parameters,
+Adam/AdamW first and second moments (or Adagrad accumulated squares or SGD
+velocity) plus optimizer step and configuration,
 permutation/order and Park--Miller state, active epoch/microbatch cursor and accumulated gradient, learning-rate
 schedule position/history, validation and early-stopping counters, and the
 best-parameter state. Procedure pointers are not serializable: install the
@@ -646,8 +652,8 @@ owns that adapter and the FortOpt `lbfgsb_t` lifecycle. The
 `optimize_l2=.true.`, appends a bounded L2 hyperparameter to the same vector.
 The result reports convergence, iterations, line-search evaluations, objective,
 gradient norm, and the final L2 value. This is a deterministic full-batch
-optimizer path. Mini-batch Adam and SGD (with optional momentum/Nesterov
-acceleration) are available stochastic trainers.
+optimizer path. Mini-batch Adam, Adagrad, and SGD (with optional
+momentum/Nesterov acceleration) are available stochastic trainers.
 The optimizer consumes the analytic value/gradient path above, so no
 finite-difference hyperparameter approximation is introduced.
 

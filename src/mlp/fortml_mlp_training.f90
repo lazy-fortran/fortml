@@ -18,6 +18,7 @@ module fortml_mlp_training
     use fortopt_objective, only: objective_t
     use fortopt_adam, only: adam_t
     use fortopt_adamw, only: adamw_t
+    use fortopt_adagrad, only: adagrad_t
     use fortopt_sgd, only: sgd_t
     use fortopt_lbfgsb, only: lbfgsb_t, lbfgsb_options_t, lbfgsb_result_t
     implicit none
@@ -28,6 +29,7 @@ module fortml_mlp_training
     integer, parameter, public :: MLP_OPTIMIZER_ADAM = 1
     integer, parameter, public :: MLP_OPTIMIZER_SGD = 2
     integer, parameter, public :: MLP_OPTIMIZER_ADAMW = 3
+    integer, parameter, public :: MLP_OPTIMIZER_ADAGRAD = 4
 
     abstract interface
         subroutine mlp_epoch_callback_proc(epoch, loss, gradient_norm, stop)
@@ -476,7 +478,8 @@ contains
             self%shuffle_seed > 0 .and. self%adam_step_count >= 0 .and. &
             (self%optimizer == MLP_OPTIMIZER_ADAM .or. &
             self%optimizer == MLP_OPTIMIZER_SGD .or. &
-            self%optimizer == MLP_OPTIMIZER_ADAMW) .and. &
+            self%optimizer == MLP_OPTIMIZER_ADAMW .or. &
+            self%optimizer == MLP_OPTIMIZER_ADAGRAD) .and. &
             self%validation_interval > 0 .and. self%patience >= 0 .and. &
             self%gradient_clipped_updates >= 0 .and. &
             allocated(self%parameters) .and. allocated(self%first_moment) .and. &
@@ -966,6 +969,7 @@ contains
         type(mlp_training_state_t) :: result
         type(adam_t) :: optimizer
         type(adamw_t) :: adamw_optimizer
+        type(adagrad_t) :: adagrad_optimizer
         type(sgd_t) :: sgd_optimizer
         type(mlp_batch_iterator_t) :: iterator
         real(dp), allocatable :: theta(:), best_theta(:), gradient(:)
@@ -1147,11 +1151,14 @@ contains
             call sgd_optimizer%initialize(n_parameters, status, &
                 learning_rate=config%learning_rate, momentum=config%momentum, &
                 nesterov=config%nesterov)
-        else
+        else if (config%optimizer == MLP_OPTIMIZER_ADAMW) then
             call adamw_optimizer%initialize(n_parameters, status, &
                 learning_rate=config%learning_rate, beta1=config%beta1, &
                 beta2=config%beta2, epsilon=config%epsilon, &
                 weight_decay=config%weight_decay)
+        else
+            call adagrad_optimizer%initialize(n_parameters, status, &
+                learning_rate=config%learning_rate, epsilon=config%epsilon)
         end if
         if (status%code /= FORTNUM_OK) then
             if (present(state)) state = result
@@ -1173,13 +1180,20 @@ contains
                 if (sgd_optimizer%learning_rate <= 0.0_dp) then
                     sgd_optimizer%learning_rate = config%learning_rate
                 end if
-            else
+            else if (config%optimizer == MLP_OPTIMIZER_ADAMW) then
                 adamw_optimizer%first_moment = checkpoint%first_moment
                 adamw_optimizer%second_moment = checkpoint%second_moment
                 adamw_optimizer%step_count = checkpoint%adam_step_count
                 adamw_optimizer%learning_rate = checkpoint%last_learning_rate
                 if (adamw_optimizer%learning_rate <= 0.0_dp) then
                     adamw_optimizer%learning_rate = config%learning_rate
+                end if
+            else
+                adagrad_optimizer%accumulated_square = checkpoint%first_moment
+                adagrad_optimizer%step_count = checkpoint%adam_step_count
+                adagrad_optimizer%learning_rate = checkpoint%last_learning_rate
+                if (adagrad_optimizer%learning_rate <= 0.0_dp) then
+                    adagrad_optimizer%learning_rate = config%learning_rate
                 end if
             end if
         end if
@@ -1279,16 +1293,20 @@ contains
                             optimizer%learning_rate = effective_rate
                         else if (config%optimizer == MLP_OPTIMIZER_SGD) then
                             sgd_optimizer%learning_rate = effective_rate
-                        else
+                        else if (config%optimizer == MLP_OPTIMIZER_ADAMW) then
                             adamw_optimizer%learning_rate = effective_rate
+                        else
+                            adagrad_optimizer%learning_rate = effective_rate
                         end if
                         result%last_learning_rate = effective_rate
                         if (config%optimizer == MLP_OPTIMIZER_ADAM) then
                             call optimizer%step(theta, gradient, status)
                         else if (config%optimizer == MLP_OPTIMIZER_SGD) then
                             call sgd_optimizer%step(theta, gradient, status)
-                        else
+                        else if (config%optimizer == MLP_OPTIMIZER_ADAMW) then
                             call adamw_optimizer%step(theta, gradient, status)
+                        else
+                            call adagrad_optimizer%step(theta, gradient, status)
                         end if
                         if (status%code /= FORTNUM_OK) then
                             if (present(state)) state = result
@@ -1307,7 +1325,8 @@ contains
                 end if
                 if (present(checkpoint)) then
                     call checkpoint_capture(checkpoint, x, target, config, result, &
-                        iterator, optimizer, adamw_optimizer, sgd_optimizer, theta, &
+                        iterator, optimizer, adamw_optimizer, adagrad_optimizer, &
+                        sgd_optimizer, theta, &
                         best_theta, stale_epochs, &
                         epoch, microbatch_count, accumulated_samples, &
                         accumulated_gradient, present(validation_x), status)
@@ -1379,7 +1398,8 @@ contains
             end if
             if (present(checkpoint)) then
                 call checkpoint_capture(checkpoint, x, target, config, result, &
-                    iterator, optimizer, adamw_optimizer, sgd_optimizer, theta, &
+                    iterator, optimizer, adamw_optimizer, adagrad_optimizer, &
+                    sgd_optimizer, theta, &
                     best_theta, stale_epochs, &
                     epoch, microbatch_count, accumulated_samples, &
                     accumulated_gradient, present(validation_x), status)
@@ -1429,7 +1449,7 @@ contains
     end subroutine mlp_train
 
     subroutine checkpoint_capture(checkpoint, x, target, config, result, iterator, &
-            optimizer, adamw_optimizer, sgd_optimizer, theta, best_theta, &
+            optimizer, adamw_optimizer, adagrad_optimizer, sgd_optimizer, theta, best_theta, &
             stale_epochs, active_epoch, &
             active_microbatches, accumulated_samples, accumulated_gradient, &
             has_validation, status)
@@ -1440,6 +1460,7 @@ contains
         type(mlp_batch_iterator_t), intent(in) :: iterator
         type(adam_t), intent(in) :: optimizer
         type(adamw_t), intent(in) :: adamw_optimizer
+        type(adagrad_t), intent(in) :: adagrad_optimizer
         type(sgd_t), intent(in) :: sgd_optimizer
         real(dp), intent(in) :: theta(:), best_theta(:)
         integer, intent(in) :: stale_epochs
@@ -1468,7 +1489,7 @@ contains
             if (allocated(sgd_optimizer%velocity)) then
                 if (size(sgd_optimizer%velocity) /= size(theta)) invalid_state = .true.
             end if
-        else
+        else if (config%optimizer == MLP_OPTIMIZER_ADAMW) then
             if (.not. allocated(adamw_optimizer%first_moment)) invalid_state = .true.
             if (.not. allocated(adamw_optimizer%second_moment)) invalid_state = .true.
             if (allocated(adamw_optimizer%first_moment)) then
@@ -1478,6 +1499,15 @@ contains
             end if
             if (allocated(adamw_optimizer%second_moment)) then
                 if (size(adamw_optimizer%second_moment) /= size(theta)) then
+                    invalid_state = .true.
+                end if
+            end if
+        else
+            if (.not. allocated(adagrad_optimizer%accumulated_square)) then
+                invalid_state = .true.
+            end if
+            if (allocated(adagrad_optimizer%accumulated_square)) then
+                if (size(adagrad_optimizer%accumulated_square) /= size(theta)) then
                     invalid_state = .true.
                 end if
             end if
@@ -1513,8 +1543,10 @@ contains
             checkpoint%adam_step_count = optimizer%step_count
         else if (config%optimizer == MLP_OPTIMIZER_SGD) then
             checkpoint%adam_step_count = sgd_optimizer%step_count
-        else
+        else if (config%optimizer == MLP_OPTIMIZER_ADAMW) then
             checkpoint%adam_step_count = adamw_optimizer%step_count
+        else
+            checkpoint%adam_step_count = adagrad_optimizer%step_count
         end if
         checkpoint%stale_epochs = stale_epochs
         checkpoint%validation_interval = config%validation_interval
@@ -1553,9 +1585,13 @@ contains
             allocate(checkpoint%first_moment, source=sgd_optimizer%velocity)
             allocate(checkpoint%second_moment(size(theta)))
             checkpoint%second_moment = 0.0_dp
-        else
+        else if (config%optimizer == MLP_OPTIMIZER_ADAMW) then
             allocate(checkpoint%first_moment, source=adamw_optimizer%first_moment)
             allocate(checkpoint%second_moment, source=adamw_optimizer%second_moment)
+        else
+            allocate(checkpoint%first_moment, source=adagrad_optimizer%accumulated_square)
+            allocate(checkpoint%second_moment(size(theta)))
+            checkpoint%second_moment = 0.0_dp
         end if
         allocate(checkpoint%best_parameters, source=best_theta)
         allocate(checkpoint%accumulated_gradient, source=accumulated_gradient)
@@ -1589,7 +1625,8 @@ contains
             options%patience >= 0 .and. options%learning_rate > 0.0_dp .and. &
             (options%optimizer == MLP_OPTIMIZER_ADAM .or. &
             options%optimizer == MLP_OPTIMIZER_SGD .or. &
-            options%optimizer == MLP_OPTIMIZER_ADAMW) .and. &
+            options%optimizer == MLP_OPTIMIZER_ADAMW .or. &
+            options%optimizer == MLP_OPTIMIZER_ADAGRAD) .and. &
             options%beta1 >= 0.0_dp .and. options%beta1 < 1.0_dp .and. &
             options%beta2 >= 0.0_dp .and. options%beta2 < 1.0_dp .and. &
             options%epsilon > 0.0_dp .and. options%l2 >= 0.0_dp .and. &
