@@ -76,7 +76,7 @@ contains
             phase = real(i, dp)
             x(i, 1) = cos(0.31_dp*phase) + 0.04_dp*sin(0.17_dp*phase)
             x(i, 2) = sin(0.31_dp*phase) - 0.03_dp*cos(0.13_dp*phase)
-            radial_score = x(i, 1)**2 + x(i, 2)**2 - 0.78_dp
+            radial_score = x(i, 1)**2 + x(i, 2)**2 - 1.0_dp
             if (radial_score >= 0.0_dp) then
                 labels(i) = 37
             else
