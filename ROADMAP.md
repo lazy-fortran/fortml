@@ -1742,6 +1742,10 @@ conservation law, or geometric structure is part of the model contract. This
 work package is a research track. It becomes an implementation claim only when
 the residual, derivative, and long-horizon behavior have independent tests.
 
+The current API/evidence boundary is summarized in
+[`docs/PHYSICS_MODELS.md`](docs/PHYSICS_MODELS.md); the current benchmark slice
+is [`../fortml-bench/results/PHYSICS_MODELS.md`](../fortml-bench/results/PHYSICS_MODELS.md).
+
 The literature establishes several complementary directions:
 
 - [Hamiltonian Neural Networks](https://papers.nips.cc/paper/9672-hamiltonian-neural-networks.pdf)
