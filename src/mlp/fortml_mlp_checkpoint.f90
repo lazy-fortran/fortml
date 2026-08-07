@@ -19,7 +19,7 @@ module fortml_mlp_checkpoint
 
     character(*), parameter, public :: MLP_CHECKPOINT_MAGIC = &
         "FORTML_MLP_CHECKPOINT_TEXT"
-    integer, parameter, public :: MLP_CHECKPOINT_SCHEMA_VERSION = 1
+    integer, parameter, public :: MLP_CHECKPOINT_SCHEMA_VERSION = 2
 
     public :: mlp_checkpoint_save
     public :: mlp_checkpoint_load
