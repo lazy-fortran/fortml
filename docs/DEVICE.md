@@ -1,0 +1,74 @@
+# FortML device contract
+
+`fortml_device` is the explicit control-plane boundary for accelerator-aware
+models and operators. It describes the selected backend and records data-region
+metadata; it does not allocate buffers, launch kernels, or silently move an
+array to the host.
+
+## Select and query a backend
+
+```fortran
+use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU, &
+    FORTML_DEVICE_CUDA
+use fortnum_status, only: status_ok, fortnum_status_t
+
+type(fortml_device_t) :: device
+type(fortnum_status_t) :: status
+
+call device%select(FORTML_DEVICE_CPU, status)
+if (.not. status_ok(status)) error stop "CPU selection failed"
+
+call device%select(FORTML_DEVICE_CUDA, status, device_index=0)
+if (.not. status_ok(status)) then
+    ! FORTNUM_NOT_IMPLEMENTED means that this build has no CUDA kernel or
+    ! runtime.  Keep the CPU context and choose it explicitly.
+    call device%select(FORTML_DEVICE_CPU, status)
+end if
+```
+
+`FORTML_DEVICE_CPU` is always available. CUDA is available only when the
+current build supplies at least one of FortML's CUDA kernel entry points. The
+default Fortran build links the CUDA stubs, so a CUDA request returns
+`FORTNUM_NOT_IMPLEMENTED`; this is a recoverable refusal, not a host fallback.
+`fortml_query_device` and `fortml_device_available` expose the same runtime
+probe without changing a context. An invalid kind returns
+`FORTNUM_DOMAIN_ERROR`.
+
+The context reports `kind`, `backend`, `device_index`, `stream_id`, and a
+`fortml_device_capability_t`. The capability record distinguishes host
+accessibility, persistent residency, asynchronous streams, and CUDA kernel
+availability. Stream IDs other than zero are refused until a backend supplies
+an ownership and synchronization implementation. Selecting a new backend
+while a data region is active is also refused.
+
+## Register residency and transfers
+
+An operator that owns an explicit OpenACC or CUDA data region can register its
+accounting boundary:
+
+```fortran
+call device%begin_residency(bytes, status, owns_data=.true.)
+call device%record_host_to_device(bytes, status)
+call operator%matvec_device(input, output, status)
+call device%record_device_to_host(output_bytes, status)
+call device%end_residency(status)
+```
+
+`begin_residency` stores the declared byte extent and ownership flag. It does
+not allocate or copy memory. Transfer methods increment byte and event
+counters, and are valid only for an active CUDA residency. A CPU context
+refuses host-device transfer recording with `FORTNUM_NOT_IMPLEMENTED`, which
+prevents a CPU timing from being reported as a GPU transfer. The counters are
+`host_to_device_bytes`, `device_to_host_bytes`,
+`host_to_device_transfers`, and `device_to_host_transfers`.
+
+The accounting object is deliberately separate from an operator's data
+ownership. `owns_residency=.true.` means that the caller registered ownership
+for reporting; `fortml_device` still never deallocates the operator's arrays.
+Call `end_residency` before `clear` or backend selection. Repeated create,
+register, and destroy cycles therefore remain observable and recoverable.
+
+Current operator APIs retain their existing explicit `enter_data`/`exit_data`
+calls. They are not implicitly converted by this metadata layer, and a model
+must not claim complete device execution until every operation and transfer is
+registered and validated against an independent CPU oracle.
