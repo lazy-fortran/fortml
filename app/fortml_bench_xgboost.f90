@@ -1,5 +1,5 @@
 program fortml_bench_xgboost
-    !! Release workload for the exact depth-one second-order boosting lane.
+    !! Release workload for the exact depth-limited second-order boosting lane.
     !!
     !! NumPy reconstructs this fixture and the split formulas independently.
     !! This executable reports only values and release-build timings.
@@ -30,7 +30,7 @@ contains
 
         call make_fixture(x, y)
         options%n_estimators = n_estimators
-        options%max_depth = 1
+        options%max_depth = 2
         options%min_samples_leaf = 2
         options%learning_rate = 0.25_dp
         options%l1 = 0.15_dp
@@ -92,7 +92,7 @@ contains
                 x(i, 1) + 0.2_dp*x(i, 2) >= 0.0_dp)
         end do
         options%n_estimators = n_estimators
-        options%max_depth = 1
+        options%max_depth = 2
         options%min_samples_leaf = 2
         options%learning_rate = 0.25_dp
         options%l1 = 0.0_dp
@@ -158,7 +158,7 @@ contains
                 x(i, 1) < -0.35_dp)
         end do
         options%n_estimators = n_estimators
-        options%max_depth = 1
+        options%max_depth = 2
         options%min_samples_leaf = 2
         options%learning_rate = 0.25_dp
         options%l1 = 0.0_dp
