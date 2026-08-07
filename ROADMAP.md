@@ -1560,6 +1560,10 @@ peak memory, and batch-size scaling with the same correctness gate as training.
   direct NumPy threshold oracle, aligned probability-simplex checks, CPU fit
   and prediction timings, and an explicit CUDA refusal in
   [`results/RANDOM_FOREST.md`](../fortml-bench/results/RANDOM_FOREST.md).
+- [x] Add the PCA-initialized tied linear-autoencoder lane with an independent
+  centered thin-SVD reconstruction oracle, exact RMSE agreement, CPU timing,
+  and an explicit CUDA refusal in
+  [`results/LINEAR_AUTOENCODER.md`](../fortml-bench/results/LINEAR_AUTOENCODER.md).
 - [x] Add the exact depth-limited recursive XGBoost-style squared/logistic lane
   (including depth/node diagnostics), explicit learned/forced NaN routing, and the
   fitted-scaler plus binary and one-vs-rest multiclass Laplace GP
