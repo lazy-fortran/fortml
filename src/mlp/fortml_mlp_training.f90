@@ -15,6 +15,7 @@ module fortml_mlp_training
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
         FORTNUM_DOMAIN_ERROR, FORTNUM_CONVERGENCE_ERROR
     use fortml_mlp, only: mlp_t
+    use fortml_mlp_schedules, only: mlp_learning_rate_schedule_t
     use fortml_losses, only: weighted_mse_loss_value, weighted_mse_loss_vjp, &
         weighted_mse_loss_hvp
     use fortopt_objective, only: objective_t
@@ -98,6 +99,11 @@ module fortml_mlp_training
         procedure(mlp_epoch_callback_proc), pointer, nopass :: callback => null()
         procedure(mlp_learning_rate_schedule_proc), pointer, nopass :: &
             learning_rate_schedule => null()
+        !! A typed schedule is stateless and can be persisted in a checkpoint.
+        !! Set `use_typed_schedule` to select it; a custom callback and typed
+        !! schedule cannot be active simultaneously.
+        logical :: use_typed_schedule = .false.
+        type(mlp_learning_rate_schedule_t) :: typed_schedule
         procedure(mlp_training_event_proc), pointer, nopass :: &
             event_callback => null()
     end type mlp_training_options_t
@@ -136,10 +142,11 @@ module fortml_mlp_training
         !! the total target epoch, so a resumed call may increase it.  The
         !! model parameters, Adam moments and step counter, local shuffle
         !! stream, exact permutation cursor, schedule position, validation and
-        !! best-state bookkeeping are all copied.  Procedure pointers (custom
-        !! schedules and callbacks) are intentionally not copied: the caller
-        !! must install deterministic procedures again on the resumed options.
-        integer :: format_version = 4
+        !! best-state bookkeeping are all copied. A typed schedule is copied
+        !! with its structural and continuous fields. Procedure pointers
+        !! (custom schedules and callbacks) are intentionally not copied: the
+        !! caller must install deterministic procedures again on resumed options.
+        integer :: format_version = 5
         logical :: initialized = .false.
         logical :: resume_safe = .true.
         integer :: n_samples = 0
@@ -169,6 +176,7 @@ module fortml_mlp_training
         logical :: converged = .false.
         logical :: early_stopped = .false.
         logical :: restore_best = .true.
+        logical :: has_typed_schedule = .false.
         integer(int64) :: shuffle_state = 1_int64
         real(dp) :: learning_rate = 1.0e-3_dp
         real(dp) :: beta1 = 0.9_dp
@@ -185,6 +193,7 @@ module fortml_mlp_training
         real(dp) :: min_delta = 0.0_dp
         real(dp) :: gradient_clip_norm = 0.0_dp
         real(dp) :: ema_decay = 0.0_dp
+        type(mlp_learning_rate_schedule_t) :: typed_schedule
         real(dp) :: last_learning_rate = 0.0_dp
         real(dp) :: initial_loss = huge(1.0_dp)
         real(dp) :: final_loss = huge(1.0_dp)
@@ -449,7 +458,7 @@ contains
         if (allocated(self%validation_loss_history)) then
             deallocate(self%validation_loss_history)
         end if
-        self%format_version = 4
+        self%format_version = 5
         self%initialized = .false.
         self%resume_safe = .true.
         self%n_samples = 0
@@ -479,6 +488,7 @@ contains
         self%converged = .false.
         self%early_stopped = .false.
         self%restore_best = .true.
+        self%has_typed_schedule = .false.
         self%shuffle_state = 1_int64
         self%learning_rate = 1.0e-3_dp
         self%beta1 = 0.9_dp
@@ -495,6 +505,7 @@ contains
         self%min_delta = 0.0_dp
         self%gradient_clip_norm = 0.0_dp
         self%ema_decay = 0.0_dp
+        self%typed_schedule = mlp_learning_rate_schedule_t()
         self%last_learning_rate = 0.0_dp
         self%initial_loss = huge(1.0_dp)
         self%final_loss = huge(1.0_dp)
@@ -509,7 +520,7 @@ contains
     logical function mlp_checkpoint_valid(self) result(valid)
         class(mlp_training_checkpoint_t), intent(in) :: self
 
-        valid = self%initialized .and. self%format_version == 4 .and. &
+        valid = self%initialized .and. self%format_version == 5 .and. &
             self%n_samples > 0 .and. self%n_features > 0 .and. &
             self%n_outputs > 0 .and. self%n_parameters > 0 .and. &
             self%epoch >= 0 .and. self%updates >= 0 .and. &
@@ -621,6 +632,7 @@ contains
             ieee_is_finite(self%initial_validation_loss) .and. &
             ieee_is_finite(self%final_validation_loss) .and. &
             ieee_is_finite(self%best_validation_loss)
+        if (self%has_typed_schedule) valid = valid .and. self%typed_schedule%valid()
     end function mlp_checkpoint_valid
 
     subroutine mlp_loss_value_gradient(model, x, target, l2, value, gradient, &
@@ -1145,8 +1157,12 @@ contains
         !! objective without using validation rows for updates.  When
         !! `checkpoint` is present, a fresh snapshot is written after each
         !! completed epoch and an initialized snapshot resumes the same
-        !! trajectory.  `options%max_epochs` is a total target epoch on both
-        !! fresh and resumed calls.
+        !! trajectory.  Set `options%use_typed_schedule` and
+        !! `options%typed_schedule` to select one of the stateless built-in
+        !! schedules; its fields are serialized with the checkpoint. Custom
+        !! schedule callbacks and typed schedules are mutually exclusive.
+        !! `options%max_epochs` is a total target epoch on both fresh and
+        !! resumed calls.
         class(mlp_t), intent(inout) :: model
         real(dp), intent(in) :: x(:, :), target(:, :)
         type(fortnum_status_t), intent(out) :: status
@@ -1178,6 +1194,8 @@ contains
         integer :: start_epoch, history_length
         logical :: stop_now, event_stop, has_batch, resuming, resume_active_epoch
         logical :: incompatible_checkpoint
+        logical :: has_typed_schedule
+        type(mlp_learning_rate_schedule_t) :: schedule_config
 
         resuming = .false.
         validation_loss = huge(1.0_dp)
@@ -1185,6 +1203,14 @@ contains
         if (present(checkpoint)) resuming = checkpoint%initialized
         resume_active_epoch = .false.
         if (present(options)) config = options
+        has_typed_schedule = config%use_typed_schedule
+        schedule_config = config%typed_schedule
+        if (has_typed_schedule .and. .not. schedule_config%valid()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP train: typed schedule is invalid")
+            if (present(state)) state = result
+            return
+        end if
         if (.not. valid_options(config) .or. &
             .not. valid_data(model, x, target) .or. &
             (present(validation_x) .neqv. present(validation_target))) then
@@ -1255,6 +1281,14 @@ contains
                 incompatible_checkpoint = .true.
             end if
             if (checkpoint%ema_decay /= config%ema_decay) incompatible_checkpoint = .true.
+            if (checkpoint%has_typed_schedule .neqv. has_typed_schedule) then
+                incompatible_checkpoint = .true.
+            end if
+            if (checkpoint%has_typed_schedule) then
+                if (.not. schedules_equal(checkpoint%typed_schedule, schedule_config)) then
+                    incompatible_checkpoint = .true.
+                end if
+            end if
             if (checkpoint%epoch > config%max_epochs) incompatible_checkpoint = .true.
             if (incompatible_checkpoint) then
                 call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -1515,7 +1549,14 @@ contains
                                 result%gradient_clipped_updates + 1
                         end if
                         effective_rate = config%learning_rate
-                        if (associated(config%learning_rate_schedule)) then
+                        if (has_typed_schedule) then
+                            call schedule_config%rate(result%updates + 1, &
+                                config%learning_rate, effective_rate, status)
+                            if (status%code /= FORTNUM_OK) then
+                                if (present(state)) state = result
+                                return
+                            end if
+                        else if (associated(config%learning_rate_schedule)) then
                             call config%learning_rate_schedule(epoch, &
                                 result%updates + 1, config%learning_rate, &
                                 effective_rate)
@@ -1585,7 +1626,8 @@ contains
                         sgd_optimizer, theta, &
                         best_theta, stale_epochs, &
                         epoch, microbatch_count, accumulated_samples, &
-                        accumulated_gradient, ema_parameters, present(validation_x), status)
+                        accumulated_gradient, ema_parameters, has_typed_schedule, &
+                        schedule_config, present(validation_x), status)
                     if (status%code /= FORTNUM_OK) then
                         if (present(state)) state = result
                         return
@@ -1683,7 +1725,8 @@ contains
                     sgd_optimizer, theta, &
                     best_theta, stale_epochs, &
                     epoch, microbatch_count, accumulated_samples, &
-                    accumulated_gradient, ema_parameters, present(validation_x), status)
+                    accumulated_gradient, ema_parameters, has_typed_schedule, &
+                    schedule_config, present(validation_x), status)
                 if (status%code /= FORTNUM_OK) then
                     if (present(state)) state = result
                     return
@@ -1749,7 +1792,7 @@ contains
             sgd_optimizer, theta, best_theta, &
             stale_epochs, active_epoch, &
             active_microbatches, accumulated_samples, accumulated_gradient, &
-            ema_parameters, has_validation, status)
+            ema_parameters, has_typed_schedule, typed_schedule, has_validation, status)
         type(mlp_training_checkpoint_t), intent(inout) :: checkpoint
         real(dp), intent(in) :: x(:, :), target(:, :)
         type(mlp_training_options_t), intent(in) :: config
@@ -1765,6 +1808,8 @@ contains
         integer, intent(in) :: active_epoch, active_microbatches, accumulated_samples
         real(dp), intent(in) :: accumulated_gradient(:)
         real(dp), allocatable, intent(in) :: ema_parameters(:)
+        logical, intent(in) :: has_typed_schedule
+        type(mlp_learning_rate_schedule_t), intent(in) :: typed_schedule
         logical, intent(in) :: has_validation
         type(fortnum_status_t), intent(out) :: status
         integer :: n
@@ -1847,7 +1892,7 @@ contains
             return
         end if
         call checkpoint%clear()
-        checkpoint%format_version = 4
+        checkpoint%format_version = 5
         checkpoint%initialized = .true.
         checkpoint%resume_safe = .true.
         checkpoint%n_samples = size(x, 1)
@@ -1887,6 +1932,8 @@ contains
         checkpoint%converged = result%converged
         checkpoint%early_stopped = result%early_stopped
         checkpoint%restore_best = config%restore_best
+        checkpoint%has_typed_schedule = has_typed_schedule
+        checkpoint%typed_schedule = typed_schedule
         checkpoint%shuffle_state = iterator%shuffle_state
         checkpoint%learning_rate = config%learning_rate
         checkpoint%beta1 = config%beta1
@@ -2014,7 +2061,23 @@ contains
         if (options%shuffle) valid = valid .and. options%shuffle_seed > 0
         if (options%nesterov) valid = valid .and. &
             options%optimizer == MLP_OPTIMIZER_SGD .and. options%momentum > 0.0_dp
+        if (options%use_typed_schedule) then
+            valid = valid .and. options%typed_schedule%valid()
+            if (associated(options%learning_rate_schedule)) valid = .false.
+        end if
     end function valid_options
+
+    logical function schedules_equal(first, second) result(equal)
+        type(mlp_learning_rate_schedule_t), intent(in) :: first, second
+
+        equal = first%kind == second%kind .and. &
+            first%warmup_updates == second%warmup_updates .and. &
+            first%total_updates == second%total_updates .and. &
+            first%min_rate_fraction == second%min_rate_fraction .and. &
+            first%decay_factor == second%decay_factor .and. &
+            first%peak_rate_fraction == second%peak_rate_fraction .and. &
+            first%final_rate_fraction == second%final_rate_fraction
+    end function schedules_equal
 
     logical function valid_lbfgsb_options(options) result(valid)
         type(mlp_lbfgsb_options_t), intent(in) :: options

@@ -1,9 +1,10 @@
 # MLP learning-rate schedules
 
 `fortml_mlp_schedules` provides stateless, validated schedules that can be
-used directly from the existing `mlp_learning_rate_schedule_proc` callback or
-from a differentiable optimizer trajectory. The schedule never owns a mutable
-epoch cursor: callers pass the one-based update number explicitly, which keeps
+selected with `mlp_training_options_t%use_typed_schedule`, routed through the
+existing `mlp_learning_rate_schedule_proc` callback, or used from a
+differentiable optimizer trajectory. The schedule never owns a mutable epoch
+cursor: callers pass the one-based update number explicitly, which keeps
 replay and checkpoint behavior deterministic.
 
 ```fortran
@@ -47,6 +48,25 @@ d_decay_factor, d_peak_fraction, d_final_fraction, status)`. The two added
 products are exact and are zero for the other schedule families. Integer
 warm-up and total-update counts are structural controls, not differentiable
 coordinates.
+
+## Trainer integration
+
+Pass a built-in schedule directly to `mlp_train` to keep the schedule in the
+training contract rather than routing it through a procedure pointer:
+
+```fortran
+schedule = make_mlp_schedule_warmup_cosine(100, 10_000, 0.05_dp)
+options%use_typed_schedule = .true.
+options%typed_schedule = schedule
+call mlp_train(model, x, target, status, options, state, checkpoint=checkpoint)
+```
+
+The trainer validates the schedule once and evaluates its exact rate at every
+optimizer update. A typed schedule and a custom callback are mutually
+exclusive. Its structural and continuous fields are copied into the portable
+checkpoint; resumed options must provide the same typed schedule, otherwise
+the trainer returns a domain error instead of changing the optimization path.
+Typed schedules are currently CPU-only and have no hidden CUDA fallback.
 
 ```fortran
 subroutine scheduled_rate(epoch, update, base_rate, rate)
