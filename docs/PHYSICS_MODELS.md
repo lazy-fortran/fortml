@@ -23,10 +23,10 @@ and non-finite directions. The independent test
 products against central differences, the VJP dot-product identity, and the
 finite-difference Jacobian's symplectic-form defect and reversibility.
 
-This is deliberately narrower than a general HNN or LNN: the current model is
+This is deliberately narrower than a general HNN or LNN. The current model is
 separable, has canonical coordinates, and does not learn a Poisson tensor or
 an implicit integrator. `linear_autoencoder_t` is likewise only the exact
-tied, centered PCA reconstruction seam; it is not a nonlinear or physics
+tied, centered PCA reconstruction seam. It is not a nonlinear or physics
 autoencoder initializer.
 
 ## Research contracts
@@ -42,7 +42,7 @@ products rather than introduce a second training stack:
   points.
 * General HNN/LNN, SympNet, and symplectic recurrent maps need a declared
   structure certificate. A learned Poisson tensor is accepted only with
-  independent skew-symmetry and Jacobi checks; a general Hamiltonian requires
+  independent skew-symmetry and Jacobi checks. A general Hamiltonian requires
   an applicable implicit symplectic method or a typed refusal.
 * Physics-consistent and symplectic GPs should register linear differential
   operators and adjoints, then expose mixed value/derivative covariance
@@ -64,7 +64,7 @@ the PIML review by [Karniadakis et al.](https://doi.org/10.1038/s42254-021-00314
 [Deep Neural Networks as Gaussian Processes](https://arxiv.org/abs/1711.00165),
 and the linear autoencoder/PCA optimum of
 [Baldi and Hornik](https://doi.org/10.1016/0893-6080(89)90014-2).
-These references motivate testable contracts; they do not by themselves
+These references motivate testable contracts. They do not by themselves
 constitute FortML implementation evidence.
 
 ## Device contract
@@ -77,11 +77,10 @@ oracle. Fixed no-autodiff reductions or map kernels may use native CUDA when a
 FortSym-derived or hand-derived expression has an independent oracle. A
 FortAD-bearing path must stay on the CPU/reference graph until its complete
 device derivative graph exists. Missing coverage is reported as a typed
-refusal or an `unavailable` benchmark row; no hidden host fallback or relabeled
+refusal or an `unavailable` benchmark row. No hidden host fallback or relabeled
 CPU timing is permitted.
 
 The benchmark evidence in
 [`../fortml-bench/results/PHYSICS_MODELS.md`](../../fortml-bench/results/PHYSICS_MODELS.md)
 records this distinction and includes a small independent NumPy symplectic
 map oracle alongside the current CPU product gate.
-
