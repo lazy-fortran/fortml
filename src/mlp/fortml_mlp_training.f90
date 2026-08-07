@@ -19,6 +19,7 @@ module fortml_mlp_training
     use fortopt_adam, only: adam_t
     use fortopt_adamw, only: adamw_t
     use fortopt_adagrad, only: adagrad_t
+    use fortopt_rmsprop, only: rmsprop_t
     use fortopt_sgd, only: sgd_t
     use fortopt_lbfgsb, only: lbfgsb_t, lbfgsb_options_t, lbfgsb_result_t
     implicit none
@@ -30,6 +31,7 @@ module fortml_mlp_training
     integer, parameter, public :: MLP_OPTIMIZER_SGD = 2
     integer, parameter, public :: MLP_OPTIMIZER_ADAMW = 3
     integer, parameter, public :: MLP_OPTIMIZER_ADAGRAD = 4
+    integer, parameter, public :: MLP_OPTIMIZER_RMSPROP = 5
 
     abstract interface
         subroutine mlp_epoch_callback_proc(epoch, loss, gradient_norm, stop)
@@ -60,6 +62,9 @@ module fortml_mlp_training
         real(dp) :: beta1 = 0.9_dp
         real(dp) :: beta2 = 0.999_dp
         real(dp) :: epsilon = 1.0e-8_dp
+        real(dp) :: rmsprop_decay = 0.99_dp
+        real(dp) :: rmsprop_momentum = 0.0_dp
+        logical :: rmsprop_centered = .false.
         integer :: optimizer = MLP_OPTIMIZER_ADAM
         real(dp) :: momentum = 0.0_dp
         logical :: nesterov = .false.
@@ -108,7 +113,7 @@ module fortml_mlp_training
         !! best-state bookkeeping are all copied.  Procedure pointers (custom
         !! schedules and callbacks) are intentionally not copied: the caller
         !! must install deterministic procedures again on the resumed options.
-        integer :: format_version = 2
+        integer :: format_version = 3
         logical :: initialized = .false.
         logical :: resume_safe = .true.
         integer :: n_samples = 0
@@ -143,6 +148,9 @@ module fortml_mlp_training
         real(dp) :: beta1 = 0.9_dp
         real(dp) :: beta2 = 0.999_dp
         real(dp) :: epsilon = 1.0e-8_dp
+        real(dp) :: rmsprop_decay = 0.99_dp
+        real(dp) :: rmsprop_momentum = 0.0_dp
+        logical :: rmsprop_centered = .false.
         real(dp) :: momentum = 0.0_dp
         logical :: nesterov = .false.
         real(dp) :: weight_decay = 0.0_dp
@@ -162,6 +170,7 @@ module fortml_mlp_training
         real(dp), allocatable :: parameters(:)
         real(dp), allocatable :: first_moment(:)
         real(dp), allocatable :: second_moment(:)
+        real(dp), allocatable :: rmsprop_buffer(:)
         real(dp), allocatable :: best_parameters(:)
         real(dp), allocatable :: accumulated_gradient(:)
         integer, allocatable :: iterator_order(:)
@@ -395,6 +404,7 @@ contains
         if (allocated(self%parameters)) deallocate(self%parameters)
         if (allocated(self%first_moment)) deallocate(self%first_moment)
         if (allocated(self%second_moment)) deallocate(self%second_moment)
+        if (allocated(self%rmsprop_buffer)) deallocate(self%rmsprop_buffer)
         if (allocated(self%best_parameters)) deallocate(self%best_parameters)
         if (allocated(self%accumulated_gradient)) then
             deallocate(self%accumulated_gradient)
@@ -407,7 +417,7 @@ contains
         if (allocated(self%validation_loss_history)) then
             deallocate(self%validation_loss_history)
         end if
-        self%format_version = 2
+        self%format_version = 3
         self%initialized = .false.
         self%resume_safe = .true.
         self%n_samples = 0
@@ -442,6 +452,9 @@ contains
         self%beta1 = 0.9_dp
         self%beta2 = 0.999_dp
         self%epsilon = 1.0e-8_dp
+        self%rmsprop_decay = 0.99_dp
+        self%rmsprop_momentum = 0.0_dp
+        self%rmsprop_centered = .false.
         self%momentum = 0.0_dp
         self%nesterov = .false.
         self%weight_decay = 0.0_dp
@@ -463,7 +476,7 @@ contains
     logical function mlp_checkpoint_valid(self) result(valid)
         class(mlp_training_checkpoint_t), intent(in) :: self
 
-        valid = self%initialized .and. self%format_version == 2 .and. &
+        valid = self%initialized .and. self%format_version == 3 .and. &
             self%n_samples > 0 .and. self%n_features > 0 .and. &
             self%n_outputs > 0 .and. self%n_parameters > 0 .and. &
             self%epoch >= 0 .and. self%updates >= 0 .and. &
@@ -479,7 +492,8 @@ contains
             (self%optimizer == MLP_OPTIMIZER_ADAM .or. &
             self%optimizer == MLP_OPTIMIZER_SGD .or. &
             self%optimizer == MLP_OPTIMIZER_ADAMW .or. &
-            self%optimizer == MLP_OPTIMIZER_ADAGRAD) .and. &
+            self%optimizer == MLP_OPTIMIZER_ADAGRAD .or. &
+            self%optimizer == MLP_OPTIMIZER_RMSPROP) .and. &
             self%validation_interval > 0 .and. self%patience >= 0 .and. &
             self%gradient_clipped_updates >= 0 .and. &
             allocated(self%parameters) .and. allocated(self%first_moment) .and. &
@@ -500,6 +514,19 @@ contains
             all(self%iterator_order >= 1) .and. &
             all(self%iterator_order <= self%n_samples)
         if (.not. valid) return
+        if (self%optimizer == MLP_OPTIMIZER_RMSPROP) then
+            if (.not. allocated(self%rmsprop_buffer)) then
+                valid = .false.
+                return
+            end if
+            if (size(self%rmsprop_buffer) /= self%n_parameters) then
+                valid = .false.
+                return
+            end if
+        else if (allocated(self%rmsprop_buffer)) then
+            valid = .false.
+            return
+        end if
         if (self%has_validation) then
             valid = allocated(self%validation_loss_history) .and. &
                 size(self%validation_loss_history) == self%epoch
@@ -514,11 +541,15 @@ contains
             all(ieee_is_finite(self%accumulated_gradient)) .and. &
             all(ieee_is_finite(self%loss_history)) .and. &
             all(ieee_is_finite(self%learning_rate_history))
+        if (self%optimizer == MLP_OPTIMIZER_RMSPROP) valid = valid .and. &
+            all(ieee_is_finite(self%rmsprop_buffer))
         if (self%has_validation) valid = valid .and. &
             all(ieee_is_finite(self%validation_loss_history))
         valid = valid .and. ieee_is_finite(self%learning_rate) .and. &
             ieee_is_finite(self%beta1) .and. ieee_is_finite(self%beta2) .and. &
             ieee_is_finite(self%epsilon) .and. ieee_is_finite(self%l2) .and. &
+            ieee_is_finite(self%rmsprop_decay) .and. &
+            ieee_is_finite(self%rmsprop_momentum) .and. &
             ieee_is_finite(self%momentum) .and. &
             ieee_is_finite(self%weight_decay) .and. &
             ieee_is_finite(self%last_learning_rate) .and. &
@@ -530,6 +561,9 @@ contains
             self%tolerance >= 0.0_dp .and. self%min_delta >= 0.0_dp .and. &
             self%gradient_clip_norm >= 0.0_dp
         valid = valid .and. self%momentum >= 0.0_dp .and. self%momentum < 1.0_dp
+        valid = valid .and. self%rmsprop_decay >= 0.0_dp .and. &
+            self%rmsprop_decay < 1.0_dp .and. self%rmsprop_momentum >= 0.0_dp .and. &
+            self%rmsprop_momentum < 1.0_dp
         valid = valid .and. self%weight_decay >= 0.0_dp
         if (self%nesterov) valid = valid .and. self%optimizer == MLP_OPTIMIZER_SGD .and. &
             self%momentum > 0.0_dp
@@ -945,8 +979,8 @@ contains
 
     subroutine mlp_train(model, x, target, status, options, state, &
             validation_x, validation_target, checkpoint)
-        !! Train `model` with deterministic Adam, AdamW, Adagrad, or SGD
-        !! updates, as selected by `options%optimizer`.
+        !! Train `model` with deterministic Adam, AdamW, Adagrad, RMSprop, or
+        !! SGD updates, as selected by `options%optimizer`.
         !!
         !! A zero batch size selects full-batch updates.  When shuffling is
         !! enabled, an explicit Park--Miller stream seeded by `shuffle_seed`
@@ -971,6 +1005,7 @@ contains
         type(adam_t) :: optimizer
         type(adamw_t) :: adamw_optimizer
         type(adagrad_t) :: adagrad_optimizer
+        type(rmsprop_t) :: rmsprop_optimizer
         type(sgd_t) :: sgd_optimizer
         type(mlp_batch_iterator_t) :: iterator
         real(dp), allocatable :: theta(:), best_theta(:), gradient(:)
@@ -1034,6 +1069,15 @@ contains
             if (checkpoint%beta1 /= config%beta1) incompatible_checkpoint = .true.
             if (checkpoint%beta2 /= config%beta2) incompatible_checkpoint = .true.
             if (checkpoint%epsilon /= config%epsilon) incompatible_checkpoint = .true.
+            if (checkpoint%rmsprop_decay /= config%rmsprop_decay) then
+                incompatible_checkpoint = .true.
+            end if
+            if (checkpoint%rmsprop_momentum /= config%rmsprop_momentum) then
+                incompatible_checkpoint = .true.
+            end if
+            if (checkpoint%rmsprop_centered .neqv. config%rmsprop_centered) then
+                incompatible_checkpoint = .true.
+            end if
             if (checkpoint%optimizer /= config%optimizer) incompatible_checkpoint = .true.
             if (checkpoint%momentum /= config%momentum) incompatible_checkpoint = .true.
             if (checkpoint%nesterov .neqv. config%nesterov) incompatible_checkpoint = .true.
@@ -1157,9 +1201,14 @@ contains
                 learning_rate=config%learning_rate, beta1=config%beta1, &
                 beta2=config%beta2, epsilon=config%epsilon, &
                 weight_decay=config%weight_decay)
-        else
+        else if (config%optimizer == MLP_OPTIMIZER_ADAGRAD) then
             call adagrad_optimizer%initialize(n_parameters, status, &
                 learning_rate=config%learning_rate, epsilon=config%epsilon)
+        else
+            call rmsprop_optimizer%initialize(n_parameters, status, &
+                learning_rate=config%learning_rate, decay=config%rmsprop_decay, &
+                epsilon=config%epsilon, momentum=config%rmsprop_momentum, &
+                centered=config%rmsprop_centered)
         end if
         if (status%code /= FORTNUM_OK) then
             if (present(state)) state = result
@@ -1189,12 +1238,21 @@ contains
                 if (adamw_optimizer%learning_rate <= 0.0_dp) then
                     adamw_optimizer%learning_rate = config%learning_rate
                 end if
-            else
+            else if (config%optimizer == MLP_OPTIMIZER_ADAGRAD) then
                 adagrad_optimizer%accumulated_square = checkpoint%first_moment
                 adagrad_optimizer%step_count = checkpoint%adam_step_count
                 adagrad_optimizer%learning_rate = checkpoint%last_learning_rate
                 if (adagrad_optimizer%learning_rate <= 0.0_dp) then
                     adagrad_optimizer%learning_rate = config%learning_rate
+                end if
+            else
+                rmsprop_optimizer%square_average = checkpoint%first_moment
+                rmsprop_optimizer%gradient_average = checkpoint%second_moment
+                rmsprop_optimizer%momentum_buffer = checkpoint%rmsprop_buffer
+                rmsprop_optimizer%step_count = checkpoint%adam_step_count
+                rmsprop_optimizer%learning_rate = checkpoint%last_learning_rate
+                if (rmsprop_optimizer%learning_rate <= 0.0_dp) then
+                    rmsprop_optimizer%learning_rate = config%learning_rate
                 end if
             end if
         end if
@@ -1296,8 +1354,10 @@ contains
                             sgd_optimizer%learning_rate = effective_rate
                         else if (config%optimizer == MLP_OPTIMIZER_ADAMW) then
                             adamw_optimizer%learning_rate = effective_rate
-                        else
+                        else if (config%optimizer == MLP_OPTIMIZER_ADAGRAD) then
                             adagrad_optimizer%learning_rate = effective_rate
+                        else
+                            rmsprop_optimizer%learning_rate = effective_rate
                         end if
                         result%last_learning_rate = effective_rate
                         if (config%optimizer == MLP_OPTIMIZER_ADAM) then
@@ -1306,8 +1366,10 @@ contains
                             call sgd_optimizer%step(theta, gradient, status)
                         else if (config%optimizer == MLP_OPTIMIZER_ADAMW) then
                             call adamw_optimizer%step(theta, gradient, status)
-                        else
+                        else if (config%optimizer == MLP_OPTIMIZER_ADAGRAD) then
                             call adagrad_optimizer%step(theta, gradient, status)
+                        else
+                            call rmsprop_optimizer%step(theta, gradient, status)
                         end if
                         if (status%code /= FORTNUM_OK) then
                             if (present(state)) state = result
@@ -1327,6 +1389,7 @@ contains
                 if (present(checkpoint)) then
                     call checkpoint_capture(checkpoint, x, target, config, result, &
                         iterator, optimizer, adamw_optimizer, adagrad_optimizer, &
+                        rmsprop_optimizer, &
                         sgd_optimizer, theta, &
                         best_theta, stale_epochs, &
                         epoch, microbatch_count, accumulated_samples, &
@@ -1400,6 +1463,7 @@ contains
             if (present(checkpoint)) then
                 call checkpoint_capture(checkpoint, x, target, config, result, &
                     iterator, optimizer, adamw_optimizer, adagrad_optimizer, &
+                    rmsprop_optimizer, &
                     sgd_optimizer, theta, &
                     best_theta, stale_epochs, &
                     epoch, microbatch_count, accumulated_samples, &
@@ -1450,7 +1514,8 @@ contains
     end subroutine mlp_train
 
     subroutine checkpoint_capture(checkpoint, x, target, config, result, iterator, &
-            optimizer, adamw_optimizer, adagrad_optimizer, sgd_optimizer, theta, best_theta, &
+            optimizer, adamw_optimizer, adagrad_optimizer, rmsprop_optimizer, &
+            sgd_optimizer, theta, best_theta, &
             stale_epochs, active_epoch, &
             active_microbatches, accumulated_samples, accumulated_gradient, &
             has_validation, status)
@@ -1462,6 +1527,7 @@ contains
         type(adam_t), intent(in) :: optimizer
         type(adamw_t), intent(in) :: adamw_optimizer
         type(adagrad_t), intent(in) :: adagrad_optimizer
+        type(rmsprop_t), intent(in) :: rmsprop_optimizer
         type(sgd_t), intent(in) :: sgd_optimizer
         real(dp), intent(in) :: theta(:), best_theta(:)
         integer, intent(in) :: stale_epochs
@@ -1503,12 +1569,33 @@ contains
                     invalid_state = .true.
                 end if
             end if
-        else
+        else if (config%optimizer == MLP_OPTIMIZER_ADAGRAD) then
             if (.not. allocated(adagrad_optimizer%accumulated_square)) then
                 invalid_state = .true.
             end if
             if (allocated(adagrad_optimizer%accumulated_square)) then
                 if (size(adagrad_optimizer%accumulated_square) /= size(theta)) then
+                    invalid_state = .true.
+                end if
+            end if
+        else if (config%optimizer == MLP_OPTIMIZER_RMSPROP) then
+            if (.not. allocated(rmsprop_optimizer%square_average) .or. &
+                .not. allocated(rmsprop_optimizer%gradient_average) .or. &
+                .not. allocated(rmsprop_optimizer%momentum_buffer)) then
+                invalid_state = .true.
+            end if
+            if (allocated(rmsprop_optimizer%square_average)) then
+                if (size(rmsprop_optimizer%square_average) /= size(theta)) then
+                    invalid_state = .true.
+                end if
+            end if
+            if (allocated(rmsprop_optimizer%gradient_average)) then
+                if (size(rmsprop_optimizer%gradient_average) /= size(theta)) then
+                    invalid_state = .true.
+                end if
+            end if
+            if (allocated(rmsprop_optimizer%momentum_buffer)) then
+                if (size(rmsprop_optimizer%momentum_buffer) /= size(theta)) then
                     invalid_state = .true.
                 end if
             end if
@@ -1519,7 +1606,7 @@ contains
             return
         end if
         call checkpoint%clear()
-        checkpoint%format_version = 2
+        checkpoint%format_version = 3
         checkpoint%initialized = .true.
         checkpoint%resume_safe = .true.
         checkpoint%n_samples = size(x, 1)
@@ -1546,8 +1633,10 @@ contains
             checkpoint%adam_step_count = sgd_optimizer%step_count
         else if (config%optimizer == MLP_OPTIMIZER_ADAMW) then
             checkpoint%adam_step_count = adamw_optimizer%step_count
-        else
+        else if (config%optimizer == MLP_OPTIMIZER_ADAGRAD) then
             checkpoint%adam_step_count = adagrad_optimizer%step_count
+        else
+            checkpoint%adam_step_count = rmsprop_optimizer%step_count
         end if
         checkpoint%stale_epochs = stale_epochs
         checkpoint%validation_interval = config%validation_interval
@@ -1562,6 +1651,9 @@ contains
         checkpoint%beta1 = config%beta1
         checkpoint%beta2 = config%beta2
         checkpoint%epsilon = config%epsilon
+        checkpoint%rmsprop_decay = config%rmsprop_decay
+        checkpoint%rmsprop_momentum = config%rmsprop_momentum
+        checkpoint%rmsprop_centered = config%rmsprop_centered
         checkpoint%momentum = config%momentum
         checkpoint%nesterov = config%nesterov
         checkpoint%weight_decay = config%weight_decay
@@ -1589,10 +1681,14 @@ contains
         else if (config%optimizer == MLP_OPTIMIZER_ADAMW) then
             allocate(checkpoint%first_moment, source=adamw_optimizer%first_moment)
             allocate(checkpoint%second_moment, source=adamw_optimizer%second_moment)
-        else
+        else if (config%optimizer == MLP_OPTIMIZER_ADAGRAD) then
             allocate(checkpoint%first_moment, source=adagrad_optimizer%accumulated_square)
             allocate(checkpoint%second_moment(size(theta)))
             checkpoint%second_moment = 0.0_dp
+        else
+            allocate(checkpoint%first_moment, source=rmsprop_optimizer%square_average)
+            allocate(checkpoint%second_moment, source=rmsprop_optimizer%gradient_average)
+            allocate(checkpoint%rmsprop_buffer, source=rmsprop_optimizer%momentum_buffer)
         end if
         allocate(checkpoint%best_parameters, source=best_theta)
         allocate(checkpoint%accumulated_gradient, source=accumulated_gradient)
@@ -1627,7 +1723,8 @@ contains
             (options%optimizer == MLP_OPTIMIZER_ADAM .or. &
             options%optimizer == MLP_OPTIMIZER_SGD .or. &
             options%optimizer == MLP_OPTIMIZER_ADAMW .or. &
-            options%optimizer == MLP_OPTIMIZER_ADAGRAD) .and. &
+            options%optimizer == MLP_OPTIMIZER_ADAGRAD .or. &
+            options%optimizer == MLP_OPTIMIZER_RMSPROP) .and. &
             options%beta1 >= 0.0_dp .and. options%beta1 < 1.0_dp .and. &
             options%beta2 >= 0.0_dp .and. options%beta2 < 1.0_dp .and. &
             options%epsilon > 0.0_dp .and. options%l2 >= 0.0_dp .and. &
@@ -1638,12 +1735,17 @@ contains
         valid = valid .and. ieee_is_finite(options%learning_rate) .and. &
             ieee_is_finite(options%beta1) .and. ieee_is_finite(options%beta2) .and. &
             ieee_is_finite(options%epsilon) .and. ieee_is_finite(options%l2) .and. &
+            ieee_is_finite(options%rmsprop_decay) .and. &
+            ieee_is_finite(options%rmsprop_momentum) .and. &
             ieee_is_finite(options%momentum) .and. &
             ieee_is_finite(options%weight_decay) .and. &
             ieee_is_finite(options%tolerance) .and. &
             ieee_is_finite(options%min_delta) .and. &
             ieee_is_finite(options%gradient_clip_norm)
         valid = valid .and. options%weight_decay >= 0.0_dp
+        valid = valid .and. options%rmsprop_decay >= 0.0_dp .and. &
+            options%rmsprop_decay < 1.0_dp .and. options%rmsprop_momentum >= 0.0_dp .and. &
+            options%rmsprop_momentum < 1.0_dp
         if (options%shuffle) valid = valid .and. options%shuffle_seed > 0
         if (options%nesterov) valid = valid .and. &
             options%optimizer == MLP_OPTIMIZER_SGD .and. options%momentum > 0.0_dp
