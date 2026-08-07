@@ -407,7 +407,11 @@ contains
         end if
         select case (device%kind)
         case (FORTML_DEVICE_CPU)
-            call self%elbo(x, labels, value, status, scale=scale)
+            if (present(scale)) then
+                call self%elbo(x, labels, value, status, scale=scale)
+            else
+                call self%elbo(x, labels, value, status)
+            end if
         case (FORTML_DEVICE_CUDA)
             call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
                 "variational GP classification device: resident CUDA inducing graph is not linked")
@@ -583,6 +587,7 @@ contains
             call status_set(status, FORTNUM_OK, "")
             return
         end if
+        if (allocated(self%noise)) deallocate(self%noise)
         allocate(self%noise(n_samples, self%n_mc))
         call rng_seed(generator, int(self%seed, int64), status)
         if (status%code /= FORTNUM_OK) return
