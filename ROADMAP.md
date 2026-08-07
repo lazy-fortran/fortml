@@ -14,13 +14,14 @@ gate is still open, so this work does not move or recreate that tag.
 
 | Compiler | Command | Result |
 | --- | --- | --- |
-| GNU Fortran | `fo` | Static, build, test, and lint checks passed in a clean FortML/FortAD-main replay. The fresh 2026-08-08 run passed all 168 tests (368 modules; 790 first-build units, 712 second-build units). See [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
-| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded compiler lane. The checked-in NVIDIA log predates the latest 168-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
+| GNU Fortran | `fo` | Static, build, test, and lint checks passed in a clean FortML/FortAD-main replay. The fresh 2026-08-08 run passed all 170 tests (372 modules; 792 first-build units, 713 second-build units). See [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
+| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded compiler lane. The checked-in NVIDIA log predates the latest 170-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
-The checked-in GNU compiler log is the fresh 2026-08-08 run against FortAD
-`origin/main` at `3a3e94263a40f6a349f179f6ff5b982da7f1d930`, replayed from clean
-worktrees under `/mnt/storage/code/lazy-fortran/fortml-clean-3c` and
+The checked-in GNU compiler log is the fresh 2026-08-08 run against FortML
+`2c973fc6a983bd0d0fa39397cd378d6773a624b5` and FortAD `origin/main` at
+`3a3e94263a40f6a349f179f6ff5b982da7f1d930`, replayed from clean worktrees
+under `/mnt/storage/code/lazy-fortran/fortml-clean-final` and
 `/mnt/storage/code/lazy-fortran/fortad-main-clean`. The run includes the
   kernel-catalog, weighted LDA/QDA, robust/absolute XGBoost, neural NLL, random-forest,
 Extra-Trees, grouped MLP HVP and L-BFGS-B, basis/pipeline HVP, cosine
@@ -46,7 +47,7 @@ parameter snapshots and transfer counters. NVIDIA
 compiler coverage remains an
 explicit older-build result.
 
-The companion benchmark harness is clean at FortML-bench revision `699c339`;
+The companion benchmark harness is clean at FortML-bench revision `d74ef30`;
 the trainer-checkpoint, unfactored-Adafactor, binary-objective,
 multiclass-calibration, variational-multiclass-GP, PINN/physics-objective,
 physics HVP, grouped K-fold, spectral-mixture, XGBoost-ranking,

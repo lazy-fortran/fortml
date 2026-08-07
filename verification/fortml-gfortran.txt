@@ -1,11 +1,12 @@
 Verification date: 2026-08-08
-FortML revision: 3cffe630746aff174b6fe3be71f8bd8f0847b2df
+FortML revision: 2c973fc6a983bd0d0fa39397cd378d6773a624b5
 FortAD dependency: clean origin/main 3a3e94263a40f6a349f179f6ff5b982da7f1d930
 Command: fo (clean FortML/FortAD verification worktrees under /mnt/storage)
-Static: OK (368 modules, 368 changed, 368 affected)
-First build: OK (790 units)
-Second build: OK (712 units)
-Tests: OK (168/168)
+Worktree: /mnt/storage/code/lazy-fortran/fortml-clean-final
+Static: OK (372 modules, 372 changed, 372 affected)
+First build: OK (792 units)
+Second build: OK (713 units)
+Tests: OK (170/170)
 Lint: OK
 Result: All stages passed
 Warnings: existing non-fatal GNU -Warray-temporaries in FortML/FortAD,
