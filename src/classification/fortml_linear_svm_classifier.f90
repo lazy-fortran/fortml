@@ -45,6 +45,7 @@ module fortml_linear_svm_classifier
         procedure, public :: fit => svm_fit
         procedure, public :: decision_function => svm_decision_function
         procedure, public :: predict => svm_predict
+        procedure, public :: decision_function_device => svm_decision_device
         procedure, public :: predict_device => svm_predict_device
         procedure, public :: device_supported => svm_device_supported
         procedure, public :: decision_function_jvp => svm_decision_jvp
@@ -68,6 +69,7 @@ module fortml_linear_svm_classifier
 
     public :: svm_fit
     public :: svm_decision_function
+    public :: svm_decision_device
     public :: svm_predict
     public :: svm_predict_device
 
@@ -334,7 +336,7 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine svm_predict
 
-    subroutine svm_predict_device(self, device, x, scores, status)
+    subroutine svm_decision_device(self, device, x, scores, status)
         class(linear_svm_classifier_t), intent(in) :: self
         type(fortml_device_t), intent(in) :: device
         real(dp), intent(in) :: x(:, :)
@@ -349,6 +351,30 @@ contains
         select case (device%kind)
         case (FORTML_DEVICE_CPU)
             call self%decision_function(x, scores, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "linear SVM device prediction: no resident CUDA kernel is linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "linear SVM device prediction: device kind is invalid")
+        end select
+    end subroutine svm_decision_device
+
+    subroutine svm_predict_device(self, device, x, labels, status)
+        class(linear_svm_classifier_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :)
+        integer, intent(out) :: labels(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "linear SVM device prediction: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict(x, labels, status)
         case (FORTML_DEVICE_CUDA)
             call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
                 "linear SVM device prediction: no resident CUDA kernel is linked")

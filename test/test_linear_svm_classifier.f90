@@ -16,7 +16,7 @@ program test_linear_svm_classifier
     real(real64) :: value, value_plus, value_minus, l2_gradient
     real(real64) :: gradient(3), gradient_fd(3), parameters(3), parameters_plus(3)
     real(real64) :: parameters_minus(3), prediction_scores(6)
-    integer :: labels(6), predicted(6), classes(2), failures, i
+    integer :: labels(6), predicted(6), device_labels(4), classes(2), failures, i
     real(real64), parameter :: step = 1.0e-6_real64
 
     failures = 0
@@ -117,9 +117,12 @@ program test_linear_svm_classifier
     cuda%kind = FORTML_DEVICE_CUDA
     cuda%selected = .true.
     cuda%available = .true.
-    call model%predict_device(cuda, query, scores, status)
+    call model%decision_function_device(cuda, query, scores, status)
     call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
-        "CUDA prediction refusal", failures)
+        "CUDA decision refusal", failures)
+    call model%predict_device(cuda, query, device_labels, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
+        "CUDA label refusal", failures)
     call check(model%device_supported(FORTML_DEVICE_CUDA) .eqv. .false., &
         "CUDA capability refusal", failures)
 
