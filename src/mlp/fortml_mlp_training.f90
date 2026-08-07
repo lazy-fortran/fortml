@@ -235,6 +235,8 @@ module fortml_mlp_training
         procedure, public :: parameter_count => mlp_objective_parameter_count
         procedure, public :: parameters => mlp_objective_parameters
         procedure, public :: value_gradient => mlp_objective_value_gradient
+        procedure, public :: jvp => mlp_objective_jvp
+        procedure, public :: vjp => mlp_objective_vjp
         procedure, public :: hvp => mlp_objective_hvp
         procedure, public :: fortopt => mlp_objective_fortopt
     end type mlp_training_objective_t
@@ -792,9 +794,10 @@ contains
         end if
         n_model = self%model%parameter_count()
         if (size(parameters) /= self%parameter_count() .or. &
-            size(gradient) /= size(parameters)) then
+            size(gradient) /= size(parameters) .or. &
+            any(.not. ieee_is_finite(parameters))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
-                "MLP objective: parameter or gradient shape is invalid")
+                "MLP objective: parameter or gradient shape/value is invalid")
             return
         end if
         l2 = self%l2
@@ -814,6 +817,68 @@ contains
         if (self%optimize_l2) gradient(n_model + 1) = l2_gradient
         call status_set(status, FORTNUM_OK, "")
     end subroutine mlp_objective_value_gradient
+
+    subroutine mlp_objective_jvp(self, parameters, direction, value, tangent, &
+            status)
+        !! Exact scalar JVP for the MSE+L2 training objective.
+        !!
+        !! The output is scalar, so the product is the contraction of the
+        !! analytic objective gradient with `direction`.  Keeping this
+        !! operation beside `value_gradient` gives callers a complete forward
+        !! differentiation contract without finite-difference plumbing.
+        class(mlp_training_objective_t), intent(inout) :: self
+        real(dp), intent(in) :: parameters(:), direction(:)
+        real(dp), intent(out) :: value, tangent
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: gradient(:)
+
+        value = huge(1.0_dp)
+        tangent = 0.0_dp
+        if (size(direction) /= size(parameters) .or. &
+            any(.not. ieee_is_finite(direction))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP objective JVP: direction shape/value is invalid")
+            return
+        end if
+        allocate(gradient(size(parameters)))
+        call self%value_gradient(parameters, value, gradient, status)
+        if (status%code /= FORTNUM_OK) return
+        tangent = dot_product(gradient, direction)
+        if (.not. ieee_is_finite(tangent)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP objective JVP: product is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine mlp_objective_jvp
+
+    subroutine mlp_objective_vjp(self, parameters, output_bar, gradient, status)
+        !! Exact scalar VJP for the MSE+L2 training objective.
+        !!
+        !! `output_bar` is the cotangent of the scalar objective.  The
+        !! returned packed vector is `output_bar * d objective / d parameters`.
+        class(mlp_training_objective_t), intent(inout) :: self
+        real(dp), intent(in) :: parameters(:), output_bar
+        real(dp), intent(out) :: gradient(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: value
+
+        gradient = 0.0_dp
+        if (.not. ieee_is_finite(output_bar)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP objective VJP: output cotangent is not finite")
+            return
+        end if
+        call self%value_gradient(parameters, value, gradient, status)
+        if (status%code /= FORTNUM_OK) return
+        gradient = output_bar*gradient
+        if (any(.not. ieee_is_finite(gradient))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP objective VJP: product is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine mlp_objective_vjp
 
     subroutine mlp_objective_hvp(self, parameters, direction, product, status)
         class(mlp_training_objective_t), intent(inout) :: self

@@ -362,6 +362,7 @@ contains
         real(dp) :: product(3), finite_gradient(3)
         real(dp) :: value, plus, minus, fortopt_value
         real(dp) :: fortopt_gradient(3), h
+        real(dp) :: tangent, vjp_gradient(3), output_bar
         integer :: i
 
         x(:, 1) = [-1.0_dp, 0.5_dp, 2.0_dp]
@@ -391,6 +392,14 @@ contains
         call adapter%fortopt(fortopt_objective, status)
         call fortopt_objective%value_gradient(point, fortopt_value, &
             fortopt_gradient, status)
+        call adapter%jvp(point, direction, value, tangent, status)
+        call adapter%value_gradient(point + h*direction, plus, gradient_plus, &
+            status)
+        call adapter%value_gradient(point - h*direction, minus, gradient_minus, &
+            status)
+        output_bar = 1.7_dp
+        call adapter%vjp(point, output_bar, vjp_gradient, status)
+        call adapter%value_gradient(point, value, gradient, status)
         call check(status_ok(status), "optimizer objective adapter status", failures)
         call check(maxval(abs(gradient - finite_gradient)) < 3.0e-9_dp, &
             "optimizer objective gradient finite difference", failures)
@@ -400,6 +409,10 @@ contains
         call check(abs(fortopt_value - value) < 1.0e-14_dp .and. &
             maxval(abs(fortopt_gradient - gradient)) < 1.0e-14_dp, &
             "FortOpt objective adapter", failures)
+        call check(abs(tangent - (plus - minus)/(2.0_dp*h)) < 3.0e-8_dp, &
+            "optimizer objective JVP finite difference", failures)
+        call check(maxval(abs(vjp_gradient - output_bar*gradient)) < &
+            1.0e-14_dp, "optimizer objective scalar VJP", failures)
     end subroutine test_optimizer_objective_adapter
 
     subroutine test_weighted_reductions_and_diagnostics(failures)
