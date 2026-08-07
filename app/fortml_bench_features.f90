@@ -11,7 +11,8 @@ program fortml_bench_features
     use fortml_basis, only: basis_map_t, make_polynomial_basis, &
         make_fourier_basis
     use fortml_pipeline, only: basis_pipeline_t, make_basis_pipeline
-    use fortml_tree, only: decision_stump_t, gradient_boosting_regressor_t
+    use fortml_tree, only: decision_stump_t, gradient_boosting_regressor_t, &
+        cart_regressor_t
     use fortnum_status, only: fortnum_status_t, status_ok
     implicit none
 
@@ -187,6 +188,7 @@ contains
         integer :: i, j, repetition
         type(decision_stump_t) :: stump
         type(gradient_boosting_regressor_t) :: booster
+        type(cart_regressor_t) :: cart
         type(fortnum_status_t) :: status
 
         do i = 1, n_samples
@@ -227,6 +229,30 @@ contains
             "stump,", n_samples, ",", n_features, ",", elapsed_fit, ",", &
             elapsed_predict, ",", stump%split_feature(), ",", threshold, ",", &
             left_value, ",", right_value, ",", mse, ",", sum(prediction)
+
+        call system_clock(clock_start, clock_rate)
+        do repetition = 1, repetitions
+            call cart%fit(x, y, status, max_depth=3, min_samples_leaf=3)
+            if (.not. status_ok(status)) error stop "CART fit timing failed"
+        end do
+        call system_clock(clock_end)
+        elapsed_fit = real(clock_end - clock_start, dp)/real(clock_rate, dp) &
+            /real(repetitions, dp)
+        call cart%predict(x, prediction, status)
+        if (.not. status_ok(status)) error stop "CART prediction failed"
+        mse = sum((prediction - y)**2)/real(n_samples, dp)
+        call system_clock(clock_start, clock_rate)
+        do repetition = 1, repetitions*8
+            call cart%predict(x, prediction, status)
+            if (.not. status_ok(status)) error stop "CART prediction timing failed"
+        end do
+        call system_clock(clock_end)
+        elapsed_predict = real(clock_end - clock_start, dp)/real(clock_rate, dp) &
+            /real(repetitions*8, dp)
+        write (*, '(a,i0,a,i0,a,i0,a,es24.16,a,es24.16,a,es24.16,a,es24.16,a,i0)') &
+            "cart,", n_samples, ",", n_features, ",", cart%depth(), ",", &
+            elapsed_fit, ",", elapsed_predict, ",", mse, ",", sum(prediction), &
+            ",", cart%node_count()
 
         call system_clock(clock_start, clock_rate)
         do repetition = 1, repetitions
