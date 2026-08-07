@@ -588,6 +588,10 @@ The source inventory is dated 2026-08-07.
 | Serialization and distributed execution | Partial | `fortml_mlp_checkpoint` provides a versioned compiler-independent formatted-text representation with schema magic/version, exact optimizer/iterator/history state, validated temporary loading, and malformed/truncated/extra-record refusals. Other model/pipeline files and distributed execution remain open. | Versioned model and trainer files round-trip across supported compilers, and MPI training or inference agrees with a one-rank oracle. |
 | Benchmark coverage | Partial | Correctness-gated model and GP applications feed release harnesses in `../fortml-bench`; current release lanes include Bernoulli/Multinomial/ComplementNB, integer one-hot encoding, weighted ridge and elastic-net derivative products, OVR/OVO/multilabel/ordinal classification, multilabel precision/recall/F1 and ROC-AUC metrics, sigmoid/isotonic probability calibration, MLP activation products, MLP SGD/Nesterov/AdamW, typed schedules including one-cycle, five-parameter AdamW beta-logit and fixed-trajectory MLP hypergradients, differentiable imputation, basis/pipeline, exact/approximate GP, analytic GP likelihood products, exact and weighted-histogram squared/logistic/Poisson boosting, monotonic-constraint query grids, generic grid/L-BFGS-B search, and resident CUDA device-contract gates. | Every completed parity package has a pinned external oracle, release timings, memory measurements, provenance, raw data, and a maintained report. |
 
+The sibling device-contract report now also includes the resident forest
+prediction gate; higher-level Fortran forest integration remains an explicit
+CUDA refusal until private CART storage is safely bound to the C ABI.
+
 ### WP1: classification
 
 - [x] Define one public class-label contract. Classes have a deterministic order,
