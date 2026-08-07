@@ -18,7 +18,8 @@ linear algebra. Full estimator-family parity, histogram tree growth, model
 serialization, and distributed execution remain parity work packages. The MLP
 trainer now has an in-memory resumable checkpoint API, AdamW, Adagrad, RMSprop, and
 FortOpt-backed SGD, and binary logistic objectives have a bounded FortOpt
-L-BFGS-B adapter. Adagrad's accumulated-square state is checkpointed and
+L-BFGS-B adapters for logistic objectives and binary/shared-kernel Laplace GP
+classification. Adagrad's accumulated-square state is checkpointed and
 resumed exactly. A fixed full-batch MLP trajectory also exposes exact learning-rate/L2
 hypergradients; see [docs/MLP_HYPERGRADIENT.md](docs/MLP_HYPERGRADIENT.md).
 [ROADMAP.md](ROADMAP.md) records their acceptance criteria and delivery order.
