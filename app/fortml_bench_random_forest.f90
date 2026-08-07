@@ -2,7 +2,8 @@ program fortml_bench_random_forest
     !! Correctness-gated random-forest classification workload.
     use, intrinsic :: iso_fortran_env, only: dp => real64, int64
     use fortml_device, only: fortml_device_t, FORTML_DEVICE_CUDA
-    use fortml_random_forest_classifier, only: random_forest_classifier_t
+    use fortml_random_forest_classifier, only: random_forest_classifier_t, &
+        random_forest_cuda_plan_t, RANDOM_FOREST_CUDA_PLAN_ABI_VERSION
     use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_NOT_IMPLEMENTED
     implicit none
 
@@ -13,6 +14,7 @@ program fortml_bench_random_forest
     integer(int64) :: started, finished, rate
     real(dp) :: fit_seconds, predict_seconds
     type(random_forest_classifier_t) :: model
+    type(random_forest_cuda_plan_t) :: cuda_plan
     type(fortml_device_t) :: cuda
     type(fortnum_status_t) :: status
     integer :: i, repetitions
@@ -62,4 +64,13 @@ program fortml_bench_random_forest
         error stop "random forest CUDA contract changed unexpectedly"
     end if
     write (*, '(a)') "random_forest_cuda,unavailable"
+    call cuda_plan%create(model, cuda, status)
+    if (status%code /= FORTNUM_NOT_IMPLEMENTED .or. &
+            cuda_plan%abi() /= RANDOM_FOREST_CUDA_PLAN_ABI_VERSION) then
+        error stop "random forest CUDA plan contract changed unexpectedly"
+    end if
+    write (*, '(a,i0)') "random_forest_cuda_plan_abi,", cuda_plan%abi()
+    write (*, '(a)') "random_forest_cuda_plan,unavailable"
+    call cuda_plan%destroy(status)
+    if (.not. status_ok(status)) error stop "random forest CUDA plan cleanup failed"
 end program fortml_bench_random_forest
