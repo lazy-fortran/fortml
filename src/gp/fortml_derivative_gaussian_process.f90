@@ -46,8 +46,12 @@ module fortml_derivative_gaussian_process
             gp_derivative_log_marginal_likelihood
         procedure, public :: log_marginal_likelihood_jvp => &
             gp_derivative_log_marginal_likelihood_jvp
+        procedure, public :: log_marginal_likelihood_vjp => &
+            gp_derivative_log_marginal_likelihood_vjp
         procedure, public :: hyperparameter_gradient => &
             gp_derivative_hyperparameter_gradient
+        procedure, public :: hyperparameter_vjp => &
+            gp_derivative_hyperparameter_vjp
         procedure, public :: hyperparameter_hvp => gp_derivative_hyperparameter_hvp
     end type gp_derivative_regression_t
 
@@ -62,7 +66,9 @@ module fortml_derivative_gaussian_process
     public :: gp_derivative_predict_input_jvp
     public :: gp_derivative_predict_input_vjp
     public :: gp_derivative_log_marginal_likelihood
+    public :: gp_derivative_log_marginal_likelihood_vjp
     public :: gp_derivative_hyperparameter_gradient
+    public :: gp_derivative_hyperparameter_vjp
     public :: gp_derivative_hyperparameter_hvp
 
 contains
@@ -818,7 +824,8 @@ contains
         real(dp), allocatable :: gradient(:)
 
         value_dot = 0.0_dp
-        if (size(direction) /= self%parameter_count()) then
+        if (size(direction) /= self%parameter_count() .or. &
+            any(.not. ieee_is_finite(direction))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "derivative GP likelihood_jvp: direction shape is invalid")
             return
@@ -829,6 +836,53 @@ contains
         value_dot = dot_product(gradient, direction)
         call status_set(status, FORTNUM_OK, "")
     end subroutine gp_derivative_log_marginal_likelihood_jvp
+
+    subroutine gp_derivative_log_marginal_likelihood_vjp(self, value_bar, parameter_bar, status)
+        !! Reverse product of the scalar derivative-GP log marginal likelihood.
+        !! The packed coordinates are kernel log parameters followed by the
+        !! log observation-noise variance.  A scalar objective cotangent is
+        !! accepted explicitly so callers can compose this likelihood with a
+        !! larger scalar objective without special-casing a gradient.
+        class(gp_derivative_regression_t), intent(in) :: self
+        real(dp), intent(in) :: value_bar
+        real(dp), intent(out) :: parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: gradient(:)
+
+        parameter_bar = 0.0_dp
+        if (.not. derivative_gp_fitted(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "derivative GP likelihood_vjp: model is not fitted")
+            return
+        end if
+        if (size(parameter_bar) /= self%parameter_count() .or. &
+            .not. ieee_is_finite(value_bar)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "derivative GP likelihood_vjp: cotangent or output shape is invalid")
+            return
+        end if
+        allocate(gradient(size(parameter_bar)))
+        call self%hyperparameter_gradient(gradient, status)
+        if (status%code /= FORTNUM_OK) return
+        parameter_bar = value_bar*gradient
+        if (any(.not. ieee_is_finite(parameter_bar))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "derivative GP likelihood_vjp: nonfinite product")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_derivative_log_marginal_likelihood_vjp
+
+    subroutine gp_derivative_hyperparameter_vjp(self, value_bar, parameter_bar, status)
+        !! Alias for the scalar likelihood VJP in the model's public
+        !! hyperparameter-product vocabulary.
+        class(gp_derivative_regression_t), intent(in) :: self
+        real(dp), intent(in) :: value_bar
+        real(dp), intent(out) :: parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        call self%log_marginal_likelihood_vjp(value_bar, parameter_bar, status)
+    end subroutine gp_derivative_hyperparameter_vjp
 
     subroutine gp_derivative_hyperparameter_gradient(self, gradient, status)
         class(gp_derivative_regression_t), intent(in) :: self
@@ -881,10 +935,6 @@ contains
         real(dp), intent(in) :: direction(:)
         real(dp), intent(out) :: parameter_hvp(:)
         type(fortnum_status_t), intent(out) :: status
-        real(dp), allocatable :: parameters(:), plus(:), minus(:)
-        real(dp), allocatable :: gradient_plus(:), gradient_minus(:)
-        real(dp) :: scale, step
-
         parameter_hvp = 0.0_dp
         if (.not. derivative_gp_fitted(self)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -898,29 +948,112 @@ contains
             return
         end if
 
-        ! A value-only derivative-GP fit has the same covariance geometry as
-        ! an exact value GP.  Use the kernel's analytic parameter HVP and the
-        ! differentiated Cholesky solve in that case; mixed value/derivative
-        ! observation blocks still use the existing structured finite-
-        ! difference fallback until input-parameter second products are
-        ! available for every supported kernel.
         if (all(self%components == 0)) then
             call derivative_gp_value_only_hvp(self, direction, parameter_hvp, status)
             return
         end if
-        parameters = self%parameters()
-        scale = max(1.0_dp, maxval(abs(direction)))
-        step = 3.0e-5_dp/scale
-        plus = parameters + step*direction
-        minus = parameters - step*direction
-        allocate(gradient_plus(size(parameters)), gradient_minus(size(parameters)))
-        call derivative_gp_gradient_at(self, plus, gradient_plus, status)
-        if (status%code /= FORTNUM_OK) return
-        call derivative_gp_gradient_at(self, minus, gradient_minus, status)
-        if (status%code /= FORTNUM_OK) return
-        parameter_hvp = (gradient_plus - gradient_minus)/(2.0_dp*step)
-        call status_set(status, FORTNUM_OK, "")
+        call derivative_gp_mixed_hvp(self, direction, parameter_hvp, status)
     end subroutine gp_derivative_hyperparameter_hvp
+
+    subroutine derivative_gp_mixed_hvp(self, direction, parameter_hvp, status)
+        !! Analytic Hessian-vector product for mixed value/first-derivative
+        !! observations.  The covariance directional derivative, parameter
+        !! derivative, and parameter/direction mixed derivative are assembled
+        !! from the supported smooth leaf rules below.  A leaf without the
+        !! required second input/parameter product returns
+        !! `FORTNUM_NOT_IMPLEMENTED`; no finite-difference fallback is hidden
+        !! behind this public HVP entry point.
+        class(gp_derivative_regression_t), intent(in) :: self
+        real(dp), intent(in) :: direction(:)
+        real(dp), intent(out) :: parameter_hvp(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: covariance(:, :), covariance_dot(:, :)
+        real(dp), allocatable :: alpha_dot(:, :), identity(:, :), inverse(:, :)
+        real(dp), allocatable :: inverse_dot(:, :), matrix_bar(:, :)
+        real(dp), allocatable :: matrix_bar_dot(:, :), parameter_matrix(:, :)
+        real(dp), allocatable :: parameter_matrix_dot(:, :)
+        real(dp) :: covariance_value, covariance_dot_value
+        real(dp) :: covariance_parameter, covariance_parameter_dot
+        real(dp) :: noise_dot, trace_matrix_bar, trace_matrix_bar_dot
+        integer :: i, j, p, kernel_count
+
+        parameter_hvp = 0.0_dp
+        if (size(direction) /= self%parameter_count() .or. &
+            any(.not. ieee_is_finite(direction))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "derivative GP mixed HVP: direction shape or value is invalid")
+            return
+        end if
+        kernel_count = self%kernel%parameter_count()
+        allocate(covariance(self%n_observations, self%n_observations))
+        allocate(covariance_dot, mold=covariance)
+        allocate(alpha_dot, mold=self%alpha)
+        allocate(identity, mold=covariance)
+        allocate(inverse, mold=covariance)
+        allocate(inverse_dot, mold=covariance)
+        allocate(matrix_bar, mold=covariance)
+        allocate(matrix_bar_dot, mold=covariance)
+        allocate(parameter_matrix, mold=covariance)
+        allocate(parameter_matrix_dot, mold=covariance)
+
+        do j = 1, self%n_observations
+            do i = 1, self%n_observations
+                call derivative_covariance_direction(self%kernel, self%x_train(i, :), &
+                    self%components(i), self%x_train(j, :), self%components(j), &
+                    direction(:kernel_count), covariance(i, j), covariance_dot(i, j), status)
+                if (status%code /= FORTNUM_OK) return
+            end do
+        end do
+        noise_dot = self%noise_variance*direction(kernel_count + 1)
+        do i = 1, self%n_observations
+            covariance_dot(i, i) = covariance_dot(i, i) + noise_dot
+        end do
+
+        alpha_dot = -matmul(covariance_dot, self%alpha)
+        call self%factorization%solve(alpha_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        identity = 0.0_dp
+        do i = 1, self%n_observations
+            identity(i, i) = 1.0_dp
+        end do
+        inverse = identity
+        call self%factorization%solve(inverse, status)
+        if (status%code /= FORTNUM_OK) return
+        inverse_dot = -matmul(inverse, matmul(covariance_dot, inverse))
+        matrix_bar = 0.5_dp*(matmul(self%alpha, transpose(self%alpha)) - &
+            real(self%n_outputs, dp)*inverse)
+        matrix_bar_dot = 0.5_dp*(matmul(alpha_dot, transpose(self%alpha)) + &
+            matmul(self%alpha, transpose(alpha_dot)) - &
+            real(self%n_outputs, dp)*inverse_dot)
+
+        parameter_hvp = 0.0_dp
+        do p = 1, kernel_count
+            do j = 1, self%n_observations
+                do i = 1, self%n_observations
+                    call derivative_covariance_parameter_hvp(self%kernel, &
+                        self%x_train(i, :), self%components(i), self%x_train(j, :), &
+                        self%components(j), p, direction(:kernel_count), covariance_value, &
+                        covariance_dot_value, covariance_parameter, covariance_parameter_dot, &
+                        status)
+                    if (status%code /= FORTNUM_OK) return
+                    parameter_matrix(i, j) = covariance_parameter
+                    parameter_matrix_dot(i, j) = covariance_parameter_dot
+                end do
+            end do
+            parameter_hvp(p) = sum(matrix_bar_dot*parameter_matrix) + &
+                sum(matrix_bar*parameter_matrix_dot)
+        end do
+        trace_matrix_bar = sum(diagonal(matrix_bar))
+        trace_matrix_bar_dot = sum(diagonal(matrix_bar_dot))
+        parameter_hvp(kernel_count + 1) = self%noise_variance*( &
+            direction(kernel_count + 1)*trace_matrix_bar + trace_matrix_bar_dot)
+        if (any(.not. ieee_is_finite(parameter_hvp))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "derivative GP mixed HVP: nonfinite product")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine derivative_gp_mixed_hvp
 
     subroutine derivative_gp_value_only_hvp(self, direction, parameter_hvp, status)
         class(gp_derivative_regression_t), intent(in) :: self
@@ -1076,68 +1209,6 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine derivative_covariance_parameter_matrix
 
-    subroutine derivative_gp_gradient_at(self, parameters, gradient, status)
-        class(gp_derivative_regression_t), intent(in) :: self
-        real(dp), intent(in) :: parameters(:)
-        real(dp), intent(out) :: gradient(:)
-        type(fortnum_status_t), intent(out) :: status
-        type(gp_derivative_regression_t) :: probe
-        integer :: kernel_count
-
-        if (size(parameters) /= self%parameter_count() .or. &
-            size(gradient) /= size(parameters) .or. &
-            any(.not. ieee_is_finite(parameters))) then
-            call status_set(status, FORTNUM_DOMAIN_ERROR, &
-                "derivative GP gradient probe: parameter shape is invalid")
-            return
-        end if
-        kernel_count = self%kernel%parameter_count()
-        call clone_kernel_into(self%kernel, probe%kernel)
-        allocate(probe%x_train, source=self%x_train)
-        allocate(probe%y_train, source=self%y_train)
-        allocate(probe%components, source=self%components)
-        probe%n_observations = self%n_observations
-        probe%n_features = self%n_features
-        probe%n_outputs = self%n_outputs
-        probe%jitter = self%jitter
-        probe%noise_variance = exp(parameters(kernel_count + 1))
-        if (.not. ieee_is_finite(probe%noise_variance) .or. &
-            probe%noise_variance <= 0.0_dp) then
-            call status_set(status, FORTNUM_DOMAIN_ERROR, &
-                "derivative GP gradient probe: noise parameter is invalid")
-            call release_kernel(probe%kernel)
-            return
-        end if
-        call probe%kernel%set_parameters(parameters(:kernel_count), status)
-        if (status%code /= FORTNUM_OK) then
-            call release_kernel(probe%kernel)
-            return
-        end if
-        call derivative_gp_refactor(probe, status)
-        if (status%code /= FORTNUM_OK) then
-            call release_kernel(probe%kernel)
-            return
-        end if
-        call probe%hyperparameter_gradient(gradient, status)
-        call release_kernel(probe%kernel)
-    end subroutine derivative_gp_gradient_at
-
-    recursive subroutine release_kernel(kernel)
-        type(kernel_t), intent(inout) :: kernel
-
-        if (associated(kernel%left)) then
-            call release_kernel(kernel%left)
-            deallocate(kernel%left)
-        end if
-        if (associated(kernel%right)) then
-            call release_kernel(kernel%right)
-            deallocate(kernel%right)
-        end if
-        if (allocated(kernel%formula)) deallocate(kernel%formula)
-        if (allocated(kernel%log_parameters)) deallocate(kernel%log_parameters)
-        nullify(kernel%left, kernel%right)
-    end subroutine release_kernel
-
     subroutine derivative_covariance_parameter(kernel, x1, component1, x2, &
             component2, parameter, covariance, covariance_dot, status)
         type(kernel_t), intent(in) :: kernel
@@ -1194,6 +1265,203 @@ contains
             covariance_dot = 0.0_dp
         end if
     end subroutine derivative_covariance_parameter
+
+    recursive subroutine derivative_covariance_parameter_hvp(kernel, x1, component1, x2, &
+            component2, parameter, direction, covariance, covariance_dot, &
+            covariance_parameter, covariance_parameter_dot, status)
+        !! Return one derivative-observation covariance block and its
+        !! parameter/directional products.  The HVP needs
+        !! ``d C_p / d direction`` in addition to ``C_p``.  RBF, linear, and
+        !! constant leaves have closed forms; sums/products use exact product
+        !! rules.  Other leaves deliberately refuse until their fourth-order
+        !! input/parameter products are generated and independently checked.
+        type(kernel_t), intent(in) :: kernel
+        real(dp), intent(in) :: x1(:), x2(:), direction(:)
+        integer, intent(in) :: component1, component2, parameter
+        real(dp), intent(out) :: covariance, covariance_dot
+        real(dp), intent(out) :: covariance_parameter, covariance_parameter_dot
+        type(fortnum_status_t), intent(out) :: status
+        integer :: left_count
+        real(dp) :: left_value, right_value, left_dot, right_dot
+        real(dp) :: left_parameter, right_parameter
+        real(dp) :: left_parameter_dot, right_parameter_dot
+        real(dp) :: variance, lengthscale, q, r2, f, t
+        real(dp) :: c_length, c_length_length, a, a_length, a_length_length
+        real(dp) :: difference
+
+        covariance = 0.0_dp
+        covariance_dot = 0.0_dp
+        covariance_parameter = 0.0_dp
+        covariance_parameter_dot = 0.0_dp
+        if (size(x1) /= size(x2) .or. size(direction) /= kernel%parameter_count() .or. &
+            any(.not. ieee_is_finite(x1)) .or. any(.not. ieee_is_finite(x2)) .or. &
+            any(.not. ieee_is_finite(direction)) .or. component1 < 0 .or. component2 < 0 .or. &
+            component1 > size(x1) .or. component2 > size(x2) .or. parameter < 1 .or. &
+            parameter > kernel%parameter_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "derivative GP mixed HVP: input, component, or parameter is invalid")
+            return
+        end if
+        if (kernel_contains_white_noise(kernel) .and. &
+            (component1 > 0 .or. component2 > 0)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "derivative GP mixed HVP: white-noise derivative is undefined")
+            return
+        end if
+
+        select case (kernel%kind)
+        case (KERNEL_SUM)
+            left_count = kernel%left%parameter_count()
+            if (parameter <= left_count) then
+                call derivative_covariance_parameter_hvp(kernel%left, x1, component1, x2, &
+                    component2, parameter, direction(:left_count), covariance, covariance_dot, &
+                    covariance_parameter, covariance_parameter_dot, status)
+                if (status%code /= FORTNUM_OK) return
+                call derivative_covariance_direction(kernel%right, x1, component1, x2, &
+                    component2, direction(left_count + 1:), right_value, right_dot, status)
+                if (status%code /= FORTNUM_OK) return
+                covariance = covariance + right_value
+                covariance_dot = covariance_dot + right_dot
+            else
+                call derivative_covariance_direction(kernel%left, x1, component1, x2, &
+                    component2, direction(:left_count), left_value, left_dot, status)
+                if (status%code /= FORTNUM_OK) return
+                call derivative_covariance_parameter_hvp(kernel%right, x1, component1, x2, &
+                    component2, parameter - left_count, direction(left_count + 1:), &
+                    covariance, covariance_dot, covariance_parameter, &
+                    covariance_parameter_dot, status)
+                if (status%code /= FORTNUM_OK) return
+                covariance = covariance + left_value
+                covariance_dot = covariance_dot + left_dot
+            end if
+            call status_set(status, FORTNUM_OK, "")
+            return
+        case (KERNEL_PRODUCT)
+            left_count = kernel%left%parameter_count()
+            if (parameter <= left_count) then
+                call derivative_covariance_parameter_hvp(kernel%left, x1, component1, x2, &
+                    component2, parameter, direction(:left_count), left_value, left_dot, &
+                    left_parameter, left_parameter_dot, status)
+                if (status%code /= FORTNUM_OK) return
+                call derivative_covariance_direction(kernel%right, x1, component1, x2, &
+                    component2, direction(left_count + 1:), right_value, right_dot, status)
+                if (status%code /= FORTNUM_OK) return
+                covariance = left_value*right_value
+                covariance_dot = left_dot*right_value + left_value*right_dot
+                covariance_parameter = left_parameter*right_value
+                covariance_parameter_dot = left_parameter_dot*right_value + &
+                    left_parameter*right_dot
+            else
+                call derivative_covariance_direction(kernel%left, x1, component1, x2, &
+                    component2, direction(:left_count), left_value, left_dot, status)
+                if (status%code /= FORTNUM_OK) return
+                call derivative_covariance_parameter_hvp(kernel%right, x1, component1, x2, &
+                    component2, parameter - left_count, direction(left_count + 1:), &
+                    right_value, right_dot, right_parameter, right_parameter_dot, status)
+                if (status%code /= FORTNUM_OK) return
+                covariance = left_value*right_value
+                covariance_dot = left_dot*right_value + left_value*right_dot
+                covariance_parameter = left_value*right_parameter
+                covariance_parameter_dot = left_dot*right_parameter + &
+                    left_value*right_parameter_dot
+            end if
+            call status_set(status, FORTNUM_OK, "")
+            return
+        case (KERNEL_RBF)
+            if (kernel%parameter_count() /= 2) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "derivative GP mixed HVP: RBF parameter layout is invalid")
+                return
+            end if
+            variance = exp(kernel%log_parameters(1))
+            lengthscale = exp(kernel%log_parameters(2))
+            q = 1.0_dp/(lengthscale*lengthscale)
+            r2 = sum((x1 - x2)**2)
+            f = variance*exp(-0.5_dp*q*r2)
+            t = q*r2
+            if (component1 == 0 .and. component2 == 0) then
+                covariance = f
+                c_length = f*t
+                c_length_length = f*(t*t - 2.0_dp*t)
+            else if (component1 > 0 .and. component2 == 0) then
+                difference = x1(component1) - x2(component1)
+                covariance = -f*q*difference
+                c_length = covariance*(t - 2.0_dp)
+                c_length_length = covariance*(t*t - 6.0_dp*t + 4.0_dp)
+            else if (component1 == 0 .and. component2 > 0) then
+                difference = x1(component2) - x2(component2)
+                covariance = f*q*difference
+                c_length = covariance*(t - 2.0_dp)
+                c_length_length = covariance*(t*t - 6.0_dp*t + 4.0_dp)
+            else
+                a = q*merge(1.0_dp, 0.0_dp, component1 == component2) - &
+                    q*q*(x1(component1) - x2(component1))* &
+                    (x1(component2) - x2(component2))
+                a_length = -2.0_dp*q*merge(1.0_dp, 0.0_dp, component1 == component2) + &
+                    4.0_dp*q*q*(x1(component1) - x2(component1))* &
+                    (x1(component2) - x2(component2))
+                a_length_length = 4.0_dp*q*merge(1.0_dp, 0.0_dp, component1 == component2) - &
+                    16.0_dp*q*q*(x1(component1) - x2(component1))* &
+                    (x1(component2) - x2(component2))
+                covariance = f*a
+                c_length = f*(t*a + a_length)
+                c_length_length = f*((t*t - 2.0_dp*t)*a + 2.0_dp*t*a_length + &
+                    a_length_length)
+            end if
+            covariance_dot = direction(1)*covariance + direction(2)*c_length
+            if (parameter == 1) then
+                covariance_parameter = covariance
+                covariance_parameter_dot = covariance_dot
+            else
+                covariance_parameter = c_length
+                covariance_parameter_dot = direction(1)*c_length + &
+                    direction(2)*c_length_length
+            end if
+            call status_set(status, FORTNUM_OK, "")
+            return
+        case (KERNEL_LINEAR)
+            if (kernel%parameter_count() /= 1) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "derivative GP mixed HVP: linear parameter layout is invalid")
+                return
+            end if
+            variance = exp(kernel%log_parameters(1))
+            if (component1 == 0 .and. component2 == 0) then
+                covariance = variance*dot_product(x1, x2)
+            else if (component1 > 0 .and. component2 == 0) then
+                covariance = variance*x2(component1)
+            else if (component1 == 0 .and. component2 > 0) then
+                covariance = variance*x1(component2)
+            else
+                covariance = variance*merge(1.0_dp, 0.0_dp, component1 == component2)
+            end if
+            covariance_dot = direction(1)*covariance
+            covariance_parameter = covariance
+            covariance_parameter_dot = covariance_dot
+            call status_set(status, FORTNUM_OK, "")
+            return
+        case (KERNEL_CONSTANT)
+            if (kernel%parameter_count() /= 1) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "derivative GP mixed HVP: constant parameter layout is invalid")
+                return
+            end if
+            if (component1 == 0 .and. component2 == 0) then
+                covariance = exp(kernel%log_parameters(1))
+            else
+                covariance = 0.0_dp
+            end if
+            covariance_dot = direction(1)*covariance
+            covariance_parameter = covariance
+            covariance_parameter_dot = covariance_dot
+            call status_set(status, FORTNUM_OK, "")
+            return
+        case default
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "derivative GP mixed HVP: kernel leaf lacks analytic second products")
+            return
+        end select
+    end subroutine derivative_covariance_parameter_hvp
 
     recursive subroutine kernel_value_parameter_jvp(kernel, x1, x2, parameter, &
             value, value_dot, status)

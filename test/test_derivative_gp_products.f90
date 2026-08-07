@@ -17,6 +17,7 @@ program test_derivative_gp_products
 
     failures = 0
     call test_likelihood_products(failures)
+    call test_likelihood_vjp_and_hvp_boundaries(failures)
     call test_value_only_hvp(failures)
     call test_matern_parameter_products(failures)
     call test_periodic_rational_parameter_products(failures)
@@ -150,6 +151,72 @@ contains
             failures = failures + 1
         end if
     end subroutine test_likelihood_products
+
+    subroutine test_likelihood_vjp_and_hvp_boundaries(failures)
+        !! Check the scalar reverse product against an independently assembled
+        !! finite-difference likelihood oracle, and ensure a mixed Matern
+        !! second product refuses explicitly rather than finite-differencing.
+        integer, intent(inout) :: failures
+        type(gp_derivative_regression_t) :: model
+        type(kernel_t) :: kernel
+        type(fortnum_status_t) :: status
+        real(dp) :: x(3, 1), y(3, 1), theta(3), gradient(3), parameter_bar(3)
+        real(dp) :: finite_gradient(3), value_bar, h, plus, minus
+        real(dp) :: direction(3), hvp(3)
+        integer :: i
+
+        x(:, 1) = [0.0_dp, 0.45_dp, 1.05_dp]
+        y(:, 1) = [1.2_dp, -0.3_dp, 0.8_dp]
+        kernel = make_rbf_kernel(1, 1.4_dp, 0.75_dp, status)
+        call model%fit(x, [0, 1, 0], y, kernel, 0.07_dp, status, jitter=1.0e-10_dp)
+        if (.not. status_ok(status)) then
+            write (error_unit, '(a)') "FAIL [derivative GP likelihood VJP] fit"
+            failures = failures + 1
+            return
+        end if
+        theta = model%parameters()
+        call model%hyperparameter_gradient(gradient, status)
+        value_bar = -0.37_dp
+        call model%log_marginal_likelihood_vjp(value_bar, parameter_bar, status)
+        if (.not. status_ok(status) .or. maxval(abs(parameter_bar - value_bar*gradient)) > &
+            2.0e-12_dp) then
+            write (error_unit, '(a,es12.4)') &
+                "FAIL [derivative GP likelihood VJP] scalar pullback ", &
+                maxval(abs(parameter_bar - value_bar*gradient))
+            failures = failures + 1
+        end if
+        call model%hyperparameter_vjp(value_bar, parameter_bar, status)
+        if (.not. status_ok(status) .or. maxval(abs(parameter_bar - value_bar*gradient)) > &
+            2.0e-12_dp) then
+            write (error_unit, '(a)') "FAIL [derivative GP hyperparameter VJP] alias"
+            failures = failures + 1
+        end if
+        h = 2.0e-5_dp
+        do i = 1, size(theta)
+            call model%set_parameters(theta + h*unit_vector(3, i), status)
+            call model%log_marginal_likelihood(plus, status)
+            call model%set_parameters(theta - h*unit_vector(3, i), status)
+            call model%log_marginal_likelihood(minus, status)
+            finite_gradient(i) = (plus - minus)/(2.0_dp*h)
+        end do
+        call model%set_parameters(theta, status)
+        if (.not. status_ok(status) .or. maxval(abs(gradient - finite_gradient)) > 2.0e-7_dp) then
+            write (error_unit, '(a,es12.4)') &
+                "FAIL [derivative GP likelihood VJP] independent gradient ", &
+                maxval(abs(gradient - finite_gradient))
+            failures = failures + 1
+        end if
+
+        kernel = make_matern32_kernel(1, 1.4_dp, 0.75_dp, status)
+        call model%fit(x, [0, 1, 0], y, kernel, 0.07_dp, status, jitter=1.0e-10_dp)
+        direction = [0.21_dp, -0.13_dp, 0.17_dp]
+        call model%hyperparameter_hvp(direction, hvp, status)
+        if (status%code /= FORTNUM_NOT_IMPLEMENTED) then
+            write (error_unit, '(a,i0)') &
+                "FAIL [derivative GP mixed HVP] unsupported Matern refusal code=", status%code
+            failures = failures + 1
+        end if
+    end subroutine test_likelihood_vjp_and_hvp_boundaries
 
     subroutine test_matern_parameter_products(failures)
         integer, intent(inout) :: failures
