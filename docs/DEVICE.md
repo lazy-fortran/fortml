@@ -72,3 +72,17 @@ Current operator APIs retain their existing explicit `enter_data`/`exit_data`
 calls. They are not implicitly converted by this metadata layer, and a model
 must not claim complete device execution until every operation and transfer is
 registered and validated against an independent CPU oracle.
+
+## Estimator capability example: kNN
+
+`knn_classifier_t%device_supported(kind)` reports estimator-level support. It
+currently returns true only for `FORTML_DEVICE_CPU`; the classifier's stable
+distance ordering and vote reduction do not yet have a resident CUDA/OpenACC
+kernel. `knn_classifier_t%predict_device(device,x,labels,status)` therefore
+delegates only an explicitly selected CPU context and returns
+`FORTNUM_NOT_IMPLEMENTED` for CUDA. The CUDA branch never copies the training
+rows back to the host and never fabricates a host prediction. The independent
+`test_knn_classifier_device` behavioral test checks CPU parity, the capability
+query, the CUDA refusal, and rejection of an unselected context. This is a
+declared gap, not GPU evidence; a future resident implementation must add a
+distance/tie-order oracle and transfer accounting before changing the query.
