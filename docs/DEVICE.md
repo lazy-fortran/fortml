@@ -138,10 +138,12 @@ that a complete estimator or trainer is resident.
 ## New estimator contracts
 
 The weighted elastic-net regressor, OVO logistic classifier, Laplace GP
-classifier, and typed MLP learning-rate schedules expose
+classifier, typed MLP learning-rate schedules, MLP classifier prediction
+products, deterministic random-forest classification, and basis/pipeline HVP
+products expose
 `device_supported(kind)`. They currently report CPU support only. Their
-`predict_device`/`predict_proba_device` (or GP latent-prediction) entry points
-dispatch exactly to the selected CPU context and return
+`predict_device`/`predict_proba_device` (or GP latent-prediction/HVP) entry
+points dispatch exactly to the selected CPU context and return
 `FORTNUM_NOT_IMPLEMENTED` for CUDA because no resident model kernel is linked.
 The scalar GP likelihood helper likewise reports CUDA derivative products as
 unsupported. These typed refusals are intentional: an unrelated CUDA kernel
@@ -149,6 +151,13 @@ in the process cannot turn a host allocation into a GPU benchmark, and no
 implicit host/device transfer is hidden behind a prediction call. The
 independent `test_device_contract_new_features` fixture checks these refusal
 boundaries without requiring a CUDA driver.
+
+The same rule covers `basis_map_t%hvp` and the horizontal, column-selecting,
+and sequential pipeline HVP methods: the analytic CPU products are tested by
+finite-difference-of-VJP oracles, but no CUDA derivative kernel is claimed.
+Random-forest prediction is a fixed, piecewise tree route and is a candidate
+for a no-autodiff native CUDA kernel; until that plan has a resident-state
+oracle, CUDA requests remain typed refusals rather than OpenACC host fallbacks.
 
 The mixed value/first-derivative GP has the same explicit boundary. Its
 `gp_derivative_regression_t%predict_device` method dispatches selected CPU
