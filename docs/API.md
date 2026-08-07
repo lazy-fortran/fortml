@@ -739,6 +739,30 @@ round-robin. Invalid fold counts, seeds, and pre-initialization calls return
 status errors. The splitters do not fit or store transformers, so callers must
 fit preprocessing on each training index set explicitly.
 
+### `fortml_hyperparameter_search`
+
+`hyperparameter_grid_search(objective,lower,upper,points,result,status[,options,device])`
+enumerates a deterministic Cartesian grid. `points(i)==1` evaluates the
+interval midpoint; larger counts include both bounds. Each candidate is sent
+through the complete `fortopt_objective_t%value_gradient` product, so a grid
+run is still protected by the objective's finite-value and derivative checks.
+`hyperparameter_search_options_t%max_evaluations` bounds the Cartesian product
+before any allocation or evaluation.
+
+`hyperparameter_lbfgsb_search(objective,initial,lower,upper,result,status[,
+options,device])` routes the same objective directly to FortOpt L-BFGS-B.
+`hyperparameter_search_result_t` reports the best packed coordinates, value,
+evaluation count, method, and convergence flag. Bounds are projected by the
+optimizer and malformed or nonfinite products return status errors. This layer
+does not finite-difference objectives and does not reinterpret a missing
+hypergradient as zero.
+
+The generic orchestrator supports selected CPU contexts. A selected CUDA
+context returns `FORTNUM_NOT_IMPLEMENTED` until objective state, candidate
+buffers, and optimizer history are resident on the device; no host search is
+timed or hidden behind a CUDA request. Model-specific adapters can still use
+their own resident products when they expose a stronger contract.
+
 ## Neural models and variational inference
 
 ### `fortml_mlp`
@@ -925,10 +949,13 @@ training.
 
 `fortml_mlp_schedules` supplies stateless built-in schedule values for that
 callback seam: constant, linear warm-up, cosine decay, warm-up plus cosine,
-and exponential decay. `mlp_learning_rate_schedule_t%rate` validates the
+exponential decay, and one-cycle warm-up/cosine schedules.
+`mlp_learning_rate_schedule_t%rate` validates the
 update and returns a finite positive rate; `rate_with_derivatives` additionally
 returns exact products with respect to the base rate, minimum-rate fraction,
-and decay factor. The schedule receives an explicit update index rather than
+and decay factor. `rate_with_full_derivatives` also returns exact products with
+respect to one-cycle peak and final rate fractions (zero for other families).
+The schedule receives an explicit update index rather than
 owning hidden mutable state, so a replayed training run uses the same rates.
 `device_supported(kind)` reports CPU-only support in this release: schedules
 have no resident CUDA optimizer lowering yet, so they must not be timed as GPU
@@ -1062,8 +1089,9 @@ selection remain unsupported.
 ### `fortml_xgboost`
 
 `xgboost_t` is a deterministic second-order boosting estimator. Use
-`fit_regression` for a squared objective or `fit_binary` for a logistic
-objective. Both fit methods accept an optional positive `sample_weight(:)`;
+`fit_regression` for a squared objective, `fit_binary` for a logistic
+objective, or `fit_poisson` for nonnegative count targets with a log link.
+All fit methods accept an optional positive `sample_weight(:)`;
 weights affect the base score and every gradient/Hessian reduction. The
 `xgboost_options_t` fields `tree_method="exact"` (the default) and
 `tree_method="hist"` select exhaustive split enumeration or deterministic
@@ -1103,6 +1131,16 @@ refusal. `missing_policy()` and `accepts_missing()` report the fitted policy.
 `predict_vjp(x,output_bar,x_bar,status)` is the matching reverse product: it
 returns a zero feature cotangent away from split boundaries and refuses the
 same discontinuities, nonfinite cotangents, and malformed shapes.
+
+For `fit_poisson`, margins are log expected counts and `predict`/staged
+predictions apply a finite guarded exponential. The Newton products are
+`gradient = exp(margin) - target` and `hessian = exp(margin)` (with a positive
+floor for degenerate zero-rate nodes); negative targets are rejected. Poisson
+input JVP/VJP products follow the same piecewise-constant tree contract as
+the squared and logistic lanes. The CPU exact and weighted-histogram paths
+are independently oracle-tested. No resident CUDA tree kernel is linked in
+this release, so `predict_device` on CUDA returns
+`FORTNUM_NOT_IMPLEMENTED` instead of silently falling back to the host.
 
 `predict_device(device,x,y,status)` is the explicit device-control-plane
 entry point for vector predictions. CPU dispatch uses the validated host path.
