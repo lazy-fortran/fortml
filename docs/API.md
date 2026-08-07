@@ -919,7 +919,7 @@ coincidence. The refusal applies only when an input derivative is requested.
 The HVP is a deterministic directional finite difference of that analytic
 gradient. It is intentionally listed as such until a generated second-order
 derivative product is added. The RBF parameter JVP/VJP path uses the checked
-FortSym-generated natural-leaf value and first derivatives (FortSym `58a0e06`,
+FortSym-generated natural-leaf value and first derivatives (FortSym `f71a1aa`,
 15 IR nodes, 7 compound operations). Matérn and RBF HVP paths retain their
 FortAD or explicit products. User formulas use the validated forward
 derivative stack and do not call a procedure pointer.

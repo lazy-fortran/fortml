@@ -178,7 +178,7 @@ is available, with FortAD and an independent dense oracle retained as checks.
 The ordinary RBF kernel now uses a FortSym-generated natural-parameter leaf for
 its value and first derivatives with respect to variance, squared distance, and
 lengthscale. The leaf is lowered once and shared by the kernel parameter JVP
-and VJP paths; its generated header records FortSym `58a0e06`, 15 IR nodes, and
+and VJP paths; its generated header records FortSym `f71a1aa`, 15 IR nodes, and
 7 compound operations. The independent scalar/finite-difference test is
 `test_fortsym_rbf_leaf`. RBF HVPs and Matérn derivative products still use their
 FortAD or explicit paths until a symbolic operation-count comparison accepts a
