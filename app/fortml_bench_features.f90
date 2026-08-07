@@ -16,6 +16,7 @@ program fortml_bench_features
         regression_mean_pinball_loss
     use fortml_tree, only: decision_stump_t, gradient_boosting_regressor_t, &
         cart_regressor_t
+    use fortml_cart_classifier, only: cart_classifier_t
     use fortnum_status, only: fortnum_status_t, status_ok
     implicit none
 
@@ -23,6 +24,7 @@ program fortml_bench_features
     call benchmark_basis_pipeline()
     call benchmark_tree_models()
     call benchmark_regression_metrics()
+    call benchmark_cart_classifier()
 
 contains
 
@@ -324,5 +326,49 @@ contains
             "regression_metrics,", n_samples, ",", n_outputs, ",", elapsed, &
             ",", mse, ",", mae, ",", r2, ",", pinball
     end subroutine benchmark_regression_metrics
+
+    subroutine benchmark_cart_classifier()
+        integer, parameter :: n_samples = 128, n_features = 2, n_classes = 2
+        integer, parameter :: repetitions = 8
+        real(dp) :: x(n_samples, n_features), probabilities(n_samples, n_classes)
+        real(dp) :: elapsed_fit, elapsed_predict, elapsed
+        integer :: labels(n_samples), prediction(n_samples)
+        integer(int64) :: clock_start, clock_end, clock_rate
+        integer :: i, repetition, correct
+        type(cart_classifier_t) :: classifier
+        type(fortnum_status_t) :: status
+
+        do i = 1, n_samples
+            x(i, 1) = -1.0_dp + 2.0_dp*real(i - 1, dp)/real(n_samples - 1, dp)
+            x(i, 2) = sin(0.09_dp*real(i, dp))
+            labels(i) = merge(7, -3, x(i, 1) >= 0.1_dp)
+        end do
+        call system_clock(clock_start, clock_rate)
+        do repetition = 1, repetitions
+            call classifier%fit(x, labels, status, max_depth=3, min_samples_leaf=3)
+            if (.not. status_ok(status)) error stop "CART classifier fit failed"
+        end do
+        call system_clock(clock_end)
+        elapsed_fit = real(clock_end - clock_start, dp)/real(clock_rate, dp) &
+            /real(repetitions, dp)
+        call classifier%predict(x, prediction, status)
+        call classifier%predict_proba(x, probabilities, status)
+        if (.not. status_ok(status)) error stop "CART classifier prediction failed"
+        correct = count(prediction == labels)
+        call system_clock(clock_start, clock_rate)
+        do repetition = 1, repetitions*8
+            call classifier%predict(x, prediction, status)
+            if (.not. status_ok(status)) error stop "CART classifier timing failed"
+        end do
+        call system_clock(clock_end)
+        elapsed_predict = real(clock_end - clock_start, dp)/real(clock_rate, dp) &
+            /real(repetitions*8, dp)
+        elapsed = sum(probabilities)
+        write (*, '(a,i0,a,i0,a,i0,a,es24.16,a,es24.16,a,es24.16,a,es24.16,a,i0)') &
+            "cart_classifier,", n_samples, ",", n_features, ",", n_classes, ",", &
+            elapsed_fit, ",", elapsed_predict, ",", &
+            real(correct, dp)/real(n_samples, dp), ",", elapsed, ",", &
+            classifier%node_count()
+    end subroutine benchmark_cart_classifier
 
 end program fortml_bench_features
