@@ -57,6 +57,7 @@ not supplied through a hidden generic interface.
 | Type | Value or prediction | JVP | VJP or gradient | HVP |
 | --- | --- | --- | --- | --- |
 | `linear_regression_t` | `predict` | Free `linear_predict_jvp` | Free `linear_predict_vjp` | No |
+| `ridge_regression_t` | Weighted `predict` | Packed-parameter and continuous-input JVP | Packed-parameter and continuous-input VJP | No |
 | `pca_t` | Centered projection and reconstruction | Input JVP for a fixed fitted state | Input VJP for a fixed fitted state | Fit-time SVD derivatives are not exposed |
 | `logistic_regression_t` | Decision score and probabilities | Parameter/input JVP, probability JVP | Parameter/input VJP, probability VJP | No |
 | `softmax_regression_t` | Multiclass decision scores and probabilities | Parameter/input JVP, probability JVP | Parameter/input VJP, probability VJP | No |
@@ -102,6 +103,39 @@ The free procedures
 `linear_predict_vjp(coef,x,u,coef_bar,x_bar[,fit_intercept])` operate on an
 explicit coefficient array. They do not return a status object, so all arrays
 must have the model shapes described above.
+
+### `fortml_ridge_regression`
+
+`ridge_regression_t%fit(x,y,status[,alpha,fit_intercept,sample_weight])`
+fits a weighted dense ridge model for a vector or matrix target. Inputs use
+`(n_samples,n_features)` row semantics and targets use
+`(n_samples,n_outputs)`; the vector overload accepts a one-dimensional target.
+The objective is the weighted squared residual plus
+`alpha*sum(feature_coefficients**2)`. `alpha` must be finite and
+nonnegative. An intercept is fitted by default and is never regularized.
+`sample_weight` must be finite, nonnegative, have one entry per sample, and
+have positive total mass. The solve is an SVD least-squares problem with
+square-root ridge rows, so rank-deficient designs have a deterministic
+minimum-norm solution. The estimator stores no training rows after `fit`.
+
+`predict(x,y,status)` has vector and matrix forms. `coefficients()` returns a
+copy whose first row is the intercept when `fit_intercept()` is true;
+`parameters()` flattens this matrix in Fortran column-major order, and
+`set_parameters(values,status)` updates the fitted prediction state after
+checking the packed size and finiteness. `parameter_count()`,
+`feature_count()`, `output_count()`, `regularization()`, `fit_intercept()`,
+and `fitted()` expose the corresponding metadata.
+
+`predict_jvp(x,theta_dot,x_dot,y,y_dot,status)` (also `jvp`) and
+`predict_vjp(x,y_bar,theta_bar,x_bar,status)` (also `vjp`) provide exact
+products with respect to the packed coefficients and continuous input rows.
+They hold the fitted SVD state, `alpha`, and sample weights fixed. Tangents,
+cotangents, inputs, and outputs must have finite compatible shapes. There is
+no derivative through the SVD fit, rank decisions, sample-weight support, or
+`alpha` hyperparameter; those requests are an explicit boundary of this
+estimator rather than a silent host fallback. Unfitted calls, malformed
+packs, nonfinite arrays, nonpositive weight mass, and shape mismatches return
+`FORTNUM_DOMAIN_ERROR`.
 
 ### `fortml_pca`
 
@@ -706,6 +740,21 @@ after the last optimizer state and therefore marks that snapshot
 `resume_safe=.false.`. Use `restore_best=.false.` when a run must be resumed.
 `checkpoint%valid()` validates allocation, dimensions, finite values, and the
 format version, while `checkpoint%clear()` releases its arrays.
+
+`fortml_mlp_checkpoint` adds the file boundary without exposing compiler
+runtime state. `mlp_checkpoint_save(checkpoint,path,status)` writes a valid
+snapshot as versioned formatted text with the magic
+`FORTML_MLP_CHECKPOINT_TEXT`; `mlp_checkpoint_load(checkpoint,path,status)`
+reads it into a temporary value, validates every scalar and array, and only
+then replaces the destination. The schema records all optimizer variants,
+including Adam/AdamW moments, Adagrad squares, RMSprop square/mean/momentum
+state, or SGD velocity, together with the exact iterator permutation and
+shuffle stream. Real values use 17 significant decimal digits, and array
+lengths and record names are explicit, so files are independent of compiler
+endianness and unformatted-record conventions. Unknown schema versions,
+truncation, extra records, invalid values, and optimizer-state shape mismatches
+are refused with a non-OK status. Procedure pointers remain intentionally
+outside the file contract and must be installed by the resumed caller.
 
 `mlp_training_objective_t` packages the same objective for FortOpt. Call
 `initialize(model,x,target,l2,status[,optimize_l2])`, then use `parameters`,
