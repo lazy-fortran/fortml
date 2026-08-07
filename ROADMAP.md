@@ -43,7 +43,7 @@ parameter snapshots and transfer counters. NVIDIA
 compiler coverage remains an
 explicit older-build result.
 
-The companion benchmark harness is clean at FortML-bench revision `5beb1e6`;
+The companion benchmark harness is clean at FortML-bench revision `71a4758`;
 the trainer-checkpoint, binary-objective, variational-multiclass-GP,
 physics-objective, XGBoost-ranking, and resident dense-MSE CUDA CSV rows record
 their FortML source revisions and independent NumPy or analytic behavioral
