@@ -1461,6 +1461,10 @@ count as a production lazy implementation.
   pipeline HVPs. CPU behavior is independently oracle-tested; selected CUDA
   contexts return typed `FORTNUM_NOT_IMPLEMENTED` until resident ensemble,
   neural, and derivative kernels exist.
+- [x] Define the versioned `random_forest_cuda_plan_t` ABI boundary (version 1)
+  with fitted shape/device metadata, lifecycle methods, sentinel-preserving
+  typed refusals, and a benchmark plan-creation row. It does not allocate or
+  copy host trees; a resident no-autodiff CUDA tree kernel remains open.
 - [ ] Keep batches, parameters, gradients, optimizer accumulators, and workspaces
   resident through complete MLP and variational training steps.
 - [ ] Extend residency to basis/pipeline transforms, tree histograms, classifier
@@ -1576,6 +1580,10 @@ peak memory, and batch-size scaling with the same correctness gate as training.
   benchmark with an independent direct NumPy threshold oracle, aligned
   probability-simplex checks, CPU fit and prediction timings, and an explicit
   CUDA refusal in [`results/EXTRA_TREES.md`](../fortml-bench/results/EXTRA_TREES.md).
+- [x] Add the named grouped-MLP regularization benchmark with an independent
+  linear-ridge value/gradient/JVP/HVP oracle, FortOpt-ready packed products,
+  and an explicit CUDA derivative-graph refusal in
+  [`results/MLP_GROUPED_TRAINING.md`](../fortml-bench/results/MLP_GROUPED_TRAINING.md).
 - [x] Add the PCA-initialized tied linear-autoencoder lane with an independent
   centered thin-SVD reconstruction oracle, exact RMSE agreement, CPU timing,
   and an explicit CUDA refusal in
