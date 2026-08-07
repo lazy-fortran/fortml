@@ -11,6 +11,7 @@ module fortml_xgboost
 
     integer, parameter, public :: XGB_OBJECTIVE_SQUARED = 1
     integer, parameter, public :: XGB_OBJECTIVE_LOGISTIC = 2
+    integer, parameter, public :: XGB_OBJECTIVE_POISSON = 3
     integer, parameter, public :: XGB_MISSING_ERROR = 0
     integer, parameter, public :: XGB_MISSING_LEARN = 1
     integer, parameter, public :: XGB_MISSING_LEFT = 2
@@ -72,7 +73,8 @@ module fortml_xgboost
         logical, allocatable :: missing_left(:)
     end type xgb_tree_t
 
-    !> Second-order boosting for squared and binary logistic objectives.
+    !> Second-order boosting for squared, binary logistic, and Poisson count
+    !> objectives.
     !> Fit is discrete; predictions are deterministic and the objective's
     !> Hessians are aggregated exactly for every retained candidate split.
     type, public :: xgboost_t
@@ -92,6 +94,7 @@ module fortml_xgboost
         procedure, public :: fit => xgb_fit
         procedure, public :: fit_regression => xgb_fit_regression
         procedure, public :: fit_binary => xgb_fit_binary
+        procedure, public :: fit_poisson => xgb_fit_poisson
         procedure, public :: predict_matrix => xgb_predict_matrix
         procedure, public :: predict_vector => xgb_predict_vector
         generic, public :: predict => predict_matrix, predict_vector
@@ -149,7 +152,7 @@ contains
         objective_code = parse_objective(settings%objective)
         if (objective_code == 0) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
-                "xgboost fit: objective must be squared or logistic")
+                "xgboost fit: objective must be squared, logistic, or poisson")
             return
         end if
         missing_code = parse_missing_policy(settings%missing_policy)
@@ -209,6 +212,12 @@ contains
                     "xgboost fit: logistic targets must be in [0, 1]")
                 return
             end if
+        else if (objective_code == XGB_OBJECTIVE_POISSON) then
+            if (any(y < 0.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "xgboost fit: poisson targets must be nonnegative counts")
+                return
+            end if
         end if
 
         allocate(observation_weight(n_samples))
@@ -238,6 +247,8 @@ contains
         end if
         if (objective_code == XGB_OBJECTIVE_LOGISTIC) then
             self%base_score = stable_logit(mean_target)
+        else if (objective_code == XGB_OBJECTIVE_POISSON) then
+            self%base_score = stable_log_rate(mean_target)
         else
             self%base_score = mean_target
         end if
@@ -312,6 +323,31 @@ contains
         end if
     end subroutine xgb_fit_binary
 
+    subroutine xgb_fit_poisson(self, x, y, status, options, sample_weight)
+        !! Fit a nonnegative-count model with the log-link Poisson objective.
+        !!
+        !! The fitted margin is the log mean and predictions are positive
+        !! expected counts. Exact and weighted-histogram growth use stable
+        !! gradients `exp(margin)-target` and Hessians `exp(margin)`. Input
+        !! products remain piecewise-constant tree products; CUDA prediction
+        !! is a typed refusal until a resident tree kernel is linked.
+        class(xgboost_t), intent(out) :: self
+        real(dp), intent(in) :: x(:, :), y(:)
+        type(fortnum_status_t), intent(out) :: status
+        type(xgboost_options_t), intent(in), optional :: options
+        real(dp), intent(in), optional :: sample_weight(:)
+        type(xgboost_options_t) :: settings
+
+        settings = xgboost_options_t()
+        if (present(options)) settings = options
+        settings%objective = "poisson"
+        if (present(sample_weight)) then
+            call xgb_fit(self, x, y, status, settings, sample_weight)
+        else
+            call xgb_fit(self, x, y, status, settings)
+        end if
+    end subroutine xgb_fit_poisson
+
     subroutine xgb_predict_matrix(self, x, y, status)
         class(xgboost_t), intent(in) :: self
         real(dp), intent(in) :: x(:, :)
@@ -329,6 +365,8 @@ contains
         if (status%code /= FORTNUM_OK) return
         if (self%objective_code == XGB_OBJECTIVE_LOGISTIC) then
             y(:, 1) = stable_sigmoid_array(margin)
+        else if (self%objective_code == XGB_OBJECTIVE_POISSON) then
+            y(:, 1) = stable_poisson_array(margin)
         else
             y(:, 1) = margin
         end if
@@ -352,6 +390,8 @@ contains
         if (status%code /= FORTNUM_OK) return
         if (self%objective_code == XGB_OBJECTIVE_LOGISTIC) then
             y = stable_sigmoid_array(margin)
+        else if (self%objective_code == XGB_OBJECTIVE_POISSON) then
+            y = stable_poisson_array(margin)
         else
             y = margin
         end if
@@ -460,8 +500,9 @@ contains
     !> Return the cumulative prediction after every boosting stage.
     !>
     !> The second dimension is ordered from the first fitted tree through the
-    !> complete ensemble.  Regression stages contain margins; logistic stages
-    !> contain positive-class probabilities, matching `predict`.
+    !> complete ensemble. Regression stages contain margins; logistic stages
+    !> contain positive-class probabilities; Poisson stages contain positive
+    !> expected counts, matching `predict`.
     subroutine xgb_predict_staged(self, x, staged, status)
         class(xgboost_t), intent(in) :: self
         real(dp), intent(in) :: x(:, :)
@@ -489,6 +530,8 @@ contains
             margin = margin + self%learning_rate*correction
             if (self%objective_code == XGB_OBJECTIVE_LOGISTIC) then
                 staged(:, i) = stable_sigmoid_array(margin)
+            else if (self%objective_code == XGB_OBJECTIVE_POISSON) then
+                staged(:, i) = stable_poisson_array(margin)
             else
                 staged(:, i) = margin
             end if
@@ -847,6 +890,8 @@ contains
             name = "squared"
         case (XGB_OBJECTIVE_LOGISTIC)
             name = "logistic"
+        case (XGB_OBJECTIVE_POISSON)
+            name = "poisson"
         case default
             name = "unfitted"
         end select
@@ -941,6 +986,11 @@ contains
             probability = stable_sigmoid_array(margin)
             gradient = probability - target
             hessian = max(probability*(1.0_dp - probability), minimum_hessian)
+        case (XGB_OBJECTIVE_POISSON)
+            allocate(probability(size(margin)))
+            probability = stable_poisson_array(margin)
+            gradient = probability - target
+            hessian = max(probability, minimum_hessian)
         case default
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "xgboost derivatives: unsupported objective")
@@ -1356,6 +1406,8 @@ contains
             code = XGB_OBJECTIVE_SQUARED
         case ("logistic", "binary:logistic", "classification")
             code = XGB_OBJECTIVE_LOGISTIC
+        case ("poisson", "count:poisson", "reg:poisson")
+            code = XGB_OBJECTIVE_POISSON
         case default
             code = 0
         end select
@@ -1487,6 +1539,41 @@ contains
         clipped = min(max(probability, epsilon), 1.0_dp - epsilon)
         value = log(clipped) - log(1.0_dp - clipped)
     end function stable_logit
+
+    real(dp) function stable_log_rate(mean_value) result(value)
+        !! Finite log-link intercept for a weighted Poisson target mean.
+        real(dp), intent(in) :: mean_value
+        real(dp), parameter :: minimum_mean = 1.0e-12_dp
+        real(dp) :: clipped
+
+        clipped = max(mean_value, minimum_mean)
+        value = log(clipped)
+        value = min(max(value, log(tiny(1.0_dp))), &
+            log(huge(1.0_dp)) - 1.0_dp)
+    end function stable_log_rate
+
+    pure real(dp) function stable_poisson_mean(value) result(mean_value)
+        !! Overflow/underflow-safe `exp(value)` for Poisson means.
+        real(dp), intent(in) :: value
+        real(dp) :: clipped
+
+        clipped = min(max(value, log(tiny(1.0_dp))), &
+            log(huge(1.0_dp)) - 1.0_dp)
+        mean_value = exp(clipped)
+    end function stable_poisson_mean
+
+    pure elemental real(dp) function stable_poisson_element(value) result(mean_value)
+        real(dp), intent(in) :: value
+
+        mean_value = stable_poisson_mean(value)
+    end function stable_poisson_element
+
+    function stable_poisson_array(values) result(means)
+        real(dp), intent(in) :: values(:)
+        real(dp) :: means(size(values))
+
+        means = stable_poisson_element(values)
+    end function stable_poisson_array
 
     pure real(dp) function safe_midpoint(left, right) result(midpoint)
         !! Overflow-safe midpoint for finite ordered values.  Computing each
