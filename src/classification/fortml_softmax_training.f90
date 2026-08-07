@@ -4,8 +4,10 @@ module fortml_softmax_training
     !! `softmax_training_objective_t` keeps a fitted multinomial model and a
     !! copy of its labelled data.  The packed optimizer variable contains the
     !! model coefficients/intercepts and may append a non-negative L2
-    !! coefficient.  Value, gradient, and Hessian-vector products are
-    !! evaluated analytically; no finite differences are used by the adapter.
+    !! coefficient.  Value, gradient, scalar JVP/VJP, and Hessian-vector
+    !! products are evaluated analytically; no finite differences are used by
+    !! the adapter.  The optional log-L2 coordinate maps a bounded real
+    !! variable `z` to the strictly positive coefficient `exp(z)`.
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
@@ -29,11 +31,14 @@ module fortml_softmax_training
         real(dp) :: weight_sum = 0.0_dp
         real(dp) :: l2 = 0.0_dp
         logical :: optimize_l2 = .false.
+        logical :: optimize_log_l2 = .false.
     contains
         procedure, public :: initialize => softmax_objective_initialize
         procedure, public :: parameter_count => softmax_objective_parameter_count
         procedure, public :: parameters => softmax_objective_parameters
         procedure, public :: value_gradient => softmax_objective_value_gradient
+        procedure, public :: jvp => softmax_objective_jvp
+        procedure, public :: vjp => softmax_objective_vjp
         procedure, public :: hvp => softmax_objective_hvp
         procedure, public :: fortopt => softmax_objective_fortopt
     end type softmax_training_objective_t
@@ -51,7 +56,10 @@ module fortml_softmax_training
         real(dp) :: l2 = 0.0_dp
         real(dp) :: l2_lower_bound = 0.0_dp
         real(dp) :: l2_upper_bound = 20.0_dp
+        real(dp) :: log_l2_lower_bound = -12.0_dp
+        real(dp) :: log_l2_upper_bound = 3.0_dp
         logical :: optimize_l2 = .false.
+        logical :: optimize_log_l2 = .false.
     end type softmax_lbfgsb_options_t
 
     type, public :: softmax_lbfgsb_result_t
@@ -69,7 +77,7 @@ module fortml_softmax_training
 contains
 
     subroutine softmax_objective_initialize(self, model, x, labels, l2, status, &
-            optimize_l2, sample_weight, class_weight)
+            optimize_l2, sample_weight, class_weight, optimize_log_l2)
         class(softmax_training_objective_t), intent(out) :: self
         type(softmax_regression_t), target, intent(inout) :: model
         real(dp), intent(in) :: x(:, :), l2
@@ -77,13 +85,21 @@ contains
         type(fortnum_status_t), intent(out) :: status
         logical, intent(in), optional :: optimize_l2
         real(dp), intent(in), optional :: sample_weight(:), class_weight(:)
+        logical, intent(in), optional :: optimize_log_l2
         integer, allocatable :: classes(:)
         real(dp), allocatable :: class_factors(:)
         integer :: i, j, n_classes
 
         self%l2 = 0.0_dp
         self%optimize_l2 = .false.
+        self%optimize_log_l2 = .false.
         if (present(optimize_l2)) self%optimize_l2 = optimize_l2
+        if (present(optimize_log_l2)) self%optimize_log_l2 = optimize_log_l2
+        if (self%optimize_l2 .and. self%optimize_log_l2) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "softmax objective: choose direct or log L2 optimization")
+            return
+        end if
         if (.not. model%fitted()) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "softmax objective: model is not fitted")
@@ -95,7 +111,8 @@ contains
                 "softmax objective: model, input, or label shape is invalid")
             return
         end if
-        if (.not. ieee_is_finite(l2) .or. l2 < 0.0_dp) then
+        if (.not. ieee_is_finite(l2) .or. l2 < 0.0_dp .or. &
+            (self%optimize_log_l2 .and. l2 <= 0.0_dp)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "softmax objective: L2 coefficient is invalid")
             return
@@ -166,7 +183,7 @@ contains
         count = 0
         if (.not. associated(self%model)) return
         count = self%model%parameter_count()
-        if (self%optimize_l2) count = count + 1
+        if (self%optimize_l2 .or. self%optimize_log_l2) count = count + 1
     end function softmax_objective_parameter_count
 
     function softmax_objective_parameters(self) result(parameters)
@@ -180,6 +197,7 @@ contains
         n_model = self%model%parameter_count()
         parameters(:n_model) = self%model%parameters()
         if (self%optimize_l2) parameters(n_model + 1) = self%l2
+        if (self%optimize_log_l2) parameters(n_model + 1) = log(self%l2)
     end function softmax_objective_parameters
 
     subroutine softmax_objective_value_gradient(self, parameters, value, gradient, &
@@ -189,7 +207,7 @@ contains
         real(dp), intent(out) :: value, gradient(:)
         type(fortnum_status_t), intent(out) :: status
         real(dp), allocatable :: logits(:, :), probabilities(:, :)
-        real(dp) :: l2, maximum, normalizer, residual
+        real(dp) :: l2, log_l2, maximum, normalizer, residual
         integer :: i, j, k, n_features, n_classes, n_model, offset
 
         value = 0.0_dp
@@ -211,9 +229,20 @@ contains
         n_classes = self%model%class_count()
         offset = n_features*n_classes
         l2 = self%l2
-        if (self%optimize_l2) then
+        log_l2 = 0.0_dp
+        if (self%optimize_l2 .or. self%optimize_log_l2) then
             l2 = parameters(n_model + 1)
-            if (.not. ieee_is_finite(l2) .or. l2 < 0.0_dp) then
+            if (self%optimize_log_l2) then
+                log_l2 = l2
+                if (log_l2 < -700.0_dp .or. log_l2 > 700.0_dp) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "softmax objective: log L2 coefficient is invalid")
+                    return
+                end if
+                l2 = exp(log_l2)
+            end if
+            if (.not. ieee_is_finite(l2) .or. l2 < 0.0_dp .or. &
+                (self%optimize_log_l2 .and. l2 <= 0.0_dp)) then
                 call status_set(status, FORTNUM_DOMAIN_ERROR, &
                     "softmax objective: optimized L2 coefficient is invalid")
                 return
@@ -259,6 +288,8 @@ contains
         gradient(:offset) = gradient(:offset) + l2*parameters(:offset)
         if (self%optimize_l2) gradient(n_model + 1) = 0.5_dp*sum( &
             parameters(:offset)**2)
+        if (self%optimize_log_l2) gradient(n_model + 1) = 0.5_dp*l2*sum( &
+            parameters(:offset)**2)
         if (.not. ieee_is_finite(value) .or. any(.not. ieee_is_finite(gradient))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "softmax objective: value or gradient is not finite")
@@ -266,6 +297,60 @@ contains
         end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine softmax_objective_value_gradient
+
+    subroutine softmax_objective_jvp(self, parameters, direction, value, tangent, &
+            status)
+        !! Exact directional derivative of the scalar objective.
+        class(softmax_training_objective_t), intent(inout) :: self
+        real(dp), intent(in) :: parameters(:), direction(:)
+        real(dp), intent(out) :: value, tangent
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: gradient(:)
+
+        value = huge(1.0_dp)
+        tangent = 0.0_dp
+        if (size(direction) /= size(parameters) .or. &
+            any(.not. ieee_is_finite(direction))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "softmax objective JVP: direction shape/value is invalid")
+            return
+        end if
+        allocate(gradient(size(parameters)))
+        call self%value_gradient(parameters, value, gradient, status)
+        if (status%code /= FORTNUM_OK) return
+        tangent = dot_product(gradient, direction)
+        if (.not. ieee_is_finite(tangent)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "softmax objective JVP: product is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine softmax_objective_jvp
+
+    subroutine softmax_objective_vjp(self, parameters, output_bar, gradient, status)
+        !! Exact reverse product for the scalar objective.
+        class(softmax_training_objective_t), intent(inout) :: self
+        real(dp), intent(in) :: parameters(:), output_bar
+        real(dp), intent(out) :: gradient(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: value
+
+        gradient = 0.0_dp
+        if (.not. ieee_is_finite(output_bar)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "softmax objective VJP: output cotangent is invalid")
+            return
+        end if
+        call self%value_gradient(parameters, value, gradient, status)
+        if (status%code /= FORTNUM_OK) return
+        gradient = output_bar*gradient
+        if (any(.not. ieee_is_finite(gradient))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "softmax objective VJP: product is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine softmax_objective_vjp
 
     subroutine softmax_objective_hvp(self, parameters, direction, product, status)
         !! Exact Hessian-vector product for the joint `(theta,l2)` block.
@@ -297,10 +382,19 @@ contains
         offset = n_features*n_classes
         l2 = self%l2
         l2_direction = 0.0_dp
-        if (self%optimize_l2) then
+        if (self%optimize_l2 .or. self%optimize_log_l2) then
             l2 = parameters(n_model + 1)
             l2_direction = direction(n_model + 1)
-            if (.not. ieee_is_finite(l2) .or. l2 < 0.0_dp) then
+            if (self%optimize_log_l2) then
+                if (l2 < -700.0_dp .or. l2 > 700.0_dp) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "softmax objective HVP: log L2 is outside safe range")
+                    return
+                end if
+                l2 = exp(l2)
+            end if
+            if (.not. ieee_is_finite(l2) .or. l2 < 0.0_dp .or. &
+                (self%optimize_log_l2 .and. l2 <= 0.0_dp)) then
                 call status_set(status, FORTNUM_DOMAIN_ERROR, &
                     "softmax objective HVP: optimized L2 coefficient is invalid")
                 return
@@ -345,10 +439,18 @@ contains
                     product(offset + j) + residual_dot
             end do
         end do
-        product(:offset) = product(:offset) + l2*direction(:offset) + &
-            l2_direction*parameters(:offset)
-        if (self%optimize_l2) product(n_model + 1) = dot_product( &
-            parameters(:offset), direction(:offset))
+        if (self%optimize_log_l2) then
+            product(:offset) = product(:offset) + l2*direction(:offset) + &
+                l2*direction(n_model + 1)*parameters(:offset)
+            product(n_model + 1) = l2*dot_product(parameters(:offset), &
+                direction(:offset)) + 0.5_dp*l2*sum(parameters(:offset)**2)* &
+                direction(n_model + 1)
+        else
+            product(:offset) = product(:offset) + l2*direction(:offset) + &
+                l2_direction*parameters(:offset)
+            if (self%optimize_l2) product(n_model + 1) = dot_product( &
+                parameters(:offset), direction(:offset))
+        end if
         if (any(.not. ieee_is_finite(product))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "softmax objective HVP: product is not finite")
@@ -413,7 +515,7 @@ contains
         end if
         call adapter%initialize(model, x, labels, options%l2, status, &
             optimize_l2=options%optimize_l2, sample_weight=sample_weight, &
-            class_weight=class_weight)
+            class_weight=class_weight, optimize_log_l2=options%optimize_log_l2)
         if (status%code /= FORTNUM_OK) return
         n_model = model%parameter_count()
         n_parameters = adapter%parameter_count()
@@ -424,6 +526,10 @@ contains
         if (options%optimize_l2) then
             lower(n_model + 1) = options%l2_lower_bound
             upper(n_model + 1) = options%l2_upper_bound
+        end if
+        if (options%optimize_log_l2) then
+            lower(n_model + 1) = options%log_l2_lower_bound
+            upper(n_model + 1) = options%log_l2_upper_bound
         end if
         call adapter%fortopt(objective, status)
         if (status%code /= FORTNUM_OK) return
@@ -440,6 +546,8 @@ contains
         if (status%code /= FORTNUM_OK) return
         if (options%optimize_l2) then
             call model%set_regularization(parameters(n_model + 1), status)
+        else if (options%optimize_log_l2) then
+            call model%set_regularization(exp(parameters(n_model + 1)), status)
         else
             call model%set_regularization(options%l2, status)
         end if
@@ -452,6 +560,7 @@ contains
         result%gradient_norm = sqrt(sum(gradient*gradient))
         result%l2 = options%l2
         if (options%optimize_l2) result%l2 = parameters(n_model + 1)
+        if (options%optimize_log_l2) result%l2 = exp(parameters(n_model + 1))
         if (.not. ieee_is_finite(result%objective) .or. &
             .not. ieee_is_finite(result%gradient_norm) .or. &
             .not. ieee_is_finite(result%l2)) then
@@ -486,9 +595,23 @@ contains
             options%gradient_tolerance >= 0.0_dp .and. &
             options%step_tolerance >= 0.0_dp .and. &
             options%objective_tolerance >= 0.0_dp
+        if (options%optimize_l2 .and. options%optimize_log_l2) valid = .false.
         if (options%optimize_l2) valid = valid .and. &
             options%l2 >= options%l2_lower_bound .and. &
             options%l2 <= options%l2_upper_bound
+        if (options%optimize_log_l2) then
+            if (options%l2 <= 0.0_dp .or. &
+                .not. ieee_is_finite(options%log_l2_lower_bound) .or. &
+                .not. ieee_is_finite(options%log_l2_upper_bound) .or. &
+                options%log_l2_lower_bound > options%log_l2_upper_bound .or. &
+                options%log_l2_lower_bound < -700.0_dp .or. &
+                options%log_l2_upper_bound > 700.0_dp) then
+                valid = .false.
+            else if (valid) then
+                if (log(options%l2) < options%log_l2_lower_bound .or. &
+                    log(options%l2) > options%log_l2_upper_bound) valid = .false.
+            end if
+        end if
     end function valid_options
 
 end module fortml_softmax_training
