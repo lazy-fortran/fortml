@@ -12,6 +12,8 @@ module fortml_xgboost
     integer, parameter, public :: XGB_OBJECTIVE_SQUARED = 1
     integer, parameter, public :: XGB_OBJECTIVE_LOGISTIC = 2
     integer, parameter, public :: XGB_OBJECTIVE_POISSON = 3
+    integer, parameter, public :: XGB_OBJECTIVE_HUBER = 4
+    integer, parameter, public :: XGB_OBJECTIVE_QUANTILE = 5
     integer, parameter, public :: XGB_MISSING_ERROR = 0
     integer, parameter, public :: XGB_MISSING_LEARN = 1
     integer, parameter, public :: XGB_MISSING_LEFT = 2
@@ -46,6 +48,8 @@ module fortml_xgboost
         real(dp) :: gamma = 0.0_dp
         real(dp) :: min_child_weight = 1.0e-3_dp
         character(len=16) :: objective = "squared"
+        real(dp) :: huber_delta = 1.0_dp
+        real(dp) :: quantile_alpha = 0.5_dp
         character(len=16) :: missing_policy = "error"
         character(len=16) :: tree_method = "exact"
         integer :: max_bin = 256
@@ -73,8 +77,8 @@ module fortml_xgboost
         logical, allocatable :: missing_left(:)
     end type xgb_tree_t
 
-    !> Second-order boosting for squared, binary logistic, and Poisson count
-    !> objectives.
+    !> Second-order boosting for squared, binary logistic, Poisson count,
+    !> Huber, and quantile objectives.
     !> Fit is discrete; predictions are deterministic and the objective's
     !> Hessians are aggregated exactly for every retained candidate split.
     type, public :: xgboost_t
@@ -86,6 +90,7 @@ module fortml_xgboost
         integer :: max_bin = 256
         real(dp) :: learning_rate = 0.0_dp
         real(dp) :: base_score = 0.0_dp
+        real(dp) :: objective_parameter = 0.0_dp
         integer :: missing_code = XGB_MISSING_ERROR
         integer, allocatable :: monotone_constraints(:)
         type(xgb_tree_t), allocatable :: estimators(:)
@@ -95,6 +100,8 @@ module fortml_xgboost
         procedure, public :: fit_regression => xgb_fit_regression
         procedure, public :: fit_binary => xgb_fit_binary
         procedure, public :: fit_poisson => xgb_fit_poisson
+        procedure, public :: fit_huber => xgb_fit_huber
+        procedure, public :: fit_quantile => xgb_fit_quantile
         procedure, public :: predict_matrix => xgb_predict_matrix
         procedure, public :: predict_vector => xgb_predict_vector
         generic, public :: predict => predict_matrix, predict_vector
@@ -123,6 +130,7 @@ module fortml_xgboost
         procedure, public :: estimator_count => xgb_estimator_count
         procedure, public :: base_margin => xgb_base_margin
         procedure, public :: objective_name => xgb_objective_name
+        procedure, public :: objective_parameter_value => xgb_objective_parameter
         procedure, public :: missing_policy => xgb_missing_policy
         procedure, public :: tree_method => xgb_tree_method
         procedure, public :: max_bin_count => xgb_max_bin_count
@@ -152,7 +160,7 @@ contains
         objective_code = parse_objective(settings%objective)
         if (objective_code == 0) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
-                "xgboost fit: objective must be squared, logistic, or poisson")
+                "xgboost fit: unsupported objective")
             return
         end if
         missing_code = parse_missing_policy(settings%missing_policy)
@@ -219,6 +227,22 @@ contains
                 return
             end if
         end if
+        if (objective_code == XGB_OBJECTIVE_HUBER) then
+            if (.not. ieee_is_finite(settings%huber_delta) .or. &
+                settings%huber_delta <= 0.0_dp) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "xgboost fit: huber_delta must be finite and positive")
+                return
+            end if
+        else if (objective_code == XGB_OBJECTIVE_QUANTILE) then
+            if (.not. ieee_is_finite(settings%quantile_alpha) .or. &
+                settings%quantile_alpha <= 0.0_dp .or. &
+                settings%quantile_alpha >= 1.0_dp) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "xgboost fit: quantile_alpha must lie strictly between zero and one")
+                return
+            end if
+        end if
 
         allocate(observation_weight(n_samples))
         observation_weight = 1.0_dp
@@ -249,6 +273,9 @@ contains
             self%base_score = stable_logit(mean_target)
         else if (objective_code == XGB_OBJECTIVE_POISSON) then
             self%base_score = stable_log_rate(mean_target)
+        else if (objective_code == XGB_OBJECTIVE_QUANTILE) then
+            self%base_score = weighted_quantile(y, observation_weight, &
+                settings%quantile_alpha)
         else
             self%base_score = mean_target
         end if
@@ -259,7 +286,7 @@ contains
 
         do i = 1, settings%n_estimators
             call objective_derivatives(objective_code, prediction, y, gradient, &
-                hessian, status)
+                hessian, settings%huber_delta, settings%quantile_alpha, status)
             if (status%code /= FORTNUM_OK) return
             gradient = observation_weight*gradient
             hessian = observation_weight*hessian
@@ -277,6 +304,13 @@ contains
         self%tree_method_code = tree_method_code
         self%max_bin = settings%max_bin
         self%learning_rate = rate
+        if (objective_code == XGB_OBJECTIVE_HUBER) then
+            self%objective_parameter = settings%huber_delta
+        else if (objective_code == XGB_OBJECTIVE_QUANTILE) then
+            self%objective_parameter = settings%quantile_alpha
+        else
+            self%objective_parameter = 0.0_dp
+        end if
         self%missing_code = missing_code
         allocate(self%monotone_constraints(n_features))
         self%monotone_constraints = 0
@@ -347,6 +381,48 @@ contains
             call xgb_fit(self, x, y, status, settings)
         end if
     end subroutine xgb_fit_poisson
+
+    subroutine xgb_fit_huber(self, x, y, status, options, sample_weight)
+        !! Fit a robust Huber regression tree ensemble.  The objective uses
+        !! the exact piecewise Huber gradient and a positive Hessian floor on
+        !! its linear tails; the split/tree boundary remains nondifferentiable.
+        class(xgboost_t), intent(out) :: self
+        real(dp), intent(in) :: x(:, :), y(:)
+        type(fortnum_status_t), intent(out) :: status
+        type(xgboost_options_t), intent(in), optional :: options
+        real(dp), intent(in), optional :: sample_weight(:)
+        type(xgboost_options_t) :: settings
+
+        settings = xgboost_options_t()
+        if (present(options)) settings = options
+        settings%objective = "huber"
+        if (present(sample_weight)) then
+            call xgb_fit(self, x, y, status, settings, sample_weight)
+        else
+            call xgb_fit(self, x, y, status, settings)
+        end if
+    end subroutine xgb_fit_huber
+
+    subroutine xgb_fit_quantile(self, x, y, status, options, sample_weight)
+        !! Fit a pinball/quantile regression tree ensemble.  The subgradient
+        !! convention is alpha at an exact zero residual and alpha-1 below
+        !! zero; a positive Hessian floor makes Newton leaf updates explicit.
+        class(xgboost_t), intent(out) :: self
+        real(dp), intent(in) :: x(:, :), y(:)
+        type(fortnum_status_t), intent(out) :: status
+        type(xgboost_options_t), intent(in), optional :: options
+        real(dp), intent(in), optional :: sample_weight(:)
+        type(xgboost_options_t) :: settings
+
+        settings = xgboost_options_t()
+        if (present(options)) settings = options
+        settings%objective = "quantile"
+        if (present(sample_weight)) then
+            call xgb_fit(self, x, y, status, settings, sample_weight)
+        else
+            call xgb_fit(self, x, y, status, settings)
+        end if
+    end subroutine xgb_fit_quantile
 
     subroutine xgb_predict_matrix(self, x, y, status)
         class(xgboost_t), intent(in) :: self
@@ -892,10 +968,20 @@ contains
             name = "logistic"
         case (XGB_OBJECTIVE_POISSON)
             name = "poisson"
+        case (XGB_OBJECTIVE_HUBER)
+            name = "huber"
+        case (XGB_OBJECTIVE_QUANTILE)
+            name = "quantile"
         case default
             name = "unfitted"
         end select
     end function xgb_objective_name
+
+    real(dp) function xgb_objective_parameter(self) result(value)
+        class(xgboost_t), intent(in) :: self
+
+        value = self%objective_parameter
+    end function xgb_objective_parameter
 
     character(len=16) function xgb_missing_policy(self) result(name)
         class(xgboost_t), intent(in) :: self
@@ -963,13 +1049,16 @@ contains
     end function xgb_fitted
 
     subroutine objective_derivatives(objective_code, margin, target, gradient, &
-            hessian, status)
+            hessian, huber_delta, quantile_alpha, status)
         integer, intent(in) :: objective_code
         real(dp), intent(in) :: margin(:), target(:)
         real(dp), intent(out) :: gradient(:), hessian(:)
+        real(dp), intent(in) :: huber_delta, quantile_alpha
         type(fortnum_status_t), intent(out) :: status
         real(dp), parameter :: minimum_hessian = 1.0e-12_dp
         real(dp), allocatable :: probability(:)
+        real(dp) :: residual
+        integer :: i
 
         if (size(margin) /= size(target) .or. size(gradient) /= size(target) .or. &
             size(hessian) /= size(target)) then
@@ -991,6 +1080,26 @@ contains
             probability = stable_poisson_array(margin)
             gradient = probability - target
             hessian = max(probability, minimum_hessian)
+        case (XGB_OBJECTIVE_HUBER)
+            do i = 1, size(margin)
+                residual = margin(i) - target(i)
+                if (abs(residual) <= huber_delta) then
+                    gradient(i) = residual
+                    hessian(i) = 1.0_dp
+                else
+                    gradient(i) = huber_delta*sign(1.0_dp, residual)
+                    hessian(i) = minimum_hessian
+                end if
+            end do
+        case (XGB_OBJECTIVE_QUANTILE)
+            do i = 1, size(margin)
+                if (margin(i) - target(i) >= 0.0_dp) then
+                    gradient(i) = quantile_alpha
+                else
+                    gradient(i) = quantile_alpha - 1.0_dp
+                end if
+                hessian(i) = minimum_hessian
+            end do
         case default
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "xgboost derivatives: unsupported objective")
@@ -1408,6 +1517,10 @@ contains
             code = XGB_OBJECTIVE_LOGISTIC
         case ("poisson", "count:poisson", "reg:poisson")
             code = XGB_OBJECTIVE_POISSON
+        case ("huber", "reg:pseudohubererror")
+            code = XGB_OBJECTIVE_HUBER
+        case ("quantile", "reg:quantile", "pinball")
+            code = XGB_OBJECTIVE_QUANTILE
         case default
             code = 0
         end select
@@ -1629,5 +1742,40 @@ contains
             order(j + 1) = key
         end do
     end subroutine sort_feature_indices
+
+    real(dp) function weighted_quantile(values, weights, alpha) result(quantile)
+        real(dp), intent(in) :: values(:), weights(:), alpha
+        real(dp), allocatable :: sorted_values(:), sorted_weights(:)
+        real(dp) :: value_key, weight_key, threshold, cumulative
+        integer :: i, j, n
+
+        n = size(values)
+        allocate(sorted_values(n), sorted_weights(n))
+        sorted_values = values
+        sorted_weights = weights
+        do i = 2, n
+            value_key = sorted_values(i)
+            weight_key = sorted_weights(i)
+            j = i - 1
+            do while (j >= 1)
+                if (sorted_values(j) <= value_key) exit
+                sorted_values(j + 1) = sorted_values(j)
+                sorted_weights(j + 1) = sorted_weights(j)
+                j = j - 1
+            end do
+            sorted_values(j + 1) = value_key
+            sorted_weights(j + 1) = weight_key
+        end do
+        threshold = alpha*sum(sorted_weights)
+        cumulative = 0.0_dp
+        quantile = sorted_values(n)
+        do i = 1, n
+            cumulative = cumulative + sorted_weights(i)
+            if (cumulative >= threshold) then
+                quantile = sorted_values(i)
+                exit
+            end if
+        end do
+    end function weighted_quantile
 
 end module fortml_xgboost
