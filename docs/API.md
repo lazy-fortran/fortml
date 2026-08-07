@@ -63,6 +63,7 @@ not supplied through a hidden generic interface.
 | `bernoulli_naive_bayes_t` | Log probabilities and probabilities | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
 | `multinomial_naive_bayes_t` | Log probabilities and probabilities | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
 | `basis_map_t` | `evaluate` | Parameters and inputs | Parameters and inputs | No |
+| `one_hot_encoder_t` | Dense one-hot `transform` | Refused: integer categories have no canonical tangent space | Refused: integer categories have no canonical cotangent space | No |
 | `mlp_t` | `predict` | Parameters and inputs | Parameters and inputs | Weighted-output HVP |
 | `bnn_t` | `elbo` | ELBO | ELBO | ELBO |
 | `vae_t` | `elbo`, `reconstruct` | No | ELBO gradient | No |
@@ -366,6 +367,30 @@ input derivative: observed entries are identity and missing entries are locally
 constant, hence have zero tangent and cotangent. Fitted statistics are state,
 not silently promoted to trainable parameters; callers that need statistic
 hypergradients must differentiate the fitting objective explicitly.
+
+### `fortml_one_hot_encoder`
+
+`one_hot_encoder_t%fit(x,status[,handle_unknown,missing_value,handle_missing,drop_first])`
+fits an integer categorical matrix with samples in rows.  Each feature's
+categories are sorted in ascending integer order and packed into
+`categories()` with one-based `category_offsets()`; `output_offsets()` gives
+the corresponding dense output blocks.  `handle_unknown` is `"error"` (the
+default) or `"ignore"` (an all-zero block at transform time).  Passing an
+integer `missing_value` enables missing-value handling: `handle_missing` may be
+`"error"`, `"ignore"`, or `"category"` (the sentinel is retained as an
+explicit sorted category).  `drop_first=.true.` keeps the first sorted category
+in metadata but omits its output column, matching a reference-category design.
+Empty matrices, all-missing features under the ignore policy, malformed policy
+names, unknown/error values, and output shape mismatches return a domain
+status.  `feature_count`, `output_count`, per-feature category/output counts,
+policy accessors, and `fitted` expose the packed state.
+
+Categorical integer inputs intentionally do not pretend to be differentiable:
+`transform_jvp` and `transform_vjp` validate all shapes and return
+`FORTNUM_NOT_IMPLEMENTED` with an explicit tangent/cotangent-space refusal.
+Use a differentiable numerical basis or ordinal representation when a smooth
+input derivative is required.  This boundary is covered by
+`test_one_hot_encoder` independently of the implementation.
 
 ### `fortml_basis`
 

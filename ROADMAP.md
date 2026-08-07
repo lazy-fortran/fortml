@@ -98,7 +98,7 @@ documentation, refusal behavior, and benchmark evidence are all present.
 | Area | Current state | Production target |
 | --- | --- | --- |
 | Linear regression and generalized linear models | Linear regression is implemented. Logistic and softmax support sample and positive sorted-class weights | OLS, weighted/ridge/lasso/elastic-net, robust, quantile, Poisson/Gamma/Tweedie, multinomial, calibrated and regularized classifiers with shared solver and derivative contracts |
-| Feature transforms and basis maps | Polynomial, Fourier, radial, B-spline, callback bases, standard/min-max scalers, horizontal/sequential basis pipelines, and a fitted basis-to-linear estimator are implemented | Sparse/categorical features, feature names, DAG pipelines, leakage-safe cross-validation, differentiable basis hyperparameters |
+| Feature transforms and basis maps | Polynomial, Fourier, radial, B-spline, callback bases, standard/min-max scalers, integer categorical one-hot encoding, horizontal/sequential basis pipelines, and a fitted basis-to-linear estimator are implemented | Sparse/categorical feature views, feature names, DAG pipelines, leakage-safe cross-validation, differentiable basis hyperparameters |
 | Nearest-neighbor and margin methods | Missing | kNN/KD-tree or ball-tree search, kernel/radius neighbors, linear/kernel SVM and SVR, calibrated probabilities, deterministic tie and missing-value policies |
 | Trees and ensembles | Partial | Deterministic finite-only regression stumps, weighted depth-limited CART regression and classification, squared-loss stump boosting, and exact depth-limited second-order squared/logistic boosting are implemented. Forests, histograms, missing-value routing, ranking, monotonic and interaction constraints remain planned |
 | Clustering and unsupervised learning | Missing | k-means/minibatch k-means, Gaussian mixtures/EM, density and graph clustering, manifold methods, outlier detection, decomposition, matrix factorization, and density metrics |
@@ -457,11 +457,18 @@ return status errors.
   dynamic type.
 - [x] Add `simple_imputer_t` with mean, median, and constant strategies,
   explicit IEEE-NaN missingness, all-missing-column policy, fitted statistics,
-  and independent transform/JVP/VJP tests. One-hot encoding with stored
-  category order remains open.
-- [ ] Add one-hot encoding with a stored category order, missing-indicator
-  features, and sparse feature views. Column selection is implemented for basis
-  unions; general transformer columns remain open.
+  and independent transform/JVP/VJP tests.
+- [x] Add `one_hot_encoder_t` for integer categorical columns with deterministic
+  per-feature sorted categories, packed category/output offsets, optional
+  reference-category dropping, explicit unknown error/ignore behavior, and
+  missing error/ignore/category policies. Its categorical JVP/VJP methods
+  validate shapes and return an explicit `FORTNUM_NOT_IMPLEMENTED` boundary
+  rather than claiming a derivative that has no canonical meaning. Independent
+  value, metadata, policy, and refusal tests are in `test_one_hot_encoder`.
+- [ ] Add missing-indicator features and sparse CSR/CSC one-hot views. Column
+  selection is implemented for basis unions; general transformer columns remain
+  open. The benchmark lane must add dense one-hot correctness and throughput
+  comparisons before this family is called performance-complete.
 - [ ] Add robust scaling, quantile and power transforms, normalization,
   missing-indicator features, ordinal encoding, target encoding with leakage
   guards, polynomial interactions, hashing, and sparse CSR/CSC feature views.
