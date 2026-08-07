@@ -118,7 +118,7 @@ contains
                 "CUDA MSE: native reduction failed")
             return
         end if
-        call device%record_device_to_host(8_int64, transfer_status)
+        call device%record_device_to_host(block_count*8_int64, transfer_status)
         call device%end_residency(end_status)
         if (transfer_status%code /= FORTNUM_OK) then
             status = transfer_status

@@ -125,8 +125,9 @@ building block for the shared weighted regression metric. It accepts
 column-major host target and prediction matrices plus optional row weights,
 copies them explicitly to a temporary allocation on the selected device, and
 performs the squared-error and block reduction in
-`src/validation/fortml_cuda_metrics.cu`. Only the final scalar is copied back;
-there is no hidden CPU metric fallback. `fortml_cuda_mse_available()` and
+`src/validation/fortml_cuda_metrics.cu`. The block partials are copied back
+for the final scalar accumulation, and the wrapper records the exact transfer
+bytes/events; there is no hidden CPU metric fallback. `fortml_cuda_mse_available()` and
 `fortml_device` capability probing report whether the native object is linked.
 The ordinary Fortran build therefore gives a typed `FORTNUM_NOT_IMPLEMENTED`
 refusal, while `test/run_cuda_metric.sh` builds the CUDA object with `nvcc`

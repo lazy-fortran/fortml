@@ -425,8 +425,10 @@ is the explicit native-CUDA counterpart for the weighted MSE reduction. It
 requires a selected, available CUDA context and contiguous finite host arrays
 with matching nonempty shapes. The native path copies the arrays to a
 temporary device allocation, performs the elementwise squared-error and block
-reduction on CUDA, then copies one scalar back; the transfer-inclusive
-boundary is intentional and is never relabeled as resident model execution.
+reduction on CUDA, then copies the block partials back for the final scalar
+accumulation; the transfer-inclusive boundary is intentional and is never
+relabeled as resident model execution. The device context records the exact
+temporary residency and transfer counters.
 Weights are finite, nonnegative, and have positive mass. The default Fortran
 build links an unavailable stub, so the routine returns
 `FORTNUM_NOT_IMPLEMENTED` without changing the output when no native CUDA
