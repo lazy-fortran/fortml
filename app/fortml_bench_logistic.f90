@@ -43,7 +43,7 @@ program fortml_bench_logistic
     if (accuracy < 0.95_dp .or. maxval(abs(sum(probabilities, dim=2) - 1.0_dp)) > 1.0e-14_dp) then
         error stop "logistic benchmark correctness oracle failed"
     end if
-    call write_oracle(accuracy, maxval(abs(sum(probabilities, dim=2) - 1.0_dp)))
+    call write_oracle(labels, predicted, probabilities)
     if (oracle_only_requested()) stop
 
     call system_clock(clock_start, clock_rate)
@@ -69,16 +69,25 @@ program fortml_bench_logistic
 
 contains
 
-    subroutine write_oracle(value, normalization_error)
-        real(dp), intent(in) :: value, normalization_error
+    subroutine write_oracle(target, prediction, probability)
+        integer, intent(in) :: target(:), prediction(:)
+        real(dp), intent(in) :: probability(:, :)
         character(len=1024) :: path
-        integer :: unit, environment_status
+        integer :: i, j, unit, environment_status
 
         call get_environment_variable("FORTML_BENCH_ORACLE", path, status=environment_status)
         if (environment_status /= 0 .or. len_trim(path) == 0) return
         open (newunit=unit, file=trim(path), status="replace", action="write")
-        write (unit, '(a,es26.17e3)') "accuracy,", value
-        write (unit, '(a,es26.17e3)') "normalization_error,", normalization_error
+        write (unit, '(a)') "quantity,row,column,value"
+        do i = 1, size(target)
+            write (unit, '(a,i0,a,i0,a,i0)') "target,", i, ",1,", target(i)
+            write (unit, '(a,i0,a,i0,a,i0)') &
+                "prediction,", i, ",1,", prediction(i)
+            do j = 1, size(probability, 2)
+                write (unit, '(a,i0,a,i0,a,es26.17e3)') &
+                    "probability,", i, ",", j, ",", probability(i, j)
+            end do
+        end do
         close (unit)
     end subroutine write_oracle
 
