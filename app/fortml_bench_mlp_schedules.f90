@@ -6,16 +6,17 @@ program fortml_bench_mlp_schedules
     use fortml_mlp_schedules, only: &
         mlp_learning_rate_schedule_t, make_mlp_schedule_constant, &
         make_mlp_schedule_linear_warmup, make_mlp_schedule_cosine_decay, &
-        make_mlp_schedule_warmup_cosine, make_mlp_schedule_exponential_decay
+        make_mlp_schedule_warmup_cosine, make_mlp_schedule_exponential_decay, &
+        make_mlp_schedule_one_cycle
     implicit none
 
-    integer, parameter :: schedule_count = 5, update_count = 5
+    integer, parameter :: schedule_count = 6, update_count = 5
     integer, parameter :: updates(update_count) = [1, 2, 5, 10, 12]
     integer, parameter :: repetitions = 4096
     real(dp), parameter :: base_rate = 0.2_dp
     type(mlp_learning_rate_schedule_t) :: schedules(schedule_count)
     type(fortnum_status_t) :: status
-    real(dp) :: rate, d_base, d_min, d_decay, elapsed
+    real(dp) :: rate, d_base, d_min, d_decay, d_peak, d_final, elapsed
     real(dp) :: sink
     integer(int64) :: clock_start, clock_end, clock_rate
     integer :: schedule_index, update_index, repetition, oracle_unit
@@ -27,6 +28,7 @@ program fortml_bench_mlp_schedules
     schedules(3) = make_mlp_schedule_cosine_decay(10, 0.1_dp)
     schedules(4) = make_mlp_schedule_warmup_cosine(2, 10, 0.2_dp)
     schedules(5) = make_mlp_schedule_exponential_decay(2, 0.8_dp)
+    schedules(6) = make_mlp_schedule_one_cycle(2, 10, 4.0_dp, 0.1_dp)
     do schedule_index = 1, schedule_count
         if (.not. schedules(schedule_index)%valid()) then
             error stop "MLP schedule benchmark: invalid fixture"
@@ -43,14 +45,17 @@ program fortml_bench_mlp_schedules
         do schedule_index = 1, schedule_count
             do update_index = 1, update_count
                 index = 100*(schedule_index-1) + updates(update_index)
-                call schedules(schedule_index)%rate_with_derivatives( &
-                    updates(update_index), base_rate, rate, d_base, d_min, d_decay, status)
+                call schedules(schedule_index)%rate_with_full_derivatives( &
+                    updates(update_index), base_rate, rate, d_base, d_min, d_decay, &
+                    d_peak, d_final, status)
                 if (.not. status_ok(status)) error stop &
                     "MLP schedule benchmark: evaluation failed"
                 write (oracle_unit, '(a,i0,a,es26.17e3)') "rate,", index, ",", rate
                 write (oracle_unit, '(a,i0,a,es26.17e3)') "d_base_rate,", index, ",", d_base
                 write (oracle_unit, '(a,i0,a,es26.17e3)') "d_min_rate_fraction,", index, ",", d_min
                 write (oracle_unit, '(a,i0,a,es26.17e3)') "d_decay_factor,", index, ",", d_decay
+                write (oracle_unit, '(a,i0,a,es26.17e3)') "d_peak_rate_fraction,", index, ",", d_peak
+                write (oracle_unit, '(a,i0,a,es26.17e3)') "d_final_rate_fraction,", index, ",", d_final
             end do
         end do
         close (oracle_unit)
@@ -62,11 +67,12 @@ program fortml_bench_mlp_schedules
     do repetition = 1, repetitions
         do schedule_index = 1, schedule_count
             do update_index = 1, update_count
-                call schedules(schedule_index)%rate_with_derivatives( &
-                    updates(update_index), base_rate, rate, d_base, d_min, d_decay, status)
+                call schedules(schedule_index)%rate_with_full_derivatives( &
+                    updates(update_index), base_rate, rate, d_base, d_min, d_decay, &
+                    d_peak, d_final, status)
                 if (.not. status_ok(status)) error stop &
                     "MLP schedule benchmark: timing evaluation failed"
-                sink = sink + rate + d_base + d_min + d_decay
+                sink = sink + rate + d_base + d_min + d_decay + d_peak + d_final
             end do
         end do
     end do

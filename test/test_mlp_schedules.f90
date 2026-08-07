@@ -6,14 +6,15 @@ program test_mlp_schedules
         mlp_learning_rate_schedule_t, make_mlp_schedule_constant, &
         make_mlp_schedule_linear_warmup, make_mlp_schedule_cosine_decay, &
         make_mlp_schedule_warmup_cosine, make_mlp_schedule_exponential_decay, &
+        make_mlp_schedule_one_cycle, &
         MLP_SCHEDULE_CONSTANT, MLP_SCHEDULE_LINEAR_WARMUP, &
         MLP_SCHEDULE_COSINE_DECAY, MLP_SCHEDULE_WARMUP_COSINE, &
-        MLP_SCHEDULE_EXPONENTIAL_DECAY
+        MLP_SCHEDULE_EXPONENTIAL_DECAY, MLP_SCHEDULE_ONE_CYCLE
     implicit none
 
     type(mlp_learning_rate_schedule_t) :: schedule, invalid
     type(fortnum_status_t) :: status
-    real(dp) :: rate, dbase, dmin, ddecay, plus, minus, h, base
+    real(dp) :: rate, dbase, dmin, ddecay, dpeak, dfinal, plus, minus, h, base
     real(dp) :: expected, pi, progress
     integer :: failures
 
@@ -85,6 +86,40 @@ program test_mlp_schedules
     call schedule%rate(2, base, rate, status)
     call check(status_ok(status) .and. abs(rate-base) < 1.0e-15_dp, &
         "exponential warmup plateau", failures)
+
+    schedule = make_mlp_schedule_one_cycle(2, 10, 4.0_dp, 0.1_dp)
+    call check(schedule%kind == MLP_SCHEDULE_ONE_CYCLE .and. schedule%valid(), &
+        "one-cycle schedule metadata", failures)
+    call schedule%rate_with_full_derivatives(1, base, rate, dbase, dmin, ddecay, &
+        dpeak, dfinal, status)
+    call check(status_ok(status) .and. abs(rate-0.5_dp*base*(1.0_dp+4.0_dp)) < 1.0e-15_dp .and. &
+        abs(dbase-2.5_dp) < 1.0e-15_dp .and. abs(dpeak-0.5_dp*base) < 1.0e-15_dp .and. &
+        abs(dfinal) < 1.0e-15_dp .and. abs(dmin) < 1.0e-15_dp .and. &
+        abs(ddecay) < 1.0e-15_dp, "one-cycle warmup products", failures)
+    call schedule%rate_with_full_derivatives(6, base, rate, dbase, dmin, ddecay, &
+        dpeak, dfinal, status)
+    call check(status_ok(status) .and. rate < base*4.0_dp .and. rate > base*0.1_dp .and. &
+        dpeak > 0.0_dp .and. dfinal > 0.0_dp, "one-cycle cosine products", failures)
+    call schedule%rate_with_full_derivatives(6, base, rate, dbase, dmin, ddecay, &
+        dpeak, dfinal, status)
+    schedule%peak_rate_fraction = schedule%peak_rate_fraction+h
+    call schedule%rate(6, base, plus, status)
+    schedule%peak_rate_fraction = schedule%peak_rate_fraction-2.0_dp*h
+    call schedule%rate(6, base, minus, status)
+    schedule%peak_rate_fraction = schedule%peak_rate_fraction+h
+    call check(abs(dpeak-(plus-minus)/(2.0_dp*h)) < 2.0e-10_dp, &
+        "one-cycle peak-rate finite difference", failures)
+    schedule%final_rate_fraction = schedule%final_rate_fraction+h
+    call schedule%rate(6, base, plus, status)
+    schedule%final_rate_fraction = schedule%final_rate_fraction-2.0_dp*h
+    call schedule%rate(6, base, minus, status)
+    schedule%final_rate_fraction = schedule%final_rate_fraction+h
+    call check(abs(dfinal-(plus-minus)/(2.0_dp*h)) < 2.0e-10_dp, &
+        "one-cycle final-rate finite difference", failures)
+    call check(.not. schedule%device_supported(2), &
+        "one-cycle CUDA capability refusal", failures)
+    invalid = make_mlp_schedule_one_cycle(2, 10, 0.5_dp, 0.1_dp)
+    call check(.not. invalid%valid(), "one-cycle peak below initial refusal", failures)
 
     invalid = mlp_learning_rate_schedule_t(kind=MLP_SCHEDULE_WARMUP_COSINE, &
         warmup_updates=4, total_updates=4, min_rate_fraction=0.1_dp)
