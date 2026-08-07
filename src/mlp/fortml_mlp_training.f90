@@ -236,8 +236,7 @@ contains
         end do
 
         call shrink_history(result%loss_history, result%epochs)
-        if (config%restore_best .and. result%best_epoch > 0 .and. &
-                result%best_epoch < result%epochs) then
+        if (config%restore_best .and. result%best_epoch < result%epochs) then
             theta = best_theta
             call model%set_parameters(theta, status)
             if (status%code /= FORTNUM_OK) then
