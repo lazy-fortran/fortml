@@ -1,12 +1,27 @@
 #include <cuda_runtime.h>
 
+#include "fortml_cuda_mse_plan.h"
+
 #include <cmath>
 #include <cstddef>
+#include <new>
 #include <vector>
 
 namespace {
 
 constexpr int kThreads = 256;
+
+struct MsePlan {
+  double* target = nullptr;
+  double* prediction = nullptr;
+  double* sample_weight = nullptr;
+  double* block_sum = nullptr;
+  int n_samples = 0;
+  int n_outputs = 0;
+  int blocks = 0;
+  double denominator = 0.0;
+  int device_index = 0;
+};
 
 __global__ void weighted_mse_kernel(const double* target,
                                     const double* prediction,
@@ -102,4 +117,93 @@ extern "C" int fortml_cuda_mean_squared_error(
   cudaFree(device_weight);
   cudaFree(device_block_sum);
   return error == cudaSuccess ? 0 : 2;
+}
+
+extern "C" int fortml_cuda_mse_plan_create(
+    const double* target, const double* prediction, const double* sample_weight,
+    int n_samples, int n_outputs, int device_index, void** opaque_plan) {
+  if (opaque_plan == nullptr || target == nullptr || prediction == nullptr ||
+      n_samples <= 0 || n_outputs <= 0 || device_index < 0) return 1;
+  const std::size_t count = static_cast<std::size_t>(n_samples) *
+      static_cast<std::size_t>(n_outputs);
+  if (!finite_array(target, count) || !finite_array(prediction, count)) return 1;
+  double denominator = static_cast<double>(n_samples);
+  if (sample_weight != nullptr) {
+    if (!finite_array(sample_weight, static_cast<std::size_t>(n_samples))) return 1;
+    denominator = 0.0;
+    for (int row = 0; row < n_samples; ++row) {
+      if (sample_weight[row] < 0.0) return 1;
+      denominator += sample_weight[row];
+    }
+    if (!(denominator > 0.0) || !std::isfinite(denominator)) return 1;
+  }
+  cudaError_t error = cudaSetDevice(device_index);
+  if (error != cudaSuccess) return static_cast<int>(error);
+  MsePlan* plan = new (std::nothrow) MsePlan();
+  if (plan == nullptr) return 1;
+  plan->n_samples = n_samples;
+  plan->n_outputs = n_outputs;
+  plan->blocks = static_cast<int>((count + kThreads - 1) / kThreads);
+  plan->denominator = denominator;
+  plan->device_index = device_index;
+  error = cudaMalloc(&plan->target, count * sizeof(double));
+  if (error == cudaSuccess) error = cudaMalloc(&plan->prediction, count * sizeof(double));
+  if (error == cudaSuccess && sample_weight != nullptr)
+    error = cudaMalloc(&plan->sample_weight, static_cast<std::size_t>(n_samples) * sizeof(double));
+  if (error == cudaSuccess)
+    error = cudaMalloc(&plan->block_sum, static_cast<std::size_t>(plan->blocks) * sizeof(double));
+  if (error == cudaSuccess)
+    error = cudaMemcpy(plan->target, target, count * sizeof(double), cudaMemcpyHostToDevice);
+  if (error == cudaSuccess)
+    error = cudaMemcpy(plan->prediction, prediction, count * sizeof(double), cudaMemcpyHostToDevice);
+  if (error == cudaSuccess && sample_weight != nullptr)
+    error = cudaMemcpy(plan->sample_weight, sample_weight,
+                       static_cast<std::size_t>(n_samples) * sizeof(double),
+                       cudaMemcpyHostToDevice);
+  if (error != cudaSuccess) {
+    cudaFree(plan->target);
+    cudaFree(plan->prediction);
+    cudaFree(plan->sample_weight);
+    cudaFree(plan->block_sum);
+    delete plan;
+    return static_cast<int>(error);
+  }
+  *opaque_plan = plan;
+  return 0;
+}
+
+extern "C" int fortml_cuda_mse_plan_execute(void* opaque_plan, double* value) {
+  if (opaque_plan == nullptr || value == nullptr) return 1;
+  MsePlan* plan = static_cast<MsePlan*>(opaque_plan);
+  cudaError_t error = cudaSetDevice(plan->device_index);
+  if (error != cudaSuccess) return static_cast<int>(error);
+  const std::size_t count = static_cast<std::size_t>(plan->n_samples) *
+      static_cast<std::size_t>(plan->n_outputs);
+  weighted_mse_kernel<<<plan->blocks, kThreads>>>(
+      plan->target, plan->prediction, plan->sample_weight, plan->block_sum,
+      count, plan->n_samples);
+  error = cudaGetLastError();
+  if (error == cudaSuccess) error = cudaDeviceSynchronize();
+  if (error != cudaSuccess) return static_cast<int>(error);
+  std::vector<double> block_sum(static_cast<std::size_t>(plan->blocks));
+  error = cudaMemcpy(block_sum.data(), plan->block_sum,
+                     block_sum.size() * sizeof(double), cudaMemcpyDeviceToHost);
+  if (error != cudaSuccess) return static_cast<int>(error);
+  double total = 0.0;
+  for (double partial : block_sum) total += partial;
+  *value = total / (plan->denominator * static_cast<double>(plan->n_outputs));
+  return std::isfinite(*value) ? 0 : 1;
+}
+
+extern "C" int fortml_cuda_mse_plan_destroy(void* opaque_plan) {
+  if (opaque_plan == nullptr) return 0;
+  MsePlan* plan = static_cast<MsePlan*>(opaque_plan);
+  cudaError_t error = cudaSetDevice(plan->device_index);
+  if (error != cudaSuccess) return static_cast<int>(error);
+  error = cudaFree(plan->target);
+  if (error == cudaSuccess) error = cudaFree(plan->prediction);
+  if (error == cudaSuccess) error = cudaFree(plan->sample_weight);
+  if (error == cudaSuccess) error = cudaFree(plan->block_sum);
+  delete plan;
+  return static_cast<int>(error);
 }
