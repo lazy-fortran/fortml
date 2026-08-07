@@ -127,7 +127,7 @@ multiclass, weighted, probabilistic, derivative, or GPU coverage.
 | --- | --- | --- | --- |
 | Classification | binary, multinomial/softmax, OVR, OVO, multilabel, Naive Bayes, LDA/QDA, tree, neural, Laplace GP, variational GP, calibrated, ordinal | binary/softmax/OVR/OVO/multilabel and weighted ordinal cumulative-logit heads, weighted Gaussian/Bernoulli/Multinomial/Complement/Categorical NB, weighted LDA/QDA, CART, MLP, binary/OVR Laplace GP, Platt sigmoid and weighted PAVA isotonic calibration, exact and histogram boosted trees | sparse/multioutput multilabel, ordinal GP and variational/coupled GP likelihoods, resident GPU training, shared preprocessing/search |
 | Regression | OLS, weighted/ridge/lasso/elastic-net, robust, quantile, GLM, multi-output, partial-fit | dense OLS, weighted ridge, weighted elastic-net/lasso, weighted linear SVR, weighted Poisson/Gamma log-link GLM, exact/histogram XGBoost-style squared/Huber/quantile regression with bounded FortOpt L-BFGS-B and fixed-state products, multi-output fixed-fit products | Tweedie, positive/Bayesian/ARD, partial-fit, fit-time/hyperparameter products, resident GPU kernels |
-| Ensembles | CART, random/extra forests, bagging, AdaBoost, histogram boosting, XGBoost/LightGBM ranking/categorical/DART | weighted CART, deterministic seeded random-forest classification, squared/Huber/quantile boosting, exact and bounded histogram second-order XGBoost-style binary/OVR, and exact/histogram per-feature monotonic constraints | extra-trees/bagging/AdaBoost, ranking/categorical/interaction constraints, DART/GOSS/EFB, distributed and resident GPU histograms |
+| Ensembles | CART, random/extra forests, bagging, AdaBoost, histogram boosting, XGBoost/LightGBM ranking/categorical/DART | weighted CART, deterministic seeded random-forest and randomized-threshold Extra-Trees classification, squared/Huber/quantile boosting, exact and bounded histogram second-order XGBoost-style binary/OVR, and exact/histogram per-feature monotonic constraints | bagging/AdaBoost, ranking/categorical/interaction constraints, DART/GOSS/EFB, distributed and resident GPU histograms |
 | Gaussian processes | exact, derivative observations, multitask, sparse/variational, SKI/lazy, local experts, classification | exact and derivative GPs with RBF, Matérn, periodic, rational-quadratic, cosine, polynomial, linear, constant, white-noise, user, sum, and product leaves, sparse/local/SKI/structured operators, binary/OVR Laplace classification | full likelihood/kernel catalog, batch/multitask/variational classification, implicit derivatives, resident GPU solves |
 | Neural and physics models | MLP, CNN, RNN/GRU/LSTM, attention, autoencoder/VAE, BNN, HNN/LNN/symplectic/PINN | MLP/MLP classifier, named sequential `mlp_chain_t`, BNN, VAE, vanilla RNN, Hamiltonian MLP, selected optimizer hypergradients | broader module tree, recurrent/attention/convolution families, full products, GP/linear initialization, physics residual and long-horizon GPU gates |
 
@@ -247,10 +247,13 @@ when a lower-level primitive already exists.
   and support-vector metadata remain open.
 - [ ] Calibration workflows: Platt/sigmoid, isotonic, temperature scaling,
   reliability diagrams, class weighting, and calibration-aware cross-validation.
-- [ ] Random forests, extra trees, bagging, AdaBoost, random patches, and
-  histogram gradient boosting with staged prediction, warm starts, feature
-  importance, missing/categorical values, monotonic constraints, and permutation
-  importance.
+- [x] Deterministic seeded random-forest and randomized-threshold Extra-Trees
+  classifiers provide aligned probabilities, arbitrary integer labels, Gini or
+  entropy criteria, depth/leaf controls, positive sample weights, seeded
+  reproducibility, and explicit CPU/CUDA device contracts. Bagging, AdaBoost,
+  random patches, histogram gradient boosting, staged/warm-start APIs,
+  feature importance, missing/categorical values, monotonic constraints, and
+  permutation importance remain open.
 - [x] Binary and one-vs-rest XGBoost-style staged predictions, cumulative
   margins, gain/weight/cover feature-importance diagnostics, and fixed-tree
   input JVP/VJP products with split-boundary refusals.
@@ -1569,6 +1572,10 @@ peak memory, and batch-size scaling with the same correctness gate as training.
   direct NumPy threshold oracle, aligned probability-simplex checks, CPU fit
   and prediction timings, and an explicit CUDA refusal in
   [`results/RANDOM_FOREST.md`](../fortml-bench/results/RANDOM_FOREST.md).
+- [x] Add the deterministic randomized-threshold Extra-Trees classifier
+  benchmark with an independent direct NumPy threshold oracle, aligned
+  probability-simplex checks, CPU fit and prediction timings, and an explicit
+  CUDA refusal in [`results/EXTRA_TREES.md`](../fortml-bench/results/EXTRA_TREES.md).
 - [x] Add the PCA-initialized tied linear-autoencoder lane with an independent
   centered thin-SVD reconstruction oracle, exact RMSE agreement, CPU timing,
   and an explicit CUDA refusal in
