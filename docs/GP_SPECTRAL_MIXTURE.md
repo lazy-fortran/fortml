@@ -15,6 +15,11 @@ and `scales` have shape
 `(num_mixtures, input_dim)`.  The constructor validates dimensions, positivity,
 and finiteness before allocating state.
 
+GPyTorch's default constraint keeps mixture means positive.  FortML accepts
+signed physical means as well; the cosine factor makes `+mu` and `-mu`
+equivalent, so this preserves the same covariance family without forcing a
+redundant positivity transform.
+
 The packed parameter contract is compositional and stable:
 
 ```
