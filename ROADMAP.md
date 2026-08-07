@@ -719,6 +719,13 @@ return status errors.
   mathematically defined, and partial-fit propagation for streaming data.
 - [ ] Add deterministic train/test, K-fold, stratified K-fold, and grouped split
   iterators plus cross-validation scoring and routed parameters.
+- [x] Add `fortml_hyperparameter_search` orchestration for deterministic bounded
+  Cartesian grids and FortOpt L-BFGS-B. The grid path guards product overflow,
+  requires complete finite value/gradient objectives, and records every
+  evaluation; the L-BFGS-B path consumes the same analytic callback without
+  hidden finite differences. Independent quadratic tests and a release
+  benchmark cover the CPU optimum and typed CUDA refusal until resident search
+  state and objective kernels are linked.
 - [ ] Add grid and seeded random parameter search after estimator cloning and
   scoring are stable.
 - [ ] Add successive-halving, Bayesian, and differentiable hyperparameter
