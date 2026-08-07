@@ -28,6 +28,8 @@ module fortml_logistic_regression
         procedure, public :: predict => logistic_predict
         procedure, public :: coefficients => logistic_coefficients
         procedure, public :: intercept_value => logistic_intercept_value
+        procedure, public :: regularization => logistic_regularization
+        procedure, public :: set_regularization => logistic_set_regularization
         procedure, public :: classes => logistic_classes
         procedure, public :: feature_count => logistic_feature_count
         procedure, public :: parameter_count => logistic_parameter_count
@@ -559,6 +561,26 @@ contains
 
         value = self%intercept
     end function logistic_intercept_value
+
+    real(dp) function logistic_regularization(self) result(value)
+        class(logistic_regression_t), intent(in) :: self
+
+        value = self%l2
+    end function logistic_regularization
+
+    subroutine logistic_set_regularization(self, value, status)
+        class(logistic_regression_t), intent(inout) :: self
+        real(dp), intent(in) :: value
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. ieee_is_finite(value) .or. value < 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "logistic set_regularization: L2 coefficient is invalid")
+            return
+        end if
+        self%l2 = value
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine logistic_set_regularization
 
     function logistic_classes(self) result(labels)
         class(logistic_regression_t), intent(in) :: self
