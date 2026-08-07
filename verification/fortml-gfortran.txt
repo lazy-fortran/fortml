@@ -1,14 +1,15 @@
 Verification date: 2026-08-08
-FortML revision: 2c973fc6a983bd0d0fa39397cd378d6773a624b5
+FortML revision: dbb43896d7848d8fe455db37ef8474301869fee6
 FortAD dependency: clean origin/main 3a3e94263a40f6a349f179f6ff5b982da7f1d930
+FortNum dependency: clean origin/main 38bc0e578ec5c6c0e636e8fdd3844f54f9e3e473
 Command: fo (clean FortML/FortAD verification worktrees under /mnt/storage)
 Worktree: /mnt/storage/code/lazy-fortran/fortml-clean-final
-Static: OK (372 modules, 372 changed, 372 affected)
-First build: OK (792 units)
-Second build: OK (713 units)
-Tests: OK (170/170)
-Lint: OK
-Result: All stages passed
+Static: OK (380 modules, 380 changed, 380 affected)
+First build: OK (798 units)
+Second build: OK (798 units)
+Tests: OK (173/173)
+Lint: WARN (0 unused imports; 1720 compiler warnings; fo exits nonzero)
+Result: Build and behavioral stages passed; lint warning gate remains open
 Warnings: existing non-fatal GNU -Warray-temporaries in FortML/FortAD,
 FortNum/FortFront dependencies, XGBoost benchmark applications, and generated
 Matérn/RBF product applications.
