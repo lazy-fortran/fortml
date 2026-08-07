@@ -62,6 +62,7 @@ not supplied through a hidden generic interface.
 | `gaussian_naive_bayes_t` | Log probabilities and probabilities | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
 | `bernoulli_naive_bayes_t` | Log probabilities and probabilities | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
 | `multinomial_naive_bayes_t` | Log probabilities and probabilities | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
+| `complement_naive_bayes_t` | Log probabilities and probabilities | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
 | `basis_map_t` | `evaluate` | Parameters and inputs | Parameters and inputs | No |
 | `one_hot_encoder_t` | Dense one-hot `transform` | Refused: integer categories have no canonical tangent space | Refused: integer categories have no canonical cotangent space | No |
 | `mlp_t` | `predict` | Parameters and inputs | Parameters and inputs | Weighted-output HVP |
@@ -244,6 +245,27 @@ Input and packed-parameter JVP/VJP products cover log probabilities and
 probabilities, including the simplex and log-softmax projections. Negative or
 nonfinite counts, nonpositive smoothing, malformed packs, nonpositive class
 mass, unfitted models, and nonfinite prediction inputs are refused.
+
+### `fortml_complement_naive_bayes`
+
+`complement_naive_bayes_t%fit(x,labels,status[,alpha,priors,sample_weight,
+class_weight,norm])` fits Complement Naive Bayes on finite nonnegative real
+counts. Classes are sorted integer labels. For class `c`, the feature mass is
+formed from all weighted rows outside `c`, smoothed by positive `alpha`, and
+converted to the positive complement weight `-log(q)`. With `norm=.true.`,
+each class's weights receive the second normalization used by ComplementNB.
+Empirical or explicit sorted-class priors supply the differentiable intercept.
+
+`predict_log_proba`, `predict_proba`, and `predict` use stable normalization and
+deterministic first-class ties. `feature_probabilities`, `feature_weights`,
+`feature_counts`, `weighted_class_counts`, `class_prior`, `alpha_value`,
+`norm_enabled`, `parameter_count`, `parameters`, and `set_parameters` expose
+the fitted state. Packed parameters contain the complement probability matrix
+in Fortran column-major order followed by the normalized class-prior block.
+Input and packed-parameter JVP/VJP products cover log probabilities and
+probabilities. Negative/nonfinite counts, nonpositive smoothing, malformed
+packs, nonpositive effective class mass, unfitted models, and nonfinite query
+inputs are refused.
 
 ### `fortml_classification_metrics`
 
@@ -526,14 +548,21 @@ structures, and implicit integrators remain separate research contracts.
 ### `fortml_mlp_training`
 
 `mlp_train(model,x,target,status,options,state[,validation_x,validation_target,checkpoint])`
-trains an existing `mlp_t` with deterministic Adam or FortOpt-backed SGD. A zero `batch_size`
+trains an existing `mlp_t` with deterministic Adam, AdamW, or FortOpt-backed SGD. A zero `batch_size`
 selects full-batch updates.
 Mini-batch shuffling uses an explicit Park-Miller stream controlled by
 `shuffle_seed`, and does not mutate process-global random state. The options
 also provide optimizer selection (`MLP_OPTIMIZER_ADAM` or
-`MLP_OPTIMIZER_SGD`), learning-rate and Adam coefficients, optional SGD
+`MLP_OPTIMIZER_SGD` or `MLP_OPTIMIZER_ADAMW`), learning-rate and Adam
+coefficients, optional SGD
 momentum/Nesterov acceleration, L2 regularization, gradient tolerance,
 patience, best-state restoration, and an epoch callback.
+`MLP_OPTIMIZER_ADAMW` uses the same bias-corrected moments as Adam and applies
+decoupled multiplicative `weight_decay` after each update. Weight decay is
+validated as finite and non-negative, is checkpointed with the optimizer
+configuration, and is compared on resume. The update trajectory is analytic
+for fixed options; optimizer-trajectory hypergradients through learning rate,
+decay, moments, and stopping remain a separate capability.
 
 `mlp_training_state_t` records epoch and update counts, the best epoch and
 loss, the final loss and gradient norm, convergence flags, a compact loss
