@@ -109,7 +109,7 @@ only listed as gaps:
   coefficients are packed per output after kernel and log-noise parameters, and
   prediction and likelihood products include their analytic JVP/VJP/HVP terms.
   ARD, priors, and sparse/multitask mean routing remain open. A dedicated
-  release benchmark for this mean block remains the next evidence task.
+  release benchmark is `results/GP_MEAN.md` in `fortml-bench`.
 - XGBoost validation monitoring accepts typed validation arrays, computes
   objective-native weighted validation loss, records best iteration and loss,
   and supports restore-best or retain-all ensembles. Warm starts, serialized
