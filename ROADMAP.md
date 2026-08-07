@@ -19,7 +19,7 @@ Extra-Trees, grouped MLP HVP, basis/pipeline HVP, cosine derivative-GP,
 multilabel/ROC-AUC ranking, derivative-GP capability refusals, resident-MSE
 contract, resident forest plan boundary, and PCA-initialized linear
 autoencoder slices. The
-build emits four GNU array-temporary warnings in the grouped-MLP benchmark app;
+build emits three GNU array-temporary warnings in the grouped-MLP benchmark app;
 lint and all behavioral tests pass. NVIDIA compiler coverage remains an
 explicit older-build result.
 

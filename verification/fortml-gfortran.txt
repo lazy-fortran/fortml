@@ -5,7 +5,6 @@ fo build [####################] 746/746 100%
 fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_mlp_grouped_training.f90:36:17: Warning: Creating array temporary at (1) [-Warray-temporaries]
 fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_mlp_grouped_training.f90:36:17: Warning: Creating array temporary at (1) [-Warray-temporaries]
 fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_mlp_grouped_training.f90:36:17: Warning: Creating array temporary at (1) [-Warray-temporaries]
-fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_mlp_grouped_training.f90:36:17: Warning: Creating array temporary at (1) [-Warray-temporaries]
 Build: OK
 fo build [--------------------] 0/685 0%
 fo build [###################-] 684/685 99%
