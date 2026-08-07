@@ -107,8 +107,8 @@ end program exact_gp_example
 | Area | Public modules | Main limits |
 | --- | --- | --- |
 | Regression and features | `fortml_linear_regression`, `fortml_basis`, `fortml_pipeline` | Dense SVD fit. Basis HVPs are not exposed. Pipelines currently form horizontal unions of fixed basis stages. |
-| Classification | `fortml_logistic_regression`, `fortml_softmax_regression`, `fortml_losses` | FortOpt L-BFGS-B binary and multinomial fits, stable probabilities, deterministic integer-label ordering, and shared sigmoid/softmax cross-entropy products. Sample and class weights are planned. |
-| Neural models | `fortml_mlp`, `fortml_mlp_training`, `fortml_bnn`, `fortml_vae`, `fortml_rnn` | MLPs use deterministic Xavier/He initialization and Adam training; the recurrent model is one vanilla `tanh` RNN with a zero initial state |
+| Classification | `fortml_logistic_regression`, `fortml_softmax_regression`, `fortml_mlp_classifier`, `fortml_losses` | FortOpt L-BFGS-B linear fits and deterministic Adam multiclass MLP fits use stable probabilities and integer-label ordering. Sample and class weights are planned. |
+| Neural models | `fortml_mlp`, `fortml_mlp_training`, `fortml_mlp_classifier`, `fortml_bnn`, `fortml_vae`, `fortml_rnn` | MLPs use deterministic Xavier/He initialization, Adam training, and a multiclass logits classifier; the recurrent model is one vanilla `tanh` RNN with a zero initial state |
 | Trees and boosting | `fortml_tree` | Deterministic regression stumps and squared-loss residual boosting; histogram, classification, ranking, and XGBoost/LightGBM policies are planned |
 | Variational inference | `fortml_variational`, `fortml_sparse_gp` | `sparse_gp_t` has scalar targets and caller-supplied variational parameters |
 | Exact GPs | `fortml_kernels`, `fortml_gaussian_process`, `fortml_gp_training`, `fortml_derivative_gaussian_process`, `fortml_multi_output_gp` | Exact-GP hyperparameters can be optimized with FortOpt L-BFGS-B; derivative observations cover function values and first input derivatives |

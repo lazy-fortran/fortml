@@ -210,6 +210,23 @@ packed network gradient, and the analytic derivative with respect to the
 scalar L2 hyperparameter. This scalar product is the first outer
 hyperparameter-search seam for neural training.
 
+### `fortml_mlp_classifier`
+
+`mlp_classifier_t%fit(x,labels,status[,hidden_layer_sizes,options,state])`
+builds a deterministic MLP logits model and minimizes stable multiclass
+softmax cross-entropy with Adam. Integer labels are sorted and retained as
+class metadata. The final layer has one logit per class, and the options
+control hidden activation, seeded initialization and shuffling, mini-batches,
+L2 regularization, early stopping, and best-state restoration.
+
+`decision_function` returns logits, `predict_proba` applies the shared stable
+softmax, and `predict` maps the largest probability back to the stored labels.
+`classes`, `feature_count`, `class_count`, `parameter_count`, `parameters`,
+`set_parameters`, and `fitted` expose the state. `loss_gradient` returns the
+cross-entropy value and packed network gradient for a fitted model, which is
+the current neural-classifier derivative seam. Binary, multilabel, ordinal,
+sample-weighted, and GP likelihood classifier adapters remain roadmap work.
+
 ### `fortml_tree`
 
 `decision_stump_t%fit(x,y,status[,min_samples_leaf])` exhaustively selects the
