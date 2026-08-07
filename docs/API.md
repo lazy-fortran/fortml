@@ -98,6 +98,17 @@ tie rule that selects the second class. `coefficients()`, `intercept_value()`,
 Three-class data, one-class data, nonfinite inputs, invalid penalties, and
 shape mismatches return a domain or convergence status.
 
+### `fortml_classification_metrics`
+
+The shared metric procedures keep arbitrary integer labels and an explicit
+class order: `classification_accuracy`,
+`classification_balanced_accuracy`, `classification_confusion_matrix`, and
+`classification_precision_recall_f1`. `classification_accuracy` accepts an
+optional nonnegative sample-weight vector. `classification_log_loss` accepts a
+row-wise probability matrix, matching integer labels and class order, and
+optional sample weights. Shape, duplicate-class, unknown-label, nonfinite,
+negative-weight, and zero-weight-mass cases return a domain status.
+
 ### `fortml_losses`
 
 The loss facade provides stable matrix-valued `sigmoid_value`, `softmax_value`,
@@ -121,6 +132,17 @@ the stored class label with a first-column tie rule. `coefficients`,
 `intercept_values`, `classes`, `feature_count`, `class_count`, and `fitted`
 expose the model state. At least two distinct classes are required. Sample and
 class weighting remain a roadmap item shared with the binary classifier.
+
+### `fortml_preprocessing`
+
+`standard_scaler_t%fit` stores column means and population standard deviations.
+zero-variance columns use unit scale. `transform`, `inverse_transform`, and
+`transform_jvp` operate on row-oriented batches. `minmax_scaler_t%fit` stores
+column extrema and maps to an increasing caller-selected range (default
+`[0,1]`), with the same transform, inverse, and input-JVP operations. Fitted
+statistics are state rather than differentiable parameters. The JVPs are with
+respect to the input batch. Unfitted models, nonfinite values, and shape
+mismatches are refused.
 
 ### `fortml_basis`
 
@@ -208,7 +230,12 @@ loss, the final loss and gradient norm, convergence flags, and a compact loss
 history. `mlp_loss_value_gradient` returns the mean-squared-error value, the
 packed network gradient, and the analytic derivative with respect to the
 scalar L2 hyperparameter. This scalar product is the first outer
-hyperparameter-search seam for neural training.
+hyperparameter-search seam for neural training. `mlp_loss_hvp` adds the exact joint Hessian-vector
+product for a parameter direction and an L2 direction, including the mixed
+parameter/L2 block used by outer hyperparameter optimization. The HVP is
+checked against independent central differences for linear and nonlinear MLP
+fixtures. Optimizer-trajectory, learning-rate, and Adam-beta hypergradients
+remain separate contracts.
 
 ### `fortml_mlp_classifier`
 
@@ -240,6 +267,21 @@ prediction and input-JVP products are deterministic. Split selection is a
 discrete fit operation, so differentiable split surrogates, histogram growth,
 missing-value routing, classification objectives, and XGBoost/LightGBM policy
 variants remain in the tree roadmap.
+
+### `fortml_xgboost`
+
+`xgboost_t` is the exact depth-one second-order boosting foundation. Use
+`fit_regression` for a squared objective or `fit_binary` for a logistic
+objective. `xgboost_options_t` controls estimator count, learning rate,
+minimum leaf size, L1/L2 leaf regularization, split gamma, and minimum child
+Hessian. Candidate splits aggregate exact gradients and Hessians and use the
+regularized gain. `predict_margin`, `predict`, `predict_proba`,
+`decision_function`, `split_gain`, and `leaf_weights` expose diagnostics.
+`predict_jvp` is zero away from learned split boundaries and returns a
+structured refusal at a discontinuity. Depth greater than one, histogram
+quantile approximation, missing-value routing, categorical features, ranking,
+and constraints are deliberately refused until their independent contracts
+land.
 
 ### `fortml_bnn`
 
@@ -393,6 +435,21 @@ iteration limit or nonfinite objective returns a convergence status. The
 adapter currently targets exact fitted GPs. Derivative-observation,
 multi-output, and approximate GP training objectives remain separate roadmap
 adapters.
+
+### `fortml_gp_classification`
+
+`gp_classification_t%fit(x,labels,kernel,status[,options,state])` fits a binary
+Laplace GP classifier. Labels are arbitrary integers and are retained in
+ascending order. `GP_LIKELIHOOD_LOGISTIC` uses a MacKay logistic predictive
+integral. `GP_LIKELIHOOD_PROBIT` uses the analytic probit predictive map.
+`gp_classification_options_t` controls Newton iterations, damping, tolerance,
+and jitter. `predict_latent` returns posterior latent mean and variance.
+`predict_proba` returns two observed-probability columns. Both have input-JVP
+variants, and `predict` returns the stored integer labels. Every kernel that
+supplies the existing matrix and input-derivative contracts is supported.
+This is currently a Laplace binary classifier: variational likelihoods,
+multiclass coupling, kernel hyperparameter products, and derivative
+observations remain explicit roadmap work.
 
 ### `fortml_derivative_gaussian_process`
 

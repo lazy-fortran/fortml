@@ -100,6 +100,35 @@ parameter update. The adapter owns no duplicate covariance state. Bounds,
 convergence tolerances, and result diagnostics are explicit options, which
 leaves derivative-observation and approximate-GP adapters on the same seam.
 
+`fortml_gp_classification` reuses the kernel matrix and Cholesky boundaries for
+a binary Laplace classifier. Newton updates solve the symmetric
+`I + sqrt(W) K sqrt(W)` system, then prediction uses the posterior latent mean
+and variance. Logistic observations use the MacKay probability integral and
+probit observations use the closed-form Gaussian-CDF map. Latent and observed
+probability input JVPs are assembled from the kernel input derivatives, so a
+kernel that refuses an input derivative (for example a coincident Matérn
+1/2 query) propagates that refusal rather than silently differentiating a
+finite-difference approximation. The current classifier intentionally stops
+at binary Laplace inference. Variational and multiclass likelihoods need their
+own objective and state contracts.
+
+The exact depth-one `fortml_xgboost` lane is deliberately separate from the
+smooth derivative graph. Each boosting iteration computes objective gradients
+and Hessians at the current margins, exhaustively evaluates every feature
+threshold, and stores the regularized Newton leaf weights. Predictions are
+piecewise constant. Their input JVP is zero in an open leaf and refuses on a
+learned split. This makes the second-order objective contract testable without
+pretending that discrete split selection is differentiable. Deeper trees,
+histograms, missing-value routing, and categorical or monotonic constraints
+will be added as distinct policies with independent oracles.
+
+`fortml_preprocessing` keeps fitted statistics in model state and exposes only
+the smooth input derivative of a transform. Standard scaling uses unit scale
+for a constant column. Min-max scaling maps constant columns to the lower
+range endpoint. These choices are explicit so a basis pipeline can compose a
+scaler without inventing a hidden parameter derivative or changing the sample
+axis.
+
 ## Lazy operators and iterative solves
 
 `fortml_linear_operator` defines the matrix-free boundary used by scalable<!-- slop-ok -->
