@@ -14,7 +14,9 @@ program test_gp_multiclass_classification
     type(gp_multiclass_classification_state_t) :: state, repeat_state
     type(fortnum_status_t) :: status
     type(kernel_t) :: kernel
-    real(dp) :: x(9, 2), query(6, 2), probabilities(6, 3)
+    real(dp) :: x(9, 2), query(6, 2), query_dot(6, 2), query_plus(6, 2)
+    real(dp) :: query_minus(6, 2), probabilities(6, 3), probabilities_dot(6, 3)
+    real(dp) :: probabilities_plus(6, 3), probabilities_minus(6, 3)
     real(dp) :: repeat_probabilities(6, 3), probit_probabilities(6, 3)
     integer :: labels(9), predicted(9), query_predicted(6), classes(3)
     integer :: failures
@@ -35,6 +37,9 @@ program test_gp_multiclass_classification
     query(4, :) = [0.2_dp, 1.0_dp]
     query(5, :) = [1.0_dp, 0.2_dp]
     query(6, :) = [0.5_dp, 0.5_dp]
+    query_dot = 0.0_dp
+    query_dot(:, 1) = [0.2_dp, -0.1_dp, 0.3_dp, 0.0_dp, -0.2_dp, 0.1_dp]
+    query_dot(:, 2) = [-0.1_dp, 0.2_dp, 0.1_dp, -0.3_dp, 0.2_dp, 0.0_dp]
     failures = 0
 
     kernel = make_rbf_kernel(2, 1.5_dp, 0.55_dp, status)
@@ -58,6 +63,16 @@ program test_gp_multiclass_classification
     call model%predict(x, predicted, status)
     call check(status_ok(status) .and. count(predicted == labels) >= 8, &
         "one-vs-rest training behavior", failures)
+
+    call model%predict_proba_jvp(query, query_dot, probabilities, &
+        probabilities_dot, status)
+    query_plus = query + 1.0e-5_dp*query_dot
+    query_minus = query - 1.0e-5_dp*query_dot
+    call model%predict_proba(query_plus, probabilities_plus, status)
+    call model%predict_proba(query_minus, probabilities_minus, status)
+    call check(status_ok(status) .and. maxval(abs(probabilities_dot - &
+        (probabilities_plus - probabilities_minus)/(2.0e-5_dp))) < 3.0e-6_dp, &
+        "normalized probability JVP finite difference", failures)
 
     call repeat_model%fit(x, labels, kernel, status, options, repeat_state)
     call repeat_model%predict_proba(query, repeat_probabilities, status)

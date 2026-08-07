@@ -42,6 +42,8 @@ module fortml_gp_multiclass_classification
         procedure, public :: fit => gp_multiclass_classification_fit
         procedure, public :: predict_proba => &
             gp_multiclass_classification_predict_proba
+        procedure, public :: predict_proba_jvp => &
+            gp_multiclass_classification_predict_proba_jvp
         procedure, public :: predict => gp_multiclass_classification_predict
         procedure, public :: classes => gp_multiclass_classification_classes
         procedure, public :: class_count => gp_multiclass_classification_class_count
@@ -52,6 +54,7 @@ module fortml_gp_multiclass_classification
 
     public :: gp_multiclass_classification_fit
     public :: gp_multiclass_classification_predict_proba
+    public :: gp_multiclass_classification_predict_proba_jvp
     public :: gp_multiclass_classification_predict
 
 contains
@@ -166,6 +169,51 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine gp_multiclass_classification_predict_proba
+
+    subroutine gp_multiclass_classification_predict_proba_jvp( &
+            self, x, x_dot, probabilities, probabilities_dot, status)
+        class(gp_multiclass_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), x_dot(:, :)
+        real(dp), intent(out) :: probabilities(:, :), probabilities_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: binary_probabilities(:, :), binary_probability_dot(:, :)
+        real(dp), allocatable :: raw(:, :), raw_dot(:, :)
+        real(dp) :: normalization, normalization_dot
+        integer :: i, j
+
+        if (.not. prediction_shapes(self, x, probabilities, status)) return
+        if (any(shape(x_dot) /= shape(x)) .or. &
+            any(.not. ieee_is_finite(x_dot)) .or. &
+            any(shape(probabilities_dot) /= shape(probabilities))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP multiclass classification probability JVP: shape is invalid")
+            return
+        end if
+        allocate(binary_probabilities(size(x, 1), 2))
+        allocate(binary_probability_dot(size(x, 1), 2))
+        allocate(raw(size(x, 1), self%n_classes), raw_dot(size(x, 1), self%n_classes))
+        do j = 1, self%n_classes
+            call self%models(j)%predict_proba_jvp(x, x_dot, binary_probabilities, &
+                binary_probability_dot, status)
+            if (status%code /= FORTNUM_OK) return
+            raw(:, j) = binary_probabilities(:, 2)
+            raw_dot(:, j) = binary_probability_dot(:, 2)
+        end do
+        do i = 1, size(x, 1)
+            normalization = sum(raw(i, :))
+            normalization_dot = sum(raw_dot(i, :))
+            if (.not. ieee_is_finite(normalization) .or. &
+                normalization <= tiny(1.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "GP multiclass classification probability JVP: invalid sum")
+                return
+            end if
+            probabilities(i, :) = raw(i, :)/normalization
+            probabilities_dot(i, :) = (raw_dot(i, :)*normalization - &
+                raw(i, :)*normalization_dot)/(normalization*normalization)
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_multiclass_classification_predict_proba_jvp
 
     subroutine gp_multiclass_classification_predict(self, x, labels, status)
         class(gp_multiclass_classification_t), intent(in) :: self
