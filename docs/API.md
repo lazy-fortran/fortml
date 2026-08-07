@@ -49,6 +49,7 @@ not supplied through a hidden generic interface.
 | `logistic_regression_t` | Decision score and probabilities | Parameter/input JVP, probability JVP | Parameter/input VJP, probability VJP | No |
 | `softmax_regression_t` | Multiclass decision scores and probabilities | Parameter/input JVP, probability JVP | Parameter/input VJP, probability VJP | No |
 | `gaussian_naive_bayes_t` | Log probabilities and probabilities | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
+| `bernoulli_naive_bayes_t` | Log probabilities and probabilities | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
 | `basis_map_t` | `evaluate` | Parameters and inputs | Parameters and inputs | No |
 | `mlp_t` | `predict` | Parameters and inputs | Parameters and inputs | Weighted-output HVP |
 | `bnn_t` | `elbo` | ELBO | ELBO | ELBO |
@@ -57,8 +58,8 @@ not supplied through a hidden generic interface.
 | `kernel_t` | Scalar value and matrix | Parameter JVP | Parameter VJP | Parameter HVP |
 | `gp_regression_t` | Mean, variance, LML | Prediction and LML parameters | Prediction and LML parameters | Mean and LML parameters |
 | `gp_derivative_regression_t` | Mean, variance, and LML | Prediction and LML parameter JVP | Prediction parameter VJP and analytic LML hyperparameter gradient | Directional HVP (finite difference of the analytic gradient) |
-| `gp_classification_t` | Latent and observed probabilities | Input JVP | No fitted-parameter product | No |
-| `gp_multiclass_classification_t` | Normalized observed probabilities | Input JVP | No fitted-parameter product | No |
+| `gp_classification_t` | Latent and observed probabilities | Input JVP | Input VJP; Laplace-mode kernel hyperparameter gradient | No |
+| `gp_multiclass_classification_t` | Normalized observed probabilities | Input JVP | Input VJP; packed one-vs-rest Laplace-mode kernel hyperparameter gradient | No |
 | `multi_output_gp_t` | Correlated mean and LML | No | No | No |
 | Approximate GP types | Mean, variance, or ELBO as listed below | No | No | No |
 
@@ -183,6 +184,29 @@ The log-probability and probability methods expose input and packed-parameter
 JVP/VJP products. Products differentiate through the log-softmax normalization
 and the normalized prior block, and reject unfitted models, nonfinite values,
 invalid shapes, nonpositive variances, and nonsensical prior mass.
+
+### `fortml_bernoulli_naive_bayes`
+
+`bernoulli_naive_bayes_t%fit(x,labels,status[,alpha,priors,sample_weight,
+class_weight])` fits a finite Bernoulli Naive Bayes model. Features may be
+binary or relaxed values in `[0,1]`; the relaxed extension makes the
+prediction map smooth for input products. Classes are sorted integer labels.
+`alpha` is a strictly positive Laplace/Beta smoothing mass, and optional
+nonnegative sample weights and positive sorted-class weights form the effective
+class moments and empirical priors. Explicit priors are normalized in sorted
+class order.
+
+`predict_log_proba`, `predict_proba`, and `predict` use shifted
+log-probability normalization and deterministic first-class ties.
+`feature_probabilities`, `class_prior`, `weighted_class_counts`, `classes`,
+`alpha_value`, `parameter_count`, `parameters`, and `set_parameters` expose the
+fitted state. The packed parameter order is feature probabilities in
+Fortran column-major order followed by normalized class priors.
+
+Input and packed-parameter JVP/VJP products cover both log probabilities and
+probabilities, including the log-softmax and normalized-prior projections.
+Nonfinite values, out-of-range features, nonpositive alpha, malformed packs,
+unfitted models, and nonpositive effective class mass are refused explicitly.
 
 ### `fortml_classification_metrics`
 
@@ -780,12 +804,14 @@ and jitter. `predict_latent` returns posterior latent mean and variance.
 variants, and `predict` returns the stored integer labels. Every kernel that
 supplies the existing matrix and input-derivative contracts is supported.
 `parameter_count()` and `parameters()` expose read-only kernel-log-parameter
-metadata in the fitted model. `hyperparameter_gradient` validates its output
-shape and then returns a domain-status refusal: the Laplace mode, likelihood
-curvature, and posterior factorization are fit-time state and are not yet
-recomputed by a classifier parameter product. Variational likelihoods,
-multiclass coupling, kernel hyperparameter products, and derivative observations
-remain explicit roadmap work.
+metadata in the fitted model. `hyperparameter_gradient` returns the exact
+envelope gradient of the fitted Laplace-mode log posterior (without the
+optional evidence correction). At a converged mode this is the kernel-VJP
+contraction `0.5 * alpha * alpha^T : dK/dtheta`, so sums, products, and other
+kernels implementing the parameter-VJP contract are supported. Differentiating
+the full Laplace evidence, including mode-curvature terms, is a separate
+contract. Variational likelihoods, shared multiclass coupling, and
+derivative-observation classifier paths remain explicit roadmap work.
 
 `gp_multiclass_classification_t` provides deterministic one-vs-rest multiclass
 GP classification over the same binary Laplace models. It fits one model per
@@ -793,9 +819,10 @@ sorted integer class, normalizes their positive probabilities onto a simplex,
 and exposes `classes`, `class_count`, `feature_count`, `predict_proba`,
 `predict`, and `fitted`. `parameter_count()` and `parameters()` concatenate
 the read-only kernel metadata for each one-vs-rest model in sorted class order.
-`hyperparameter_gradient` returns an explicit domain-status refusal until the
-coupled Laplace objective and all posterior refactorizations are differentiable.
-The wrapper inherits the selected logistic or probit likelihood and
+`hyperparameter_gradient` concatenates the exact binary envelope gradients in
+sorted-class order. It is the gradient of the sum of the independent
+one-vs-rest Laplace-mode log posteriors; a shared coupled categorical objective
+remains a separate contract. The wrapper inherits the selected logistic or probit likelihood and
 kernel/refusal behavior. It is a coupling policy rather than a multinomial
 likelihood, so variational categorical likelihoods and shared multiclass
 hyperparameter training remain separate work.

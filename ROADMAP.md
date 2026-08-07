@@ -9,12 +9,12 @@ and implementation limits in [`docs/DESIGN.md`](docs/DESIGN.md) and
 
 | Compiler | Command | Result |
 | --- | --- | --- |
-| GNU Fortran | `fo` | Static, build, and lint checks passed. The fresh 2026-08-07 run passed all 60 tests. See [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
+| GNU Fortran | `fo` | Static, build, and lint checks passed. The fresh 2026-08-07 run passed all 61 tests. See [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
 | NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded compiler lane. The checked-in NVIDIA log predates the latest 60-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
 The checked-in compiler logs above are older compiler snapshots. A fresh GNU
-Fortran `fo` run on 2026-08-07 passed static analysis, the build, all 60 tests,
+Fortran `fo` run on 2026-08-07 passed static analysis, the build, all 61 tests,
 and lint. The fresh run includes implementation work whose compiler logs have
 not yet replaced those snapshots. NVIDIA compiler coverage therefore remains
 an explicit older-build result.
@@ -284,9 +284,9 @@ Toeplitz FFT products remain host-resident.
 
 Accelerator support is operator-specific. OpenACC and native CUDA paths cover
 the kernel, structured, and sparse operations documented above. The historical
-`nvfortran` verification establishes compiler compatibility for all 30 tests.
-The five new test programs are covered by the GNU run only in this
-environment.
+`nvfortran` verification establishes compiler compatibility for the older
+30-test snapshot. The newer tests, including Bernoulli Naive Bayes, are covered
+by the GNU run only in this environment.
 It does not establish that every model trains or predicts entirely on a GPU.
 
 ## Parity work packages
@@ -295,7 +295,7 @@ The source inventory is dated 2026-08-07.
 
 | Work package | State | Implemented baseline | Package exit |
 | --- | --- | --- | --- |
-| Classification | Partial | `fortml_logistic_regression` and `fortml_softmax_regression` provide binary and multinomial integer-label fitting with sample-weighted reductions, `fortml_ovr_logistic_classifier` adds deterministic one-vs-rest binary logistic fits with normalized probabilities and parameter products, `fortml_gaussian_naive_bayes` adds weighted Gaussian class moments, variance smoothing, explicit/empirical priors, packed state, and input/parameter probability products, `fortml_logistic_training` adds an exact weighted logistic objective with parameter/L2 gradients and HVPs plus bounded FortOpt L-BFGS-B, `fortml_cart_classifier` adds deterministic weighted Gini/entropy trees and leaf probabilities, `fortml_mlp_classifier` adds deterministic multiclass logits training with Adam, `fortml_gp_classification` adds binary Laplace logistic/probit inference, `fortml_gp_multiclass_classification` adds one-vs-rest multiclass GP probabilities, and shared metrics cover accuracy, top-k, balanced accuracy, confusion, precision/recall/F1, Brier, binary Matthews, weighted accuracy, log loss, and expected/maximum calibration error. | Binary and multiclass linear, tree, neural, GP, and boosted-tree classifiers share label, probability, weighting, and metric conventions. |
+| Classification | Partial | `fortml_logistic_regression` and `fortml_softmax_regression` provide binary and multinomial integer-label fitting with sample-weighted reductions, `fortml_ovr_logistic_classifier` adds deterministic one-vs-rest binary logistic fits with normalized probabilities and parameter products, `fortml_gaussian_naive_bayes` adds weighted Gaussian class moments and input/parameter probability products, `fortml_bernoulli_naive_bayes` adds weighted relaxed-[0,1] Bernoulli features, positive smoothing, packed state, and input/parameter probability products, `fortml_logistic_training` adds an exact weighted logistic objective with parameter/L2 gradients and HVPs plus bounded FortOpt L-BFGS-B, `fortml_cart_classifier` adds deterministic weighted Gini/entropy trees and leaf probabilities, `fortml_mlp_classifier` adds deterministic multiclass logits training with Adam and sample/class weights, `fortml_gp_classification` adds binary Laplace logistic/probit inference plus an exact mode-envelope kernel gradient, `fortml_gp_multiclass_classification` adds packed one-vs-rest envelope gradients, and shared metrics cover accuracy, top-k, balanced accuracy, confusion, precision/recall/F1, Brier, binary Matthews, weighted accuracy, log loss, and expected/maximum calibration error. | Binary and multiclass linear, tree, neural, GP, and boosted-tree classifiers share label, probability, weighting, and metric conventions. |
 | Estimator contracts, pipelines, and bases | Partial | `basis_map_t`, horizontal and sequential basis pipelines, fitted standard/min-max scalers with input JVPs, `basis_linear_regression_t`, row-oriented sample conventions, status objects, and the parameter registry are public. | Fitted transformers and estimators compose without data leakage, expose routed parameters, and run through cross-validation. |
 | Tree boosting | Partial | `decision_stump_t`, weighted depth-limited `cart_regressor_t` and `cart_classifier_t`, squared-loss `gradient_boosting_regressor_t`, `xgboost_t`, and `xgboost_multiclass_t` provide deterministic exhaustive split products. The CART lanes have weighted squared-error or Gini/entropy criteria, depth and leaf constraints, fixed feature/threshold tie ordering, piecewise input JVP/refusal for regression, and finite-only probability/prediction paths for classification. The XGBoost-style lane has exact depth-limited squared/logistic gradients, Hessians, regularized gains, recursive Newton leaves, tree-depth/node diagnostics, binary probabilities, and one-vs-rest multiclass probabilities. | Regression and classification trees support deterministic histogram boosting, validation-based stopping, missing values, deeper growth, and model persistence. |
 | Training infrastructure | Partial | Model-specific gradients, exact MSE+L2 neural HVPs including the L2 mixed hyperparameter block, `fortopt_adam` integration, deterministic seeded batch cursors, per-update learning-rate callbacks, norm clipping, sample-weighted gradient accumulation, natural-gradient seams, and seeded variational draws exist. | One trainer owns batches, optimizer state, schedules, clipping, validation, early stopping, callbacks, and resumable state for every model with a completed trainer adapter. |
@@ -330,7 +330,8 @@ The source inventory is dated 2026-08-07.
   contract. Softmax and OVR objective adapters remain separate follow-up work.
 - [x] Add a multiclass `mlp_classifier_t` adapter with a logits layer, stable
   softmax cross-entropy, deterministic Adam, sorted integer labels, probability
-  normalization, and a packed parameter-gradient product. Binary, multilabel,
+  normalization, sample/class weighting, and a packed parameter-gradient
+  product. Binary, multilabel,
   ordinal, and variational GP adapters remain separate contracts.
 - [x] Add a deterministic one-vs-rest logistic wrapper with sorted class
   ordering, first-max tie handling, shared sample/class weights, normalized
@@ -341,6 +342,11 @@ The source inventory is dated 2026-08-07.
   sorted arbitrary integer labels, empirical or explicit priors, global
   variance smoothing, packed means/variances/priors, stable log-probabilities,
   and independent input/parameter JVP/VJP/refusal oracles.
+- [x] Add differentiable Bernoulli Naive Bayes with relaxed `[0,1]` features,
+  sorted arbitrary integer labels, positive Laplace/Beta smoothing, empirical
+  or explicit priors, sample/class weights, packed parameters, stable
+  log-probabilities, input/parameter JVP/VJPs, and independent analytic,
+  finite-difference, adjoint, and refusal oracles.
 - [ ] Add multilabel-indicator and multioutput classification contracts,
   including per-output class metadata, sparse target support, threshold
   policies, micro/macro/samples averaging, and refusal of ambiguous target
@@ -805,13 +811,13 @@ state phases are reported separately.
   variational, local, SKI, Lanczos, and matrix-free GP paths. Inducing-point and
   local-gate training remain separate parameter blocks.
 - [x] Add binary Laplace GP classification for logistic and probit likelihoods,
-  with damped Newton state, latent/probability prediction, and input JVPs over
-  the kernel derivative contract. Kernel hyperparameter products and
-  derivative-observation classifier paths remain open.
-- [x] Publish read-only fitted-kernel parameter metadata for binary and
-  one-vs-rest GP classifiers, with explicit domain-status refusals for
-  hyperparameter gradients until mode, likelihood-curvature, and posterior
-  refactorization paths are differentiated together.
+  with damped Newton state, latent/probability prediction, input JVPs over the
+  kernel derivative contract, and an exact envelope gradient for the converged
+  mode log posterior (without evidence correction).
+- [x] Publish fitted-kernel parameter metadata and exact mode-envelope
+  hyperparameter gradients for binary and one-vs-rest GP classifiers. The
+  multiclass wrapper packs independent binary gradients; a shared categorical
+  Laplace evidence gradient remains open.
 - [x] Add one-vs-rest multiclass GP classification as a deterministic wrapper
   over the binary Laplace contract, with sorted labels and normalized positive
   probabilities. Variational categorical likelihoods remain open.
