@@ -48,6 +48,7 @@ not supplied through a hidden generic interface.
 | `linear_regression_t` | `predict` | Free `linear_predict_jvp` | Free `linear_predict_vjp` | No |
 | `logistic_regression_t` | Decision score and probabilities | Parameter/input JVP, probability JVP | Parameter/input VJP, probability VJP | No |
 | `softmax_regression_t` | Multiclass decision scores and probabilities | Parameter/input JVP, probability JVP | Parameter/input VJP, probability VJP | No |
+| `gaussian_naive_bayes_t` | Log probabilities and probabilities | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
 | `basis_map_t` | `evaluate` | Parameters and inputs | Parameters and inputs | No |
 | `mlp_t` | `predict` | Parameters and inputs | Parameters and inputs | Weighted-output HVP |
 | `bnn_t` | `elbo` | ELBO | ELBO | ELBO |
@@ -100,7 +101,8 @@ reduction.
 `predict_proba(x,probabilities,status)` returns `(n_samples,2)` with columns
 `classes()(1)` and `classes()(2)`. `predict(x,labels,status)` uses a zero-logit
 tie rule that selects the second class. `coefficients()`, `intercept_value()`,
-`classes()`, `feature_count()`, and `fitted()` expose the fitted state.
+`regularization()`, `set_regularization(value,status)`, `classes()`,
+`feature_count()`, and `fitted()` expose or update the fitted state.
 Three-class data, one-class data, nonfinite inputs, invalid penalties, and
 shape mismatches return a domain or convergence status.
 
@@ -115,6 +117,28 @@ stable probability products. Tangent and cotangent arrays must be finite and
 shape-compatible. Unfitted models, malformed packs, and nonfinite inputs are
 refused. There is intentionally no HVP until a second-order classifier
 contract is added.
+
+### `fortml_logistic_training`
+
+`logistic_training_objective_t` packages a fitted
+`logistic_regression_t` and a weighted binary data set as a FortOpt-ready
+objective. `initialize(model,x,labels,l2,status[,optimize_l2,sample_weight,
+class_weight])` validates the fitted class order and positive effective weight
+mass, then exposes `parameters`, `parameter_count`, `value_gradient`, and
+`hvp`. The objective uses the same positive-weight-mass cross-entropy and
+feature-only L2 convention as `logistic_regression_t%fit`. With
+`optimize_l2=.true.`, the packed vector appends a non-negative L2 coordinate.
+Its gradient is the exact half squared feature norm and its HVP includes the
+mixed parameter/L2 block. No finite differences are used by the adapter.
+
+`fortopt(objective,status)` installs a context callback for
+`fortopt_objective`. `logistic_optimize_lbfgsb(model,x,labels,options,result,
+status[,sample_weight,class_weight])` owns the bounded FortOpt L-BFGS-B
+lifecycle. `logistic_lbfgsb_options_t` supplies explicit bounds for model
+parameters and, when requested, the L2 coordinate. The result reports
+convergence, iterations, line-search evaluations, objective, gradient norm,
+and final L2. The adapter requires a fitted binary model. Use `fit` first when
+an initial parameter state is needed.
 
 ### `fortml_ovr_logistic_classifier`
 
@@ -132,6 +156,33 @@ rows. `predict_proba_parameter_jvp` and `predict_proba_parameter_vjp` provide
 the corresponding products for the packed binary-model parameters. The
 quotient-rule normalization is included in every product, and finite,
 unfitted, shape, and zero-support cases return status errors.
+
+### `fortml_gaussian_naive_bayes`
+
+`gaussian_naive_bayes_t%fit(x,labels,status[,var_smoothing,priors,
+sample_weight,class_weight])` fits a finite-only Gaussian Naive Bayes model.
+Rows are samples and columns are features. Integer labels are sorted
+deterministically and define the probability-column order. Means and
+population variances are weighted per class. `var_smoothing` adds a global
+maximum-variance floor (and a machine-tiny floor for constant features), so
+every fitted density is strictly positive. Optional positive `priors` are
+normalized in sorted class order. Nonnegative sample weights and positive
+sorted-class weights multiply before moments and empirical priors are formed.
+every class must retain positive effective mass.
+
+`predict_log_proba`, `predict_proba`, and `predict` use a shifted log-density
+normalization and deterministic first-class ties. `classes`, `means`,
+`variances`, `class_prior`, `weighted_class_counts`, `var_smoothing_value`,
+`epsilon_value`, `feature_count`, `class_count`, and `fitted` expose the
+fitted state. `parameter_count`, `parameters`, and `set_parameters` use the
+packed order `[means, variances, priors]`, with each matrix in Fortran
+column-major order. Priors are normalized by `set_parameters` and variances
+must remain strictly positive.
+
+The log-probability and probability methods expose input and packed-parameter
+JVP/VJP products. Products differentiate through the log-softmax normalization
+and the normalized prior block, and reject unfitted models, nonfinite values,
+invalid shapes, nonpositive variances, and nonsensical prior mass.
 
 ### `fortml_classification_metrics`
 
@@ -371,7 +422,7 @@ structures, and implicit integrators remain separate research contracts.
 
 ### `fortml_mlp_training`
 
-`mlp_train(model,x,target,status,options,state[,validation_x,validation_target])`
+`mlp_train(model,x,target,status,options,state[,validation_x,validation_target,checkpoint])`
 trains an existing `mlp_t` with deterministic Adam. A zero `batch_size`
 selects full-batch updates.
 Mini-batch shuffling uses an explicit Park-Miller stream controlled by
@@ -405,6 +456,26 @@ positive mass. L2 remains a single parameter regularizer in either reduction.
 `mlp_loss_diagnostics_t` reports `data_loss`, `regularization_loss`,
 `weight_mass`, and `sample_count`, so callers can log named scalar components
 without reconstructing the reduction.
+
+`mlp_training_checkpoint_t` is the in-memory resumable trainer state. Pass an
+uninitialized checkpoint to `mlp_train` to capture it after each completed
+epoch (and at every microbatch boundary). Pass the initialized checkpoint back
+to a later call to resume. `options%max_epochs` is the total target epoch, not
+an additional count. The snapshot includes packed model parameters, Adam first
+and second moments plus bias-correction step, permutation/order and Park--Miller
+state, active epoch/microbatch cursor and accumulated gradient, learning-rate
+schedule position/history, validation and early-stopping counters, and the
+best-parameter state. Procedure pointers are not serializable: install the
+same deterministic schedule and callback on the resumed options. A checkpoint
+is rejected when dimensions, batch/accumulation policy, shuffle seed, Adam
+coefficients, L2, validation/early-stopping policy, or clipping/tolerance
+policy differ. A resumed call intentionally clears terminal convergence or
+early-stop flags so increasing the total epoch target continues training.
+Best-state restoration changes model parameters
+after the last optimizer state and therefore marks that snapshot
+`resume_safe=.false.`. Use `restore_best=.false.` when a run must be resumed.
+`checkpoint%valid()` validates allocation, dimensions, finite values, and the
+format version, while `checkpoint%clear()` releases its arrays.
 
 `mlp_training_objective_t` packages the same objective for FortOpt. Call
 `initialize(model,x,target,l2,status[,optimize_l2])`, then use `parameters`,

@@ -1,19 +1,15 @@
-fo build [--------------------] 0/633 0%
-fo build [##################--] 571/633 90%
-fo build [####################] 633/633 100%
-fo build [--------------------] 0/619 0%
-fo build [##################--] 559/619 90%
-fo build [####################] 619/619 100%
-fo test [--------------------] 0/30 0%
-fo test [#####---------------] 8/30 26%
-fo test [#############-------] 20/30 66%
-fo test [####################] 30/30 100%
-fo: compiler changed from nvfortran to gfortran; rebuilding
+Static: OK (137 modules, 137 changed, 137 affected)
+fo build [--------------------] 0/663 0%
+fo build [###################-] 640/663 96%
+fo build [####################] 663/663 100%
 fo: warning: Warning: Creating array temporary at (1) [-Warray-temporaries]
 fo: warning: Warning: Creating array temporary at (1) [-Warray-temporaries]
 fo: warning: Warning: Creating array temporary at (1) [-Warray-temporaries]
-Static: OK (78 modules, 78 changed, 78 affected)
 Build: OK
+fo build [--------------------] 0/644 0%
+fo build [####################] 644/644 100%
+fo test [--------------------] 0/60 0%
+fo test [####################] 60/60 100%
 Tests: OK
 Lint: OK
-All stages passed (7.9s)
+All stages passed (5.8s)
