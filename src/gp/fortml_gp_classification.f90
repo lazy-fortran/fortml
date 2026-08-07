@@ -80,6 +80,9 @@ module fortml_gp_classification
     public :: gp_classification_predict_proba_jvp
     public :: gp_classification_predict_proba_vjp
     public :: gp_classification_predict
+    public :: gp_classification_log_likelihood_value
+    public :: gp_classification_log_likelihood_jvp
+    public :: gp_classification_log_likelihood_vjp
 
 contains
 
@@ -474,6 +477,116 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine gp_classification_predict
 
+    !> Evaluate the sum of log likelihoods for signed latent margins.
+    !!
+    !! ``eta(i)`` is the latent function value multiplied by the encoded
+    !! class label (``+1`` for the positive class and ``-1`` for the negative
+    !! class).  The result is therefore the Bernoulli log likelihood for the
+    !! selected Laplace likelihood, without the GP prior term.  Keeping this
+    !! scalar product public gives training objectives and hyperparameter
+    !! search a common analytic likelihood primitive instead of duplicating
+    !! logistic/probit tail handling.
+    subroutine gp_classification_log_likelihood_value(eta, likelihood, value, status)
+        real(dp), intent(in) :: eta(:)
+        integer, intent(in) :: likelihood
+        real(dp), intent(out) :: value
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: log_probability, derivative, curvature
+        integer :: i
+
+        value = 0.0_dp
+        if (.not. valid_likelihood(likelihood) .or. size(eta) < 1 .or. &
+            any(.not. ieee_is_finite(eta))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP classification likelihood: inputs are invalid")
+            return
+        end if
+        do i = 1, size(eta)
+            call likelihood_log_terms(eta(i), likelihood, log_probability, &
+                derivative, curvature)
+            value = value + log_probability
+        end do
+        if (.not. ieee_is_finite(value)) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "GP classification likelihood: value is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_classification_log_likelihood_value
+
+    !> Forward product of the signed-margin log likelihood.
+    subroutine gp_classification_log_likelihood_jvp(eta, likelihood, eta_dot, &
+            value, value_dot, status)
+        real(dp), intent(in) :: eta(:), eta_dot(:)
+        integer, intent(in) :: likelihood
+        real(dp), intent(out) :: value, value_dot
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: log_probability, derivative, curvature
+        integer :: i
+
+        value = 0.0_dp
+        value_dot = 0.0_dp
+        if (size(eta_dot) /= size(eta) .or. any(.not. ieee_is_finite(eta_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP classification likelihood JVP: tangent is invalid")
+            return
+        end if
+        if (.not. valid_likelihood(likelihood) .or. size(eta) < 1 .or. &
+            any(.not. ieee_is_finite(eta))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP classification likelihood JVP: inputs are invalid")
+            return
+        end if
+        do i = 1, size(eta)
+            call likelihood_log_terms(eta(i), likelihood, log_probability, &
+                derivative, curvature)
+            value = value + log_probability
+            value_dot = value_dot + derivative*eta_dot(i)
+        end do
+        if (.not. ieee_is_finite(value) .or. .not. ieee_is_finite(value_dot)) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "GP classification likelihood JVP: result is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_classification_log_likelihood_jvp
+
+    !> Reverse product of the signed-margin log likelihood.
+    subroutine gp_classification_log_likelihood_vjp(eta, likelihood, value_bar, &
+            eta_bar, status)
+        real(dp), intent(in) :: eta(:)
+        integer, intent(in) :: likelihood
+        real(dp), intent(in) :: value_bar
+        real(dp), intent(out) :: eta_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: log_probability, derivative, curvature
+        integer :: i
+
+        eta_bar = 0.0_dp
+        if (size(eta_bar) /= size(eta) .or. .not. ieee_is_finite(value_bar)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP classification likelihood VJP: cotangent is invalid")
+            return
+        end if
+        if (.not. valid_likelihood(likelihood) .or. size(eta) < 1 .or. &
+            any(.not. ieee_is_finite(eta))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP classification likelihood VJP: inputs are invalid")
+            return
+        end if
+        do i = 1, size(eta)
+            call likelihood_log_terms(eta(i), likelihood, log_probability, &
+                derivative, curvature)
+            eta_bar(i) = value_bar*derivative
+        end do
+        if (any(.not. ieee_is_finite(eta_bar))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "GP classification likelihood VJP: result is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_classification_log_likelihood_vjp
+
     function gp_classification_classes(self) result(classes)
         class(gp_classification_t), intent(in) :: self
         integer :: classes(2)
@@ -696,6 +809,50 @@ contains
             curvature = max(ratio*(ratio + eta), MIN_LIKELIHOOD_CURVATURE)
         end if
     end subroutine likelihood_terms
+
+    subroutine likelihood_log_terms(eta, likelihood, log_probability, gradient, curvature)
+        real(dp), intent(in) :: eta
+        integer, intent(in) :: likelihood
+        real(dp), intent(out) :: log_probability, gradient, curvature
+        real(dp) :: probability
+
+        call likelihood_terms(eta, likelihood, probability, gradient, curvature)
+        if (likelihood == GP_LIKELIHOOD_LOGISTIC) then
+            ! log(sigmoid(eta)) without overflow for either sign of eta.
+            if (eta >= 0.0_dp) then
+                log_probability = -log(1.0_dp + exp(-eta))
+            else
+                log_probability = eta - log(1.0_dp + exp(eta))
+            end if
+        else
+            log_probability = log_normal_cdf_stable(eta)
+        end if
+    end subroutine likelihood_log_terms
+
+    real(dp) function log_normal_cdf_stable(value) result(log_probability)
+        real(dp), intent(in) :: value
+        real(dp), parameter :: LOG_SQRT_TWO_PI = 0.91893853320467274178032973640562_dp
+        real(dp) :: inverse_square, correction
+
+        if (value > -8.0_dp) then
+            log_probability = log(max(normal_cdf(value), tiny(1.0_dp)))
+            return
+        end if
+        ! Mills-ratio expansion, retaining two terms, avoids erfc underflow in
+        ! the negative probit tail while agreeing smoothly with the direct CDF
+        ! branch over the transition used by the Laplace solver.
+        inverse_square = 1.0_dp/(value*value)
+        correction = 1.0_dp - inverse_square + 3.0_dp*inverse_square*inverse_square
+        log_probability = -0.5_dp*value*value - log(-value) - &
+            LOG_SQRT_TWO_PI + log(max(correction, tiny(1.0_dp)))
+    end function log_normal_cdf_stable
+
+    logical function valid_likelihood(likelihood) result(valid)
+        integer, intent(in) :: likelihood
+
+        valid = likelihood == GP_LIKELIHOOD_LOGISTIC .or. &
+            likelihood == GP_LIKELIHOOD_PROBIT
+    end function valid_likelihood
 
     real(dp) function predictive_probability(likelihood, mean, variance) result(probability)
         integer, intent(in) :: likelihood
