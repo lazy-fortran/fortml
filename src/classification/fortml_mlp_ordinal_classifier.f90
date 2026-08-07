@@ -474,7 +474,12 @@ contains
             probabilities(row,self%class_count()) = 1.0_dp - &
                 stable_sigmoid(self%threshold(self%class_count()-1)-scores(row,1))
         end do
-        if (any(probabilities < -1.0e-12_dp) .or. any(.not. ieee_is_finite(probabilities))) then
+        if (any(probabilities < -1.0e-12_dp)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP ordinal probability: nonfinite or negative probability")
+            return
+        end if
+        if (any(.not. ieee_is_finite(probabilities))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "MLP ordinal probability: nonfinite or negative probability")
             return
@@ -788,9 +793,17 @@ contains
 
     logical function valid_options(config) result(value)
         type(mlp_ordinal_classifier_options_t), intent(in) :: config
-        value = config%max_iterations >= 1 .and. config%initialization_seed >= 0 .and. &
-            config%l2 >= 0.0_dp .and. ieee_is_finite(config%l2) .and. &
-            config%tolerance > 0.0_dp .and. ieee_is_finite(config%tolerance)
+        value = config%max_iterations >= 1
+        if (.not. value) return
+        value = config%initialization_seed >= 0
+        if (.not. value) return
+        value = config%l2 >= 0.0_dp
+        if (.not. value) return
+        value = ieee_is_finite(config%l2)
+        if (.not. value) return
+        value = config%tolerance > 0.0_dp
+        if (.not. value) return
+        value = ieee_is_finite(config%tolerance)
     end function valid_options
 
     subroutine raw_to_threshold(raw, threshold, status)
