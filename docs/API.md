@@ -67,6 +67,7 @@ not supplied through a hidden generic interface.
 | `basis_map_t` | `evaluate` | Parameters and inputs | Parameters and inputs | No |
 | `one_hot_encoder_t` | Dense one-hot `transform` | Refused: integer categories have no canonical tangent space | Refused: integer categories have no canonical cotangent space | No |
 | `mlp_t` | `predict` | Parameters and inputs | Parameters and inputs | Weighted-output HVP |
+| `mlp_training_objective_t` | MSE+L2 scalar objective | Packed network/L2 JVP | Packed network/L2 gradient and scalar VJP | Joint network/L2 HVP |
 | `mlp_hypergradient_objective_t` | Validation MSE after fixed full-batch GD trajectory | Outer `[log(learning_rate),log(l2)]` JVP | Exact trajectory value gradient and scalar VJP | Reverse trajectory products; inner MLP HVP |
 | `mlp_rmsprop_hypergradient_objective_t` | Validation MSE after fixed full-batch RMSprop trajectory | Packed `[log(learning_rate),log(l2),decay,log(epsilon),momentum]` JVP | Exact trajectory value gradient and scalar VJP | Forward state sensitivities; inner MLP HVP |
 | `bnn_t` | `elbo` | ELBO | ELBO | ELBO |
@@ -708,7 +709,9 @@ format version, while `checkpoint%clear()` releases its arrays.
 
 `mlp_training_objective_t` packages the same objective for FortOpt. Call
 `initialize(model,x,target,l2,status[,optimize_l2])`, then use `parameters`,
-`parameter_count`, `value_gradient`, and `hvp`. With `optimize_l2=.true.`, the
+`parameter_count`, `value_gradient`, `jvp`, `vjp`, and `hvp`. The scalar JVP
+contracts the packed direction with the analytic value gradient; the scalar VJP
+scales that gradient by its output cotangent. With `optimize_l2=.true.`, the
 packed vector appends the non-negative L2 coefficient and both the gradient and
 HVP include its mixed block. `fortopt(objective,status)` installs a context
 callback directly into `fortopt_objective`. An L-BFGS-B caller can therefore
