@@ -6,12 +6,16 @@ program test_mlp_classifier
     use fortnum_status, only: fortnum_status_t, status_ok
     implicit none
 
-    type(mlp_classifier_t) :: first_model, second_model, weighted_model, unfitted
+    type(mlp_classifier_t) :: first_model, second_model, weighted_model, &
+        sample_weighted_model, combined_model, minibatch_model, unfitted
     type(mlp_classifier_options_t) :: options
     type(mlp_classifier_state_t) :: first_state, second_state
     type(fortnum_status_t) :: status
     real(dp) :: x(6, 3), probabilities(6, 3), scores(6, 3), wrong_scores(6, 2)
     real(dp) :: weighted_probabilities(6, 3), weighted_x(6, 3)
+    real(dp) :: sample_weighted_probabilities(6, 3)
+    real(dp) :: combined_probabilities(6, 3)
+    real(dp) :: sample_weights(6), combined_weights(6)
     real(dp), allocatable :: theta(:), gradient(:), plus_gradient(:)
     real(dp) :: value, plus, minus, h
     integer :: labels(6), predicted(6), predicted_second(6), classes(3), failures
@@ -96,9 +100,64 @@ program test_mlp_classifier
         maxval(abs(weighted_probabilities(:, 2) - 2.0_dp/7.0_dp)) < 2.0e-4_dp .and. &
         maxval(abs(weighted_probabilities(:, 3) - 4.0_dp/7.0_dp)) < 2.0e-4_dp, &
         "class-weighted probability oracle", failures)
+
+    sample_weights = [0.0_dp, 1.0_dp, 0.0_dp, 2.0_dp, 0.0_dp, 3.0_dp]
+    call sample_weighted_model%fit(weighted_x, labels, status, options=options, &
+        sample_weight=sample_weights)
+    call sample_weighted_model%predict_proba(weighted_x, &
+        sample_weighted_probabilities, status)
+    call check(status_ok(status) .and. maxval(abs(sample_weighted_probabilities(:, 1) - &
+        2.0_dp/6.0_dp)) < 2.0e-4_dp .and. &
+        maxval(abs(sample_weighted_probabilities(:, 2) - 1.0_dp/6.0_dp)) < &
+        2.0e-4_dp .and. maxval(abs(sample_weighted_probabilities(:, 3) - &
+        3.0_dp/6.0_dp)) < 2.0e-4_dp, &
+        "sample-weighted probability oracle", failures)
+
+    combined_weights = sample_weights
+    call combined_model%fit(weighted_x, labels, status, options=options, &
+        sample_weight=combined_weights, class_weight=[1.0_dp, 2.0_dp, 4.0_dp])
+    call combined_model%predict_proba(weighted_x, combined_probabilities, status)
+    call check(status_ok(status) .and. maxval(abs(combined_probabilities(:, 1) - &
+        1.0_dp/8.0_dp)) < 2.0e-4_dp .and. &
+        maxval(abs(combined_probabilities(:, 2) - 1.0_dp/8.0_dp)) < &
+        2.0e-4_dp .and. maxval(abs(combined_probabilities(:, 3) - &
+        3.0_dp/4.0_dp)) < 2.0e-4_dp, &
+        "sample/class-weight composition oracle", failures)
+
+    call first_model%loss_gradient(x, labels, 0.0_dp, value, gradient, status, &
+        sample_weight=sample_weights)
+    theta = first_model%parameters()
+    theta(1) = theta(1) + h
+    call first_model%set_parameters(theta, status)
+    call first_model%loss_gradient(x, labels, 0.0_dp, plus, plus_gradient, status, &
+        sample_weight=sample_weights)
+    theta(1) = theta(1) - 2.0_dp*h
+    call first_model%set_parameters(theta, status)
+    call first_model%loss_gradient(x, labels, 0.0_dp, minus, plus_gradient, status, &
+        sample_weight=sample_weights)
+    theta(1) = theta(1) + h
+    call first_model%set_parameters(theta, status)
+    call check(status_ok(status) .and. abs(gradient(1) - (plus - minus)/(2.0_dp*h)) &
+        < 3.0e-6_dp, "sample-weighted cross-entropy parameter oracle", failures)
+
+    options%batch_size = 2
+    call minibatch_model%fit(weighted_x, labels, status, options=options, &
+        sample_weight=[0.0_dp, 0.0_dp, 1.0_dp, 1.0_dp, 1.0_dp, 1.0_dp])
+    call check(status_ok(status), "all-zero minibatch is skipped", failures)
+    options%batch_size = 0
+
     call weighted_model%fit(weighted_x, labels, status, options=options, &
         class_weight=[1.0_dp, 2.0_dp])
     call check(.not. status_ok(status), "class-weight shape refusal", failures)
+    call weighted_model%fit(weighted_x, labels, status, options=options, &
+        sample_weight=[1.0_dp, 2.0_dp])
+    call check(.not. status_ok(status), "sample-weight shape refusal", failures)
+    call weighted_model%fit(weighted_x, labels, status, options=options, &
+        sample_weight=[1.0_dp, 1.0_dp, -1.0_dp, 1.0_dp, 1.0_dp, 1.0_dp])
+    call check(.not. status_ok(status), "negative sample-weight refusal", failures)
+    call weighted_model%fit(weighted_x, labels, status, options=options, &
+        sample_weight=0.0_dp*sample_weights)
+    call check(.not. status_ok(status), "zero effective sample-weight refusal", failures)
 
     call first_model%fit(x, [1, 1, 1, 1, 1, 1], status, options=options)
     call check(.not. status_ok(status), "one-class refusal", failures)

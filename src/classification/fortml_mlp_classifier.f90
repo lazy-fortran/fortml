@@ -69,7 +69,7 @@ module fortml_mlp_classifier
 contains
 
     subroutine mlp_classifier_fit(self, x, labels, status, hidden_layer_sizes, &
-            options, state, class_weight)
+            options, state, sample_weight, class_weight)
         class(mlp_classifier_t), intent(out) :: self
         real(dp), intent(in) :: x(:, :)
         integer, intent(in) :: labels(:)
@@ -77,6 +77,7 @@ contains
         integer, intent(in), optional :: hidden_layer_sizes(:)
         type(mlp_classifier_options_t), intent(in), optional :: options
         type(mlp_classifier_state_t), intent(out), optional :: state
+        real(dp), intent(in), optional :: sample_weight(:)
         real(dp), intent(in), optional :: class_weight(:)
         type(mlp_classifier_options_t) :: config
         type(mlp_classifier_state_t) :: result
@@ -122,6 +123,24 @@ contains
         end if
         allocate(class_factors(n_classes))
         class_factors = 1.0_dp
+        allocate(sample_weights(size(labels)))
+        sample_weights = 1.0_dp
+        if (present(sample_weight)) then
+            if (size(sample_weight) /= size(labels)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP classifier fit: sample weights must match samples")
+                if (present(state)) state = result
+                return
+            end if
+            if (any(.not. ieee_is_finite(sample_weight)) .or. &
+                any(sample_weight < 0.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP classifier fit: sample weights must be finite and nonnegative")
+                if (present(state)) state = result
+                return
+            end if
+            sample_weights = sample_weight
+        end if
         if (present(class_weight)) then
             if (size(class_weight) /= n_classes) then
                 call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -137,6 +156,17 @@ contains
                 return
             end if
             class_factors = class_weight
+        end if
+        do first = 1, size(labels)
+            sample_weights(first) = sample_weights(first)*class_factors(encoded(first))
+        end do
+        if (any(.not. ieee_is_finite(sample_weights)) .or. &
+            .not. ieee_is_finite(sum(sample_weights)) .or. &
+            sum(sample_weights) <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier fit: effective sample weights must have positive mass")
+            if (present(state)) state = result
+            return
         end if
 
         n_samples = size(x, 1)
@@ -164,10 +194,6 @@ contains
         end if
         allocate(self%class_label(n_classes))
         self%class_label = classes
-        allocate(sample_weights(n_samples))
-        do first = 1, n_samples
-            sample_weights(first) = class_factors(encoded(first))
-        end do
 
         theta = self%logits%parameters()
         allocate(best_theta, source=theta)
@@ -208,6 +234,10 @@ contains
                 x_batch = x(order(first:last), :)
                 batch_labels = encoded(order(first:last))
                 batch_weights = sample_weights(order(first:last))
+                if (sum(batch_weights) <= 0.0_dp) then
+                    deallocate(x_batch, batch_labels, batch_weights)
+                    cycle
+                end if
                 call mlp_classifier_loss_gradient(self%logits, x_batch, &
                     batch_labels, config%l2, loss, gradient, status, batch_weights)
                 deallocate(x_batch, batch_labels, batch_weights)
