@@ -551,6 +551,8 @@ Matérn 1/2, 3/2, 5/2, linear, constant, and sum/product kernels. Matérn 1/2
 still refuses coincident derivative observations. The HVP is a deterministic
 directional finite difference of that analytic gradient. It is intentionally
 listed as such until a generated second-order derivative product is added.
+Validated user-formula leaves currently refuse derivative hyperparameter
+products rather than silently approximating their input partials.
 
 `fortml_derivative_gp_training` provides
 `gp_optimize_derivative_hyperparameters` with the same bounded FortOpt
