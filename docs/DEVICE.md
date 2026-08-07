@@ -86,3 +86,15 @@ checks the kernel directly, while `test/run_knn_classifier_cuda.sh` checks the
 Fortran API against the same nearest-neighbor oracle. CUDA remains unavailable
 when the native object is not linked, and JVP/VJP products remain refused at
 the discrete neighbor boundary.
+
+## Direct RMSprop state kernel
+
+The no-autodiff optimizer recurrence has a separate native CUDA C API in
+`src/mlp/fortml_cuda_rmsprop.cu`. `fortml_cuda_rmsprop_plan_create` keeps the
+parameters, square average, centered mean, and momentum buffer resident.
+`fortml_cuda_rmsprop_plan_step` accepts a device-resident gradient and performs
+one update without a host state round trip. `plan_download` is an explicit
+inspection boundary. `test/run_cuda_rmsprop_state.sh` checks centered momentum
+updates against an independent CPU recurrence. This kernel does not provide
+MLP gradient or hypergradient evaluation. Those autodiff-sensitive paths stay
+on the FortAD/FortSym reference until a complete device graph exists.
