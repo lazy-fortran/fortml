@@ -46,6 +46,17 @@ not implemented. `device_supported(FORTML_DEVICE_CUDA)` is false and the
 device prediction/covariance entry points return `FORTNUM_NOT_IMPLEMENTED`
 without a host fallback.
 
+`joint_covariance_jvp` and `joint_covariance_vjp` provide the same packed
+kernel-log/noise-log derivative contract for the dense latent posterior
+covariance. The JVP differentiates the prior, train/query cross-covariance,
+and Cholesky solve in one direction. The VJP propagates a symmetric cotangent
+through those same blocks and satisfies the independent adjoint identity in
+`test_derivative_gp_products`. These products are CPU-only and return the
+ordinary covariance-block refusal for kernels that cannot form the requested
+derivative observation; there is no finite-difference fallback. CUDA remains
+an explicit `FORTNUM_NOT_IMPLEMENTED` boundary until the resident covariance
+and factorization graph is linked.
+
 The independent behavior gates are `test_derivative_gp_products`,
 `test_derivative_gp_device`, and `test_derivative_gp_capabilities`. The
 product test compares dense covariance, parameter products, query JVP/VJP,

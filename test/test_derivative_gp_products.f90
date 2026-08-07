@@ -25,6 +25,7 @@ program test_derivative_gp_products
     call test_product_parameter_products(failures)
     call test_prediction_products(failures)
     call test_joint_covariance(failures)
+    call test_joint_covariance_products(failures)
     call test_query_input_products(failures)
     call test_periodic_rational_query_products(failures)
     call test_user_formula_observations(failures)
@@ -479,6 +480,74 @@ contains
             failures = failures + 1
         end if
     end subroutine test_joint_covariance
+
+    subroutine test_joint_covariance_products(failures)
+        !! Independent finite-difference and adjoint checks for the posterior
+        !! covariance parameter products.  The oracle assembles each dense
+        !! covariance from the RBF block formulas and a fresh Cholesky solve;
+        !! it does not call the production JVP/VJP routines.
+        integer, intent(inout) :: failures
+        type(gp_derivative_regression_t) :: model
+        type(kernel_t) :: kernel
+        type(fortnum_status_t) :: status
+        real(dp) :: x(3, 1), y(3, 1), x_test(2, 1)
+        real(dp) :: covariance(2, 2), covariance_dot(2, 2)
+        real(dp) :: covariance_plus(2, 2), covariance_minus(2, 2)
+        real(dp) :: cotangent(2, 2), parameter_bar(3), direction(3)
+        real(dp) :: theta(3), fd_dot(2, 2), fd_bar(3), h, left, right
+        integer :: i
+
+        x(:, 1) = [0.0_dp, 0.45_dp, 1.05_dp]
+        y(:, 1) = [1.2_dp, -0.3_dp, 0.8_dp]
+        x_test(:, 1) = [0.25_dp, 0.8_dp]
+        direction = [0.13_dp, -0.09_dp, 0.07_dp]
+        cotangent = reshape([0.4_dp, -0.2_dp, 0.1_dp, 0.3_dp], [2, 2])
+        kernel = make_rbf_kernel(1, 1.4_dp, 0.75_dp, status)
+        call model%fit(x, [0, 1, 0], y, kernel, 0.07_dp, status, jitter=1.0e-10_dp)
+        if (.not. status_ok(status)) then
+            write (error_unit, '(a)') "FAIL [derivative GP joint products] fit"
+            failures = failures + 1
+            return
+        end if
+        theta = model%parameters()
+        call model%joint_covariance_jvp(x_test, [1, 0], direction, covariance, &
+            covariance_dot, status)
+        h = 2.0e-5_dp
+        call oracle_joint_covariance(theta + h*direction, x, [0, 1, 0], y, x_test, &
+            [1, 0], 0.07_dp, 1.0e-10_dp, covariance_plus)
+        call oracle_joint_covariance(theta - h*direction, x, [0, 1, 0], y, x_test, &
+            [1, 0], 0.07_dp, 1.0e-10_dp, covariance_minus)
+        fd_dot = (covariance_plus - covariance_minus)/(2.0_dp*h)
+        if (.not. status_ok(status) .or. maxval(abs(covariance_dot - fd_dot)) > 4.0e-7_dp) then
+            write (error_unit, '(a,es12.4)') &
+                "FAIL [derivative GP joint covariance JVP] finite difference ", &
+                maxval(abs(covariance_dot - fd_dot))
+            failures = failures + 1
+        end if
+
+        call model%joint_covariance_vjp(x_test, [1, 0], cotangent, parameter_bar, status)
+        left = dot_product(parameter_bar, direction)
+        right = sum(cotangent*covariance_dot)
+        if (.not. status_ok(status) .or. abs(left - right) > 4.0e-8_dp) then
+            write (error_unit, '(a,es12.4)') &
+                "FAIL [derivative GP joint covariance VJP] adjoint ", abs(left - right)
+            failures = failures + 1
+        end if
+        do i = 1, 3
+            call oracle_joint_covariance(theta + h*unit_vector(3, i), x, [0, 1, 0], y, &
+                x_test, [1, 0], 0.07_dp, 1.0e-10_dp, covariance_plus)
+            call oracle_joint_covariance(theta - h*unit_vector(3, i), x, [0, 1, 0], y, &
+                x_test, [1, 0], 0.07_dp, 1.0e-10_dp, covariance_minus)
+            fd_bar(i) = (sum(cotangent*covariance_plus) - sum(cotangent*covariance_minus))/ &
+                (2.0_dp*h)
+        end do
+        if (.not. status_ok(status) .or. maxval(abs(parameter_bar - fd_bar)) > 7.0e-7_dp) then
+            write (error_unit, '(a,es12.4)') &
+                "FAIL [derivative GP joint covariance VJP] finite difference ", &
+                maxval(abs(parameter_bar - fd_bar))
+            failures = failures + 1
+        end if
+    end subroutine test_joint_covariance_products
 
     subroutine test_query_input_products(failures)
         integer, intent(inout) :: failures

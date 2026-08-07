@@ -33,6 +33,8 @@ module fortml_derivative_gaussian_process
         procedure, public :: predict_device => gp_derivative_predict_device
         procedure, public :: joint_covariance => gp_derivative_joint_covariance
         procedure, public :: joint_covariance_device => gp_derivative_joint_covariance_device
+        procedure, public :: joint_covariance_jvp => gp_derivative_joint_covariance_jvp
+        procedure, public :: joint_covariance_vjp => gp_derivative_joint_covariance_vjp
         procedure, public :: device_supported => gp_derivative_device_supported
         procedure, public :: predict_jvp => gp_derivative_predict_jvp
         procedure, public :: predict_vjp => gp_derivative_predict_vjp
@@ -60,6 +62,8 @@ module fortml_derivative_gaussian_process
     public :: gp_derivative_predict_device
     public :: gp_derivative_joint_covariance
     public :: gp_derivative_joint_covariance_device
+    public :: gp_derivative_joint_covariance_jvp
+    public :: gp_derivative_joint_covariance_vjp
     public :: gp_derivative_device_supported
     public :: gp_derivative_predict_jvp
     public :: gp_derivative_predict_vjp
@@ -297,6 +301,177 @@ contains
                 "derivative GP joint covariance device: device kind is invalid")
         end select
     end subroutine gp_derivative_joint_covariance_device
+
+    subroutine gp_derivative_joint_covariance_jvp(self, x, components, direction, &
+            covariance, covariance_dot, status)
+        !! Directional parameter product of the dense latent posterior
+        !! covariance.  This is the exact derivative of
+        !! ``P - C^T K^{-1} C`` in packed kernel-log/noise-log coordinates;
+        !! the factorization and all covariance blocks remain on the CPU
+        !! reference path.  CUDA has no implicit host fallback.
+        class(gp_derivative_regression_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), direction(:)
+        integer, intent(in) :: components(:)
+        real(dp), intent(out) :: covariance(:, :), covariance_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: cross(:, :), cross_dot(:, :), prior(:, :)
+        real(dp), allocatable :: prior_dot(:, :), train_dot(:, :)
+        real(dp), allocatable :: work(:, :), work_dot(:, :)
+        real(dp) :: noise_dot, value, value_dot
+        integer :: i, j, kernel_count, n_query
+
+        n_query = size(x, 1)
+        if (size(direction) /= self%parameter_count() .or. &
+            any(.not. ieee_is_finite(direction)) .or. n_query < 1 .or. &
+            size(x, 2) /= self%n_features .or. size(components) /= n_query .or. &
+            any(components < 0) .or. any(components > self%n_features) .or. &
+            any(shape(covariance) /= [n_query, n_query]) .or. &
+            any(shape(covariance_dot) /= [n_query, n_query])) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "derivative GP joint covariance JVP: input or output shape is invalid")
+            return
+        end if
+        call self%joint_covariance(x, components, covariance, status)
+        if (status%code /= FORTNUM_OK) return
+
+        kernel_count = self%kernel%parameter_count()
+        allocate(cross(self%n_observations, n_query))
+        allocate(cross_dot, mold=cross)
+        allocate(prior(n_query, n_query), prior_dot(n_query, n_query))
+        allocate(train_dot(self%n_observations, self%n_observations))
+        allocate(work, mold=cross)
+        allocate(work_dot, mold=cross)
+        do j = 1, n_query
+            do i = 1, self%n_observations
+                call derivative_covariance(self%kernel, self%x_train(i, :), &
+                    self%components(i), x(j, :), components(j), cross(i, j), status)
+                if (status%code /= FORTNUM_OK) return
+                call derivative_covariance_direction(self%kernel, self%x_train(i, :), &
+                    self%components(i), x(j, :), components(j), direction(:kernel_count), &
+                    value, value_dot, status)
+                if (status%code /= FORTNUM_OK) return
+                cross_dot(i, j) = value_dot
+            end do
+            do i = 1, n_query
+                call derivative_covariance(self%kernel, x(i, :), components(i), &
+                    x(j, :), components(j), prior(i, j), status)
+                if (status%code /= FORTNUM_OK) return
+                call derivative_covariance_direction(self%kernel, x(i, :), components(i), &
+                    x(j, :), components(j), direction(:kernel_count), value, &
+                    prior_dot(i, j), status)
+                if (status%code /= FORTNUM_OK) return
+            end do
+        end do
+        do j = 1, self%n_observations
+            do i = 1, self%n_observations
+                call derivative_covariance_direction(self%kernel, self%x_train(i, :), &
+                    self%components(i), self%x_train(j, :), self%components(j), &
+                    direction(:kernel_count), value, train_dot(i, j), status)
+                if (status%code /= FORTNUM_OK) return
+            end do
+        end do
+        noise_dot = self%noise_variance*direction(kernel_count + 1)
+        do i = 1, self%n_observations
+            train_dot(i, i) = train_dot(i, i) + noise_dot
+        end do
+
+        work = cross
+        call self%factorization%solve(work, status)
+        if (status%code /= FORTNUM_OK) return
+        work_dot = cross_dot - matmul(train_dot, work)
+        call self%factorization%solve(work_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        covariance_dot = prior_dot - matmul(transpose(cross_dot), work) - &
+            matmul(transpose(cross), work_dot)
+        covariance_dot = 0.5_dp*(covariance_dot + transpose(covariance_dot))
+        if (any(.not. ieee_is_finite(covariance_dot))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "derivative GP joint covariance JVP: nonfinite result")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_derivative_joint_covariance_jvp
+
+    subroutine gp_derivative_joint_covariance_vjp(self, x, components, covariance_bar, &
+            parameter_bar, status)
+        !! Reverse product of the dense latent posterior covariance with
+        !! respect to packed kernel-log/noise-log parameters.  The symmetric
+        !! cotangent is propagated through the exact dense solve; unsupported
+        !! derivative-observation kernels return their ordinary typed refusal.
+        class(gp_derivative_regression_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), covariance_bar(:, :)
+        integer, intent(in) :: components(:)
+        real(dp), intent(out) :: parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: covariance(:, :), cross(:, :), work(:, :)
+        real(dp), allocatable :: cotangent(:, :), cross_bar(:, :), train_bar(:, :)
+        real(dp) :: value, value_dot
+        integer :: i, j, p, kernel_count, n_query
+
+        parameter_bar = 0.0_dp
+        n_query = size(x, 1)
+        if (size(parameter_bar) /= self%parameter_count() .or. n_query < 1 .or. &
+            size(x, 2) /= self%n_features .or. size(components) /= n_query .or. &
+            any(components < 0) .or. any(components > self%n_features) .or. &
+            any(shape(covariance_bar) /= [n_query, n_query]) .or. &
+            any(.not. ieee_is_finite(covariance_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "derivative GP joint covariance VJP: input or output shape is invalid")
+            return
+        end if
+        allocate(covariance(n_query, n_query))
+        call self%joint_covariance(x, components, covariance, status)
+        if (status%code /= FORTNUM_OK) return
+        allocate(cross(self%n_observations, n_query), work(self%n_observations, n_query))
+        do j = 1, n_query
+            do i = 1, self%n_observations
+                call derivative_covariance(self%kernel, self%x_train(i, :), &
+                    self%components(i), x(j, :), components(j), cross(i, j), status)
+                if (status%code /= FORTNUM_OK) return
+            end do
+        end do
+        work = cross
+        call self%factorization%solve(work, status)
+        if (status%code /= FORTNUM_OK) return
+        cotangent = 0.5_dp*(covariance_bar + transpose(covariance_bar))
+        cross_bar = -2.0_dp*matmul(work, cotangent)
+        train_bar = matmul(work, matmul(cotangent, transpose(work)))
+        kernel_count = self%kernel%parameter_count()
+        do p = 1, kernel_count
+            do j = 1, self%n_observations
+                do i = 1, self%n_observations
+                    call derivative_covariance_parameter(self%kernel, self%x_train(i, :), &
+                        self%components(i), self%x_train(j, :), self%components(j), p, &
+                        value, value_dot, status)
+                    if (status%code /= FORTNUM_OK) return
+                    parameter_bar(p) = parameter_bar(p) + train_bar(i, j)*value_dot
+                end do
+            end do
+            do j = 1, n_query
+                do i = 1, self%n_observations
+                    call derivative_covariance_parameter(self%kernel, self%x_train(i, :), &
+                        self%components(i), x(j, :), components(j), p, value, value_dot, status)
+                    if (status%code /= FORTNUM_OK) return
+                    parameter_bar(p) = parameter_bar(p) + cross_bar(i, j)*value_dot
+                end do
+            end do
+            do j = 1, n_query
+                do i = 1, n_query
+                    call derivative_covariance_parameter(self%kernel, x(i, :), components(i), &
+                        x(j, :), components(j), p, value, value_dot, status)
+                    if (status%code /= FORTNUM_OK) return
+                    parameter_bar(p) = parameter_bar(p) + cotangent(i, j)*value_dot
+                end do
+            end do
+        end do
+        parameter_bar(kernel_count + 1) = self%noise_variance*sum(diagonal(train_bar))
+        if (any(.not. ieee_is_finite(parameter_bar))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "derivative GP joint covariance VJP: nonfinite result")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_derivative_joint_covariance_vjp
 
     logical function gp_derivative_device_supported(self, device_kind) result(supported)
         !! Report capability without implying an implicit host fallback.
