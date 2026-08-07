@@ -69,6 +69,8 @@ not supplied through a hidden generic interface.
 | `bernoulli_naive_bayes_t` | Log probabilities and probabilities | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
 | `multinomial_naive_bayes_t` | Log probabilities and probabilities | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
 | `complement_naive_bayes_t` | Log probabilities and probabilities | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
+| `lda_classifier_t` | Gaussian log probabilities, probabilities, and labels | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
+| `qda_classifier_t` | Class-specific Gaussian log probabilities, probabilities, and labels | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
 | `multilabel_logistic_classifier_t` | Independent positive probabilities for an indicator matrix | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
 | `ordinal_logistic_classifier_t` | Ordered cumulative-logit probabilities and labels | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
 | `basis_map_t` | `evaluate` | Parameters and inputs | Parameters and inputs | No |
@@ -85,6 +87,7 @@ not supplied through a hidden generic interface.
 | `vae_t` | `elbo`, `reconstruct` | No | ELBO gradient | No |
 | `rnn_t` | `forward`, squared-error `loss` | No | Loss gradient by BPTT | No |
 | `kernel_t` | Scalar value and matrix | Parameter JVP | Parameter VJP | Parameter HVP |
+| `xgboost_t` | Squared/logistic/Poisson/Huber/quantile margins and predictions | Fixed-tree input JVP away from split boundaries | Fixed-tree input VJP away from split boundaries | No |
 | `gp_regression_t` | Mean, variance, LML | Prediction and LML parameters | Prediction and LML parameters | Mean and LML parameters |
 | `gp_derivative_regression_t` | Mean, variance, and LML | Prediction and LML parameter JVP | Prediction parameter VJP and analytic LML hyperparameter gradient | Directional HVP (finite difference of the analytic gradient) |
 | `gp_classification_t` | Latent and observed probabilities | Input JVP | Input VJP and Laplace-mode kernel hyperparameter gradient | No |
