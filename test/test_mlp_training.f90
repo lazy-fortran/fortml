@@ -6,6 +6,7 @@ program test_mlp_training
     use fortml_mlp, only: mlp_t, MLP_LINEAR
     use fortml_mlp_training, only: mlp_training_options_t, &
         mlp_training_state_t, mlp_training_objective_t, &
+        mlp_training_checkpoint_t, &
         mlp_loss_diagnostics_t, MLP_REDUCTION_MEAN, MLP_REDUCTION_SUM, &
         mlp_loss_value_gradient, mlp_loss_hvp, mlp_train
     implicit none
@@ -15,6 +16,7 @@ program test_mlp_training
     failures = 0
     call test_first_adam_step(failures)
     call test_reproducible_minibatch_and_callback(failures)
+    call test_resume_checkpoint(failures)
     call test_l2_hyperparameter_product(failures)
     call test_loss_hvp_oracle(failures)
     call test_nonlinear_loss_hvp(failures)
@@ -27,6 +29,80 @@ program test_mlp_training
     write (*, '(a)') "PASS MLP training independent behavioral oracles"
 
 contains
+
+    subroutine test_resume_checkpoint(failures)
+        integer, intent(inout) :: failures
+        type(mlp_t) :: full_model, resumed_model
+        type(mlp_training_options_t) :: full_options, split_options
+        type(mlp_training_state_t) :: full_state, resumed_state
+        type(mlp_training_checkpoint_t) :: full_checkpoint, resumed_checkpoint
+        type(fortnum_status_t) :: status
+        real(dp) :: x(8, 1), target(8, 1), full_theta(7), resumed_theta(7)
+
+        x(:, 1) = [-2.0_dp, -1.5_dp, -1.0_dp, -0.25_dp, 0.25_dp, 1.0_dp, &
+            1.5_dp, 2.0_dp]
+        target(:, 1) = 0.8_dp*x(:, 1) - 0.35_dp
+        call full_model%initialize([1, 2, 1], status, initialization_seed=41)
+        call resumed_model%initialize([1, 2, 1], status, initialization_seed=41)
+        full_options%max_epochs = 8
+        full_options%batch_size = 2
+        full_options%accumulation_steps = 2
+        full_options%shuffle = .true.
+        full_options%shuffle_seed = 991
+        full_options%learning_rate = 0.012_dp
+        full_options%tolerance = 0.0_dp
+        full_options%restore_best = .false.
+        full_options%learning_rate_schedule => deterministic_decay
+        split_options = full_options
+        split_options%max_epochs = 3
+
+        call mlp_train(full_model, x, target, status, full_options, full_state, &
+            checkpoint=full_checkpoint)
+        call check(status_ok(status), "uninterrupted checkpoint status", failures)
+        call check(full_checkpoint%valid() .and. full_checkpoint%epoch == 8 .and. &
+            full_checkpoint%updates == full_state%updates .and. &
+            full_checkpoint%adam_step_count == full_state%updates, &
+            "uninterrupted checkpoint metadata", failures)
+
+        call mlp_train(resumed_model, x, target, status, split_options, &
+            checkpoint=resumed_checkpoint)
+        call check(status_ok(status), "partial checkpoint status", failures)
+        call check(resumed_checkpoint%valid() .and. resumed_checkpoint%epoch == 3 .and. &
+            resumed_checkpoint%iterator_position == size(x, 1) + 1 .and. &
+            size(resumed_checkpoint%first_moment) == resumed_model%parameter_count(), &
+            "partial checkpoint state", failures)
+        call mlp_train(resumed_model, x, target, status, full_options, resumed_state, &
+            checkpoint=resumed_checkpoint)
+        call check(status_ok(status), "resumed checkpoint status", failures)
+        full_theta = full_model%parameters()
+        resumed_theta = resumed_model%parameters()
+        call check(resumed_state%epochs == full_state%epochs .and. &
+            resumed_state%updates == full_state%updates .and. &
+            maxval(abs(full_theta - resumed_theta)) < 1.0e-14_dp .and. &
+            maxval(abs(full_state%loss_history - resumed_state%loss_history)) < &
+            1.0e-14_dp .and. &
+            maxval(abs(full_checkpoint%parameters - resumed_checkpoint%parameters)) < &
+            1.0e-14_dp .and. &
+            maxval(abs(full_checkpoint%first_moment - &
+            resumed_checkpoint%first_moment)) < 1.0e-14_dp .and. &
+            maxval(abs(full_checkpoint%second_moment - &
+            resumed_checkpoint%second_moment)) < 1.0e-14_dp .and. &
+            all(full_checkpoint%iterator_order == resumed_checkpoint%iterator_order), &
+            "uninterrupted/resumed Adam trajectory", failures)
+        split_options%batch_size = 1
+        call mlp_train(resumed_model, x, target, status, split_options, &
+            checkpoint=resumed_checkpoint)
+        call check(.not. status_ok(status), "incompatible checkpoint refusal", failures)
+    end subroutine test_resume_checkpoint
+
+    subroutine deterministic_decay(epoch, update, base_rate, rate)
+        integer, intent(in) :: epoch, update
+        real(dp), intent(in) :: base_rate
+        real(dp), intent(out) :: rate
+
+        rate = base_rate/(1.0_dp + 0.025_dp*real(epoch - 1, dp)) &
+            + 1.0e-5_dp*real(mod(update, 3), dp)
+    end subroutine deterministic_decay
 
     subroutine test_first_adam_step(failures)
         integer, intent(inout) :: failures

@@ -85,6 +85,73 @@ module fortml_mlp_training
         real(dp), allocatable :: validation_loss_history(:)
     end type mlp_training_state_t
 
+    type, public :: mlp_training_checkpoint_t
+        !! Complete in-memory Adam training snapshot.
+        !!
+        !! A checkpoint is produced at every completed epoch when it is passed
+        !! to `mlp_train`.  Calling `mlp_train` again with the same initialized
+        !! checkpoint resumes at `epoch + 1`; `max_epochs` is interpreted as
+        !! the total target epoch, so a resumed call may increase it.  The
+        !! model parameters, Adam moments and step counter, local shuffle
+        !! stream, exact permutation cursor, schedule position, validation and
+        !! best-state bookkeeping are all copied.  Procedure pointers (custom
+        !! schedules and callbacks) are intentionally not copied: the caller
+        !! must install deterministic procedures again on the resumed options.
+        integer :: format_version = 1
+        logical :: initialized = .false.
+        logical :: resume_safe = .true.
+        integer :: n_samples = 0
+        integer :: n_features = 0
+        integer :: n_outputs = 0
+        integer :: n_parameters = 0
+        integer :: epoch = 0
+        integer :: updates = 0
+        integer :: microbatches = 0
+        integer :: microbatch_position = 1
+        integer :: active_epoch = 0
+        integer :: active_microbatches = 0
+        integer :: accumulated_samples = 0
+        integer :: iterator_epoch = 0
+        integer :: iterator_position = 1
+        integer :: batch_size = 0
+        integer :: accumulation_steps = 1
+        integer :: shuffle_seed = 17
+        integer :: adam_step_count = 0
+        integer :: stale_epochs = 0
+        integer :: gradient_clipped_updates = 0
+        logical :: shuffle = .false.
+        logical :: has_validation = .false.
+        logical :: converged = .false.
+        logical :: early_stopped = .false.
+        integer(int64) :: shuffle_state = 1_int64
+        real(dp) :: learning_rate = 1.0e-3_dp
+        real(dp) :: beta1 = 0.9_dp
+        real(dp) :: beta2 = 0.999_dp
+        real(dp) :: epsilon = 1.0e-8_dp
+        real(dp) :: l2 = 0.0_dp
+        real(dp) :: last_learning_rate = 0.0_dp
+        real(dp) :: initial_loss = huge(1.0_dp)
+        real(dp) :: final_loss = huge(1.0_dp)
+        real(dp) :: best_loss = huge(1.0_dp)
+        real(dp) :: initial_validation_loss = huge(1.0_dp)
+        real(dp) :: final_validation_loss = huge(1.0_dp)
+        real(dp) :: best_validation_loss = huge(1.0_dp)
+        integer :: best_epoch = 0
+        integer :: best_validation_epoch = 0
+        real(dp), allocatable :: parameters(:)
+        real(dp), allocatable :: first_moment(:)
+        real(dp), allocatable :: second_moment(:)
+        real(dp), allocatable :: best_parameters(:)
+        real(dp), allocatable :: accumulated_gradient(:)
+        integer, allocatable :: iterator_order(:)
+        real(dp), allocatable :: loss_history(:)
+        real(dp), allocatable :: learning_rate_history(:)
+        real(dp), allocatable :: validation_loss_history(:)
+    contains
+        procedure, public :: clear => mlp_checkpoint_clear
+        procedure, public :: valid => mlp_checkpoint_valid
+    end type mlp_training_checkpoint_t
+
     type, public :: mlp_loss_diagnostics_t
         !! Named scalar diagnostics for the MLP MSE objective.
         real(dp) :: data_loss = 0.0_dp
@@ -300,6 +367,129 @@ contains
 
         initialized = self%ready
     end function batch_iterator_initialized
+
+    subroutine mlp_checkpoint_clear(self)
+        class(mlp_training_checkpoint_t), intent(inout) :: self
+
+        if (allocated(self%parameters)) deallocate(self%parameters)
+        if (allocated(self%first_moment)) deallocate(self%first_moment)
+        if (allocated(self%second_moment)) deallocate(self%second_moment)
+        if (allocated(self%best_parameters)) deallocate(self%best_parameters)
+        if (allocated(self%accumulated_gradient)) then
+            deallocate(self%accumulated_gradient)
+        end if
+        if (allocated(self%iterator_order)) deallocate(self%iterator_order)
+        if (allocated(self%loss_history)) deallocate(self%loss_history)
+        if (allocated(self%learning_rate_history)) then
+            deallocate(self%learning_rate_history)
+        end if
+        if (allocated(self%validation_loss_history)) then
+            deallocate(self%validation_loss_history)
+        end if
+        self%format_version = 1
+        self%initialized = .false.
+        self%resume_safe = .true.
+        self%n_samples = 0
+        self%n_features = 0
+        self%n_outputs = 0
+        self%n_parameters = 0
+        self%epoch = 0
+        self%updates = 0
+        self%microbatches = 0
+        self%microbatch_position = 1
+        self%active_epoch = 0
+        self%active_microbatches = 0
+        self%accumulated_samples = 0
+        self%iterator_epoch = 0
+        self%iterator_position = 1
+        self%batch_size = 0
+        self%accumulation_steps = 1
+        self%shuffle_seed = 17
+        self%adam_step_count = 0
+        self%stale_epochs = 0
+        self%gradient_clipped_updates = 0
+        self%shuffle = .false.
+        self%has_validation = .false.
+        self%converged = .false.
+        self%early_stopped = .false.
+        self%shuffle_state = 1_int64
+        self%learning_rate = 1.0e-3_dp
+        self%beta1 = 0.9_dp
+        self%beta2 = 0.999_dp
+        self%epsilon = 1.0e-8_dp
+        self%l2 = 0.0_dp
+        self%last_learning_rate = 0.0_dp
+        self%initial_loss = huge(1.0_dp)
+        self%final_loss = huge(1.0_dp)
+        self%best_loss = huge(1.0_dp)
+        self%initial_validation_loss = huge(1.0_dp)
+        self%final_validation_loss = huge(1.0_dp)
+        self%best_validation_loss = huge(1.0_dp)
+        self%best_epoch = 0
+        self%best_validation_epoch = 0
+    end subroutine mlp_checkpoint_clear
+
+    logical function mlp_checkpoint_valid(self) result(valid)
+        class(mlp_training_checkpoint_t), intent(in) :: self
+
+        valid = self%initialized .and. self%format_version == 1 .and. &
+            self%n_samples > 0 .and. self%n_features > 0 .and. &
+            self%n_outputs > 0 .and. self%n_parameters > 0 .and. &
+            self%epoch >= 0 .and. self%updates >= 0 .and. &
+            self%microbatches >= 0 .and. self%microbatch_position >= 1 .and. &
+            self%active_epoch >= self%epoch .and. &
+            self%active_microbatches >= 0 .and. self%accumulated_samples >= 0 .and. &
+            self%iterator_epoch >= 0 .and. self%iterator_position >= 1 .and. &
+            self%iterator_position <= self%n_samples + 1 .and. &
+            self%accumulated_samples <= self%n_samples .and. &
+            self%active_microbatches <= self%accumulation_steps .and. &
+            self%batch_size > 0 .and. self%accumulation_steps > 0 .and. &
+            self%shuffle_seed > 0 .and. self%adam_step_count >= 0 .and. &
+            allocated(self%parameters) .and. allocated(self%first_moment) .and. &
+            allocated(self%second_moment) .and. allocated(self%best_parameters) &
+            .and. allocated(self%accumulated_gradient) .and. &
+            allocated(self%iterator_order) .and. &
+            allocated(self%loss_history) .and. &
+            allocated(self%learning_rate_history)
+        if (.not. valid) return
+        valid = size(self%parameters) == self%n_parameters .and. &
+            size(self%first_moment) == self%n_parameters .and. &
+            size(self%second_moment) == self%n_parameters .and. &
+            size(self%best_parameters) == self%n_parameters .and. &
+            size(self%accumulated_gradient) == self%n_parameters .and. &
+            size(self%iterator_order) == self%n_samples .and. &
+            size(self%loss_history) == self%epoch .and. &
+            size(self%learning_rate_history) == self%epoch .and. &
+            all(self%iterator_order >= 1) .and. &
+            all(self%iterator_order <= self%n_samples)
+        if (.not. valid) return
+        if (self%has_validation) then
+            valid = allocated(self%validation_loss_history) .and. &
+                size(self%validation_loss_history) == self%epoch
+        else
+            valid = .not. allocated(self%validation_loss_history)
+        end if
+        if (.not. valid) return
+        valid = all(ieee_is_finite(self%parameters)) .and. &
+            all(ieee_is_finite(self%first_moment)) .and. &
+            all(ieee_is_finite(self%second_moment)) .and. &
+            all(ieee_is_finite(self%best_parameters)) .and. &
+            all(ieee_is_finite(self%accumulated_gradient)) .and. &
+            all(ieee_is_finite(self%loss_history)) .and. &
+            all(ieee_is_finite(self%learning_rate_history))
+        if (self%has_validation) valid = valid .and. &
+            all(ieee_is_finite(self%validation_loss_history))
+        valid = valid .and. ieee_is_finite(self%learning_rate) .and. &
+            ieee_is_finite(self%beta1) .and. ieee_is_finite(self%beta2) .and. &
+            ieee_is_finite(self%epsilon) .and. ieee_is_finite(self%l2) .and. &
+            ieee_is_finite(self%last_learning_rate) .and. &
+            ieee_is_finite(self%initial_loss) .and. ieee_is_finite(self%final_loss) &
+            .and. ieee_is_finite(self%best_loss)
+        if (self%has_validation) valid = valid .and. &
+            ieee_is_finite(self%initial_validation_loss) .and. &
+            ieee_is_finite(self%final_validation_loss) .and. &
+            ieee_is_finite(self%best_validation_loss)
+    end function mlp_checkpoint_valid
 
     subroutine mlp_loss_value_gradient(model, x, target, l2, value, gradient, &
             l2_gradient, status, sample_weight, reduction, diagnostics)
@@ -706,7 +896,7 @@ contains
     end subroutine mlp_optimize_lbfgsb
 
     subroutine mlp_train(model, x, target, status, options, state, &
-            validation_x, validation_target)
+            validation_x, validation_target, checkpoint)
         !! Train `model` with deterministic Adam updates.
         !!
         !! A zero batch size selects full-batch updates.  When shuffling is
@@ -715,13 +905,18 @@ contains
         !! touched.  Callback execution occurs once per completed epoch.
         !! Optional validation arrays are evaluated at `validation_interval`;
         !! patience and best-state restoration then monitor that held-out
-        !! objective without using validation rows for updates.
+        !! objective without using validation rows for updates.  When
+        !! `checkpoint` is present, a fresh snapshot is written after each
+        !! completed epoch and an initialized snapshot resumes the same
+        !! trajectory.  `options%max_epochs` is a total target epoch on both
+        !! fresh and resumed calls.
         class(mlp_t), intent(inout) :: model
         real(dp), intent(in) :: x(:, :), target(:, :)
         type(fortnum_status_t), intent(out) :: status
         type(mlp_training_options_t), intent(in), optional :: options
         type(mlp_training_state_t), intent(out), optional :: state
         real(dp), intent(in), optional :: validation_x(:, :), validation_target(:, :)
+        type(mlp_training_checkpoint_t), intent(inout), optional :: checkpoint
         type(mlp_training_options_t) :: config
         type(mlp_training_state_t) :: result
         type(adam_t) :: optimizer
@@ -738,8 +933,13 @@ contains
         integer :: batch, epoch
         integer :: microbatch_count, accumulated_samples
         integer :: stale_epochs
-        logical :: stop_now, has_batch
+        integer :: start_epoch, history_length
+        logical :: stop_now, has_batch, resuming, resume_active_epoch
+        logical :: incompatible_checkpoint
 
+        resuming = .false.
+        if (present(checkpoint)) resuming = checkpoint%initialized
+        resume_active_epoch = .false.
         if (present(options)) config = options
         if (.not. valid_options(config) .or. &
             .not. valid_data(model, x, target) .or. &
@@ -765,42 +965,115 @@ contains
         if (batch == 0) batch = n_samples
         batch = min(batch, n_samples)
 
-        theta = model%parameters()
-        allocate(best_theta, source=theta)
-        allocate(gradient(n_parameters))
-        allocate(accumulated_gradient(n_parameters))
-        allocate(result%loss_history(config%max_epochs))
-        allocate(result%learning_rate_history(config%max_epochs))
-        result%loss_history = huge(1.0_dp)
-        result%learning_rate_history = 0.0_dp
-        if (present(validation_x)) then
-            allocate(result%validation_loss_history(config%max_epochs))
-            result%validation_loss_history = huge(1.0_dp)
+        if (resuming) then
+            incompatible_checkpoint = .not. checkpoint%valid()
+            if (.not. checkpoint%resume_safe) incompatible_checkpoint = .true.
+            if (checkpoint%n_samples /= n_samples) incompatible_checkpoint = .true.
+            if (checkpoint%n_features /= size(x, 2)) incompatible_checkpoint = .true.
+            if (checkpoint%n_outputs /= n_outputs) incompatible_checkpoint = .true.
+            if (checkpoint%n_parameters /= n_parameters) incompatible_checkpoint = .true.
+            if (checkpoint%batch_size /= batch) incompatible_checkpoint = .true.
+            if (checkpoint%accumulation_steps /= config%accumulation_steps) then
+                incompatible_checkpoint = .true.
+            end if
+            if (checkpoint%shuffle .neqv. config%shuffle) incompatible_checkpoint = .true.
+            if (checkpoint%shuffle_seed /= config%shuffle_seed) incompatible_checkpoint = .true.
+            if (checkpoint%learning_rate /= config%learning_rate) incompatible_checkpoint = .true.
+            if (checkpoint%beta1 /= config%beta1) incompatible_checkpoint = .true.
+            if (checkpoint%beta2 /= config%beta2) incompatible_checkpoint = .true.
+            if (checkpoint%epsilon /= config%epsilon) incompatible_checkpoint = .true.
+            if (checkpoint%l2 /= config%l2) incompatible_checkpoint = .true.
+            if (checkpoint%epoch > config%max_epochs) incompatible_checkpoint = .true.
+            if (incompatible_checkpoint) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP train: checkpoint is invalid or incompatible")
+                if (present(state)) state = result
+                return
+            end if
+            resume_active_epoch = checkpoint%iterator_position <= n_samples .and. &
+                checkpoint%active_epoch > checkpoint%epoch
+            if (checkpoint%has_validation .neqv. present(validation_x)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP train: checkpoint validation contract differs")
+                if (present(state)) state = result
+                return
+            end if
         end if
-        result%accumulation_steps = config%accumulation_steps
-        call mlp_loss_value_gradient(model, x, target, config%l2, loss, &
-            gradient, l2_gradient, status)
-        if (status%code /= FORTNUM_OK) then
-            if (present(state)) state = result
-            return
-        end if
-        result%initial_loss = loss
-        best_loss = loss
-        result%best_loss = loss
-        monitored_loss = loss
-        if (present(validation_x)) then
-            call mlp_loss_value_gradient(model, validation_x, validation_target, &
-                config%l2, validation_loss, gradient, l2_gradient, status)
+
+        if (resuming) then
+            theta = checkpoint%parameters
+            call model%set_parameters(theta, status)
             if (status%code /= FORTNUM_OK) then
                 if (present(state)) state = result
                 return
             end if
-            result%initial_validation_loss = validation_loss
-            result%best_validation_loss = validation_loss
-            best_loss = validation_loss
-            monitored_loss = validation_loss
+            allocate(best_theta, source=checkpoint%best_parameters)
+        else
+            theta = model%parameters()
+            allocate(best_theta, source=theta)
         end if
-        stale_epochs = 0
+        allocate(gradient(n_parameters))
+        allocate(accumulated_gradient(n_parameters))
+        history_length = config%max_epochs
+        allocate(result%loss_history(history_length))
+        allocate(result%learning_rate_history(history_length))
+        result%loss_history = huge(1.0_dp)
+        result%learning_rate_history = 0.0_dp
+        if (present(validation_x)) then
+            allocate(result%validation_loss_history(history_length))
+            result%validation_loss_history = huge(1.0_dp)
+        end if
+        result%accumulation_steps = config%accumulation_steps
+        if (resuming) then
+            result%epochs = checkpoint%epoch
+            result%updates = checkpoint%updates
+            result%microbatches = checkpoint%microbatches
+            result%gradient_clipped_updates = checkpoint%gradient_clipped_updates
+            result%converged = checkpoint%converged
+            result%early_stopped = checkpoint%early_stopped
+            result%best_epoch = checkpoint%best_epoch
+            result%best_validation_epoch = checkpoint%best_validation_epoch
+            result%initial_loss = checkpoint%initial_loss
+            result%final_loss = checkpoint%final_loss
+            result%best_loss = checkpoint%best_loss
+            result%initial_validation_loss = checkpoint%initial_validation_loss
+            result%final_validation_loss = checkpoint%final_validation_loss
+            result%best_validation_loss = checkpoint%best_validation_loss
+            result%last_learning_rate = checkpoint%last_learning_rate
+            if (result%epochs > 0) then
+                result%loss_history(:result%epochs) = checkpoint%loss_history
+                result%learning_rate_history(:result%epochs) = &
+                    checkpoint%learning_rate_history
+                if (present(validation_x)) result%validation_loss_history( &
+                    :result%epochs) = checkpoint%validation_loss_history
+            end if
+            best_loss = checkpoint%best_loss
+            stale_epochs = checkpoint%stale_epochs
+            monitored_loss = checkpoint%best_loss
+        else
+            call mlp_loss_value_gradient(model, x, target, config%l2, loss, &
+                gradient, l2_gradient, status)
+            if (status%code /= FORTNUM_OK) then
+                if (present(state)) state = result
+                return
+            end if
+            result%initial_loss = loss
+            best_loss = loss
+            result%best_loss = loss
+            monitored_loss = loss
+            if (present(validation_x)) then
+                call mlp_loss_value_gradient(model, validation_x, validation_target, &
+                    config%l2, validation_loss, gradient, l2_gradient, status)
+                if (status%code /= FORTNUM_OK) then
+                    if (present(state)) state = result
+                    return
+                end if
+                result%initial_validation_loss = validation_loss
+                result%best_validation_loss = validation_loss
+                best_loss = validation_loss
+                monitored_loss = validation_loss
+            end if
+        end if
         call optimizer%initialize(n_parameters, status, &
             learning_rate=config%learning_rate, beta1=config%beta1, &
             beta2=config%beta2, epsilon=config%epsilon)
@@ -808,22 +1081,49 @@ contains
             if (present(state)) state = result
             return
         end if
+        if (resuming) then
+            optimizer%first_moment = checkpoint%first_moment
+            optimizer%second_moment = checkpoint%second_moment
+            optimizer%step_count = checkpoint%adam_step_count
+            optimizer%learning_rate = checkpoint%last_learning_rate
+            if (optimizer%learning_rate <= 0.0_dp) then
+                optimizer%learning_rate = config%learning_rate
+            end if
+        end if
         call iterator%initialize(n_samples, status, batch_size=batch, &
             shuffle=config%shuffle, seed=config%shuffle_seed)
         if (status%code /= FORTNUM_OK) then
             if (present(state)) state = result
             return
         end if
+        if (resuming) then
+            iterator%order = checkpoint%iterator_order
+            iterator%position = checkpoint%iterator_position
+            iterator%epoch_number = checkpoint%iterator_epoch
+            iterator%shuffle_state = checkpoint%shuffle_state
+        end if
 
-        do epoch = 1, config%max_epochs
-            call iterator%reset(status)
-            if (status%code /= FORTNUM_OK) then
-                if (present(state)) state = result
-                return
+        start_epoch = 1
+        if (resuming) start_epoch = checkpoint%epoch + 1
+        if (resuming .and. resume_active_epoch) start_epoch = checkpoint%active_epoch
+        do epoch = start_epoch, config%max_epochs
+            if (.not. (resuming .and. resume_active_epoch .and. &
+                epoch == start_epoch)) then
+                call iterator%reset(status)
+                if (status%code /= FORTNUM_OK) then
+                    if (present(state)) state = result
+                    return
+                end if
             end if
             accumulated_gradient = 0.0_dp
             accumulated_samples = 0
             microbatch_count = 0
+            if (resuming .and. resume_active_epoch .and. epoch == start_epoch) then
+                accumulated_gradient = checkpoint%accumulated_gradient
+                accumulated_samples = checkpoint%accumulated_samples
+                microbatch_count = checkpoint%active_microbatches
+                resume_active_epoch = .false.
+            end if
             has_batch = .true.
             do while (has_batch)
                 call iterator%next_batch(batch_indices, has_batch, status)
@@ -900,6 +1200,16 @@ contains
                         microbatch_count = 0
                     end if
                 end if
+                if (present(checkpoint)) then
+                    call checkpoint_capture(checkpoint, x, target, config, result, &
+                        iterator, optimizer, theta, best_theta, stale_epochs, &
+                        epoch, microbatch_count, accumulated_samples, &
+                        accumulated_gradient, present(validation_x), status)
+                    if (status%code /= FORTNUM_OK) then
+                        if (present(state)) state = result
+                        return
+                    end if
+                end if
             end do
 
             call mlp_loss_value_gradient(model, x, target, config%l2, loss, &
@@ -954,14 +1264,24 @@ contains
             end if
             if (gradient_norm <= config%tolerance) then
                 result%converged = .true.
-                exit
             end if
             if (stop_now) then
                 result%early_stopped = .true.
-                exit
             end if
             if (config%patience > 0 .and. stale_epochs >= config%patience) then
                 result%early_stopped = .true.
+            end if
+            if (present(checkpoint)) then
+                call checkpoint_capture(checkpoint, x, target, config, result, &
+                    iterator, optimizer, theta, best_theta, stale_epochs, &
+                    epoch, microbatch_count, accumulated_samples, &
+                    accumulated_gradient, present(validation_x), status)
+                if (status%code /= FORTNUM_OK) then
+                    if (present(state)) state = result
+                    return
+                end if
+            end if
+            if (result%converged .or. result%early_stopped) then
                 exit
             end if
         end do
@@ -985,6 +1305,7 @@ contains
                 return
             end if
             result%gradient_norm = sqrt(sum(gradient*gradient))
+            if (present(checkpoint)) checkpoint%resume_safe = .false.
         end if
         result%final_loss = loss
         if (present(validation_x)) then
@@ -999,6 +1320,105 @@ contains
         if (present(state)) state = result
         call status_set(status, FORTNUM_OK, "")
     end subroutine mlp_train
+
+    subroutine checkpoint_capture(checkpoint, x, target, config, result, iterator, &
+            optimizer, theta, best_theta, stale_epochs, active_epoch, &
+            active_microbatches, accumulated_samples, accumulated_gradient, &
+            has_validation, status)
+        type(mlp_training_checkpoint_t), intent(inout) :: checkpoint
+        real(dp), intent(in) :: x(:, :), target(:, :)
+        type(mlp_training_options_t), intent(in) :: config
+        type(mlp_training_state_t), intent(in) :: result
+        type(mlp_batch_iterator_t), intent(in) :: iterator
+        type(adam_t), intent(in) :: optimizer
+        real(dp), intent(in) :: theta(:), best_theta(:)
+        integer, intent(in) :: stale_epochs
+        integer, intent(in) :: active_epoch, active_microbatches, accumulated_samples
+        real(dp), intent(in) :: accumulated_gradient(:)
+        logical, intent(in) :: has_validation
+        type(fortnum_status_t), intent(out) :: status
+        integer :: n
+
+        if (size(theta) < 1 .or. size(best_theta) /= size(theta) .or. &
+            size(accumulated_gradient) /= size(theta) .or. &
+            active_epoch < result%epochs .or. active_microbatches < 0 .or. &
+            accumulated_samples < 0 .or. &
+            .not. iterator%initialized() .or. &
+            .not. allocated(optimizer%first_moment) .or. &
+            size(optimizer%first_moment) /= size(theta) .or. &
+            size(optimizer%second_moment) /= size(theta)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP checkpoint: optimizer or parameter state is invalid")
+            return
+        end if
+        call checkpoint%clear()
+        checkpoint%format_version = 1
+        checkpoint%initialized = .true.
+        checkpoint%resume_safe = .true.
+        checkpoint%n_samples = size(x, 1)
+        checkpoint%n_features = size(x, 2)
+        checkpoint%n_outputs = size(target, 2)
+        checkpoint%n_parameters = size(theta)
+        checkpoint%epoch = result%epochs
+        checkpoint%updates = result%updates
+        checkpoint%microbatches = result%microbatches
+        checkpoint%gradient_clipped_updates = result%gradient_clipped_updates
+        checkpoint%microbatch_position = iterator%position
+        checkpoint%active_epoch = active_epoch
+        checkpoint%active_microbatches = active_microbatches
+        checkpoint%accumulated_samples = accumulated_samples
+        checkpoint%iterator_epoch = iterator%epoch_number
+        checkpoint%iterator_position = iterator%position
+        checkpoint%batch_size = iterator%batch_size
+        checkpoint%accumulation_steps = config%accumulation_steps
+        checkpoint%shuffle_seed = config%shuffle_seed
+        checkpoint%adam_step_count = optimizer%step_count
+        checkpoint%stale_epochs = stale_epochs
+        checkpoint%shuffle = config%shuffle
+        checkpoint%has_validation = has_validation
+        checkpoint%converged = result%converged
+        checkpoint%early_stopped = result%early_stopped
+        checkpoint%shuffle_state = iterator%shuffle_state
+        checkpoint%learning_rate = config%learning_rate
+        checkpoint%beta1 = config%beta1
+        checkpoint%beta2 = config%beta2
+        checkpoint%epsilon = config%epsilon
+        checkpoint%l2 = config%l2
+        checkpoint%last_learning_rate = result%last_learning_rate
+        checkpoint%initial_loss = result%initial_loss
+        checkpoint%final_loss = result%final_loss
+        checkpoint%best_loss = result%best_loss
+        checkpoint%initial_validation_loss = result%initial_validation_loss
+        checkpoint%final_validation_loss = result%final_validation_loss
+        checkpoint%best_validation_loss = result%best_validation_loss
+        checkpoint%best_epoch = result%best_epoch
+        checkpoint%best_validation_epoch = result%best_validation_epoch
+        allocate(checkpoint%parameters, source=theta)
+        allocate(checkpoint%first_moment, source=optimizer%first_moment)
+        allocate(checkpoint%second_moment, source=optimizer%second_moment)
+        allocate(checkpoint%best_parameters, source=best_theta)
+        allocate(checkpoint%accumulated_gradient, source=accumulated_gradient)
+        allocate(checkpoint%iterator_order, source=iterator%order)
+        allocate(checkpoint%loss_history(result%epochs))
+        allocate(checkpoint%learning_rate_history(result%epochs))
+        n = result%epochs
+        if (n > 0) then
+            checkpoint%loss_history = result%loss_history(:n)
+            checkpoint%learning_rate_history = result%learning_rate_history(:n)
+        end if
+        if (has_validation) then
+            allocate(checkpoint%validation_loss_history(result%epochs))
+            if (n > 0) checkpoint%validation_loss_history = &
+                result%validation_loss_history(:n)
+        end if
+        if (.not. checkpoint%valid()) then
+            call checkpoint%clear()
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP checkpoint: captured state failed validation")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine checkpoint_capture
 
     logical function valid_options(options) result(valid)
         type(mlp_training_options_t), intent(in) :: options
