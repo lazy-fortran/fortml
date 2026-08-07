@@ -1838,6 +1838,18 @@ The maintained reports and their raw artifacts are in `../fortml-bench/results`:
 - [`ONE_HOT_ENCODER.md`](../fortml-bench/results/ONE_HOT_ENCODER.md), backed by
   `one_hot_encoder.csv` for sorted categories, packed one-based offsets,
   dense transforms, and explicit categorical derivative refusals.
+- [`LINEAR_SVM.md`](../fortml-bench/results/LINEAR_SVM.md), backed by
+  `linear_svm.csv` for weighted arbitrary-label primal SVM fit/predict,
+  signed-margin oracle checks, and the explicit CUDA refusal.
+- [`NEURAL_LOSSES.md`](../fortml-bench/results/NEURAL_LOSSES.md), backed by
+  `neural_losses.csv` for BCE, softmax cross-entropy, weighted-MSE, Huber,
+  and weighted-MLP HVP products.
+- [`DERIVATIVE_GP.md`](../fortml-bench/results/DERIVATIVE_GP.md), backed by
+  `derivative_gp.csv` for exact periodic and rational-quadratic mixed-query
+  JVP/VJP products and typed CUDA refusals.
+- [`HYPERPARAMETER_SEARCH.md`](../fortml-bench/results/HYPERPARAMETER_SEARCH.md),
+  backed by `hyperparameter_search.csv` for bounded grid, seeded random, and
+  FortOpt L-BFGS-B search evidence.
 - [`ADAMW_HYPERGRADIENT.md`](../fortml-bench/results/ADAMW_HYPERGRADIENT.md),
   backed by `adamw_training.csv` and `mlp_hypergradient.csv` for independent
   AdamW recurrence and fixed-trajectory hypergradient finite-difference oracles.
