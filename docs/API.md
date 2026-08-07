@@ -522,6 +522,42 @@ derivatives are not claimed. CPU dispatch is complete; CUDA score and label
 requests return `FORTNUM_NOT_IMPLEMENTED` until a resident RBF reduction is
 linked, with no hidden host fallback.
 
+### `fortml_rbf_svm_classifier`
+
+`rbf_svm_classifier_t%fit(x,labels,status[,c,gamma,max_iterations,tolerance,
+sample_weight])` fits a dense binary RBF support-vector classifier. The finite
+training rows are the explicit RBF feature basis. FortOpt L-BFGS-B minimizes
+the deterministic weighted convex squared-hinge RKHS objective
+`0.5*cvec^T*K*cvec + C/sum(w)*sum_i w_i*max(0,1-y_i*(K*cvec+b))**2`.
+This is a primal-coordinate kernel expansion with exact finite-basis
+semantics; it is deliberately named separately from `linear_svm_classifier_t`
+and does not claim a general sparse/exact-dual SMO implementation. `C` and
+`gamma` must be finite and positive. `sample_weight` is finite and
+nonnegative with positive total mass. Labels may be any two distinct integers;
+`classes()` stores the ascending pair and the zero-score tie goes to the
+second class.
+
+`decision_function(x,scores,status)` returns the signed RBF score and
+`predict(x,labels,status)` applies that deterministic threshold. `predict_proba`
+returns two columns in `classes()` order using the explicitly uncalibrated
+sigmoid of the score (`p(positive)=sigmoid(score)`). `coefficients()` are the
+training-basis expansion weights, `intercept()`, `gamma()`, `c_parameter()`,
+`support_vector_count()`, `classes()`, `feature_count()`, `sample_count()`,
+`iterations()`, and `fitted()` expose state. The packed `parameters()` order is
+`[coefficients,intercept,log(gamma)]`; `set_parameters` updates only this
+fixed-state prediction map and validates finite positive `gamma`.
+
+`decision_function_jvp(x,theta_dot,x_dot,scores,scores_dot,status)` and
+`decision_function_vjp(x,scores_bar,theta_bar,x_bar,status)` (also `jvp` and
+`vjp`) are analytic fixed-state products with respect to packed coefficients,
+intercept, log-gamma, and query inputs. `predict_proba_jvp` and
+`predict_proba_vjp` apply the same map through the sigmoid. Fit-state,
+active-set, hyperparameter-search, and hard-label derivatives are not exposed:
+the squared-hinge margin changes curvature at one and hard prediction is
+discrete. No finite-difference fallback is used. `device_supported(CPU)` is
+true for a fitted model; CUDA score, label, and probability calls return
+`FORTNUM_NOT_IMPLEMENTED` until a resident RBF-SVM kernel is linked.
+
 ### `fortml_linear_svr`
 
 `linear_svr_regression_t%fit(x,targets,status[,l2,epsilon,fit_intercept,loss,
