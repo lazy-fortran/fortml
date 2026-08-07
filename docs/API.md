@@ -113,7 +113,7 @@ eight-activation oracle, and repeated resident-batch evidence.
 | `vae_t` | `elbo`, `reconstruct` | No | ELBO gradient | No |
 | `rnn_t` | `forward`, squared-error `loss` | No | Loss gradient by BPTT | No |
 | `kernel_t` | Scalar value and matrix | Parameter JVP | Parameter VJP | Parameter HVP |
-| `xgboost_t` | Squared/logistic/Poisson/Huber/quantile margins and predictions | Fixed-tree input JVP away from split boundaries | Fixed-tree input VJP away from split boundaries | No |
+| `xgboost_t` | Squared/squared-log (RMSLE)/logistic/Poisson/Huber/quantile margins and predictions | Fixed-tree input JVP away from split boundaries | Fixed-tree input VJP away from split boundaries | No |
 | `random_forest_classifier_t` | Bootstrap-ensemble probabilities and labels | Refused: split routing is discrete | Refused: split routing is discrete | No |
 | `extra_trees_classifier_t` | Randomized-threshold ensemble probabilities and labels | Refused: split routing is discrete | Refused: split routing is discrete | No |
 | `gp_regression_t` | Mean, variance, LML | Prediction and LML parameters | Prediction and LML parameters | Mean and LML parameters |
@@ -739,6 +739,26 @@ mass and sum leaves the weighted sum unnormalised. Log variances below
 weights, and negative counts return typed domain errors. No CUDA NLL kernels are
 resident, so CUDA requests remain an explicit unavailable capability with no
 host fallback.
+
+`multilabel_binary_cross_entropy_with_logits_*` treats every output column as
+an independent relaxed indicator head. The value, JVP, VJP, and HVP procedures
+accept optional finite nonnegative row weights and
+`LOSS_REDUCTION_MEAN`/`LOSS_REDUCTION_SUM`; mean reduction divides by positive
+row-weight mass and sum reduction is unnormalised. The HVP is the exact
+diagonal sigmoid curvature for each logit. Targets outside `[0,1]`, malformed
+weights, nonfinite products, and zero-support batches return typed domain
+errors.
+
+`ordinal_cumulative_logit_loss_*` implements the ordered cumulative-logit
+negative log likelihood. `logits(i,k)` means
+`P(Y<=k)=sigmoid(logits(i,k))`, labels are one-based in
+`1:size(logits,2)+1`, and every row must have strictly increasing cumulative
+logits. Weighted mean/sum value, JVP, VJP, and exact HVP products are
+available; the HVP differentiates the difference of the two sigmoid terms
+analytically. A nonpositive class probability or malformed ordering is a
+typed domain refusal. These new loss kernels are CPU reference paths only;
+CUDA requests remain unavailable until resident loss kernels are linked and
+never fall back through a host copy.
 
 ### `fortml_softmax_regression`
 
@@ -1635,7 +1655,9 @@ are linked; there is no hidden host fallback.
 `fit_regression` for a squared objective, `fit_binary` for a logistic
 objective, `fit_poisson` for nonnegative count targets with a log link,
 `fit_huber` for robust Huber regression, or `fit_quantile` for pinball
-regression. The generic `fit` accepts `objective="squared"`, `"logistic"`,
+regression. Use `fit_squared_log` for XGBoost's `reg:squaredlogerror`
+(RMSLE) objective. The generic `fit` accepts `objective="squared"`,
+`"squaredlog"`/`"reg:squaredlogerror"`/`"rmsle"`, `"logistic"`,
 `"poisson"`, `"huber"`/`"pseudohuber"`, or `"quantile"`/`"pinball"`.
 All fit methods accept an optional positive `sample_weight(:)`;
 weights affect the base score and every gradient/Hessian reduction. The

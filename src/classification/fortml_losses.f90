@@ -12,6 +12,10 @@ module fortml_losses
     public :: binary_cross_entropy_with_logits_jvp
     public :: binary_cross_entropy_with_logits_vjp
     public :: binary_cross_entropy_with_logits_hvp
+    public :: multilabel_binary_cross_entropy_with_logits_value
+    public :: multilabel_binary_cross_entropy_with_logits_jvp
+    public :: multilabel_binary_cross_entropy_with_logits_vjp
+    public :: multilabel_binary_cross_entropy_with_logits_hvp
     public :: softmax_value, softmax_jvp, softmax_vjp
     public :: log_softmax_value, log_softmax_jvp, log_softmax_vjp
     public :: softmax_cross_entropy_value
@@ -38,6 +42,10 @@ module fortml_losses
     public :: huber_loss_value, huber_loss_jvp, huber_loss_vjp
     public :: huber_loss_hvp
     public :: quantile_loss_value, quantile_loss_jvp, quantile_loss_vjp
+    public :: ordinal_cumulative_logit_loss_value
+    public :: ordinal_cumulative_logit_loss_jvp
+    public :: ordinal_cumulative_logit_loss_vjp
+    public :: ordinal_cumulative_logit_loss_hvp
 
     integer, parameter, public :: LOSS_REDUCTION_MEAN = 1
     integer, parameter, public :: LOSS_REDUCTION_SUM = 2
@@ -258,6 +266,370 @@ contains
             real(size(logits), dp)
         call status_set(status, FORTNUM_OK, "")
     end subroutine binary_cross_entropy_with_logits_hvp
+
+    subroutine multilabel_binary_cross_entropy_with_logits_value(logits, targets, &
+            value, status, sample_weight, reduction)
+        !! Weighted multilabel BCE-with-logits with row-wise reductions.
+        !!
+        !! Each column is an independent relaxed indicator target.  Mean
+        !! reduction divides by positive row-weight mass, while sum reduction
+        !! leaves the weighted sum unnormalised.  This convention lets a
+        !! multilabel head and a multi-output regression head share one batch
+        !! weighting contract without silently changing the number of labels.
+        real(dp), intent(in) :: logits(:, :), targets(:, :)
+        real(dp), intent(out) :: value
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
+        integer, intent(in), optional :: reduction
+        real(dp), allocatable :: weights(:)
+        real(dp) :: normalization
+        integer :: i, j
+
+        value = 0.0_dp
+        call validate_binary_inputs(logits, targets, status)
+        if (status%code /= FORTNUM_OK) return
+        call prepare_loss_weights(size(logits, 1), sample_weight, reduction, &
+            weights, normalization, status)
+        if (status%code /= FORTNUM_OK) return
+        do j = 1, size(logits, 2)
+            do i = 1, size(logits, 1)
+                value = value + weights(i)*binary_loss(logits(i, j), targets(i, j))
+            end do
+        end do
+        value = value/normalization
+        if (.not. ieee_is_finite(value)) then
+            value = 0.0_dp
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multilabel BCE: reduction is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine multilabel_binary_cross_entropy_with_logits_value
+
+    subroutine multilabel_binary_cross_entropy_with_logits_jvp(logits, targets, &
+            logits_dot, value, value_dot, status, sample_weight, reduction)
+        !! Value and exact logits JVP of weighted multilabel BCE.
+        real(dp), intent(in) :: logits(:, :), targets(:, :), logits_dot(:, :)
+        real(dp), intent(out) :: value, value_dot
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
+        integer, intent(in), optional :: reduction
+        real(dp), allocatable :: weights(:)
+        real(dp) :: normalization, derivative
+        integer :: i, j
+
+        value = 0.0_dp
+        value_dot = 0.0_dp
+        if (any(shape(logits_dot) /= shape(logits)) .or. &
+            any(.not. ieee_is_finite(logits_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multilabel BCE JVP: tangent shape or values are invalid")
+            return
+        end if
+        call validate_binary_inputs(logits, targets, status)
+        if (status%code /= FORTNUM_OK) return
+        call prepare_loss_weights(size(logits, 1), sample_weight, reduction, &
+            weights, normalization, status)
+        if (status%code /= FORTNUM_OK) return
+        do j = 1, size(logits, 2)
+            do i = 1, size(logits, 1)
+                derivative = stable_sigmoid(logits(i, j)) - targets(i, j)
+                value = value + weights(i)*binary_loss(logits(i, j), targets(i, j))
+                value_dot = value_dot + weights(i)*derivative*logits_dot(i, j)
+            end do
+        end do
+        value = value/normalization
+        value_dot = value_dot/normalization
+        if (.not. ieee_is_finite(value) .or. .not. ieee_is_finite(value_dot)) then
+            value = 0.0_dp
+            value_dot = 0.0_dp
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multilabel BCE JVP: reduction is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine multilabel_binary_cross_entropy_with_logits_jvp
+
+    subroutine multilabel_binary_cross_entropy_with_logits_vjp(logits, targets, &
+            value_bar, logits_bar, status, sample_weight, reduction)
+        !! Exact reverse product of weighted multilabel BCE with respect to logits.
+        real(dp), intent(in) :: logits(:, :), targets(:, :), value_bar
+        real(dp), intent(out) :: logits_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
+        integer, intent(in), optional :: reduction
+        real(dp), allocatable :: weights(:)
+        real(dp) :: normalization
+        integer :: i, j
+
+        logits_bar = 0.0_dp
+        if (any(shape(logits_bar) /= shape(logits)) .or. &
+            .not. ieee_is_finite(value_bar)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multilabel BCE VJP: cotangent or output shape is invalid")
+            return
+        end if
+        call validate_binary_inputs(logits, targets, status)
+        if (status%code /= FORTNUM_OK) return
+        call prepare_loss_weights(size(logits, 1), sample_weight, reduction, &
+            weights, normalization, status)
+        if (status%code /= FORTNUM_OK) return
+        do j = 1, size(logits, 2)
+            do i = 1, size(logits, 1)
+                logits_bar(i, j) = value_bar*weights(i)* &
+                    (stable_sigmoid(logits(i, j)) - targets(i, j))/normalization
+            end do
+        end do
+        if (any(.not. ieee_is_finite(logits_bar))) then
+            logits_bar = 0.0_dp
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multilabel BCE VJP: product is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine multilabel_binary_cross_entropy_with_logits_vjp
+
+    subroutine multilabel_binary_cross_entropy_with_logits_hvp(logits, targets, &
+            logits_dot, logits_hvp, status, sample_weight, reduction)
+        !! Exact logits Hessian-vector product of weighted multilabel BCE.
+        real(dp), intent(in) :: logits(:, :), targets(:, :), logits_dot(:, :)
+        real(dp), intent(out) :: logits_hvp(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
+        integer, intent(in), optional :: reduction
+        real(dp), allocatable :: weights(:)
+        real(dp) :: normalization, probability
+        integer :: i, j
+
+        logits_hvp = 0.0_dp
+        if (any(shape(logits_dot) /= shape(logits)) .or. &
+            any(shape(logits_hvp) /= shape(logits))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multilabel BCE HVP: tangent or output shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(logits_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multilabel BCE HVP: tangent must be finite")
+            return
+        end if
+        call validate_binary_inputs(logits, targets, status)
+        if (status%code /= FORTNUM_OK) return
+        call prepare_loss_weights(size(logits, 1), sample_weight, reduction, &
+            weights, normalization, status)
+        if (status%code /= FORTNUM_OK) return
+        do j = 1, size(logits, 2)
+            do i = 1, size(logits, 1)
+                probability = stable_sigmoid(logits(i, j))
+                logits_hvp(i, j) = weights(i)*probability*(1.0_dp - probability)* &
+                    logits_dot(i, j)/normalization
+            end do
+        end do
+        if (any(.not. ieee_is_finite(logits_hvp))) then
+            logits_hvp = 0.0_dp
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multilabel BCE HVP: product is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine multilabel_binary_cross_entropy_with_logits_hvp
+
+    subroutine ordinal_cumulative_logit_loss_value(logits, labels, value, status, &
+            sample_weight, reduction)
+        !! Weighted negative log likelihood for a cumulative-logit ordinal head.
+        !!
+        !! `logits(i,k)` are ordered cumulative logits and encode
+        !! `P(Y<=k)=sigmoid(logits(i,k))`; labels are one-based class indices
+        !! in `1:size(logits,2)+1`.  Every row must have strictly increasing
+        !! cumulative logits so all class probabilities are positive.
+        real(dp), intent(in) :: logits(:, :)
+        integer, intent(in) :: labels(:)
+        real(dp), intent(out) :: value
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
+        integer, intent(in), optional :: reduction
+        real(dp), allocatable :: weights(:), dpdz(:), d2pdz2(:)
+        real(dp) :: normalization, probability
+        integer :: i
+
+        value = 0.0_dp
+        call validate_ordinal_inputs(logits, labels, status)
+        if (status%code /= FORTNUM_OK) return
+        call prepare_loss_weights(size(logits, 1), sample_weight, reduction, &
+            weights, normalization, status)
+        if (status%code /= FORTNUM_OK) return
+        allocate(dpdz(size(logits, 2)), d2pdz2(size(logits, 2)))
+        do i = 1, size(logits, 1)
+            call ordinal_probability_terms(logits(i, :), labels(i), probability, &
+                dpdz, d2pdz2, status)
+            if (status%code /= FORTNUM_OK) then
+                value = 0.0_dp
+                return
+            end if
+            value = value - weights(i)*log(probability)
+        end do
+        value = value/normalization
+        if (.not. ieee_is_finite(value)) then
+            value = 0.0_dp
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal cumulative-logit loss: reduction is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine ordinal_cumulative_logit_loss_value
+
+    subroutine ordinal_cumulative_logit_loss_jvp(logits, labels, logits_dot, value, &
+            value_dot, status, sample_weight, reduction)
+        !! Value and exact cumulative-logit JVP of the ordinal loss.
+        real(dp), intent(in) :: logits(:, :), logits_dot(:, :)
+        integer, intent(in) :: labels(:)
+        real(dp), intent(out) :: value, value_dot
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
+        integer, intent(in), optional :: reduction
+        real(dp), allocatable :: weights(:), dpdz(:), d2pdz2(:)
+        real(dp) :: normalization, probability, probability_dot
+        integer :: i
+
+        value = 0.0_dp
+        value_dot = 0.0_dp
+        if (any(shape(logits_dot) /= shape(logits)) .or. &
+            any(.not. ieee_is_finite(logits_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal cumulative-logit JVP: tangent shape or values are invalid")
+            return
+        end if
+        call validate_ordinal_inputs(logits, labels, status)
+        if (status%code /= FORTNUM_OK) return
+        call prepare_loss_weights(size(logits, 1), sample_weight, reduction, &
+            weights, normalization, status)
+        if (status%code /= FORTNUM_OK) return
+        allocate(dpdz(size(logits, 2)), d2pdz2(size(logits, 2)))
+        do i = 1, size(logits, 1)
+            call ordinal_probability_terms(logits(i, :), labels(i), probability, &
+                dpdz, d2pdz2, status)
+            if (status%code /= FORTNUM_OK) then
+                value = 0.0_dp
+                value_dot = 0.0_dp
+                return
+            end if
+            probability_dot = dot_product(dpdz, logits_dot(i, :))
+            value = value - weights(i)*log(probability)
+            value_dot = value_dot - weights(i)*probability_dot/probability
+        end do
+        value = value/normalization
+        value_dot = value_dot/normalization
+        if (.not. ieee_is_finite(value) .or. .not. ieee_is_finite(value_dot)) then
+            value = 0.0_dp
+            value_dot = 0.0_dp
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal cumulative-logit JVP: reduction is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine ordinal_cumulative_logit_loss_jvp
+
+    subroutine ordinal_cumulative_logit_loss_vjp(logits, labels, value_bar, logits_bar, &
+            status, sample_weight, reduction)
+        !! Exact reverse product of the weighted ordinal cumulative-logit loss.
+        real(dp), intent(in) :: logits(:, :), value_bar
+        integer, intent(in) :: labels(:)
+        real(dp), intent(out) :: logits_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
+        integer, intent(in), optional :: reduction
+        real(dp), allocatable :: weights(:), dpdz(:), d2pdz2(:)
+        real(dp) :: normalization, probability
+        integer :: i
+
+        logits_bar = 0.0_dp
+        if (any(shape(logits_bar) /= shape(logits)) .or. &
+            .not. ieee_is_finite(value_bar)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal cumulative-logit VJP: cotangent or output shape is invalid")
+            return
+        end if
+        call validate_ordinal_inputs(logits, labels, status)
+        if (status%code /= FORTNUM_OK) return
+        call prepare_loss_weights(size(logits, 1), sample_weight, reduction, &
+            weights, normalization, status)
+        if (status%code /= FORTNUM_OK) return
+        allocate(dpdz(size(logits, 2)), d2pdz2(size(logits, 2)))
+        do i = 1, size(logits, 1)
+            call ordinal_probability_terms(logits(i, :), labels(i), probability, &
+                dpdz, d2pdz2, status)
+            if (status%code /= FORTNUM_OK) then
+                logits_bar = 0.0_dp
+                return
+            end if
+            logits_bar(i, :) = -value_bar*weights(i)*dpdz/ &
+                (normalization*probability)
+        end do
+        if (any(.not. ieee_is_finite(logits_bar))) then
+            logits_bar = 0.0_dp
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal cumulative-logit VJP: product is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine ordinal_cumulative_logit_loss_vjp
+
+    subroutine ordinal_cumulative_logit_loss_hvp(logits, labels, logits_dot, &
+            logits_hvp, status, sample_weight, reduction)
+        !! Exact cumulative-logit Hessian-vector product of ordinal loss.
+        !!
+        !! The class probability is a difference of at most two independent
+        !! sigmoid terms.  This makes the diagonal second derivative of the
+        !! probability sufficient for an exact Hessian-vector product; no
+        !! finite-difference approximation is used.
+        real(dp), intent(in) :: logits(:, :), logits_dot(:, :)
+        integer, intent(in) :: labels(:)
+        real(dp), intent(out) :: logits_hvp(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
+        integer, intent(in), optional :: reduction
+        real(dp), allocatable :: weights(:), dpdz(:), d2pdz2(:)
+        real(dp) :: normalization, probability, probability_dot
+        integer :: i
+
+        logits_hvp = 0.0_dp
+        if (any(shape(logits_dot) /= shape(logits)) .or. &
+            any(shape(logits_hvp) /= shape(logits))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal cumulative-logit HVP: tangent or output shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(logits_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal cumulative-logit HVP: tangent must be finite")
+            return
+        end if
+        call validate_ordinal_inputs(logits, labels, status)
+        if (status%code /= FORTNUM_OK) return
+        call prepare_loss_weights(size(logits, 1), sample_weight, reduction, &
+            weights, normalization, status)
+        if (status%code /= FORTNUM_OK) return
+        allocate(dpdz(size(logits, 2)), d2pdz2(size(logits, 2)))
+        do i = 1, size(logits, 1)
+            call ordinal_probability_terms(logits(i, :), labels(i), probability, &
+                dpdz, d2pdz2, status)
+            if (status%code /= FORTNUM_OK) then
+                logits_hvp = 0.0_dp
+                return
+            end if
+            probability_dot = dot_product(dpdz, logits_dot(i, :))
+            logits_hvp(i, :) = -weights(i)/normalization * &
+                (d2pdz2*logits_dot(i, :)/probability - &
+                dpdz*probability_dot/(probability*probability))
+        end do
+        if (any(.not. ieee_is_finite(logits_hvp))) then
+            logits_hvp = 0.0_dp
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal cumulative-logit HVP: product is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine ordinal_cumulative_logit_loss_hvp
 
     subroutine softmax_value(logits, probabilities, status)
         real(dp), intent(in) :: logits(:, :)
@@ -1864,6 +2236,91 @@ contains
         end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine validate_binary_inputs
+
+    subroutine validate_ordinal_inputs(logits, labels, status)
+        real(dp), intent(in) :: logits(:, :)
+        integer, intent(in) :: labels(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (size(logits, 1) < 1 .or. size(logits, 2) < 1 .or. &
+            size(labels) /= size(logits, 1) .or. &
+            any(.not. ieee_is_finite(logits)) .or. &
+            any(labels < 1) .or. any(labels > size(logits, 2) + 1)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal cumulative-logit loss: logits or labels are invalid")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine validate_ordinal_inputs
+
+    subroutine ordinal_probability_terms(logits, label, probability, dpdz, &
+            d2pdz2, status)
+        !! Probability and diagonal probability derivatives for one ordinal row.
+        real(dp), intent(in) :: logits(:)
+        integer, intent(in) :: label
+        real(dp), intent(out) :: probability, dpdz(:), d2pdz2(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: previous_probability, current_probability
+        real(dp) :: lower_probability, upper_probability
+        real(dp) :: lower_derivative, upper_derivative
+        integer :: j
+
+        probability = 0.0_dp
+        dpdz = 0.0_dp
+        d2pdz2 = 0.0_dp
+        if (size(logits) < 1 .or. size(dpdz) /= size(logits) .or. &
+            size(d2pdz2) /= size(logits) .or. label < 1 .or. &
+            label > size(logits) + 1 .or. any(.not. ieee_is_finite(logits))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal cumulative-logit loss: row shape or label is invalid")
+            return
+        end if
+        previous_probability = stable_sigmoid(logits(1))
+        do j = 2, size(logits)
+            current_probability = stable_sigmoid(logits(j))
+            if (current_probability <= previous_probability) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "ordinal cumulative-logit loss: cumulative logits must be strictly ordered")
+                return
+            end if
+            previous_probability = current_probability
+        end do
+
+        if (label == 1) then
+            upper_probability = stable_sigmoid(logits(1))
+            upper_derivative = upper_probability*(1.0_dp - upper_probability)
+            probability = upper_probability
+            dpdz(1) = upper_derivative
+            d2pdz2(1) = upper_derivative*(1.0_dp - 2.0_dp*upper_probability)
+        else if (label == size(logits) + 1) then
+            lower_probability = stable_sigmoid(logits(size(logits)))
+            lower_derivative = lower_probability*(1.0_dp - lower_probability)
+            probability = 1.0_dp - lower_probability
+            dpdz(size(logits)) = -lower_derivative
+            d2pdz2(size(logits)) = -lower_derivative*(1.0_dp - &
+                2.0_dp*lower_probability)
+        else
+            lower_probability = stable_sigmoid(logits(label - 1))
+            upper_probability = stable_sigmoid(logits(label))
+            lower_derivative = lower_probability*(1.0_dp - lower_probability)
+            upper_derivative = upper_probability*(1.0_dp - upper_probability)
+            probability = upper_probability - lower_probability
+            dpdz(label - 1) = -lower_derivative
+            dpdz(label) = upper_derivative
+            d2pdz2(label - 1) = -lower_derivative*(1.0_dp - &
+                2.0_dp*lower_probability)
+            d2pdz2(label) = upper_derivative*(1.0_dp - 2.0_dp*upper_probability)
+        end if
+        if (.not. ieee_is_finite(probability) .or. probability <= 0.0_dp) then
+            probability = 0.0_dp
+            dpdz = 0.0_dp
+            d2pdz2 = 0.0_dp
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal cumulative-logit loss: class probability is not positive")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine ordinal_probability_terms
 
     subroutine validate_categorical_inputs(logits, labels, status)
         real(dp), intent(in) :: logits(:, :)

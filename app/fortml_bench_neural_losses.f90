@@ -3,6 +3,8 @@ program fortml_bench_neural_losses
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_ok
     use fortml_losses, only: binary_cross_entropy_with_logits_hvp, &
+        multilabel_binary_cross_entropy_with_logits_hvp, &
+        ordinal_cumulative_logit_loss_hvp, &
         softmax_cross_entropy_hvp, weighted_mse_loss_hvp, huber_loss_hvp, &
         mae_loss_jvp, focal_binary_cross_entropy_with_logits_jvp, &
         gaussian_nll_hvp, poisson_nll_hvp
@@ -12,6 +14,8 @@ program fortml_bench_neural_losses
 
     integer, parameter :: n = 64, k = 3, repetitions = 2048
     real(dp) :: logits(n, k), targets(n, k), direction(n, k), product(n, k)
+    real(dp) :: ordinal_logits(n, k - 1), ordinal_direction(n, k - 1)
+    real(dp) :: ordinal_product(n, k - 1)
     real(dp) :: prediction(n, 1), target(n, 1), weights(n), value, l2_gradient
     real(dp) :: log_variance(n, k), count_targets(n, k), variance_direction(n, k)
     real(dp) :: variance_product(n, k)
@@ -37,6 +41,10 @@ program fortml_bench_neural_losses
         variance_direction(i, :) = [0.02_dp*cos(0.09_dp*real(i, dp)), &
             -0.01_dp*sin(0.08_dp*real(i, dp)), 0.015_dp]
         labels(i) = 1 + mod(i - 1, k)
+        ordinal_logits(i, :) = [0.4_dp*sin(0.05_dp*real(i, dp)), &
+            0.9_dp + 0.3_dp*cos(0.04_dp*real(i, dp))]
+        ordinal_direction(i, :) = [0.02_dp*cos(0.09_dp*real(i, dp)), &
+            -0.01_dp*sin(0.08_dp*real(i, dp))]
         prediction(i, 1) = logits(i, 1)
         target(i, 1) = 0.4_dp*sin(0.05_dp*real(i, dp))
         weights(i) = 0.5_dp + real(mod(i, 7), dp)/7.0_dp
@@ -50,6 +58,28 @@ program fortml_bench_neural_losses
     end do
     call cpu_time(finish)
     call emit("bce_hvp", finish - start, sum(product))
+
+    call multilabel_binary_cross_entropy_with_logits_hvp(logits, targets, direction, &
+        product, status, weights)
+    if (.not. status_ok(status)) error stop "multilabel BCE warmup failed"
+    call cpu_time(start)
+    do repetition = 1, repetitions
+        call multilabel_binary_cross_entropy_with_logits_hvp(logits, targets, &
+            direction, product, status, weights)
+    end do
+    call cpu_time(finish)
+    call emit("multilabel_bce_hvp", finish - start, sum(product))
+
+    call ordinal_cumulative_logit_loss_hvp(ordinal_logits, labels, ordinal_direction, &
+        ordinal_product, status, weights)
+    if (.not. status_ok(status)) error stop "ordinal loss warmup failed"
+    call cpu_time(start)
+    do repetition = 1, repetitions
+        call ordinal_cumulative_logit_loss_hvp(ordinal_logits, labels, &
+            ordinal_direction, ordinal_product, status, weights)
+    end do
+    call cpu_time(finish)
+    call emit("ordinal_cumulative_logit_hvp", finish - start, sum(ordinal_product))
 
     call softmax_cross_entropy_hvp(logits, labels, direction, product, status)
     if (.not. status_ok(status)) error stop "softmax warmup failed"

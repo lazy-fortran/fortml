@@ -10,7 +10,13 @@ program test_neural_losses
         softmax_cross_entropy_value, softmax_cross_entropy_vjp, &
         softmax_cross_entropy_hvp, weighted_mse_loss_value, &
         weighted_mse_loss_jvp, weighted_mse_loss_vjp, weighted_mse_loss_hvp, &
-        huber_loss_hvp
+        huber_loss_hvp, multilabel_binary_cross_entropy_with_logits_value, &
+        multilabel_binary_cross_entropy_with_logits_jvp, &
+        multilabel_binary_cross_entropy_with_logits_vjp, &
+        multilabel_binary_cross_entropy_with_logits_hvp, &
+        ordinal_cumulative_logit_loss_value, &
+        ordinal_cumulative_logit_loss_jvp, ordinal_cumulative_logit_loss_vjp, &
+        ordinal_cumulative_logit_loss_hvp, LOSS_REDUCTION_SUM
     use fortml_mlp, only: mlp_t
     use fortml_mlp_training, only: mlp_loss_value_gradient, &
         mlp_loss_diagnostics_t
@@ -23,6 +29,8 @@ program test_neural_losses
     call test_softmax_hvp(failures)
     call test_weighted_mse_products(failures)
     call test_huber_kink_refusal(failures)
+    call test_multilabel_bce_products(failures)
+    call test_ordinal_loss_products(failures)
     call test_mlp_weighted_integration(failures)
     if (failures > 0) then
         write (error_unit, '(a,i0)') "FAIL neural loss cases: ", failures
@@ -141,6 +149,151 @@ contains
         call huber_loss_hvp(prediction, targets, 0.75_dp, direction, hvp, status)
         call check(.not. status_ok(status), "Huber HVP kink refusal", failures)
     end subroutine test_huber_kink_refusal
+
+    subroutine test_multilabel_bce_products(failures)
+        integer, intent(inout) :: failures
+        type(fortnum_status_t) :: status
+        real(dp) :: logits(3, 2), targets(3, 2), direction(3, 2), weights(3)
+        real(dp) :: value, value_dot, value_plus, value_minus, finite_dot
+        real(dp) :: logits_bar(3, 2), hvp(3, 2), plus_bar(3, 2), minus_bar(3, 2)
+        real(dp) :: lhs, rhs, h, reference, sum_reference, sum_value
+
+        logits = reshape([-1.2_dp, 0.4_dp, 1.1_dp, 0.7_dp, -0.8_dp, 0.2_dp], &
+            shape(logits))
+        targets = reshape([0.0_dp, 1.0_dp, 0.25_dp, 1.0_dp, 0.0_dp, 0.75_dp], &
+            shape(targets))
+        direction = reshape([0.3_dp, -0.4_dp, 0.2_dp, 0.1_dp, -0.5_dp, 0.6_dp], &
+            shape(direction))
+        weights = [1.0_dp, 2.0_dp, 4.0_dp]
+        h = 2.0e-6_dp
+        reference = reference_multilabel_bce(logits, targets, weights, .false.)
+        call multilabel_binary_cross_entropy_with_logits_value(logits, targets, &
+            value, status, weights)
+        call check(status_ok(status) .and. abs(value - reference) < 3.0e-14_dp, &
+            "multilabel BCE weighted formula", failures)
+        call multilabel_binary_cross_entropy_with_logits_jvp(logits, targets, &
+            direction, value, value_dot, status, weights)
+        finite_dot = (reference_multilabel_bce(logits + h*direction, targets, &
+            weights, .false.) - reference_multilabel_bce(logits - h*direction, &
+            targets, weights, .false.))/(2.0_dp*h)
+        call check(status_ok(status) .and. abs(value_dot - finite_dot) < 2.0e-9_dp, &
+            "multilabel BCE weighted JVP finite difference", failures)
+        call multilabel_binary_cross_entropy_with_logits_vjp(logits, targets, &
+            -0.7_dp, logits_bar, status, weights)
+        lhs = -0.7_dp*value_dot
+        rhs = sum(logits_bar*direction)
+        call check(status_ok(status) .and. abs(lhs - rhs) < 3.0e-14_dp, &
+            "multilabel BCE weighted VJP adjoint", failures)
+        call multilabel_binary_cross_entropy_with_logits_hvp(logits, targets, &
+            direction, hvp, status, weights)
+        call multilabel_binary_cross_entropy_with_logits_vjp(logits + h*direction, &
+            targets, 1.0_dp, plus_bar, status, weights)
+        call multilabel_binary_cross_entropy_with_logits_vjp(logits - h*direction, &
+            targets, 1.0_dp, minus_bar, status, weights)
+        call check(status_ok(status) .and. maxval(abs(hvp - (plus_bar - minus_bar)/ &
+            (2.0_dp*h))) < 2.0e-9_dp, &
+            "multilabel BCE weighted HVP finite difference", failures)
+        sum_reference = reference_multilabel_bce(logits, targets, weights, .true.)
+        call multilabel_binary_cross_entropy_with_logits_value(logits, targets, &
+            sum_value, status, weights, LOSS_REDUCTION_SUM)
+        call check(status_ok(status) .and. abs(sum_value - sum_reference) < 3.0e-14_dp, &
+            "multilabel BCE sum reduction", failures)
+    end subroutine test_multilabel_bce_products
+
+    subroutine test_ordinal_loss_products(failures)
+        integer, intent(inout) :: failures
+        type(fortnum_status_t) :: status
+        real(dp) :: logits(3, 2), direction(3, 2), weights(3)
+        real(dp) :: value, value_dot, value_plus, value_minus, finite_dot
+        real(dp) :: logits_bar(3, 2), hvp(3, 2), plus_bar(3, 2), minus_bar(3, 2)
+        real(dp) :: lhs, rhs, h, reference, sum_reference, sum_value
+        integer :: labels(3)
+
+        logits = reshape([-1.1_dp, 0.2_dp, 0.8_dp, 0.9_dp, 1.4_dp, 2.0_dp], &
+            shape(logits))
+        direction = reshape([0.3_dp, -0.4_dp, 0.2_dp, 0.1_dp, -0.5_dp, 0.6_dp], &
+            shape(direction))
+        labels = [1, 2, 3]
+        weights = [1.0_dp, 2.0_dp, 4.0_dp]
+        h = 2.0e-6_dp
+        reference = reference_ordinal_loss(logits, labels, weights, .false.)
+        call ordinal_cumulative_logit_loss_value(logits, labels, value, status, weights)
+        call check(status_ok(status) .and. abs(value - reference) < 3.0e-14_dp, &
+            "ordinal cumulative-logit weighted formula", failures)
+        call ordinal_cumulative_logit_loss_jvp(logits, labels, direction, value, &
+            value_dot, status, weights)
+        finite_dot = (reference_ordinal_loss(logits + h*direction, labels, weights, &
+            .false.) - reference_ordinal_loss(logits - h*direction, labels, weights, &
+            .false.))/(2.0_dp*h)
+        call check(status_ok(status) .and. abs(value_dot - finite_dot) < 2.0e-9_dp, &
+            "ordinal cumulative-logit JVP finite difference", failures)
+        call ordinal_cumulative_logit_loss_vjp(logits, labels, -0.7_dp, logits_bar, &
+            status, weights)
+        lhs = -0.7_dp*value_dot
+        rhs = sum(logits_bar*direction)
+        call check(status_ok(status) .and. abs(lhs - rhs) < 3.0e-14_dp, &
+            "ordinal cumulative-logit VJP adjoint", failures)
+        call ordinal_cumulative_logit_loss_hvp(logits, labels, direction, hvp, &
+            status, weights)
+        call ordinal_cumulative_logit_loss_vjp(logits + h*direction, labels, 1.0_dp, &
+            plus_bar, status, weights)
+        call ordinal_cumulative_logit_loss_vjp(logits - h*direction, labels, 1.0_dp, &
+            minus_bar, status, weights)
+        call check(status_ok(status) .and. maxval(abs(hvp - (plus_bar - minus_bar)/ &
+            (2.0_dp*h))) < 2.0e-9_dp, &
+            "ordinal cumulative-logit HVP finite difference", failures)
+        sum_reference = reference_ordinal_loss(logits, labels, weights, .true.)
+        call ordinal_cumulative_logit_loss_value(logits, labels, sum_value, status, &
+            weights, LOSS_REDUCTION_SUM)
+        call check(status_ok(status) .and. abs(sum_value - sum_reference) < 3.0e-14_dp, &
+            "ordinal cumulative-logit sum reduction", failures)
+        logits(2, 2) = logits(2, 1) - 0.1_dp
+        call ordinal_cumulative_logit_loss_value(logits, labels, value, status, weights)
+        call check(.not. status_ok(status), "ordinal cumulative-logit ordering refusal", &
+            failures)
+    end subroutine test_ordinal_loss_products
+
+    real(dp) function reference_multilabel_bce(logits, targets, weights, sum_reduction) &
+            result(value)
+        real(dp), intent(in) :: logits(:, :), targets(:, :), weights(:)
+        logical, intent(in) :: sum_reduction
+        integer :: i, j
+
+        value = 0.0_dp
+        do j = 1, size(logits, 2)
+            do i = 1, size(logits, 1)
+                value = value + weights(i)*(log(1.0_dp + exp(-abs(logits(i, j)))) &
+                    + merge((1.0_dp - targets(i, j))*logits(i, j), &
+                    -targets(i, j)*logits(i, j), logits(i, j) >= 0.0_dp))
+            end do
+        end do
+        if (.not. sum_reduction) value = value/sum(weights)
+    end function reference_multilabel_bce
+
+    real(dp) function reference_ordinal_loss(logits, labels, weights, sum_reduction) &
+            result(value)
+        real(dp), intent(in) :: logits(:, :), weights(:)
+        integer, intent(in) :: labels(:)
+        logical, intent(in) :: sum_reduction
+        real(dp) :: cumulative(size(logits, 2)), probability
+        integer :: i, j
+
+        value = 0.0_dp
+        do i = 1, size(logits, 1)
+            do j = 1, size(logits, 2)
+                cumulative(j) = 1.0_dp/(1.0_dp + exp(-logits(i, j)))
+            end do
+            if (labels(i) == 1) then
+                probability = cumulative(1)
+            else if (labels(i) == size(logits, 2) + 1) then
+                probability = 1.0_dp - cumulative(size(logits, 2))
+            else
+                probability = cumulative(labels(i)) - cumulative(labels(i) - 1)
+            end if
+            value = value - weights(i)*log(probability)
+        end do
+        if (.not. sum_reduction) value = value/sum(weights)
+    end function reference_ordinal_loss
 
     subroutine test_mlp_weighted_integration(failures)
         integer, intent(inout) :: failures

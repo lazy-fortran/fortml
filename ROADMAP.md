@@ -1237,12 +1237,15 @@ trials remain visible in the result schema.
   HVP differentiated-VJP, optimizer, and CUDA-refusal tests cover the current
   scope. Buffers, frozen/tied blocks, masks, stateful layers, and alias-aware
   flattening remain open extensions of the general tree.
-- [ ] Add the remaining common neural losses and metrics: multilabel and
-  ordinal losses, contrastive and triplet
-  losses, KL terms, and sequence masking. MSE/MAE/Huber/quantile, binary and
-  softmax cross-entropy, and focal BCE are implemented with explicit
-  reduction/weighting contracts; the remaining families still need the same
-  logits/probability and empty-batch semantics.
+- [x] Add weighted multilabel BCE-with-logits and ordered cumulative-logit
+  ordinal negative-log-likelihood products to the shared neural-loss facade.
+  Both expose explicit mean/sum reductions, finite row weights, value/JVP/VJP
+  products, and exact logits HVPs with independent formula, finite-difference,
+  and adjoint tests. Multilabel targets are relaxed indicators; ordinal rows
+  require strictly ordered cumulative logits and one-based class labels.
+  Resident CUDA loss kernels remain open and unsupported device requests are
+  typed refusals. Contrastive/triplet losses, KL terms, and sequence masking
+  still need the same logits/probability and empty-batch contracts.
 - [x] Add a deterministic batch iterator with seeded shuffling and final-batch
   behavior. Separate training and validation streams remain open.
 - [ ] Add a trainer that owns optimizer state, learning-rate schedules, gradient
@@ -2095,8 +2098,9 @@ The maintained reports and their raw artifacts are in `../fortml-bench/results`:
   packed-parameter and prediction oracle checks, and the explicit CUDA
   refusal.
 - [`NEURAL_LOSSES.md`](../fortml-bench/results/NEURAL_LOSSES.md), backed by
-  `neural_losses.csv` for BCE, softmax cross-entropy, weighted-MSE, Huber,
-  and weighted-MLP HVP products.
+  `neural_losses.csv` for BCE, weighted multilabel BCE, ordered cumulative-
+  logit ordinal loss, softmax cross-entropy, weighted-MSE, Huber, and
+  weighted-MLP HVP products.
 - [`KERNEL_CATALOG.md`](../fortml-bench/results/KERNEL_CATALOG.md), backed by
   `kernel_catalog.csv` for periodic, rational-quadratic, cosine, and
   polynomial value/input/parameter products plus typed CUDA refusals.
