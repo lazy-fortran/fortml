@@ -16,6 +16,8 @@ module fortml_knn_classifier
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
         FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED
+    use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU, &
+        FORTML_DEVICE_CUDA
     implicit none
     private
 
@@ -42,6 +44,8 @@ module fortml_knn_classifier
         procedure, public :: fit => knn_classifier_fit
         procedure, public :: predict_proba => knn_classifier_predict_proba
         procedure, public :: predict => knn_classifier_predict
+        procedure, public :: predict_device => knn_classifier_predict_device
+        procedure, public :: device_supported => knn_classifier_device_supported
         procedure, public :: predict_proba_jvp => knn_classifier_predict_proba_jvp
         procedure, public :: predict_proba_vjp => knn_classifier_predict_proba_vjp
         procedure, public :: classes => knn_classifier_classes
@@ -56,6 +60,7 @@ module fortml_knn_classifier
     public :: knn_classifier_fit
     public :: knn_classifier_predict_proba
     public :: knn_classifier_predict
+    public :: knn_classifier_predict_device
 
 contains
 
@@ -253,6 +258,44 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine knn_classifier_predict
+
+    subroutine knn_classifier_predict_device(self, device, x, labels, status)
+        !! Predict through the explicit device control plane.
+        !!
+        !! CPU selection delegates to the deterministic host implementation.
+        !! CUDA selection is a structured refusal until neighbor distances and
+        !! stable tie ordering have a resident implementation; it never falls
+        !! back to a hidden host copy.
+        class(knn_classifier_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :)
+        integer, intent(out) :: labels(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "KNN classifier device prediction: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict(x, labels, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "KNN classifier device prediction: resident CUDA neighbor search is not implemented")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "KNN classifier device prediction: device kind is invalid")
+        end select
+    end subroutine knn_classifier_predict_device
+
+    logical function knn_classifier_device_supported(self, device_kind) result(supported)
+        !! Report estimator-level support without inferring a host fallback.
+        class(knn_classifier_t), intent(in) :: self
+        integer, intent(in) :: device_kind
+
+        supported = device_kind == FORTML_DEVICE_CPU
+    end function knn_classifier_device_supported
 
     subroutine knn_classifier_predict_proba_jvp(self, x, x_dot, probabilities, &
             probabilities_dot, status)
