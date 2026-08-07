@@ -31,6 +31,7 @@ contains
         type(basis_pipeline_t) :: pipeline
         type(fortnum_status_t) :: status
         real(dp) :: x(2, 1), phi(2, 4)
+        character(len=129) :: long_name
 
         x(:, 1) = [0.25_dp, -0.75_dp]
         polynomial = make_polynomial_basis(1, 2, status)
@@ -72,6 +73,18 @@ contains
             pipeline%stage_count() /= 2) then
             write (error_unit, '(a)') &
                 "FAIL [horizontal pipeline] empty name refusal"
+            failures = failures + 1
+        end if
+
+        pipeline = make_basis_pipeline(1, status)
+        call pipeline%append(polynomial, status)
+        long_name = repeat("x", len(long_name))
+        call pipeline%append(fourier, status, name=long_name)
+        if (status%code /= FORTNUM_DOMAIN_ERROR .or. &
+            pipeline%stage_name(1) /= "stage_1" .or. &
+            pipeline%stage_count() /= 1) then
+            write (error_unit, '(a)') &
+                "FAIL [horizontal pipeline] generated/overlong name contract"
             failures = failures + 1
         end if
     end subroutine test_horizontal_metadata
