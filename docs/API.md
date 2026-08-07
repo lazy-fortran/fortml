@@ -58,8 +58,8 @@ not supplied through a hidden generic interface.
 | `kernel_t` | Scalar value and matrix | Parameter JVP | Parameter VJP | Parameter HVP |
 | `gp_regression_t` | Mean, variance, LML | Prediction and LML parameters | Prediction and LML parameters | Mean and LML parameters |
 | `gp_derivative_regression_t` | Mean, variance, and LML | Prediction and LML parameter JVP | Prediction parameter VJP and analytic LML hyperparameter gradient | Directional HVP (finite difference of the analytic gradient) |
-| `gp_classification_t` | Latent and observed probabilities | Input JVP | Input VJP; Laplace-mode kernel hyperparameter gradient | No |
-| `gp_multiclass_classification_t` | Normalized observed probabilities | Input JVP | Input VJP; packed one-vs-rest Laplace-mode kernel hyperparameter gradient | No |
+| `gp_classification_t` | Latent and observed probabilities | Input JVP | Laplace-mode kernel hyperparameter gradient | No |
+| `gp_multiclass_classification_t` | Normalized observed probabilities | Input JVP | Packed one-vs-rest Laplace-mode kernel hyperparameter gradient | No |
 | `multi_output_gp_t` | Correlated mean and LML | No | No | No |
 | Approximate GP types | Mean, variance, or ELBO as listed below | No | No | No |
 
