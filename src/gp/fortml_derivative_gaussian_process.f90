@@ -727,6 +727,7 @@ contains
         type(fortnum_status_t), intent(out) :: status
         real(dp), allocatable :: cross(:, :), cross_dot(:, :), work(:, :)
         real(dp), allocatable :: prior_dot(:), zero_direction(:)
+        real(dp) :: prior_value
         integer :: i, j
 
         call check_derivative_prediction_shapes(self, x, components, mean, variance, status)
@@ -754,9 +755,13 @@ contains
                     zero_direction, direction(j, :), cross(i, j), cross_dot(i, j), status)
                 if (status%code /= FORTNUM_OK) return
             end do
+            ! The prior covariance goes to a scratch scalar, not to variance(j).
+            ! variance already holds the *posterior* variance from the predict
+            ! call above, and that is what this routine must return; writing the
+            ! prior here would silently replace it with k(x,x).
             call derivative_covariance_query_direction(self%kernel, x(j, :), components(j), &
                 x(j, :), components(j), direction(j, :), direction(j, :), &
-                variance(j), prior_dot(j), status)
+                prior_value, prior_dot(j), status)
             if (status%code /= FORTNUM_OK) return
         end do
         mean_dot = matmul(transpose(cross_dot), self%alpha)

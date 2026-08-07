@@ -556,6 +556,7 @@ contains
         type(fortnum_status_t) :: status
         real(dp) :: x(3, 1), y(3, 1), x_test(2, 1), direction(2, 1)
         real(dp) :: mean(2, 1), mean_dot(2, 1), variance(2), variance_dot(2)
+        real(dp) :: mean_primal(2, 1), variance_primal(2)
         real(dp) :: mean_plus(2, 1), mean_minus(2, 1), variance_plus(2), variance_minus(2)
         real(dp) :: mean_bar(2, 1), variance_bar(2), x_bar(2, 1), fd_bar(2, 1)
         real(dp) :: objective_plus, objective_minus, adjoint_left, adjoint_right, h
@@ -577,6 +578,20 @@ contains
 
         call model%predict_input_jvp(x_test, test_components, direction, mean, mean_dot, &
             variance, variance_dot, status)
+
+        ! The primal outputs of a JVP must equal what predict returns. Checking
+        ! only the tangents leaves room for the primal to be quietly replaced:
+        ! this routine once wrote the prior k(x,x) over the posterior variance,
+        ! and every derivative assertion still passed.
+        call model%predict(x_test, test_components, mean_primal, variance_primal, status)
+        if (maxval(abs(mean - mean_primal)) > 1.0e-12_dp .or. &
+            maxval(abs(variance - variance_primal)) > 1.0e-12_dp) then
+            write (error_unit, '(a,2es12.4)') &
+                "FAIL [derivative GP query_input_jvp] primal disagrees with predict ", &
+                maxval(abs(mean - mean_primal)), maxval(abs(variance - variance_primal))
+            failures = failures + 1
+        end if
+
         h = 2.0e-6_dp
         call oracle_predict(model%parameters(), x, components, y, x_test + h*direction, &
             test_components, 0.07_dp, 1.0e-10_dp, mean_plus, variance_plus)
