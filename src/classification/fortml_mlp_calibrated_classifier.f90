@@ -69,7 +69,11 @@ module fortml_mlp_calibrated_classifier
         procedure, public :: predict_proba => mlp_calibrated_predict_proba
         procedure, public :: predict_proba_device => mlp_calibrated_predict_proba_device
         procedure, public :: predict_proba_jvp => mlp_calibrated_predict_proba_jvp
+        procedure, public :: predict_proba_parameter_jvp => &
+            mlp_calibrated_predict_proba_parameter_jvp
         procedure, public :: predict_proba_vjp => mlp_calibrated_predict_proba_vjp
+        procedure, public :: predict_proba_parameter_vjp => &
+            mlp_calibrated_predict_proba_parameter_vjp
         procedure, public :: predict => mlp_calibrated_predict
         procedure, public :: predict_device => mlp_calibrated_predict_device
         procedure, public :: classes => mlp_calibrated_classes
@@ -92,7 +96,9 @@ module fortml_mlp_calibrated_classifier
     public :: mlp_calibrated_predict_proba
     public :: mlp_calibrated_predict_proba_device
     public :: mlp_calibrated_predict_proba_jvp
+    public :: mlp_calibrated_predict_proba_parameter_jvp
     public :: mlp_calibrated_predict_proba_vjp
+    public :: mlp_calibrated_predict_proba_parameter_vjp
     public :: mlp_calibrated_predict
     public :: mlp_calibrated_predict_device
 
@@ -425,6 +431,30 @@ contains
         end if
     end subroutine mlp_calibrated_predict_proba_jvp
 
+    subroutine mlp_calibrated_predict_proba_parameter_jvp(self, x, theta_dot, probabilities, &
+            probabilities_dot, status, x_dot)
+        class(mlp_calibrated_classifier_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), theta_dot(:)
+        real(dp), intent(out) :: probabilities(:, :), probabilities_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: x_dot(:, :)
+        real(dp), allocatable :: input_dot(:, :)
+
+        allocate(input_dot(size(x, 1), size(x, 2)))
+        input_dot = 0.0_dp
+        if (present(x_dot)) then
+            if (any(shape(x_dot) /= shape(x))) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "calibrated MLP parameter JVP: input tangent shape is invalid")
+                probabilities = 0.0_dp
+                probabilities_dot = 0.0_dp
+                return
+            end if
+            input_dot = x_dot
+        end if
+        call self%predict_proba_jvp(x, theta_dot, input_dot, probabilities, probabilities_dot, status)
+    end subroutine mlp_calibrated_predict_proba_parameter_jvp
+
     subroutine mlp_calibrated_predict_proba_vjp(self, x, probabilities_bar, theta_bar, x_bar, status)
         class(mlp_calibrated_classifier_t), intent(in) :: self
         real(dp), intent(in) :: x(:, :), probabilities_bar(:, :)
@@ -488,6 +518,27 @@ contains
                 self%multiclass_temperature**2
         end if
     end subroutine mlp_calibrated_predict_proba_vjp
+
+    subroutine mlp_calibrated_predict_proba_parameter_vjp(self, x, probabilities_bar, theta_bar, &
+            status, x_bar)
+        class(mlp_calibrated_classifier_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), probabilities_bar(:, :)
+        real(dp), intent(out) :: theta_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(out), optional :: x_bar(:, :)
+        real(dp), allocatable :: local_x_bar(:, :)
+
+        allocate(local_x_bar(size(x, 1), size(x, 2)))
+        call self%predict_proba_vjp(x, probabilities_bar, theta_bar, local_x_bar, status)
+        if (present(x_bar)) then
+            if (any(shape(x_bar) /= shape(x))) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "calibrated MLP parameter VJP: input cotangent shape is invalid")
+                return
+            end if
+            x_bar = local_x_bar
+        end if
+    end subroutine mlp_calibrated_predict_proba_parameter_vjp
 
     subroutine mlp_calibrated_predict(self, x, labels, status)
         class(mlp_calibrated_classifier_t), intent(in) :: self

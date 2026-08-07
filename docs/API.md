@@ -1869,6 +1869,9 @@ state.  The packed vector is `[network parameters, smooth calibration
 parameters]`; isotonic has no calibration parameter slice.  Temperature and
 sigmoid `predict_proba_jvp`/`predict_proba_vjp` products are exact through
 network parameters, continuous inputs, and calibration parameters.
+The explicit `predict_proba_parameter_jvp` and
+`predict_proba_parameter_vjp` spellings are available when the caller wants
+to hold the input fixed (each also accepts an optional input tangent/cotangent).
 `decision_function_jvp/vjp` include the network slice and zero calibration
 coordinates because calibration does not alter logits.  Every product for a
 binary isotonic head returns `FORTNUM_NOT_IMPLEMENTED` to make its PAVA
