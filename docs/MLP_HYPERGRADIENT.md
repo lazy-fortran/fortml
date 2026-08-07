@@ -79,3 +79,27 @@ independent log bounds. The behavioral test
 `test_mlp_adamw_hypergradient` checks all three components against central
 differences, the JVP, the scalar adjoint, and an L-BFGS-B solve. Mini-batch,
 schedule, beta, and CUDA AdamW trajectories remain explicit follow-up work.
+
+## RMSprop trajectory contract
+
+`mlp_rmsprop_hypergradient_objective_t` differentiates a fixed full-batch
+RMSprop trajectory with the FortOpt recurrence. Its packed outer vector is
+
+```text
+[ log_learning_rate, log_l2, decay, log_epsilon, momentum ]
+```
+
+The square-average, optional centered gradient-average, and momentum buffer are
+propagated together with the network tangent. Consequently `value_gradient`,
+`jvp`, and scalar `vjp` are exact for both centered and uncentered modes, with
+the MLP analytic HVP supplying the derivative of each training gradient. The
+`centered` option is a fixed discrete branch; it is intentionally not packed
+or differentiated. `mlp_optimize_rmsprop_hyperparameters` sends the analytic
+products to FortOpt L-BFGS-B using bounds for all five packed variables.
+
+The independent `test_mlp_rmsprop_hypergradient` fixture checks every packed
+component against central differences, the directional JVP, scalar VJP, both
+centered branches, the L-BFGS-B adapter, and typed refusal for unsupported
+optimizer/device choices. Mini-batch, schedules, clipping, and CUDA-resident
+RMSprop state remain separate contracts until their state and reproducibility
+derivatives are implemented.

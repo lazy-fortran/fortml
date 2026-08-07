@@ -68,6 +68,7 @@ not supplied through a hidden generic interface.
 | `one_hot_encoder_t` | Dense one-hot `transform` | Refused: integer categories have no canonical tangent space | Refused: integer categories have no canonical cotangent space | No |
 | `mlp_t` | `predict` | Parameters and inputs | Parameters and inputs | Weighted-output HVP |
 | `mlp_hypergradient_objective_t` | Validation MSE after fixed full-batch GD trajectory | Outer `[log(learning_rate),log(l2)]` JVP | Exact trajectory value gradient and scalar VJP | Reverse trajectory products; inner MLP HVP |
+| `mlp_rmsprop_hypergradient_objective_t` | Validation MSE after fixed full-batch RMSprop trajectory | Packed `[log(learning_rate),log(l2),decay,log(epsilon),momentum]` JVP | Exact trajectory value gradient and scalar VJP | Forward state sensitivities; inner MLP HVP |
 | `bnn_t` | `elbo` | ELBO | ELBO | ELBO |
 | `vae_t` | `elbo`, `reconstruct` | No | ELBO gradient | No |
 | `rnn_t` | `forward`, squared-error `loss` | No | Loss gradient by BPTT | No |
@@ -635,7 +636,8 @@ recurrence. Set `rmsprop_centered` to use the centered variance estimate and
 `rmsprop_momentum` for optional classical momentum. The running square,
 optional running gradient mean, momentum buffer, optimizer kind, and step
 counter are checkpointed and restored exactly; optimizer-trajectory RMSprop
-derivatives remain explicitly refused.
+derivatives remain explicitly refused. A separate exact fixed full-batch
+RMSprop trajectory adapter is documented below.
 `MLP_OPTIMIZER_ADAMW` uses the same bias-corrected moments as Adam and applies
 decoupled multiplicative `weight_decay` after each update. Weight decay is
 validated as finite and non-negative, is checkpointed with the optimizer
@@ -762,6 +764,18 @@ available, and `mlp_optimize_adamw_hyperparameters` routes the products to
 FortOpt L-BFGS-B with explicit log bounds. Mini-batch, schedules, beta
 hypergradients, and CUDA state remain refused until their complete state
 derivatives are specified.
+
+`mlp_rmsprop_hypergradient_objective_t` provides the exact fixed full-batch
+RMSprop trajectory contract. Its packed vector is
+`[log(learning_rate),log(l2),decay,log(epsilon),momentum]`. Square-average,
+centered gradient-average, and momentum-buffer recurrences are differentiated
+with the analytic MLP HVP; both centered and uncentered modes use the same
+value/JVP/VJP products. `mlp_optimize_rmsprop_hyperparameters` routes these
+products to FortOpt L-BFGS-B with explicit bounds for every packed component.
+The `centered` flag is a fixed discrete branch rather than a differentiable
+variable, and changing it requires a new objective adapter. Mini-batch,
+schedules, clipping, and CUDA-resident RMSprop state remain typed follow-up
+contracts until their state and reproducibility derivatives are implemented.
 
 ### `fortml_mlp_classifier`
 
