@@ -8,7 +8,7 @@ program test_derivative_gp_products
     use fortml_kernels, only: kernel_t, kernel_multiply, make_linear_kernel, &
         make_matern32_kernel, make_matern52_kernel, &
         make_periodic_kernel, make_rational_quadratic_kernel, &
-        make_rbf_kernel, make_user_kernel
+        make_rbf_kernel, make_cosine_kernel, make_user_kernel
     use fortnum_cholesky, only: cholesky_factorization_t
     use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_NOT_IMPLEMENTED
     implicit none
@@ -19,6 +19,7 @@ program test_derivative_gp_products
     call test_likelihood_products(failures)
     call test_matern_parameter_products(failures)
     call test_periodic_rational_parameter_products(failures)
+    call test_cosine_parameter_products(failures)
     call test_product_parameter_products(failures)
     call test_prediction_products(failures)
     call test_joint_covariance(failures)
@@ -158,7 +159,44 @@ contains
         rational_quadratic = make_rational_quadratic_kernel(1, 1.2_dp, 0.75_dp, &
             1.6_dp, status)
         call check_kernel_parameter_gradient(rational_quadratic, "rational-quadratic", failures)
+        call check_kernel_parameter_gradient(make_cosine_kernel(1, 1.2_dp, 0.75_dp, status), &
+            "cosine", failures)
     end subroutine test_periodic_rational_parameter_products
+
+    subroutine test_cosine_parameter_products(failures)
+        !! The oracle assembles cosine value/derivative covariance blocks
+        !! directly, independently of the production kernel implementation.
+        integer, intent(inout) :: failures
+        type(gp_derivative_regression_t) :: model
+        type(kernel_t) :: kernel
+        type(fortnum_status_t) :: status
+        real(dp) :: x(3, 1), y(3, 1), theta(3), gradient(3), finite_gradient(3)
+        real(dp) :: plus, minus, h
+        integer :: i
+
+        x(:, 1) = [0.0_dp, 0.42_dp, 1.03_dp]
+        y(:, 1) = [0.8_dp, -0.2_dp, 0.6_dp]
+        kernel = make_cosine_kernel(1, 1.2_dp, 0.75_dp, status)
+        call model%fit(x, [0, 1, 0], y, kernel, 0.08_dp, status, jitter=1.0e-10_dp)
+        if (.not. status_ok(status)) then
+            write (error_unit, '(a)') "FAIL [cosine derivative GP] fit"
+            failures = failures + 1
+            return
+        end if
+        theta = model%parameters()
+        call model%hyperparameter_gradient(gradient, status)
+        h = 2.0e-5_dp
+        do i = 1, size(theta)
+            finite_gradient(i) = (oracle_lml_cosine(theta + h*unit_vector(3, i), x, &
+                [0, 1, 0], y, 0.08_dp, 1.0e-10_dp) - oracle_lml_cosine(theta - &
+                h*unit_vector(3, i), x, [0, 1, 0], y, 0.08_dp, 1.0e-10_dp))/(2.0_dp*h)
+        end do
+        if (.not. status_ok(status) .or. maxval(abs(gradient - finite_gradient)) > 3.0e-6_dp) then
+            write (error_unit, '(a,es12.4)') "FAIL [cosine derivative GP] independent gradient ", &
+                maxval(abs(gradient - finite_gradient))
+            failures = failures + 1
+        end if
+    end subroutine test_cosine_parameter_products
 
     subroutine check_kernel_parameter_gradient(kernel, name, failures)
         type(kernel_t), intent(in) :: kernel
@@ -166,7 +204,8 @@ contains
         integer, intent(inout) :: failures
         type(gp_derivative_regression_t) :: model
         type(fortnum_status_t) :: status
-        real(dp) :: x(3, 1), y(3, 1), theta(4), gradient(4), finite_gradient(4)
+        real(dp) :: x(3, 1), y(3, 1)
+        real(dp), allocatable :: theta(:), gradient(:), finite_gradient(:)
         real(dp) :: plus, minus, h
         integer :: i
 
@@ -179,6 +218,7 @@ contains
             return
         end if
         theta = model%parameters()
+        allocate(gradient(size(theta)), finite_gradient(size(theta)))
         call model%hyperparameter_gradient(gradient, status)
         h = 2.0e-5_dp
         do i = 1, size(theta)
@@ -425,6 +465,8 @@ contains
         rational_quadratic = make_rational_quadratic_kernel(1, 1.3_dp, 0.8_dp, &
             1.7_dp, status)
         call check_smooth_query_kernel(rational_quadratic, "rational-quadratic", failures)
+        call check_smooth_query_kernel(make_cosine_kernel(1, 1.3_dp, 0.8_dp, status), &
+            "cosine", failures)
     end subroutine test_periodic_rational_query_products
 
     subroutine check_smooth_query_kernel(kernel, name, failures)
@@ -639,6 +681,33 @@ contains
             0.5_dp*real(size(x, 1), dp)*log(2.0_dp*acos(-1.0_dp))
     end function oracle_lml
 
+    real(dp) function oracle_lml_cosine(theta, x, components, y, noise, jitter) result(value)
+        real(dp), intent(in) :: theta(:), x(:, :), y(:, :), noise, jitter
+        integer, intent(in) :: components(:)
+        type(cholesky_factorization_t) :: factor
+        type(fortnum_status_t) :: status
+        real(dp), allocatable :: covariance(:, :), alpha(:, :)
+        real(dp) :: logdet
+        integer :: i, j
+
+        allocate(covariance(size(x, 1), size(x, 1)))
+        do j = 1, size(x, 1)
+            do i = 1, size(x, 1)
+                covariance(i, j) = oracle_cosine_covariance(x(i, 1), components(i), &
+                    x(j, 1), components(j), exp(theta(1)), exp(theta(2)))
+            end do
+        end do
+        do i = 1, size(x, 1)
+            covariance(i, i) = covariance(i, i) + exp(theta(3)) + jitter
+        end do
+        call factor%factorize(covariance, status)
+        allocate(alpha, source=y)
+        call factor%solve(alpha, status)
+        call factor%log_determinant(logdet, status)
+        value = -0.5_dp*sum(y*alpha) - 0.5_dp*logdet - &
+            0.5_dp*real(size(x, 1), dp)*log(2.0_dp*acos(-1.0_dp))
+    end function oracle_lml_cosine
+
     subroutine oracle_predict(theta, x, components, y, x_test, test_components, noise, &
             jitter, mean, variance)
         real(dp), intent(in) :: theta(:), x(:, :), y(:, :), x_test(:, :), noise, jitter
@@ -777,6 +846,37 @@ contains
             value = kernel_value*(inv_l2 - delta*delta*inv_l2*inv_l2)
         end if
     end function oracle_covariance
+
+    real(dp) function oracle_cosine_covariance(x1, component1, x2, component2, &
+            variance, lengthscale) result(value)
+        real(dp), intent(in) :: x1, x2, variance, lengthscale
+        integer, intent(in) :: component1, component2
+        real(dp) :: delta, distance, z, kernel_value, radial_first, radial_second
+
+        delta = x1 - x2
+        distance = abs(delta)
+        z = distance/lengthscale
+        kernel_value = variance*cos(z)
+        radial_first = -variance*sin(z)/lengthscale
+        radial_second = -kernel_value/(lengthscale*lengthscale)
+        if (component1 == 0 .and. component2 == 0) then
+            value = kernel_value
+        else if (component1 > 0 .and. component2 == 0) then
+            if (distance == 0.0_dp) then
+                value = 0.0_dp
+            else
+                value = radial_first*delta/distance
+            end if
+        else if (component1 == 0 .and. component2 > 0) then
+            if (distance == 0.0_dp) then
+                value = 0.0_dp
+            else
+                value = -radial_first*delta/distance
+            end if
+        else
+            value = -radial_second
+        end if
+    end function oracle_cosine_covariance
 
     real(dp) function oracle_matern32_covariance(x1, component1, x2, component2, &
             variance, lengthscale) result(value)

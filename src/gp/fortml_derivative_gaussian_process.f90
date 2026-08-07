@@ -9,7 +9,7 @@ module fortml_derivative_gaussian_process
     use fortml_kernels, only: kernel_t, clone_kernel_into, KERNEL_RBF, KERNEL_MATERN12, &
         KERNEL_MATERN32, KERNEL_MATERN52, KERNEL_LINEAR, KERNEL_CONSTANT, &
         KERNEL_WHITE_NOISE, KERNEL_SUM, KERNEL_PRODUCT, KERNEL_USER, &
-        KERNEL_PERIODIC, KERNEL_RATIONAL_QUADRATIC
+        KERNEL_PERIODIC, KERNEL_RATIONAL_QUADRATIC, KERNEL_COSINE
     implicit none
     private
 
@@ -1396,6 +1396,7 @@ contains
         real(dp) :: alpha, period, inverse_length_squared, denominator, t
         real(dp) :: frequency, argument, t1, t2, t1_dot, t2_dot, b, b_dot
         real(dp) :: p, p2, p_dot, p2_dot, curvature, curvature_dot, logf_dot
+        real(dp) :: sine_value, cosine_value, cosine_numerator
         integer :: i, j
 
         value = 0.0_dp
@@ -1528,6 +1529,80 @@ contains
                         (alpha + 2.0_dp)*t/denominator)
                 end if
                 value_dot = value*logf_dot
+            end if
+            gradient_x1 = 2.0_dp*p*difference_vector
+            gradient_x2 = -gradient_x1
+            gradient_x1_dot = 2.0_dp*p_dot*difference_vector
+            gradient_x2_dot = -gradient_x1_dot
+            do i = 1, size(x1)
+                do j = 1, size(x2)
+                    mixed_hessian(i, j) = -2.0_dp*p*merge(1.0_dp, 0.0_dp, i == j) - &
+                        4.0_dp*p2*difference_vector(i)*difference_vector(j)
+                    mixed_hessian_dot(i, j) = -2.0_dp*p_dot*merge(1.0_dp, 0.0_dp, i == j) - &
+                        4.0_dp*p2_dot*difference_vector(i)*difference_vector(j)
+                end do
+            end do
+            call status_set(status, FORTNUM_OK, "")
+            return
+        case (KERNEL_COSINE)
+            !! The cosine leaf is radial, F(s)=variance*cos(sqrt(s)/lengthscale).
+            !! Work in s=||x1-x2||**2 so value, input gradients, and mixed
+            !! Hessians share one stable parameter tangent.  This closes the
+            !! derivative-observation parameter product for cosine kernels;
+            !! unsupported leaves continue to return a typed refusal below.
+            difference_vector = x1 - x2
+            squared_distance = sum(difference_vector*difference_vector)
+            variance = exp(kernel%log_parameters(1))
+            lengthscale = exp(kernel%log_parameters(2))
+            distance = sqrt(squared_distance)
+            if (distance <= 1.0e-8_dp) then
+                value = variance
+                p = -variance/(2.0_dp*lengthscale*lengthscale)
+                p2 = variance/(12.0_dp*lengthscale**4)
+                if (parameter == 1) then
+                    value_dot = value
+                    p_dot = p
+                    p2_dot = p2
+                else if (parameter == 2) then
+                    value_dot = 0.0_dp
+                    p_dot = -2.0_dp*p
+                    p2_dot = -4.0_dp*p2
+                else
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "kernel leaf parameter JVP: cosine parameter index is invalid")
+                    return
+                end if
+            else
+                z = distance/lengthscale
+                sine_value = sin(z)
+                cosine_value = cos(z)
+                value = variance*cosine_value
+                p = -variance*sine_value/(2.0_dp*lengthscale*distance)
+                cosine_numerator = sine_value - z*cosine_value
+                p2 = variance*cosine_numerator/(4.0_dp*lengthscale**4*z**3)
+                if (parameter == 1) then
+                    value_dot = value
+                    p_dot = p
+                    p2_dot = p2
+                else if (parameter == 2) then
+                    value_dot = variance*z*sine_value
+                    p_dot = p*(-1.0_dp - z*cosine_value/sine_value)
+                    if (abs(sine_value) <= 1.0e-10_dp) then
+                        !! Avoid a removable 0/0 in the logarithmic tangent at
+                        !! cosine extrema; evaluate the regular expression.
+                        p_dot = variance*(sine_value + z*cosine_value)/ &
+                            (2.0_dp*lengthscale*lengthscale*z)
+                    end if
+                    !! Differentiate n(z)/z**3 directly instead of forming a
+                    !! ratio through n(z); n can vanish away from the origin.
+                    p2_dot = variance/(4.0_dp*lengthscale**4)* &
+                        (-4.0_dp*cosine_numerator/z**3 - sine_value/z + &
+                        3.0_dp*cosine_numerator/z**4)
+                else
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "kernel leaf parameter JVP: cosine parameter index is invalid")
+                    return
+                end if
             end if
             gradient_x1 = 2.0_dp*p*difference_vector
             gradient_x2 = -gradient_x1
@@ -1753,6 +1828,7 @@ contains
         real(dp) :: radial_scale, radial_coefficient, dot_difference
         real(dp) :: variance, lengthscale, alpha, period, inverse_length_squared
         real(dp) :: denominator, t, argument, sine_value, cosine_value, pi_over_period
+        real(dp) :: cosine_numerator
         real(dp) :: t1, t2, t3, b, f, rscale, rsecond
         real(dp) :: a, exponential, z
         integer :: i, j
@@ -1800,7 +1876,7 @@ contains
         squared_distance = sum(difference*difference)
         distance = sqrt(squared_distance)
         if (kernel%kind == KERNEL_RBF .or. kernel%kind == KERNEL_PERIODIC .or. &
-            kernel%kind == KERNEL_RATIONAL_QUADRATIC) then
+            kernel%kind == KERNEL_RATIONAL_QUADRATIC .or. kernel%kind == KERNEL_COSINE) then
             variance = exp(kernel%log_parameters(1))
             lengthscale = exp(kernel%log_parameters(2))
             if (kernel%kind == KERNEL_RBF) then
@@ -1809,6 +1885,26 @@ contains
                 p = -0.5_dp*inverse_length_squared*value
                 p2 = 0.25_dp*inverse_length_squared**2*value
                 p3 = -0.125_dp*inverse_length_squared**3*value
+            else if (kernel%kind == KERNEL_COSINE) then
+                !! Cosine radial leaf: F(r)=variance*cos(r/lengthscale).
+                !! These s-space derivatives remain finite at coincidence and
+                !! provide the third input derivative needed by query JVP/VJP.
+                if (distance <= 1.0e-8_dp) then
+                    value = variance
+                    p = -variance/(2.0_dp*lengthscale*lengthscale)
+                    p2 = variance/(12.0_dp*lengthscale**4)
+                    p3 = -variance/(120.0_dp*lengthscale**6)
+                else
+                    z = distance/lengthscale
+                    sine_value = sin(z)
+                    cosine_value = cos(z)
+                    value = variance*cosine_value
+                    p = -variance*sine_value/(2.0_dp*lengthscale*distance)
+                    cosine_numerator = sine_value - z*cosine_value
+                    p2 = variance*cosine_numerator/(4.0_dp*lengthscale**4*z**3)
+                    p3 = variance*((z*z - 3.0_dp)*sine_value + 3.0_dp*z*cosine_value)/ &
+                        (8.0_dp*lengthscale**6*z**5)
+                end if
             else if (kernel%kind == KERNEL_RATIONAL_QUADRATIC) then
                 alpha = exp(kernel%log_parameters(3))
                 denominator = 1.0_dp + 0.5_dp*squared_distance/(alpha*lengthscale*lengthscale)
