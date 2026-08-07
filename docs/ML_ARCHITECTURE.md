@@ -176,7 +176,14 @@ resumed call validates the training
 contract before restoring the snapshot. Procedure pointers remain caller-owned
 and checkpoints whose best-state restoration changed parameters are marked
 non-resumable. Distributed checkpoint coordination remains a separate
-contract. The MSE objective has an explicit
+contract. The trainer also exposes a typed event stream through
+`mlp_training_event_proc`. `TRAIN_BEGIN`, `UPDATE`, `VALIDATION`,
+`EPOCH_END`, `CHECKPOINT`, and `TRAIN_END` events carry epoch/update
+counters, objective metrics, gradient norm, effective learning rate, and a
+stop flag. A callback may request deterministic early stopping or return a
+`fortnum_status_t` failure; failures abort the call without being converted
+into a successful checkpoint. Event procedure pointers are caller-owned and
+are intentionally not serialized. The MSE objective has an explicit
 reduction boundary: optional finite non-negative sample weights use positive
 weight mass for the mean reduction, while the sum reduction remains
 unnormalized. Named diagnostics expose data and regularization components and
