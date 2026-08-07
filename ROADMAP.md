@@ -10,7 +10,7 @@ and implementation limits in [`docs/DESIGN.md`](docs/DESIGN.md) and
 | Compiler | Command | Result |
 | --- | --- | --- |
 | GNU Fortran | `fo` | Static, build, and lint checks passed. The fresh 2026-08-07 run passed all 124 tests (280 modules; 746 build units). See [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
-| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded compiler lane. The checked-in NVIDIA log predates the latest 121-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
+| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded compiler lane. The checked-in NVIDIA log predates the latest 124-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
 The checked-in GNU compiler log is the fresh 2026-08-07 run. It includes the
