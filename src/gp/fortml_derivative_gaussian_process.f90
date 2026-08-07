@@ -437,14 +437,38 @@ contains
             probe%noise_variance <= 0.0_dp) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "derivative GP gradient probe: noise parameter is invalid")
+            call release_kernel(probe%kernel)
             return
         end if
         call probe%kernel%set_parameters(parameters(:kernel_count), status)
-        if (status%code /= FORTNUM_OK) return
+        if (status%code /= FORTNUM_OK) then
+            call release_kernel(probe%kernel)
+            return
+        end if
         call derivative_gp_refactor(probe, status)
-        if (status%code /= FORTNUM_OK) return
+        if (status%code /= FORTNUM_OK) then
+            call release_kernel(probe%kernel)
+            return
+        end if
         call probe%hyperparameter_gradient(gradient, status)
+        call release_kernel(probe%kernel)
     end subroutine derivative_gp_gradient_at
+
+    recursive subroutine release_kernel(kernel)
+        type(kernel_t), intent(inout) :: kernel
+
+        if (associated(kernel%left)) then
+            call release_kernel(kernel%left)
+            deallocate(kernel%left)
+        end if
+        if (associated(kernel%right)) then
+            call release_kernel(kernel%right)
+            deallocate(kernel%right)
+        end if
+        if (allocated(kernel%formula)) deallocate(kernel%formula)
+        if (allocated(kernel%log_parameters)) deallocate(kernel%log_parameters)
+        nullify(kernel%left, kernel%right)
+    end subroutine release_kernel
 
     subroutine derivative_covariance_parameter(kernel, x1, component1, x2, &
             component2, parameter, covariance, covariance_dot, status)
