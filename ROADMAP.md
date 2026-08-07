@@ -644,7 +644,8 @@ when a lower-level primitive already exists.
 
 - [x] Dense MLP, classifier, BNN, VAE, vanilla RNN, and separable Hamiltonian
   MLP primitives with selected value/JVP/VJP/HVP products and deterministic
-  checkpointable Adam, AdamW, Adagrad, RMSprop, and SGD training.
+  checkpointable Adam, AdamW, Adagrad, RMSprop, unfactored Adafactor, and SGD
+  training.
 - [x] Add the first production module-tree slice: `fortml_mlp_chain` owns
   named sequential `mlp_t` children, validates interface widths, exposes stable
   stage parameter ranges, and routes exact composed value/JVP/VJP/HVP products
@@ -675,7 +676,8 @@ when a lower-level primitive already exists.
   physics residual losses, each with explicit derivative and refusal contracts.
 - [x] Production RMSprop with centered/uncentered running statistics, optional
   momentum, exact checkpoint/resume state, and an independent recurrence oracle.
-- [ ] Production optimizers and schedules: L-BFGS/L-BFGS-B, Adafactor,
+- [ ] Production optimizers and schedules: L-BFGS/L-BFGS-B, matrix-factored
+  Adafactor,
   Lion, RAdam, AMSGrad, cosine/one-cycle/warmup/plateau schedules, gradient
   accumulation, clipping, EMA, decoupled regularization, and parameter groups.
   The deterministic mini-batch SGD trajectory objective now records a private
@@ -683,6 +685,12 @@ when a lower-level primitive already exists.
   and L2 hypergradients through validation MSE, and is consumable by FortOpt
   L-BFGS-B. General stochastic-loader, clipping, validation-policy, and
   resident-device products remain open.
+- [x] Add deterministic unfactored Adafactor to the model-agnostic trainer and
+  dense MLP trainer. The explicit squared-gradient state, update-RMS clipping,
+  optional relative-step/parameter scaling, schema-versioned checkpoint state,
+  and independent quadratic/MLP recurrence and resume oracles are complete.
+  Matrix-layout factored state, optimizer-trajectory hypergradients, and
+  resident CUDA Adafactor remain separate capability gates.
 - [ ] Exact fixed-trajectory and implicit hypergradients through all supported
   optimizers, schedules, batch cursors, clipping, weight decay, validation,
   early stopping, and optimizer state. Fixed full-batch SGD/AdamW/Adagrad/
@@ -1704,7 +1712,8 @@ trials remain visible in the result schema.
   The current MLP trainer now covers deterministic accumulation, schedules,
   clipping, patience, callbacks, a finite held-out validation stream with
   interval-based monitoring and best-state restoration, and an in-memory
-  resumable `mlp_training_checkpoint_t` containing Adam/AdamW/Adagrad/RMSprop/SGD,
+  resumable `mlp_training_checkpoint_t` containing Adam/AdamW/Adagrad/RMSprop/
+  unfactored Adafactor/SGD,
   iterator/schedule, and
   validation state. Event typing and serialized/distributed checkpoint
   coordination remain open.
@@ -2408,6 +2417,12 @@ results as an external literature claim.
   Hessian. Independent affine and nonlinear residual oracles are in
   `test_physics_objective`; callbacks retain ownership of state, coordinates,
   units, and device residency.
+- [x] Add the CPU `pinn_training_adapter_t` facade over
+  `physics_objective_t`. It forwards the four named data/residual/boundary/
+  conservation terms and value/gradient/JVP/VJP/HVP products, exposes bounded
+  FortOpt L-BFGS-B fitting, and returns a typed CUDA refusal without a host
+  fallback. `test_pinn` is an independent manufactured-solution gate covering
+  all products, a nonlinear HVP, fitting, and shape/device boundaries.
 - [ ] Extend the seam with symplectic-form terms, nondimensionalizing
   transforms, coordinate/time layout metadata, and richer named diagnostics
   for every term. The bounded `physics_objective_t%term_values` diagnostic now

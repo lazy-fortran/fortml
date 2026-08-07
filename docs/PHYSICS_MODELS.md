@@ -51,6 +51,19 @@ symplectic terms remain future work. The diagnostic itself is CPU/device
 agnostic and does not introduce a host fallback: a resident adapter remains
 responsible for its residual callback and products.
 
+`fortml_pinn` adds `pinn_training_adapter_t` as the training-facing facade for
+that composition. `initialize(objective,status[,device_kind])` accepts an
+initialized `physics_objective_t` and forwards `value`, `gradient`,
+`value_gradient`, `jvp`, `vjp`, `hvp`, and `term_values` without copying model
+or collocation state out of callback-owned contexts. `fit_lbfgsb` adapts the
+same objective to FortOpt's bounded L-BFGS-B implementation; the caller owns
+the packed parameter vector and bounds. The manufactured-solution
+[`test_pinn.f90`](../test/test_pinn.f90) checks all four named terms, central
+finite-difference JVP/HVP oracles, scalar VJP, the bounded fit, and malformed
+shapes. CPU is the only supported device in this slice. A CUDA initialization
+or selection request returns `FORTNUM_NOT_IMPLEMENTED` and does not execute a
+host fallback.
+
 ## Research contracts
 
 The next APIs should compose with the existing parameter registry and objective

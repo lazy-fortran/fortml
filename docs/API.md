@@ -224,7 +224,16 @@ value/gradient. `step(status)` performs one deterministic full-batch update;
 `fit(status)` runs to the declared limit or convergence. The available
 optimizers are `FORTML_TRAIN_SGD`, `FORTML_TRAIN_ADAM`, `FORTML_TRAIN_ADAMW`,
 `FORTML_TRAIN_ADAGRAD`, `FORTML_TRAIN_RMSPROP`, and
-`FORTML_TRAIN_LBFGSB` (the last is a fit-level bounded solve).
+`FORTML_TRAIN_ADAFACTOR`; `FORTML_TRAIN_LBFGSB` is a fit-level bounded solve.
+
+`FORTML_TRAIN_ADAFACTOR` uses a deterministic unfactored vector state: the
+exponentially averaged squared gradient is clipped by its update RMS and the
+epsilon-stabilized update is applied to the packed parameter vector. Set
+`adafactor_decay`, `adafactor_clip_threshold`, `adafactor_relative_step`, and
+`adafactor_scale_parameter` in `trainer_options_t` to control this recurrence.
+Because this API has no matrix-layout metadata, true row/column factored state
+is intentionally not claimed; a layout-aware adapter remains an explicit
+extension. The second moment and step counter are checkpointed.
 
 `trainer_options_t` owns optimizer coefficients, gradient clipping, optional
 parameter bounds, EMA decay, convergence tolerances, and an optional typed
@@ -242,7 +251,7 @@ the owning objective/trainer adapter and are never silently emulated here.
 `trainer_t%save_checkpoint(path,status)` writes a versioned,
 compiler-independent formatted-text snapshot containing optimizer options,
 parameters, EMA values, objective/history state, bounds, and the complete
-SGD/Adam/AdamW/Adagrad/RMSprop recurrence. `load_checkpoint(path,status)` is
+SGD/Adam/AdamW/Adagrad/RMSprop/Adafactor recurrence. `load_checkpoint(path,status)` is
 transactional: it requires an initialized destination with the same packed
 dimension, validates schema/order/counts/finite values, and refuses truncated,
 unknown, extra, or incompatible records without changing the destination.
@@ -1519,15 +1528,32 @@ there is no hidden finite-difference or host/GPU fallback. See
 [`docs/PHYSICS_MODELS.md`](PHYSICS_MODELS.md) and the independent
 `test_physics_objective` affine-residual oracle.
 
+### `fortml_pinn`
+
+`pinn_training_adapter_t` is the bounded training facade over an initialized
+`physics_objective_t`. `initialize(objective,status[,device_kind])` retains the
+callback-owned objective and exposes `value`, `gradient`, `value_gradient`,
+`jvp`, `vjp`, `hvp`, and the four-slot `term_values` diagnostic. `hvp` is exact
+when every active constraint supplies the optional
+`physics_residual_hvp_proc`; otherwise it preserves the typed refusal. The
+`fit_lbfgsb(parameters,lower,upper,options,result,status)` method runs the
+same value/gradient graph through FortOpt's bounded L-BFGS-B optimizer. The
+adapter is CPU-only in this slice: CUDA initialization and selection return
+`FORTNUM_NOT_IMPLEMENTED` and never relabel a host execution. See
+[`docs/PHYSICS_MODELS.md`](PHYSICS_MODELS.md) and the independent
+`test_pinn` manufactured-solution oracle.
+
 ### `fortml_mlp_training`
 
 `mlp_train(model,x,target,status,options,state[,validation_x,validation_target,checkpoint])`
-trains an existing `mlp_t` with deterministic Adam, AdamW, Adagrad, RMSprop, or FortOpt-backed SGD. A zero `batch_size`
+trains an existing `mlp_t` with deterministic Adam, AdamW, Adagrad, RMSprop,
+unfactored Adafactor, or FortOpt-backed SGD. A zero `batch_size`
 selects full-batch updates.
 Mini-batch shuffling uses an explicit Park-Miller stream controlled by
 `shuffle_seed`, and does not mutate process-global random state. The options
 also provide optimizer selection (`MLP_OPTIMIZER_ADAM`, `MLP_OPTIMIZER_SGD`,
-`MLP_OPTIMIZER_ADAMW`, `MLP_OPTIMIZER_ADAGRAD`, or `MLP_OPTIMIZER_RMSPROP`), learning-rate and Adam
+`MLP_OPTIMIZER_ADAMW`, `MLP_OPTIMIZER_ADAGRAD`, `MLP_OPTIMIZER_RMSPROP`, or
+`MLP_OPTIMIZER_ADAFACTOR`), learning-rate and Adam
 coefficients, optional SGD
 momentum/Nesterov acceleration, L2 regularization, gradient tolerance,
 patience, best-state restoration, and an epoch callback.
@@ -1547,6 +1573,12 @@ decay, moments, and stopping remain a separate capability.
 `MLP_OPTIMIZER_ADAGRAD` uses FortOpt's canonical accumulated-square
 recurrence, `G <- G + gradient**2`, followed by the epsilon-stabilized diagonal
 step. Its accumulator and step counter are checkpointed and restored exactly.
+`MLP_OPTIMIZER_ADAFACTOR` uses the same explicit unfactored vector recurrence
+as `FORTML_TRAIN_ADAFACTOR`, with `adafactor_decay`,
+`adafactor_clip_threshold`, optional relative-step and parameter scaling. Its
+second moment and step counter are checkpointed and compared on resume; true
+matrix-factorized state, optimizer-trajectory hypergradients, and CUDA-resident
+Adafactor remain explicit follow-up contracts.
 The separate `mlp_adagrad_hypergradient_objective_t` provides that fixed full-batch product
 over learning rate, L2, and epsilon; it is CPU-only and routes exact
 value/JVP/VJP products to FortOpt L-BFGS-B with explicit log bounds. Mini-batch,
