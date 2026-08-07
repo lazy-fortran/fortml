@@ -802,15 +802,19 @@ state phases are reported separately.
   tests over parameter blocks. Check input, parameter, hyperparameter, and
   pipeline derivatives independently so a shared packing bug cannot pass all
   tests.
-- [x] Generate and ship the proven RBF and Matérn derivative leaves with
-  FortSym, retaining the generated Fortran/CUDA source, independent dense
-  numerical checks, and pinned FortSym/FortAD provenance. The general kernel
-  family matrix still follows the capability/refusal policy below.
+- [x] Generate and ship the FortSym RBF primal leaves, retaining the generated
+  Fortran/CUDA source, independent dense numerical checks, and generator
+  revisions. The checked-in RBF/Matérn parameter products are FortAD-generated
+  or hand-written; complete symbolic derivative leaves, proof, operation-count,
+  and source-hash sidecars remain release tasks. The general kernel family
+  matrix still follows the capability/refusal policy below.
 - [ ] Generate analytic kernels with `fortsym` when it proves a smaller
   expression, preserve the proof/operation-count/source hash, and compare the
   generated product against current FortAD `main` and an independent oracle.
-  Generated code is accepted only with a fallback or a documented structured
-  refusal for unsupported shapes and smoothness.
+  This includes RBF/Matérn parameter JVP/VJP/HVP leaves when the symbolic
+  common-subexpression count beats the current FortAD product. Generated code
+  is accepted only with a fallback or a documented structured refusal for
+  unsupported shapes and smoothness.
 - [ ] Add likelihood gradients and HVPs for derivative-observation GPs, including
   noise parameters for each observation type.
 - [x] Add parameter JVP and VJP products for derivative-observation GP
@@ -1054,19 +1058,21 @@ The literature establishes several complementary directions:
 - [Hamiltonian Neural Networks](https://papers.nips.cc/paper/9672-hamiltonian-neural-networks.pdf)
   parameterize a scalar Hamiltonian and obtain the vector field from the
   canonical symplectic gradient.
-- [Symplectic learning for Hamiltonian neural networks](https://arxiv.org/abs/2106.11753)
+- [Symplectic learning for Hamiltonian neural networks](https://doi.org/10.1016/j.jcp.2023.112495)
   analyzes the discretization error introduced by the training integrator and
   motivates training through a symplectic map.
 - [Physics-informed neural networks](https://doi.org/10.1016/j.jcp.2018.10.045)
   combine data and differential-equation residuals in one objective. The
-  [PIML review](https://arxiv.org/abs/2201.05624) surveys physics-guided,
-  physics-informed, and physics-encoded architectures and the different ways
-  equations and domain knowledge enter a model.
-- [A connection between probability, physics and neural networks](https://arxiv.org/abs/2209.12737)
+  [PIML review](https://doi.org/10.1038/s42254-021-00314-5) by Karniadakis et
+  al. surveys physics-guided, physics-informed, and physics-encoded
+  architectures and the different ways equations and domain knowledge enter a
+  model.
+- [A connection between probability, physics and neural networks](https://doi.org/10.3390/psf2022005011)
   by Sascha Ranftl connects kernels satisfying linear differential constraints
-  to the infinite-width neural-network limit. Its finite-width construction is
-  an approximation to the limiting GP, so FortML will test seeded ensembles
-  against that covariance instead of claiming an exact initializer.
+  to the infinite-width neural-network limit (arXiv:2209.12737). Its
+  finite-width construction is an approximation to the limiting GP, so FortML
+  will test seeded ensembles against that covariance instead of claiming an
+  exact initializer.
 - [Symplectic Gaussian Process Regression of Hamiltonian Flow Maps](https://arxiv.org/abs/2009.05569)
   by Katharina Rath, Christopher Albert, Bernd Bischl, and Udo von Toussaint
   provides the project-specific symplectic-GP reference. Product and sum
@@ -1077,10 +1083,12 @@ The literature establishes several complementary directions:
   priors for linear PDEs. [Physics-informed Kernel Learning](https://www.jmlr.org/papers/v26/24-1536.html)
   gives a recent Fourier-approximated kernel-regression alternative to a PINN.
   Both are candidates for a native operator-kernel lane.
-- A forthcoming TU Graz DocDay abstract by Johanna Moser describes the
-  [Ghosttasking and Monge-GP direction](https://www.tugraz.at/sites/dsp/docdays/past-docdays/september-2026)
-  for physics-informed GPs for linear differential equations, including
-  parameter inference outside the constant-coefficient and controllable cases.
+- The official TU Graz DocDay program [abstract by Johanna
+  Moser](https://www.tugraz.at/sites/dsp/docdays/past-docdays/september-2026)
+  describes the Ghosttasking and Monge-GP direction for physics-informed GPs
+  for linear differential equations, including parameter inference outside the
+  constant-coefficient and controllable cases. This is an experimental,
+  non-peer-reviewed reference, not a completed FortML feature claim.
 - [Symplectic Neural Gaussian Processes](https://www.ijcai.org/proceedings/2024/465)
   combines a GP Hamiltonian with a learned system representation for
   data-efficient Hamiltonian dynamics.
@@ -1130,7 +1138,9 @@ results as an external literature claim.
   count, and fallback reason in generated-kernel provenance.
 
 The repository snapshot used for this roadmap resolves `fortad` `main` at
-`93c7b8b` and `fortsym` `main` at `58a0e06`. The RBF log-length tangent used
+`40b8085` and `fortsym` `main` at `58a0e06`. The checked-in RBF product was
+generated by FortAD `5e1bfe0`; its RBF leaf was generated by FortSym
+`16fc3a8`. The RBF log-length tangent used
 by the derivative-GP products was independently checked with a temporary
 FortSym proof against the dense numerical oracle. Future derivative work must
 refresh both checkouts before deciding that a product is unavailable.
@@ -1173,6 +1183,9 @@ refresh both checkouts before deciding that a product is unavailable.
 - [ ] Add physics-consistent kernels and mean functions for linear ODE/PDE
   constraints, boundary conditions, and Green-function constructions. Include
   Ghosttasking and Monge-GP prototypes behind explicit experimental modules.
+  Compare with Raissi, Perdikaris, and Karniadakis, [machine learning of
+  linear differential equations using Gaussian processes](https://doi.org/10.1016/j.jcp.2017.07.050),
+  and [numerical GPs for time-dependent and nonlinear PDEs](https://doi.org/10.1137/17M1120762).
 - [ ] Add symplectic GP priors for scalar Hamiltonians and vector fields.
   Construct `f = J grad(H)` for canonical systems or `f = P grad(H)` for
   Poisson systems, where the structure tensor is the antisymmetric object.
@@ -1202,11 +1215,13 @@ refresh both checkouts before deciding that a product is unavailable.
   from the infinite-width GP or NNGP/NTK feature representation to finite
   weights must record its mean, covariance, and structure-defect error instead
   of claiming an exact finite-width equivalence.
-- [ ] Add PCA initialization for linear autoencoders, following the
-  [principal-component initialization proposal](https://doi.org/10.1007/978-3-030-30484-3_14).
-  The encoder and decoder
-  use the selected principal subspace, with centering, whitening, rank, and
-  sign conventions recorded. The reconstruction oracle must match the PCA
+- [ ] Add PCA initialization for linear autoencoders, following the exact
+  Baldi--Hornik optimum above. The empirical [principal-component
+  initialization proposal](https://doi.org/10.1007/978-3-030-30484-3_14)
+  (Suzuki and Sakanashi, 2019) is a separate deep-autoencoder warm start, not
+  a claim about the exact linear optimum. The encoder and decoder use the
+  selected principal subspace, with centering, whitening, rank, and sign
+  conventions recorded. The reconstruction oracle must match the PCA
   projection to numerical tolerance.
 - [ ] Add one shared centered-SVD state for a public PCA estimator and a
   linear autoencoder initializer. Tied and untied decoder choices, rank
