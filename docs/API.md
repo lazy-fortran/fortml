@@ -54,6 +54,29 @@ variance.
 The derivative surface is model-specific. A method absent from this table is
 not supplied through a hidden generic interface.
 
+### `fortml_cuda_dense_api`
+
+`cuda_dense_plan_t` is the typed Fortran wrapper for the resident, no-autodiff
+CUDA dense-affine inference primitive. `create(weights,bias,activation,
+device_index,status)` validates finite `weights(n_inputs,n_outputs)` and
+`bias(n_outputs)`, uploads one immutable layer, and records the selected device.
+`predict(query_x,outputs,status)` accepts `query_x(n_query,n_inputs)` and
+`outputs(n_query,n_outputs)`; only the query batch and result cross the host /
+device boundary. The supported activations are `MLP_LINEAR`, `MLP_TANH`,
+`MLP_RELU`, `MLP_GELU`, `MLP_SILU`, `MLP_ELU`, `MLP_SOFTPLUS`, and
+`MLP_LEAKY_RELU`. `fitted`, `input_count`, `output_count`, `activation_kind`,
+and `device` expose the plan metadata, while `destroy(status)` releases the
+resident allocations. `fortml_cuda_dense_available()` is the native capability
+probe.
+
+The ordinary GNU build links an unavailable stub and returns
+`FORTNUM_NOT_IMPLEMENTED`; it never executes a CPU fallback. The plan exposes
+no JVP, VJP, HVP, or optimizer state. Those products remain on the FortAD /
+FortSym reference path until a complete resident derivative graph is linked.
+See [`docs/CUDA_DENSE_PLAN.md`](CUDA_DENSE_PLAN.md) and the independent
+`test/run_cuda_dense_plan.sh` gate for the ABI layout, finite-input refusal,
+eight-activation oracle, and repeated resident-batch evidence.
+
 | Type | Value or prediction | JVP | VJP or gradient | HVP |
 | --- | --- | --- | --- | --- |
 | `linear_regression_t` | `predict` | Free `linear_predict_jvp` | Free `linear_predict_vjp` | No |
