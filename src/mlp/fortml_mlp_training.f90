@@ -17,6 +17,7 @@ module fortml_mlp_training
     use fortml_mlp, only: mlp_t
     use fortopt_objective, only: objective_t
     use fortopt_adam, only: adam_t
+    use fortopt_adamw, only: adamw_t
     use fortopt_sgd, only: sgd_t
     use fortopt_lbfgsb, only: lbfgsb_t, lbfgsb_options_t, lbfgsb_result_t
     implicit none
@@ -26,6 +27,7 @@ module fortml_mlp_training
     integer, parameter, public :: MLP_REDUCTION_SUM = 2
     integer, parameter, public :: MLP_OPTIMIZER_ADAM = 1
     integer, parameter, public :: MLP_OPTIMIZER_SGD = 2
+    integer, parameter, public :: MLP_OPTIMIZER_ADAMW = 3
 
     abstract interface
         subroutine mlp_epoch_callback_proc(epoch, loss, gradient_norm, stop)
@@ -59,6 +61,7 @@ module fortml_mlp_training
         integer :: optimizer = MLP_OPTIMIZER_ADAM
         real(dp) :: momentum = 0.0_dp
         logical :: nesterov = .false.
+        real(dp) :: weight_decay = 0.0_dp
         real(dp) :: l2 = 0.0_dp
         real(dp) :: tolerance = 1.0e-8_dp
         real(dp) :: min_delta = 0.0_dp
@@ -92,7 +95,7 @@ module fortml_mlp_training
     end type mlp_training_state_t
 
     type, public :: mlp_training_checkpoint_t
-        !! Complete in-memory Adam training snapshot.
+        !! Complete in-memory optimizer training snapshot.
         !!
         !! A checkpoint is produced at every completed epoch when it is passed
         !! to `mlp_train`.  Calling `mlp_train` again with the same initialized
@@ -140,6 +143,7 @@ module fortml_mlp_training
         real(dp) :: epsilon = 1.0e-8_dp
         real(dp) :: momentum = 0.0_dp
         logical :: nesterov = .false.
+        real(dp) :: weight_decay = 0.0_dp
         real(dp) :: l2 = 0.0_dp
         real(dp) :: tolerance = 1.0e-8_dp
         real(dp) :: min_delta = 0.0_dp
@@ -438,6 +442,7 @@ contains
         self%epsilon = 1.0e-8_dp
         self%momentum = 0.0_dp
         self%nesterov = .false.
+        self%weight_decay = 0.0_dp
         self%l2 = 0.0_dp
         self%tolerance = 1.0e-8_dp
         self%min_delta = 0.0_dp
@@ -470,7 +475,8 @@ contains
             self%batch_size > 0 .and. self%accumulation_steps > 0 .and. &
             self%shuffle_seed > 0 .and. self%adam_step_count >= 0 .and. &
             (self%optimizer == MLP_OPTIMIZER_ADAM .or. &
-            self%optimizer == MLP_OPTIMIZER_SGD) .and. &
+            self%optimizer == MLP_OPTIMIZER_SGD .or. &
+            self%optimizer == MLP_OPTIMIZER_ADAMW) .and. &
             self%validation_interval > 0 .and. self%patience >= 0 .and. &
             self%gradient_clipped_updates >= 0 .and. &
             allocated(self%parameters) .and. allocated(self%first_moment) .and. &
@@ -511,6 +517,7 @@ contains
             ieee_is_finite(self%beta1) .and. ieee_is_finite(self%beta2) .and. &
             ieee_is_finite(self%epsilon) .and. ieee_is_finite(self%l2) .and. &
             ieee_is_finite(self%momentum) .and. &
+            ieee_is_finite(self%weight_decay) .and. &
             ieee_is_finite(self%last_learning_rate) .and. &
             ieee_is_finite(self%initial_loss) .and. ieee_is_finite(self%final_loss) &
             .and. ieee_is_finite(self%best_loss) .and. &
@@ -520,6 +527,7 @@ contains
             self%tolerance >= 0.0_dp .and. self%min_delta >= 0.0_dp .and. &
             self%gradient_clip_norm >= 0.0_dp
         valid = valid .and. self%momentum >= 0.0_dp .and. self%momentum < 1.0_dp
+        valid = valid .and. self%weight_decay >= 0.0_dp
         if (self%nesterov) valid = valid .and. self%optimizer == MLP_OPTIMIZER_SGD .and. &
             self%momentum > 0.0_dp
         if (self%has_validation) valid = valid .and. &
@@ -957,6 +965,7 @@ contains
         type(mlp_training_options_t) :: config
         type(mlp_training_state_t) :: result
         type(adam_t) :: optimizer
+        type(adamw_t) :: adamw_optimizer
         type(sgd_t) :: sgd_optimizer
         type(mlp_batch_iterator_t) :: iterator
         real(dp), allocatable :: theta(:), best_theta(:), gradient(:)
@@ -1023,6 +1032,9 @@ contains
             if (checkpoint%optimizer /= config%optimizer) incompatible_checkpoint = .true.
             if (checkpoint%momentum /= config%momentum) incompatible_checkpoint = .true.
             if (checkpoint%nesterov .neqv. config%nesterov) incompatible_checkpoint = .true.
+            if (checkpoint%weight_decay /= config%weight_decay) then
+                incompatible_checkpoint = .true.
+            end if
             if (checkpoint%l2 /= config%l2) incompatible_checkpoint = .true.
             if (checkpoint%validation_interval /= config%validation_interval) then
                 incompatible_checkpoint = .true.
@@ -1131,10 +1143,15 @@ contains
             call optimizer%initialize(n_parameters, status, &
                 learning_rate=config%learning_rate, beta1=config%beta1, &
                 beta2=config%beta2, epsilon=config%epsilon)
-        else
+        else if (config%optimizer == MLP_OPTIMIZER_SGD) then
             call sgd_optimizer%initialize(n_parameters, status, &
                 learning_rate=config%learning_rate, momentum=config%momentum, &
                 nesterov=config%nesterov)
+        else
+            call adamw_optimizer%initialize(n_parameters, status, &
+                learning_rate=config%learning_rate, beta1=config%beta1, &
+                beta2=config%beta2, epsilon=config%epsilon, &
+                weight_decay=config%weight_decay)
         end if
         if (status%code /= FORTNUM_OK) then
             if (present(state)) state = result
@@ -1149,12 +1166,20 @@ contains
                 if (optimizer%learning_rate <= 0.0_dp) then
                     optimizer%learning_rate = config%learning_rate
                 end if
-            else
+            else if (config%optimizer == MLP_OPTIMIZER_SGD) then
                 sgd_optimizer%velocity = checkpoint%first_moment
                 sgd_optimizer%step_count = checkpoint%adam_step_count
                 sgd_optimizer%learning_rate = checkpoint%last_learning_rate
                 if (sgd_optimizer%learning_rate <= 0.0_dp) then
                     sgd_optimizer%learning_rate = config%learning_rate
+                end if
+            else
+                adamw_optimizer%first_moment = checkpoint%first_moment
+                adamw_optimizer%second_moment = checkpoint%second_moment
+                adamw_optimizer%step_count = checkpoint%adam_step_count
+                adamw_optimizer%learning_rate = checkpoint%last_learning_rate
+                if (adamw_optimizer%learning_rate <= 0.0_dp) then
+                    adamw_optimizer%learning_rate = config%learning_rate
                 end if
             end if
         end if
@@ -1252,14 +1277,18 @@ contains
                         end if
                         if (config%optimizer == MLP_OPTIMIZER_ADAM) then
                             optimizer%learning_rate = effective_rate
-                        else
+                        else if (config%optimizer == MLP_OPTIMIZER_SGD) then
                             sgd_optimizer%learning_rate = effective_rate
+                        else
+                            adamw_optimizer%learning_rate = effective_rate
                         end if
                         result%last_learning_rate = effective_rate
                         if (config%optimizer == MLP_OPTIMIZER_ADAM) then
                             call optimizer%step(theta, gradient, status)
-                        else
+                        else if (config%optimizer == MLP_OPTIMIZER_SGD) then
                             call sgd_optimizer%step(theta, gradient, status)
+                        else
+                            call adamw_optimizer%step(theta, gradient, status)
                         end if
                         if (status%code /= FORTNUM_OK) then
                             if (present(state)) state = result
@@ -1278,7 +1307,8 @@ contains
                 end if
                 if (present(checkpoint)) then
                     call checkpoint_capture(checkpoint, x, target, config, result, &
-                        iterator, optimizer, sgd_optimizer, theta, best_theta, stale_epochs, &
+                        iterator, optimizer, adamw_optimizer, sgd_optimizer, theta, &
+                        best_theta, stale_epochs, &
                         epoch, microbatch_count, accumulated_samples, &
                         accumulated_gradient, present(validation_x), status)
                     if (status%code /= FORTNUM_OK) then
@@ -1349,7 +1379,8 @@ contains
             end if
             if (present(checkpoint)) then
                 call checkpoint_capture(checkpoint, x, target, config, result, &
-                    iterator, optimizer, sgd_optimizer, theta, best_theta, stale_epochs, &
+                    iterator, optimizer, adamw_optimizer, sgd_optimizer, theta, &
+                    best_theta, stale_epochs, &
                     epoch, microbatch_count, accumulated_samples, &
                     accumulated_gradient, present(validation_x), status)
                 if (status%code /= FORTNUM_OK) then
@@ -1398,7 +1429,8 @@ contains
     end subroutine mlp_train
 
     subroutine checkpoint_capture(checkpoint, x, target, config, result, iterator, &
-            optimizer, sgd_optimizer, theta, best_theta, stale_epochs, active_epoch, &
+            optimizer, adamw_optimizer, sgd_optimizer, theta, best_theta, &
+            stale_epochs, active_epoch, &
             active_microbatches, accumulated_samples, accumulated_gradient, &
             has_validation, status)
         type(mlp_training_checkpoint_t), intent(inout) :: checkpoint
@@ -1407,6 +1439,7 @@ contains
         type(mlp_training_state_t), intent(in) :: result
         type(mlp_batch_iterator_t), intent(in) :: iterator
         type(adam_t), intent(in) :: optimizer
+        type(adamw_t), intent(in) :: adamw_optimizer
         type(sgd_t), intent(in) :: sgd_optimizer
         real(dp), intent(in) :: theta(:), best_theta(:)
         integer, intent(in) :: stale_epochs
@@ -1430,10 +1463,23 @@ contains
             if (allocated(optimizer%second_moment)) then
                 if (size(optimizer%second_moment) /= size(theta)) invalid_state = .true.
             end if
-        else
+        else if (config%optimizer == MLP_OPTIMIZER_SGD) then
             if (.not. allocated(sgd_optimizer%velocity)) invalid_state = .true.
             if (allocated(sgd_optimizer%velocity)) then
                 if (size(sgd_optimizer%velocity) /= size(theta)) invalid_state = .true.
+            end if
+        else
+            if (.not. allocated(adamw_optimizer%first_moment)) invalid_state = .true.
+            if (.not. allocated(adamw_optimizer%second_moment)) invalid_state = .true.
+            if (allocated(adamw_optimizer%first_moment)) then
+                if (size(adamw_optimizer%first_moment) /= size(theta)) then
+                    invalid_state = .true.
+                end if
+            end if
+            if (allocated(adamw_optimizer%second_moment)) then
+                if (size(adamw_optimizer%second_moment) /= size(theta)) then
+                    invalid_state = .true.
+                end if
             end if
         end if
         if (invalid_state) then
@@ -1465,8 +1511,10 @@ contains
         checkpoint%optimizer = config%optimizer
         if (config%optimizer == MLP_OPTIMIZER_ADAM) then
             checkpoint%adam_step_count = optimizer%step_count
-        else
+        else if (config%optimizer == MLP_OPTIMIZER_SGD) then
             checkpoint%adam_step_count = sgd_optimizer%step_count
+        else
+            checkpoint%adam_step_count = adamw_optimizer%step_count
         end if
         checkpoint%stale_epochs = stale_epochs
         checkpoint%validation_interval = config%validation_interval
@@ -1483,6 +1531,7 @@ contains
         checkpoint%epsilon = config%epsilon
         checkpoint%momentum = config%momentum
         checkpoint%nesterov = config%nesterov
+        checkpoint%weight_decay = config%weight_decay
         checkpoint%l2 = config%l2
         checkpoint%tolerance = config%tolerance
         checkpoint%min_delta = config%min_delta
@@ -1500,10 +1549,13 @@ contains
         if (config%optimizer == MLP_OPTIMIZER_ADAM) then
             allocate(checkpoint%first_moment, source=optimizer%first_moment)
             allocate(checkpoint%second_moment, source=optimizer%second_moment)
-        else
+        else if (config%optimizer == MLP_OPTIMIZER_SGD) then
             allocate(checkpoint%first_moment, source=sgd_optimizer%velocity)
             allocate(checkpoint%second_moment(size(theta)))
             checkpoint%second_moment = 0.0_dp
+        else
+            allocate(checkpoint%first_moment, source=adamw_optimizer%first_moment)
+            allocate(checkpoint%second_moment, source=adamw_optimizer%second_moment)
         end if
         allocate(checkpoint%best_parameters, source=best_theta)
         allocate(checkpoint%accumulated_gradient, source=accumulated_gradient)
@@ -1536,7 +1588,8 @@ contains
             options%accumulation_steps >= 1 .and. &
             options%patience >= 0 .and. options%learning_rate > 0.0_dp .and. &
             (options%optimizer == MLP_OPTIMIZER_ADAM .or. &
-            options%optimizer == MLP_OPTIMIZER_SGD) .and. &
+            options%optimizer == MLP_OPTIMIZER_SGD .or. &
+            options%optimizer == MLP_OPTIMIZER_ADAMW) .and. &
             options%beta1 >= 0.0_dp .and. options%beta1 < 1.0_dp .and. &
             options%beta2 >= 0.0_dp .and. options%beta2 < 1.0_dp .and. &
             options%epsilon > 0.0_dp .and. options%l2 >= 0.0_dp .and. &
@@ -1548,9 +1601,11 @@ contains
             ieee_is_finite(options%beta1) .and. ieee_is_finite(options%beta2) .and. &
             ieee_is_finite(options%epsilon) .and. ieee_is_finite(options%l2) .and. &
             ieee_is_finite(options%momentum) .and. &
+            ieee_is_finite(options%weight_decay) .and. &
             ieee_is_finite(options%tolerance) .and. &
             ieee_is_finite(options%min_delta) .and. &
             ieee_is_finite(options%gradient_clip_norm)
+        valid = valid .and. options%weight_decay >= 0.0_dp
         if (options%shuffle) valid = valid .and. options%shuffle_seed > 0
         if (options%nesterov) valid = valid .and. &
             options%optimizer == MLP_OPTIMIZER_SGD .and. options%momentum > 0.0_dp
