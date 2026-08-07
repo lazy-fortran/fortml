@@ -42,6 +42,12 @@ behavioral tests pass. NVIDIA
 compiler coverage remains an
 explicit older-build result.
 
+The companion benchmark harness is clean at FortML-bench revision `05101ad`;
+the new trainer-checkpoint, binary-objective, variational-multiclass-GP,
+physics-objective, and XGBoost-ranking CSVs all record FortML `5c54bf2` and
+independent NumPy or analytic behavioral oracles. CUDA rows are explicit
+`unavailable`/typed-refusal records rather than host timings.
+
 ### 2026-08-07 objective-trainer and tree-contribution slice
 
 The model-agnostic `fortml_trainer` core is now a shared full-batch state
