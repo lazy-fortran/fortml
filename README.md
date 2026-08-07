@@ -5,7 +5,8 @@ regression, binary classification, neural models, exact and approximate
 Gaussian processes, lazy linear operators, and optimizer-facing derivative
 products. Numerical kernels
 come from `fortnum`, optimization from `fortopt`, source-generated derivatives
-from `fortad`, and sparse storage from `fortsparse`.
+from `fortad`, proof-backed symbolic kernel derivations from `fortsym`, and
+sparse storage from `fortsparse`.
 
 The current public surface concentrates on regression, binary and multinomial
 classification, Laplace binary GP classification, shared classification
@@ -69,6 +70,36 @@ Procedures that return a `fortnum_status_t` report success through
 object, so check the status before the next call. Sparse operator procedures
 use the corresponding `fortsparse_status_t`. Krylov solves return integer
 `info` values from `fortnum_krylov`.
+
+## Derivative and initialization status
+
+Derivative products are capability-specific. An absent product is refused or
+listed in [ROADMAP.md](ROADMAP.md). It is never inferred to be zero. The
+current surface is:
+
+| Surface | Products | Boundary |
+| --- | --- | --- |
+| Linear regression, scalers, basis maps, and basis pipelines | Value, input/parameter JVPs and VJPs where the public API declares them | General DAG transforms and second-order products remain open |
+| Dense MLP and MSE training objective | Parameter/input JVPs, VJPs, exact MSE+L2 HVPs, and the L2 hyperparameter derivative | Other losses, optimizers, and neural module families are partial |
+| Exact GP regression | Kernel-parameter products, input derivatives, prediction products, and differentiated-solve HVPs | Approximate and matrix-free training products are partial |
+| Derivative-observation GP | Mixed value/first-derivative observations, parameter products, and query-input JVP/VJP products | Query-input products and the likelihood HVP use documented deterministic finite differences. Analytic third-order kernels and joint posterior covariance remain open |
+| Trees, boosting, and classifiers | Piecewise JVPs where declared, with split-boundary refusals | Classifier HVPs and smooth split derivatives remain open |
+| BNN, VAE, RNN, and most approximate GP paths | Value or model-specific gradient surfaces | Full JVP/VJP/HVP coverage is a roadmap item |
+
+`fortsym` is used when it proves a smaller or more stable closed form for a
+kernel or derivative leaf. `fortad` remains the general source-transformation
+baseline. A generated product enters the implementation only after an
+independent numerical oracle and a symbolic identity check agree. The
+provenance records the FortSym and FortAD revisions, operation count, source
+hash, and any fallback or refusal. The release benchmarks compare the two
+routes where both are available.
+
+The same rule applies to model initialization. Xavier/He, PCA, NNGP/NTK, and
+GP-posterior starts are separate contracts with recorded seeds, design sets,
+and tolerances. A finite network is not declared identical to its infinite-
+width GP. Physics-informed, Hamiltonian, symplectic, and autoencoder starts
+must report the residual, invariant defect, reconstruction, or covariance
+error at initialization.
 
 ## Exact GP example
 

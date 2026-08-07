@@ -225,6 +225,41 @@ documentation, refusal behavior, and benchmark evidence are all present.
 - [x] Use the sibling `../fortml-bench` harnesses to add peak RSS, build and
   toolchain provenance, release measurements, and external Python comparisons.
 
+### Derivative and initialization policy
+
+The derivative capability is a matrix of declared products, not a promise that
+every estimator is fully differentiable. Current products cover the linear,
+basis, scaler, dense MLP, exact GP, and mixed value/first-derivative GP paths
+listed in [README.md](README.md). CART and boosting products are piecewise and
+refuse split-boundary directions. BNN, VAE, RNN, classifier HVP, and most
+approximate-GP paths remain partial. Query-input derivative-GP products and
+the derivative-GP likelihood HVP are documented deterministic finite
+differences. They are not presented as analytic or generated third-order
+products.
+
+Derivative selection follows this order:
+
+1. Use an analytic implementation or a `fortsym`-derived expression when its
+   identity proof and operation count pass the independent oracle.
+2. Use `fortad` source transformation for general differentiable model code and
+   retain the explicit reference product beside the generated source.
+3. Expose a deterministic finite-difference product only when the public API
+   labels it as such and the production objective does not silently depend on
+   it.
+4. Return a structured refusal when the smoothness, shape, device, or operator
+   contract is missing.
+
+Generated derivative artifacts record the FortSym and FortAD revisions, proof
+strength, operation count, source hash, and fallback reason. The benchmark
+harness compares generated and reference products wherever both exist.
+
+The same provenance rule applies to initialization. Standard Xavier/He,
+PCA/linear-autoencoder, NNGP/NTK, and GP-posterior starts are separate
+contracts. Physics-informed, Hamiltonian, symplectic, and autoencoder
+initializers must report their residual, invariant defect, reconstruction, or
+covariance error on the declared design set. A finite-width network is not
+claimed to equal its infinite-width GP.
+
 ## Supported boundaries
 
 Multidimensional SKI accepts one isotropic RBF leaf. Its `n_grid` argument is a
@@ -1018,6 +1053,9 @@ results as an external literature claim.
 - [ ] Add data, PDE/ODE residual, initial or boundary, conservation, and
   symplectic-form terms to one composable objective. Include nondimensionalizing
   transforms and named diagnostics for every term.
+- [ ] Add a PINN and physics-informed GP training adapter over the shared
+  objective. It must keep data, residual, initial/boundary, and conservation
+  terms separately addressable for weighting, derivatives, and diagnostics.
 - [ ] Add collocation and trajectory samplers with seeded random, adaptive
   residual, boundary, and event-aware policies. A sampler records the points it
   emitted so a run can be reproduced exactly.
@@ -1098,12 +1136,21 @@ refresh both checkouts before deciding that a product is unavailable.
   initialization. Each records the kernel, architecture, width, seed, design
   set, and solve tolerance, and states whether it promises a mean fit or a
   covariance approximation.
+- [ ] Add structure-aware GP-posterior initialization for ordinary MLPs,
+  Hamiltonian and symplectic networks, and PINN residual networks. The mapping
+  from the infinite-width GP or NNGP/NTK feature representation to finite
+  weights must record its mean, covariance, and structure-defect error instead
+  of claiming an exact finite-width equivalence.
 - [ ] Add PCA initialization for linear autoencoders, following the
   [principal-component initialization proposal](https://doi.org/10.1007/978-3-030-30484-3_14).
   The encoder and decoder
   use the selected principal subspace, with centering, whitening, rank, and
   sign conventions recorded. The reconstruction oracle must match the PCA
   projection to numerical tolerance.
+- [ ] Add one shared centered-SVD state for a public PCA estimator and a
+  linear autoencoder initializer. Tied and untied decoder choices, rank
+  truncation, whitening, and sign conventions must produce the same projected
+  reconstruction oracle.
 - [ ] Add GP or basis-map initialization for nonlinear autoencoders and VAEs.
   The linear optimum is the starting point, while nonlinear layers begin with
   an identity or contractive perturbation whose reconstruction and Jacobian
