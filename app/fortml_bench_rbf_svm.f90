@@ -25,7 +25,7 @@ program fortml_bench_rbf_svm
     call make_fixture(x, labels, sample_weight)
     call system_clock(clock_start, clock_rate)
     call model%fit(x, labels, status, c=2.0_dp, gamma=0.6_dp, &
-        max_iterations=10000, tolerance=1.0e-9_dp, sample_weight=sample_weight)
+        max_iterations=50000, tolerance=1.0e-6_dp, sample_weight=sample_weight)
     call system_clock(clock_end)
     if (.not. status_ok(status)) then
         write (*, '(a)') "RBF SVM benchmark fit status: "//trim(status%msg)
@@ -57,8 +57,8 @@ program fortml_bench_rbf_svm
         write (unit, '(a,i0,a,i0)') "prediction,", i, ",1,", predicted(i)
         write (unit, '(a,i0,a,es24.16)') "coefficient,", i, ",1,", coefficients(i)
     end do
-    write (unit, '(a,i0,a,es24.16)') "gamma,1,1,", model%gamma()
-    write (unit, '(a,i0,a,es24.16)') "intercept,1,1,", model%intercept()
+    write (unit, '(a,es24.16)') "gamma,1,1,", model%gamma()
+    write (unit, '(a,es24.16)') "intercept,1,1,", model%intercept()
     do j = 1, 2
         write (unit, '(a,i0,a,i0)') "class,", j, ",1,", classes(j)
     end do
