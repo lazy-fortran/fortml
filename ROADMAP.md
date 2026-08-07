@@ -508,10 +508,11 @@ every estimator is fully differentiable. Current products cover the linear,
 basis, scaler, dense MLP, exact GP, and mixed value/first-derivative GP paths
 listed in [README.md](README.md). CART and boosting products are piecewise and
 refuse split-boundary directions. BNN, VAE, RNN, classifier HVP, and most
-approximate-GP paths remain partial. Query-input derivative-GP products and
-the derivative-GP likelihood HVP are documented deterministic finite
-differences. They are not presented as analytic or generated third-order
-products.
+approximate-GP paths remain partial. Derivative-GP query-input JVP/VJP
+products are analytic third-input rules for the supported smooth leaves; the
+likelihood hyperparameter HVP remains a documented deterministic central
+difference. The full kernel/refusal matrix is maintained in
+[docs/GP_DERIVATIVES.md](docs/GP_DERIVATIVES.md).
 
 Derivative selection follows this order:
 
@@ -1324,7 +1325,8 @@ state phases are reported separately.
   Hessian covariance blocks. Independent directional finite-difference and
   adjoint tests cover the smooth leaves. Matérn 1/2 coincident derivatives,
   user formulas, and other unsupported leaves return typed refusals; no hidden
-  finite-difference fallback is used. Joint posterior covariance remains open.
+  finite-difference fallback is used. See [docs/GP_DERIVATIVES.md](docs/GP_DERIVATIVES.md)
+  for the complete public capability matrix.
 - [x] Add an explicit device capability and prediction dispatch contract for
   mixed value/first-derivative GPs. CPU dispatch is reference-equivalent;
   CUDA refuses with `FORTNUM_NOT_IMPLEMENTED` until a resident covariance,
