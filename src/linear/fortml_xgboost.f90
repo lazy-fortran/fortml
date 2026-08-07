@@ -95,7 +95,10 @@ module fortml_xgboost
         procedure, public :: predict_matrix => xgb_predict_matrix
         procedure, public :: predict_vector => xgb_predict_vector
         generic, public :: predict => predict_matrix, predict_vector
-        procedure, public :: predict_device => xgb_predict_device
+        procedure, public :: predict_device_vector => xgb_predict_device
+        procedure, public :: predict_device_matrix => xgb_predict_device_matrix
+        generic, public :: predict_device => predict_device_vector, &
+            predict_device_matrix
         procedure, public :: device_supported => xgb_device_supported
         procedure, public :: predict_margin_matrix => xgb_predict_margin_matrix
         procedure, public :: predict_margin_vector => xgb_predict_margin_vector
@@ -384,6 +387,25 @@ contains
                 "xgboost device prediction: device kind is invalid")
         end select
     end subroutine xgb_predict_device
+
+    subroutine xgb_predict_device_matrix(self, device, x, y, status)
+        class(xgboost_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: y(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: values(:)
+
+        if (any(shape(y) /= [size(x, 1), 1])) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost device prediction: matrix output shape is invalid")
+            return
+        end if
+        allocate(values(size(x, 1)))
+        call xgb_predict_device(self, device, x, values, status)
+        if (status%code /= FORTNUM_OK) return
+        y(:, 1) = values
+    end subroutine xgb_predict_device_matrix
 
     logical function xgb_device_supported(self, device_kind) result(supported)
         class(xgboost_t), intent(in) :: self
