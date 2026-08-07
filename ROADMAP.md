@@ -249,9 +249,10 @@ Derivative selection follows this order:
 4. Return a structured refusal when the smoothness, shape, device, or operator
    contract is missing.
 
-Generated derivative artifacts record the FortSym and FortAD revisions, proof
-strength, operation count, source hash, and fallback reason. The benchmark
-harness compares generated and reference products wherever both exist.
+Accepted generated derivative artifacts will record the FortSym and FortAD
+revisions, proof strength, operation count, source hash, and fallback reason.
+The benchmark harness compares generated and reference products wherever both
+exist.
 
 The same provenance rule applies to initialization. Standard Xavier/He,
 PCA/linear-autoencoder, NNGP/NTK, and GP-posterior starts are separate

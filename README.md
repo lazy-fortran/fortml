@@ -89,10 +89,10 @@ current surface is:
 `fortsym` is used when it proves a smaller or more stable closed form for a
 kernel or derivative leaf. `fortad` remains the general source-transformation
 baseline. A generated product enters the implementation only after an
-independent numerical oracle and a symbolic identity check agree. The
-provenance records the FortSym and FortAD revisions, operation count, source
-hash, and any fallback or refusal. The release benchmarks compare the two
-routes where both are available.
+independent numerical oracle and a symbolic identity check agree. Accepted
+generated artifacts must record the FortSym and FortAD revisions, operation
+count, source hash, and any fallback or refusal. The release benchmarks compare
+the two routes where both are available.
 
 The same rule applies to model initialization. Xavier/He, PCA, NNGP/NTK, and
 GP-posterior starts are separate contracts with recorded seeds, design sets,
