@@ -26,6 +26,23 @@ module fortml_mlp
         real(dp), allocatable :: bias(:)
     end type dense_layer_t
 
+    type, public :: mlp_parameter_block_t
+        !! Stable descriptor for one packed MLP parameter or buffer block.
+        !!
+        !! `first:last` uses the one-based order returned by `parameters()`.  A
+        !! dense MLP currently has only trainable parameter blocks, but the
+        !! explicit `is_buffer` field keeps the tree contract extensible to
+        !! non-trainable running state without changing the descriptor ABI.
+        character(len=64) :: name = ""
+        character(len=16) :: kind = ""
+        integer :: first = 0
+        integer :: last = -1
+        integer :: rows = 0
+        integer :: columns = 0
+        logical :: trainable = .true.
+        logical :: is_buffer = .false.
+    end type mlp_parameter_block_t
+
     type, public :: mlp_t
         integer, allocatable :: layer_sizes(:)
         type(dense_layer_t), allocatable :: layer(:)
@@ -34,6 +51,9 @@ module fortml_mlp
     contains
         procedure, public :: initialize => mlp_initialize
         procedure, public :: parameter_count => mlp_parameter_count
+        procedure, public :: parameter_block_count => mlp_parameter_block_count
+        procedure, public :: parameter_layout => mlp_parameter_layout
+        procedure, public :: parameter_range => mlp_parameter_range
         procedure, public :: parameters => mlp_parameters
         procedure, public :: set_parameters => mlp_set_parameters
         procedure, public :: predict => mlp_predict
@@ -128,6 +148,83 @@ contains
             count = count + size(self%layer(i)%weight) + size(self%layer(i)%bias)
         end do
     end function mlp_parameter_count
+
+    integer function mlp_parameter_block_count(self) result(count)
+        !! Return the number of named parameter/buffer blocks in the tree.
+        class(mlp_t), intent(in) :: self
+
+        if (.not. allocated(self%layer)) then
+            count = 0
+        else
+            count = 2*size(self%layer)
+        end if
+    end function mlp_parameter_block_count
+
+    function mlp_parameter_layout(self) result(layout)
+        !! Return the deterministic named tree for the packed parameter vector.
+        !!
+        !! Each dense layer contributes a `layer_n.weight` matrix followed by
+        !! a `layer_n.bias` vector.  The ranges and shapes are metadata only;
+        !! `parameters()` and `set_parameters()` remain the sole data path.
+        class(mlp_t), intent(in) :: self
+        type(mlp_parameter_block_t), allocatable :: layout(:)
+        integer :: i, block, first, count
+
+        count = self%parameter_block_count()
+        allocate(layout(count))
+        if (count == 0) return
+
+        first = 1
+        block = 0
+        do i = 1, size(self%layer)
+            block = block + 1
+            layout(block)%name = ""
+            write(layout(block)%name, '("layer_",i0,".weight")') i
+            layout(block)%kind = "weight"
+            layout(block)%first = first
+            layout(block)%last = first + size(self%layer(i)%weight) - 1
+            layout(block)%rows = size(self%layer(i)%weight, 1)
+            layout(block)%columns = size(self%layer(i)%weight, 2)
+            layout(block)%trainable = .true.
+            layout(block)%is_buffer = .false.
+            first = layout(block)%last + 1
+
+            block = block + 1
+            layout(block)%name = ""
+            write(layout(block)%name, '("layer_",i0,".bias")') i
+            layout(block)%kind = "bias"
+            layout(block)%first = first
+            layout(block)%last = first + size(self%layer(i)%bias) - 1
+            layout(block)%rows = size(self%layer(i)%bias)
+            layout(block)%columns = 1
+            layout(block)%trainable = .true.
+            layout(block)%is_buffer = .false.
+            first = layout(block)%last + 1
+        end do
+    end function mlp_parameter_layout
+
+    subroutine mlp_parameter_range(self, name, first, last, found)
+        !! Resolve a stable tree path to its packed one-based range.
+        class(mlp_t), intent(in) :: self
+        character(*), intent(in) :: name
+        integer, intent(out) :: first, last
+        logical, intent(out) :: found
+        type(mlp_parameter_block_t), allocatable :: layout(:)
+        integer :: i
+
+        first = 0
+        last = -1
+        found = .false.
+        layout = self%parameter_layout()
+        do i = 1, size(layout)
+            if (trim(layout(i)%name) == trim(name)) then
+                first = layout(i)%first
+                last = layout(i)%last
+                found = .true.
+                return
+            end if
+        end do
+    end subroutine mlp_parameter_range
 
     function mlp_parameters(self) result(theta)
         class(mlp_t), intent(in) :: self

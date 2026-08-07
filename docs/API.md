@@ -126,6 +126,16 @@ eight-activation oracle, and repeated resident-batch evidence.
 `parameter_products_t` gives `mlp_t` and fitted `gp_regression_t` one common
 packed value/JVP/VJP/HVP interface. Inputs remain fixed in that interface.
 
+`mlp_t%parameter_layout()` exposes the same packed vector as a deterministic
+named parameter tree. Each dense layer contributes `layer_n.weight` followed by
+`layer_n.bias`; every descriptor reports its one-based `first:last` range,
+matrix shape, `kind`, and trainable/buffer role. `parameter_block_count()`
+reports the number of descriptors, and `parameter_range(name,first,last,found)`
+resolves a stable path without exposing private layer storage. MLPs currently
+have no mutable buffers, so `is_buffer` is false for every descriptor; the
+explicit role field keeps checkpoint, optimizer, and pipeline selectors
+forward-compatible with future non-trainable state.
+
 ## Regression and basis maps
 
 ### `fortml_linear_autoencoder`
