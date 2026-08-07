@@ -123,7 +123,7 @@ multiclass, weighted, probabilistic, derivative, or GPU coverage.
 
 | Family | Required variants | Current FortML baseline | Missing production gates |
 | --- | --- | --- | --- |
-| Classification | binary, multinomial/softmax, OVR, OVO, multilabel, Naive Bayes, tree, neural, Laplace GP, variational GP, calibrated, ordinal | binary/softmax/OVR/OVO/multilabel logistic heads, five Naive Bayes variants, CART, MLP, binary/OVR Laplace GP, Platt sigmoid and weighted PAVA isotonic calibration, exact and histogram boosted trees | sparse/multioutput multilabel, ordinal, variational/coupled GP likelihoods, resident GPU training, shared preprocessing/search |
+| Classification | binary, multinomial/softmax, OVR, OVO, multilabel, Naive Bayes, tree, neural, Laplace GP, variational GP, calibrated, ordinal | binary/softmax/OVR/OVO/multilabel and weighted ordinal cumulative-logit heads, five Naive Bayes variants, CART, MLP, binary/OVR Laplace GP, Platt sigmoid and weighted PAVA isotonic calibration, exact and histogram boosted trees | sparse/multioutput multilabel, ordinal GP and variational/coupled GP likelihoods, resident GPU training, shared preprocessing/search |
 | Regression | OLS, weighted/ridge/lasso/elastic-net, robust, quantile, GLM, multi-output, partial-fit | dense OLS, weighted ridge, weighted elastic-net/lasso, multi-output fixed-fit products | Huber/quantile/Poisson/Gamma/Tweedie, positive/Bayesian/ARD, partial-fit, complete hyperparameter products |
 | Ensembles | CART, random/extra forests, bagging, AdaBoost, histogram boosting, XGBoost/LightGBM ranking/categorical/DART | weighted CART, squared boosting, exact and bounded histogram second-order XGBoost-style binary/OVR, and exact/histogram per-feature monotonic constraints | forests/bagging, ranking/categorical/interaction constraints, DART/GOSS/EFB, distributed and resident GPU histograms |
 | Gaussian processes | exact, derivative observations, multitask, sparse/variational, SKI/lazy, local experts, classification | exact and derivative GPs, sparse/local/SKI/structured operators, binary/OVR Laplace classification | full likelihood/kernel catalog, batch/multitask/variational classification, implicit derivatives, resident GPU solves |
@@ -192,9 +192,14 @@ when a lower-level primitive already exists.
 - [x] Lasso and elastic-net estimators with deterministic weighted coordinate
   descent, multi-output packed state, fixed-fit input/parameter JVP/VJP
   products, convergence/refusal statuses, and an independent fixture oracle.
-- [ ] Huber, quantile, Poisson, Gamma, Tweedie, ordinal, multilabel,
-  multioutput, and partial-fit estimators with the shared parameter registry
-  and sample-weight contract.
+- [x] Add weighted ordinal cumulative-logit classification with arbitrary
+  sorted integer labels, strictly increasing thresholds, packed coefficient /
+  intercept / threshold parameters, analytic input and parameter JVP/VJP
+  products, and explicit CPU/CUDA capability metadata. CUDA requests return
+  `FORTNUM_NOT_IMPLEMENTED` until a resident ordinal kernel is linked.
+- [ ] Huber, quantile, Poisson, Gamma, ordinal-GP, multilabel, multioutput,
+  and partial-fit estimators with the shared parameter registry and
+  sample-weight contract.
 - [x] Dense k-nearest-neighbor classification with deterministic ties, uniform
   or inverse-distance voting, optional sample weights, and explicit
   nondifferentiable neighbor-selection boundaries.
@@ -591,8 +596,9 @@ The source inventory is dated 2026-08-07.
   including per-output class metadata, sparse target support, threshold
   policies, micro/macro/samples averaging, and refusal of ambiguous target
   shapes.
-- [ ] Add ordinal classification and ranking losses as separate contracts.
-  do not reinterpret nominal softmax probabilities as ordered outcomes.
+- [x] Add ordinal cumulative-logit classification as a separate ordered-label
+  contract; nominal softmax probabilities are not reinterpreted as ordered
+  outcomes. Ranking losses remain a separate open contract.
 - [x] Add the deterministic finite-only `cart_classifier_t` adapter with
   sorted integer classes, weighted Gini/entropy probabilities, and explicit
   depth, leaf-size, tie, and nonfinite-input contracts.
