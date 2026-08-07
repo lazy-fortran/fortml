@@ -7,6 +7,8 @@ module fortml_pipeline
     implicit none
     private
 
+    integer, parameter :: PIPELINE_NAME_LENGTH = 128
+
     !> A horizontal pipeline of basis maps.
     !>
     !> Each stage sees the original input matrix and contributes a block of
@@ -22,6 +24,7 @@ module fortml_pipeline
         integer :: n_stages = 0
         logical :: fitted = .false.
         type(basis_map_t), allocatable :: stages(:)
+        character(len=PIPELINE_NAME_LENGTH), allocatable :: stage_names(:)
     contains
         procedure, public :: initialize => pipeline_initialize
         procedure, public :: append => pipeline_append
@@ -36,6 +39,12 @@ module fortml_pipeline
         procedure, public :: parameter_count => pipeline_parameter_count
         procedure, public :: parameters => pipeline_parameters
         procedure, public :: set_parameters => pipeline_set_parameters
+        procedure, public :: stage_name => pipeline_stage_name
+        procedure, public :: feature_name => pipeline_feature_name
+        procedure, public :: parameter_name => pipeline_parameter_name
+        procedure, public :: stage_feature_offset => pipeline_stage_feature_offset
+        procedure, public :: stage_parameter_offset => &
+            pipeline_stage_parameter_offset
         procedure, public :: static_lowering_eligible => &
             pipeline_static_lowering_eligible
         procedure, public :: valid => pipeline_valid
@@ -59,6 +68,7 @@ module fortml_pipeline
         integer :: n_stages = 0
         logical :: fitted = .false.
         type(basis_map_t), allocatable :: stages(:)
+        character(len=PIPELINE_NAME_LENGTH), allocatable :: stage_names(:)
     contains
         procedure, public :: initialize => sequential_pipeline_initialize
         procedure, public :: append => sequential_pipeline_append
@@ -73,6 +83,13 @@ module fortml_pipeline
         procedure, public :: parameter_count => sequential_pipeline_parameter_count
         procedure, public :: parameters => sequential_pipeline_parameters
         procedure, public :: set_parameters => sequential_pipeline_set_parameters
+        procedure, public :: stage_name => sequential_pipeline_stage_name
+        procedure, public :: feature_name => sequential_pipeline_feature_name
+        procedure, public :: parameter_name => sequential_pipeline_parameter_name
+        procedure, public :: stage_feature_offset => &
+            sequential_pipeline_stage_feature_offset
+        procedure, public :: stage_parameter_offset => &
+            sequential_pipeline_stage_parameter_offset
         procedure, public :: static_lowering_eligible => &
             sequential_pipeline_static_lowering_eligible
         procedure, public :: valid => sequential_pipeline_valid
@@ -116,15 +133,19 @@ contains
         self%n_stages = 0
         self%fitted = .false.
         allocate(self%stages(0))
+        allocate(self%stage_names(0))
         call status_set(status, FORTNUM_OK, "")
     end subroutine pipeline_initialize
 
-    subroutine pipeline_append(self, stage, status)
+    subroutine pipeline_append(self, stage, status, name)
         class(basis_pipeline_t), intent(inout) :: self
         type(basis_map_t), intent(in) :: stage
         type(fortnum_status_t), intent(out) :: status
+        character(*), intent(in), optional :: name
         type(basis_map_t), allocatable :: new_stages(:)
-        integer :: old_count
+        character(len=PIPELINE_NAME_LENGTH), allocatable :: new_names(:)
+        character(:), allocatable :: stage_name
+        integer :: old_count, i
 
         if (self%n_inputs < 1 .or. .not. allocated(self%stages)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -141,12 +162,34 @@ contains
                 "basis pipeline append: input dimensions do not match")
             return
         end if
+        stage_name = default_stage_name(self%n_stages + 1)
+        if (present(name)) then
+            if (len_trim(name) < 1 .or. len_trim(name) > PIPELINE_NAME_LENGTH) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "basis pipeline append: stage name is invalid")
+                return
+            end if
+            stage_name = trim(name)
+        end if
+        if (allocated(self%stage_names)) then
+            do i = 1, self%n_stages
+                if (trim(self%stage_names(i)) == stage_name) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "basis pipeline append: stage names must be unique")
+                    return
+                end if
+            end do
+        end if
 
         old_count = self%n_stages
         allocate(new_stages(old_count + 1))
+        allocate(new_names(old_count + 1))
         if (old_count > 0) new_stages(1:old_count) = self%stages
+        if (old_count > 0) new_names(1:old_count) = self%stage_names
         new_stages(old_count + 1) = stage
+        new_names(old_count + 1) = stage_name
         call move_alloc(new_stages, self%stages)
+        call move_alloc(new_names, self%stage_names)
         self%n_stages = old_count + 1
         self%fitted = .false.
         call status_set(status, FORTNUM_OK, "")
@@ -320,6 +363,85 @@ contains
         end do
     end function pipeline_parameter_count
 
+    function pipeline_stage_name(self, stage) result(name)
+        class(basis_pipeline_t), intent(in) :: self
+        integer, intent(in) :: stage
+        character(:), allocatable :: name
+
+        name = ""
+        if (.not. allocated(self%stage_names)) return
+        if (stage < 1 .or. stage > self%n_stages) return
+        name = trim(self%stage_names(stage))
+    end function pipeline_stage_name
+
+    integer function pipeline_stage_feature_offset(self, stage) result(offset)
+        class(basis_pipeline_t), intent(in) :: self
+        integer, intent(in) :: stage
+        integer :: i
+
+        offset = 0
+        if (stage < 1 .or. stage > self%n_stages) return
+        if (.not. allocated(self%stages)) return
+        offset = 1
+        do i = 1, stage - 1
+            offset = offset + self%stages(i)%feature_count()
+        end do
+    end function pipeline_stage_feature_offset
+
+    integer function pipeline_stage_parameter_offset(self, stage) result(offset)
+        class(basis_pipeline_t), intent(in) :: self
+        integer, intent(in) :: stage
+        integer :: i
+
+        offset = 0
+        if (stage < 1 .or. stage > self%n_stages) return
+        if (.not. allocated(self%stages)) return
+        offset = 1
+        do i = 1, stage - 1
+            offset = offset + self%stages(i)%parameter_count()
+        end do
+    end function pipeline_stage_parameter_offset
+
+    function pipeline_feature_name(self, feature) result(name)
+        class(basis_pipeline_t), intent(in) :: self
+        integer, intent(in) :: feature
+        character(:), allocatable :: name
+        integer :: i, offset, n_features
+
+        name = ""
+        if (feature < 1 .or. feature > self%feature_count()) return
+        offset = 0
+        do i = 1, self%n_stages
+            n_features = self%stages(i)%feature_count()
+            if (feature <= offset + n_features) then
+                name = qualified_stage_name(trim(self%stage_names(i)), &
+                    "feature", feature - offset)
+                return
+            end if
+            offset = offset + n_features
+        end do
+    end function pipeline_feature_name
+
+    function pipeline_parameter_name(self, parameter) result(name)
+        class(basis_pipeline_t), intent(in) :: self
+        integer, intent(in) :: parameter
+        character(:), allocatable :: name
+        integer :: i, offset, n_parameters
+
+        name = ""
+        if (parameter < 1 .or. parameter > self%parameter_count()) return
+        offset = 0
+        do i = 1, self%n_stages
+            n_parameters = self%stages(i)%parameter_count()
+            if (parameter <= offset + n_parameters) then
+                name = qualified_stage_name(trim(self%stage_names(i)), &
+                    "parameter", parameter - offset)
+                return
+            end if
+            offset = offset + n_parameters
+        end do
+    end function pipeline_parameter_name
+
     function pipeline_parameters(self) result(theta)
         class(basis_pipeline_t), intent(in) :: self
         real(dp), allocatable :: theta(:)
@@ -382,9 +504,10 @@ contains
         integer :: i
 
         valid = self%n_inputs > 0 .and. self%n_stages > 0 .and. &
-            allocated(self%stages)
+            allocated(self%stages) .and. allocated(self%stage_names)
         if (.not. valid) return
-        if (size(self%stages) < self%n_stages) then
+        if (size(self%stages) < self%n_stages .or. &
+            size(self%stage_names) < self%n_stages) then
             valid = .false.
             return
         end if
@@ -417,15 +540,19 @@ contains
         self%n_stages = 0
         self%fitted = .false.
         allocate(self%stages(0))
+        allocate(self%stage_names(0))
         call status_set(status, FORTNUM_OK, "")
     end subroutine sequential_pipeline_initialize
 
-    subroutine sequential_pipeline_append(self, stage, status)
+    subroutine sequential_pipeline_append(self, stage, status, name)
         class(sequential_basis_pipeline_t), intent(inout) :: self
         type(basis_map_t), intent(in) :: stage
         type(fortnum_status_t), intent(out) :: status
+        character(*), intent(in), optional :: name
         type(basis_map_t), allocatable :: new_stages(:)
-        integer :: old_count
+        character(len=PIPELINE_NAME_LENGTH), allocatable :: new_names(:)
+        character(:), allocatable :: stage_name
+        integer :: old_count, i
 
         if (self%n_inputs < 1) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -447,12 +574,34 @@ contains
                 "sequential basis pipeline append: stage shape does not match")
             return
         end if
+        stage_name = default_stage_name(self%n_stages + 1)
+        if (present(name)) then
+            if (len_trim(name) < 1 .or. len_trim(name) > PIPELINE_NAME_LENGTH) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "sequential basis pipeline append: stage name is invalid")
+                return
+            end if
+            stage_name = trim(name)
+        end if
+        if (allocated(self%stage_names)) then
+            do i = 1, self%n_stages
+                if (trim(self%stage_names(i)) == stage_name) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "sequential basis pipeline append: stage names must be unique")
+                    return
+                end if
+            end do
+        end if
 
         old_count = self%n_stages
         allocate(new_stages(old_count + 1))
+        allocate(new_names(old_count + 1))
         if (old_count > 0) new_stages(1:old_count) = self%stages
+        if (old_count > 0) new_names(1:old_count) = self%stage_names
         new_stages(old_count + 1) = stage
+        new_names(old_count + 1) = stage_name
         call move_alloc(new_stages, self%stages)
+        call move_alloc(new_names, self%stage_names)
         self%n_stages = old_count + 1
         self%n_features = stage%feature_count()
         self%fitted = .false.
@@ -662,6 +811,79 @@ contains
         end do
     end function sequential_pipeline_parameter_count
 
+    function sequential_pipeline_stage_name(self, stage) result(name)
+        class(sequential_basis_pipeline_t), intent(in) :: self
+        integer, intent(in) :: stage
+        character(:), allocatable :: name
+
+        name = ""
+        if (.not. allocated(self%stage_names)) return
+        if (stage < 1 .or. stage > self%n_stages) return
+        name = trim(self%stage_names(stage))
+    end function sequential_pipeline_stage_name
+
+    integer function sequential_pipeline_stage_feature_offset(self, stage) &
+            result(offset)
+        class(sequential_basis_pipeline_t), intent(in) :: self
+        integer, intent(in) :: stage
+        integer :: i
+
+        offset = 0
+        if (stage < 1 .or. stage > self%n_stages) return
+        if (.not. allocated(self%stages)) return
+        offset = 1
+        do i = 1, stage - 1
+            offset = offset + self%stages(i)%feature_count()
+        end do
+    end function sequential_pipeline_stage_feature_offset
+
+    integer function sequential_pipeline_stage_parameter_offset(self, stage) &
+            result(offset)
+        class(sequential_basis_pipeline_t), intent(in) :: self
+        integer, intent(in) :: stage
+        integer :: i
+
+        offset = 0
+        if (stage < 1 .or. stage > self%n_stages) return
+        if (.not. allocated(self%stages)) return
+        offset = 1
+        do i = 1, stage - 1
+            offset = offset + self%stages(i)%parameter_count()
+        end do
+    end function sequential_pipeline_stage_parameter_offset
+
+    function sequential_pipeline_feature_name(self, feature) result(name)
+        class(sequential_basis_pipeline_t), intent(in) :: self
+        integer, intent(in) :: feature
+        character(:), allocatable :: name
+
+        name = ""
+        if (self%n_stages < 1 .or. feature < 1 .or. &
+            feature > self%feature_count()) return
+        name = qualified_stage_name(trim(self%stage_names(self%n_stages)), &
+            "feature", feature)
+    end function sequential_pipeline_feature_name
+
+    function sequential_pipeline_parameter_name(self, parameter) result(name)
+        class(sequential_basis_pipeline_t), intent(in) :: self
+        integer, intent(in) :: parameter
+        character(:), allocatable :: name
+        integer :: i, offset, n_parameters
+
+        name = ""
+        if (parameter < 1 .or. parameter > self%parameter_count()) return
+        offset = 0
+        do i = 1, self%n_stages
+            n_parameters = self%stages(i)%parameter_count()
+            if (parameter <= offset + n_parameters) then
+                name = qualified_stage_name(trim(self%stage_names(i)), &
+                    "parameter", parameter - offset)
+                return
+            end if
+            offset = offset + n_parameters
+        end do
+    end function sequential_pipeline_parameter_name
+
     function sequential_pipeline_parameters(self) result(theta)
         class(sequential_basis_pipeline_t), intent(in) :: self
         real(dp), allocatable :: theta(:), local_theta(:)
@@ -730,10 +952,12 @@ contains
 
         valid = .true.
         if (self%n_inputs < 1) valid = .false.
-        if (.not. allocated(self%stages)) valid = .false.
+        if (.not. allocated(self%stages) .or. &
+            .not. allocated(self%stage_names)) valid = .false.
         if (self%n_stages < 1) valid = .false.
         if (.not. valid) return
-        if (size(self%stages) < self%n_stages) then
+        if (size(self%stages) < self%n_stages .or. &
+            size(self%stage_names) < self%n_stages) then
             valid = .false.
             return
         end if
@@ -758,5 +982,24 @@ contains
         if (.not. fitted) return
         fitted = sequential_pipeline_valid(self)
     end function sequential_pipeline_is_fitted
+
+    function default_stage_name(index) result(name)
+        integer, intent(in) :: index
+        character(:), allocatable :: name
+        character(len=32) :: buffer
+
+        write (buffer, '("stage_",i0)') index
+        name = trim(buffer)
+    end function default_stage_name
+
+    function qualified_stage_name(stage, kind, index) result(name)
+        character(*), intent(in) :: stage, kind
+        integer, intent(in) :: index
+        character(:), allocatable :: name
+        character(len=32) :: buffer
+
+        write (buffer, '(i0)') index
+        name = trim(stage)//"."//trim(kind)//"_"//trim(buffer)
+    end function qualified_stage_name
 
 end module fortml_pipeline

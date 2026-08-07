@@ -87,8 +87,12 @@ while `sequential_basis_pipeline_t` feeds one map's feature block to the next.
 `column_basis_pipeline_t` is the explicit feature-selection variant: each stage
 stores a validated one-based column list, gathers that submatrix, and scatters
 its reverse cotangent into the original columns. Stage parameters remain in a
-single deterministic flat vector. This fixed union is differentiable and
-auditable, but it is not yet a general DAG or device-parallel execution graph.
+single deterministic flat vector. Optional unique stage names expose stable
+feature and parameter names plus one-based stage offsets, so downstream
+estimators can route packed coefficients without private knowledge of stage
+order; column pipelines also expose defensive copies of their input
+selections. This fixed union is differentiable and auditable, but it is not yet
+a general DAG or device-parallel execution graph.
 
 ## MLP, VAE, and recurrent models
 

@@ -7,6 +7,8 @@ module fortml_column_pipeline
     implicit none
     private
 
+    integer, parameter :: PIPELINE_NAME_LENGTH = 128
+
     !> One basis map and the original input columns it consumes.
     type :: column_pipeline_stage_t
         type(basis_map_t) :: map
@@ -26,6 +28,7 @@ module fortml_column_pipeline
         integer :: n_stages = 0
         logical :: fitted = .false.
         type(column_pipeline_stage_t), allocatable :: stages(:)
+        character(len=PIPELINE_NAME_LENGTH), allocatable :: stage_names(:)
     contains
         procedure, public :: initialize => column_pipeline_initialize
         procedure, public :: append => column_pipeline_append
@@ -40,6 +43,14 @@ module fortml_column_pipeline
         procedure, public :: parameter_count => column_pipeline_parameter_count
         procedure, public :: parameters => column_pipeline_parameters
         procedure, public :: set_parameters => column_pipeline_set_parameters
+        procedure, public :: stage_name => column_pipeline_stage_name
+        procedure, public :: feature_name => column_pipeline_feature_name
+        procedure, public :: parameter_name => column_pipeline_parameter_name
+        procedure, public :: stage_feature_offset => &
+            column_pipeline_stage_feature_offset
+        procedure, public :: stage_parameter_offset => &
+            column_pipeline_stage_parameter_offset
+        procedure, public :: stage_columns => column_pipeline_stage_columns
         procedure, public :: static_lowering_eligible => &
             column_pipeline_static_lowering_eligible
         procedure, public :: valid => column_pipeline_valid
@@ -73,15 +84,19 @@ contains
         self%n_stages = 0
         self%fitted = .false.
         allocate(self%stages(0))
+        allocate(self%stage_names(0))
         call status_set(status, FORTNUM_OK, "")
     end subroutine column_pipeline_initialize
 
-    subroutine column_pipeline_append(self, stage, columns, status)
+    subroutine column_pipeline_append(self, stage, columns, status, name)
         class(column_basis_pipeline_t), intent(inout) :: self
         type(basis_map_t), intent(in) :: stage
         integer, intent(in) :: columns(:)
         type(fortnum_status_t), intent(out) :: status
+        character(*), intent(in), optional :: name
         type(column_pipeline_stage_t), allocatable :: new_stages(:)
+        character(len=PIPELINE_NAME_LENGTH), allocatable :: new_names(:)
+        character(:), allocatable :: stage_name
         integer :: old_count, i, j
 
         if (self%n_inputs < 1) then
@@ -118,13 +133,35 @@ contains
                 end if
             end do
         end do
+        stage_name = default_stage_name(self%n_stages + 1)
+        if (present(name)) then
+            if (len_trim(name) < 1 .or. len_trim(name) > PIPELINE_NAME_LENGTH) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "column basis pipeline append: stage name is invalid")
+                return
+            end if
+            stage_name = trim(name)
+        end if
+        if (allocated(self%stage_names)) then
+            do i = 1, self%n_stages
+                if (trim(self%stage_names(i)) == stage_name) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "column basis pipeline append: stage names must be unique")
+                    return
+                end if
+            end do
+        end if
 
         old_count = self%n_stages
         allocate(new_stages(old_count + 1))
+        allocate(new_names(old_count + 1))
         if (old_count > 0) new_stages(1:old_count) = self%stages
+        if (old_count > 0) new_names(1:old_count) = self%stage_names
         new_stages(old_count + 1)%map = stage
         new_stages(old_count + 1)%columns = columns
+        new_names(old_count + 1) = stage_name
         call move_alloc(new_stages, self%stages)
+        call move_alloc(new_names, self%stage_names)
         self%n_stages = old_count + 1
         self%fitted = .false.
         call status_set(status, FORTNUM_OK, "")
@@ -320,6 +357,98 @@ contains
         end do
     end function column_pipeline_parameter_count
 
+    function column_pipeline_stage_name(self, stage) result(name)
+        class(column_basis_pipeline_t), intent(in) :: self
+        integer, intent(in) :: stage
+        character(:), allocatable :: name
+
+        name = ""
+        if (.not. allocated(self%stage_names)) return
+        if (stage < 1 .or. stage > self%n_stages) return
+        name = trim(self%stage_names(stage))
+    end function column_pipeline_stage_name
+
+    integer function column_pipeline_stage_feature_offset(self, stage) &
+            result(offset)
+        class(column_basis_pipeline_t), intent(in) :: self
+        integer, intent(in) :: stage
+        integer :: i
+
+        offset = 0
+        if (stage < 1 .or. stage > self%n_stages) return
+        if (.not. allocated(self%stages)) return
+        offset = 1
+        do i = 1, stage - 1
+            offset = offset + self%stages(i)%map%feature_count()
+        end do
+    end function column_pipeline_stage_feature_offset
+
+    integer function column_pipeline_stage_parameter_offset(self, stage) &
+            result(offset)
+        class(column_basis_pipeline_t), intent(in) :: self
+        integer, intent(in) :: stage
+        integer :: i
+
+        offset = 0
+        if (stage < 1 .or. stage > self%n_stages) return
+        if (.not. allocated(self%stages)) return
+        offset = 1
+        do i = 1, stage - 1
+            offset = offset + self%stages(i)%map%parameter_count()
+        end do
+    end function column_pipeline_stage_parameter_offset
+
+    function column_pipeline_feature_name(self, feature) result(name)
+        class(column_basis_pipeline_t), intent(in) :: self
+        integer, intent(in) :: feature
+        character(:), allocatable :: name
+        integer :: i, offset, n_features
+
+        name = ""
+        if (feature < 1 .or. feature > self%feature_count()) return
+        offset = 0
+        do i = 1, self%n_stages
+            n_features = self%stages(i)%map%feature_count()
+            if (feature <= offset + n_features) then
+                name = qualified_stage_name(trim(self%stage_names(i)), &
+                    "feature", feature - offset)
+                return
+            end if
+            offset = offset + n_features
+        end do
+    end function column_pipeline_feature_name
+
+    function column_pipeline_parameter_name(self, parameter) result(name)
+        class(column_basis_pipeline_t), intent(in) :: self
+        integer, intent(in) :: parameter
+        character(:), allocatable :: name
+        integer :: i, offset, n_parameters
+
+        name = ""
+        if (parameter < 1 .or. parameter > self%parameter_count()) return
+        offset = 0
+        do i = 1, self%n_stages
+            n_parameters = self%stages(i)%map%parameter_count()
+            if (parameter <= offset + n_parameters) then
+                name = qualified_stage_name(trim(self%stage_names(i)), &
+                    "parameter", parameter - offset)
+                return
+            end if
+            offset = offset + n_parameters
+        end do
+    end function column_pipeline_parameter_name
+
+    function column_pipeline_stage_columns(self, stage) result(columns)
+        class(column_basis_pipeline_t), intent(in) :: self
+        integer, intent(in) :: stage
+        integer, allocatable :: columns(:)
+
+        allocate(columns(0))
+        if (.not. allocated(self%stages)) return
+        if (stage < 1 .or. stage > self%n_stages) return
+        columns = self%stages(stage)%columns
+    end function column_pipeline_stage_columns
+
     function column_pipeline_parameters(self) result(theta)
         class(column_basis_pipeline_t), intent(in) :: self
         real(dp), allocatable :: theta(:), local_theta(:)
@@ -387,9 +516,10 @@ contains
         integer :: i, j, k
 
         valid = self%n_inputs > 0 .and. self%n_stages > 0 .and. &
-            allocated(self%stages)
+            allocated(self%stages) .and. allocated(self%stage_names)
         if (.not. valid) return
-        if (size(self%stages) < self%n_stages) then
+        if (size(self%stages) < self%n_stages .or. &
+            size(self%stage_names) < self%n_stages) then
             valid = .false.
             return
         end if
@@ -443,5 +573,24 @@ contains
             selected(:, j) = x(:, columns(j))
         end do
     end subroutine gather_columns
+
+    function default_stage_name(index) result(name)
+        integer, intent(in) :: index
+        character(:), allocatable :: name
+        character(len=32) :: buffer
+
+        write (buffer, '("stage_",i0)') index
+        name = trim(buffer)
+    end function default_stage_name
+
+    function qualified_stage_name(stage, kind, index) result(name)
+        character(*), intent(in) :: stage, kind
+        integer, intent(in) :: index
+        character(:), allocatable :: name
+        character(len=32) :: buffer
+
+        write (buffer, '(i0)') index
+        name = trim(stage)//"."//trim(kind)//"_"//trim(buffer)
+    end function qualified_stage_name
 
 end module fortml_column_pipeline

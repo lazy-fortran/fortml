@@ -517,15 +517,25 @@ and callback maps can be composed without an implicit parameter remapping.
 same order. `jvp` and `vjp` return exact products over both stage parameters
 and inputs. `stage_count`, `feature_count`, `parameter_count`, `valid`,
 `is_fitted`, and `static_lowering_eligible` expose shape and backend
-capabilities. Sequential transforms and DAG branches require separate input
-and output contracts and are not inferred from this horizontal union.
+capabilities. Pass an optional unique `name` to `append`; unnamed stages use
+the deterministic `stage_N` convention. `stage_name`, `feature_name`, and
+`parameter_name` expose stable names such as `seasonal.feature_2` and
+`seasonal.parameter_1`, while `stage_feature_offset` and
+`stage_parameter_offset` return one-based starts in the packed output and
+parameter vectors. These accessors let a caller route coefficients or
+diagnostics without duplicating the pipeline's packing rules. Sequential
+transforms and DAG branches require separate input and output contracts and
+are not inferred from this horizontal union.
 
 `sequential_basis_pipeline_t` provides that explicit sequential contract.
 Construct it with `make_sequential_basis_pipeline`, append a stage whose input
 count equals the previous stage's feature count, and call `fit` before
 `transform`. Its flattened parameters follow stage order. Forward JVPs and
-reverse VJPs propagate through every stage, including the input cotangent.
-Shape mismatches, empty chains, and unfitted transforms return status errors.
+reverse VJPs propagate through every stage, including the input cotangent. The
+same optional unique stage names, feature/parameter names, and one-based stage
+offsets are available; feature names refer to the final output block. Shape
+mismatches, duplicate names, empty chains, and unfitted transforms return
+status errors.
 
 `column_basis_pipeline_t` provides the column-wise variant. Construct it with
 `make_column_basis_pipeline(n_inputs,status)`, then append a basis map and a
@@ -534,8 +544,11 @@ Indices must be in range and unique within that stage, while different stages
 may reuse columns. The transform gathers only the selected columns and
 concatenates stage feature blocks. Parameter packing follows stage order, JVPs
 gather input tangents, and VJPs scatter-add stage cotangents into the original
-input columns. This is a deterministic feature union, not a DAG scheduler or a
-parallel device executor. Those capabilities remain separate roadmap items.
+input columns. Optional unique stage names and the same stable feature and
+parameter metadata are available; `stage_columns` returns a defensive copy of
+the selected input indices. This is a deterministic feature union, not a DAG
+scheduler or a parallel device executor. Those capabilities remain separate
+roadmap items.
 
 ### `fortml_basis_linear_regression`
 
