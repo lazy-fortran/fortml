@@ -11,6 +11,7 @@ program fortml_bench_features
     use fortml_basis, only: basis_map_t, make_polynomial_basis, &
         make_fourier_basis
     use fortml_pipeline, only: basis_pipeline_t, make_basis_pipeline
+    use fortml_basis_linear_regression, only: basis_linear_regression_t
     use fortml_regression_metrics, only: regression_mean_squared_error, &
         regression_mean_absolute_error, regression_r2_score, &
         regression_mean_pinball_loss
@@ -22,6 +23,7 @@ program fortml_bench_features
 
     call benchmark_mlp_training()
     call benchmark_basis_pipeline()
+    call benchmark_basis_linear_regression()
     call benchmark_tree_models()
     call benchmark_regression_metrics()
     call benchmark_cart_classifier()
@@ -181,6 +183,76 @@ contains
             n_samples, ",", n_inputs, ",", n_features, ",", &
             elapsed/real(repetitions, dp), ",", theta_bar_sum, ",", x_bar_sum
     end subroutine benchmark_basis_pipeline
+
+    subroutine benchmark_basis_linear_regression()
+        integer, parameter :: n_samples = 128, n_inputs = 1, n_outputs = 1
+        integer, parameter :: fit_repetitions = 8, prediction_repetitions = 64
+        real(dp) :: x(n_samples, n_inputs), x_dot(n_samples, n_inputs)
+        real(dp) :: y(n_samples, n_outputs), prediction(n_samples, n_outputs)
+        real(dp) :: prediction_dot(n_samples, n_outputs)
+        real(dp), allocatable :: theta_dot(:)
+        real(dp) :: frequency, elapsed_fit, elapsed_predict, elapsed_jvp
+        real(dp) :: mse, elapsed, jvp_sum
+        integer(int64) :: clock_start, clock_end, clock_rate
+        integer :: i, repetition
+        type(basis_map_t) :: fourier
+        type(basis_pipeline_t) :: pipeline
+        type(basis_linear_regression_t) :: model
+        type(fortnum_status_t) :: status
+
+        frequency = 0.7_dp
+        do i = 1, n_samples
+            x(i, 1) = -1.0_dp + 2.0_dp*real(i - 1, dp)/real(n_samples - 1, dp)
+            x_dot(i, 1) = cos(0.013_dp*real(i, dp))
+            y(i, 1) = 1.2_dp + 2.0_dp*sin(frequency*x(i, 1)) - &
+                0.3_dp*cos(frequency*x(i, 1))
+        end do
+        fourier = make_fourier_basis(n_inputs, reshape([frequency], [1, 1]), &
+            status)
+        pipeline = make_basis_pipeline(n_inputs, status)
+        call pipeline%append(fourier, status)
+        if (.not. status_ok(status)) error stop "basis linear pipeline setup failed"
+
+        call system_clock(clock_start, clock_rate)
+        do repetition = 1, fit_repetitions
+            call model%fit(pipeline, x, y, status)
+            if (.not. status_ok(status)) error stop "basis linear fit timing failed"
+        end do
+        call system_clock(clock_end)
+        elapsed_fit = real(clock_end - clock_start, dp)/real(clock_rate, dp) &
+            /real(fit_repetitions, dp)
+        call model%predict(x, prediction, status)
+        if (.not. status_ok(status)) error stop "basis linear prediction failed"
+        allocate(theta_dot(model%parameter_count()))
+        theta_dot = 0.04_dp
+        call model%predict_jvp(x, theta_dot, x_dot, prediction, prediction_dot, &
+            status)
+        if (.not. status_ok(status)) error stop "basis linear JVP failed"
+        mse = sum((prediction - y)**2)/real(n_samples, dp)
+        jvp_sum = sum(prediction_dot)
+
+        call system_clock(clock_start, clock_rate)
+        do repetition = 1, prediction_repetitions
+            call model%predict(x, prediction, status)
+            if (.not. status_ok(status)) error stop "basis linear prediction timing failed"
+        end do
+        call system_clock(clock_end)
+        elapsed_predict = real(clock_end - clock_start, dp)/real(clock_rate, dp) &
+            /real(prediction_repetitions, dp)
+        call system_clock(clock_start, clock_rate)
+        do repetition = 1, prediction_repetitions
+            call model%predict_jvp(x, theta_dot, x_dot, prediction, prediction_dot, &
+                status)
+            if (.not. status_ok(status)) error stop "basis linear JVP timing failed"
+        end do
+        call system_clock(clock_end)
+        elapsed = real(clock_end - clock_start, dp)/real(clock_rate, dp)
+        elapsed_jvp = elapsed/real(prediction_repetitions, dp)
+        write (*, '(a,i0,a,i0,a,i0,a,es24.16,a,es24.16,a,es24.16,a,es24.16,a,es24.16,a,es24.16)') &
+            "basis_linear,", n_samples, ",", n_inputs, ",", &
+            model%parameter_count(), ",", elapsed_fit, ",", elapsed_predict, &
+            ",", elapsed_jvp, ",", mse, ",", sum(prediction), ",", jvp_sum
+    end subroutine benchmark_basis_linear_regression
 
     subroutine benchmark_tree_models()
         integer, parameter :: n_samples = 128, n_features = 2

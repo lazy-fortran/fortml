@@ -67,6 +67,7 @@ contains
         integer, allocatable :: classes(:), binary_labels(:)
         real(dp), allocatable :: effective_weight(:), class_factors(:)
         integer :: i, j, n_samples, n_features, n_classes
+        character(256) :: failure_message
 
         self%is_fitted = .false.
         if (size(x, 1) < 1 .or. size(x, 2) < 1 .or. &
@@ -140,8 +141,11 @@ contains
                 fit_intercept=fit_intercept, max_iterations=max_iterations, &
                 tolerance=tolerance, sample_weight=effective_weight)
             if (status%code /= FORTNUM_OK) then
+                write (failure_message, '(a,i0,a,a)') &
+                    "OVR logistic fit: binary estimator ", j, " failed: ", &
+                    trim(status%msg)
                 call status_set(status, FORTNUM_DOMAIN_ERROR, &
-                    "OVR logistic fit: binary estimator failed")
+                    trim(failure_message))
                 return
             end if
         end do
