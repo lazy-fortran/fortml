@@ -299,7 +299,8 @@ contains
         do k = 1, size(eta, 2)
             do i = 1, size(eta, 1)
                 if (.not. ieee_is_finite(eta(i, k)) .or. &
-                        eta(i, k) > log(huge(1.0_dp))-2.0_dp) then
+                        eta(i, k) > log(huge(1.0_dp))-2.0_dp .or. &
+                        eta(i, k) < log(tiny(1.0_dp))+2.0_dp) then
                     call status_set(status, FORTNUM_DOMAIN_ERROR, &
                         "glm predict: linear predictor is outside stable log-link domain")
                     return
@@ -386,7 +387,8 @@ contains
         eta = matmul(design, self%coefficient)
         eta_dot = matmul(design_dot, self%coefficient) + &
             matmul(design, coefficient_dot)
-        if (any(eta > log(huge(1.0_dp))-2.0_dp)) then
+        if (any(eta > log(huge(1.0_dp))-2.0_dp) .or. &
+                any(eta < log(tiny(1.0_dp))+2.0_dp)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "glm JVP: linear predictor is outside stable log-link domain")
             return
@@ -426,7 +428,8 @@ contains
         allocate(coefficient_bar, mold=self%coefficient)
         call make_design(x, self%fit_intercept_value, design)
         eta = matmul(design, self%coefficient)
-        if (any(eta > log(huge(1.0_dp))-2.0_dp)) then
+        if (any(eta > log(huge(1.0_dp))-2.0_dp) .or. &
+                any(eta < log(tiny(1.0_dp))+2.0_dp)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "glm VJP: linear predictor is outside stable log-link domain")
             return
@@ -582,7 +585,8 @@ contains
                     eta = eta + context%x(i, j)*theta(j)
                 end if
             end do
-            if (.not. ieee_is_finite(eta) .or. eta > log(huge(1.0_dp))-2.0_dp) then
+            if (.not. ieee_is_finite(eta) .or. eta > log(huge(1.0_dp))-2.0_dp .or. &
+                    eta < log(tiny(1.0_dp))+2.0_dp) then
                 call status_set(status, FORTNUM_DOMAIN_ERROR, &
                     "glm objective callback: linear predictor is outside stable domain")
                 return
