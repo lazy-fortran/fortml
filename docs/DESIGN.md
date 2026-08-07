@@ -65,10 +65,13 @@ structure-specific optimizer adapter.
 
 The current implementation provides batched prediction, parameter/input JVPs,
 parameter/input VJPs, HVPs, and a `backprop` alias for the reverse product.
-Hidden and output layers support linear, `tanh`, and ReLU activations.
-The ReLU derivative is defined as zero at its kink, and finite-difference tests
-stay away from that point. The explicit products are the reference for the
-`fortad`-generated scalar fixture comparison.
+Hidden and output layers support linear, `tanh`, ReLU, GELU (the standard tanh
+approximation), SiLU, ELU, softplus, and fixed-slope leaky ReLU activations.
+Smooth activations provide analytic first and second derivatives, which feed
+the MLP JVP, VJP, and HVP products without finite differences. ReLU uses
+derivative zero at its kink; leaky ReLU uses a fixed negative-side slope and
+zero second derivative away from the kink. The explicit products are the
+reference for the `fortad`-generated scalar fixture comparison.
 
 ## Exact GP baseline
 

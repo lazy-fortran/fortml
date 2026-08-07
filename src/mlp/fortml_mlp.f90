@@ -8,6 +8,14 @@ module fortml_mlp
     integer, parameter, public :: MLP_LINEAR = 1
     integer, parameter, public :: MLP_TANH = 2
     integer, parameter, public :: MLP_RELU = 3
+    integer, parameter, public :: MLP_GELU = 4
+    integer, parameter, public :: MLP_SILU = 5
+    integer, parameter, public :: MLP_ELU = 6
+    integer, parameter, public :: MLP_SOFTPLUS = 7
+    integer, parameter, public :: MLP_LEAKY_RELU = 8
+    real(dp), parameter :: gelu_c = 0.797884560802865355879_dp
+    real(dp), parameter :: gelu_k = 0.044715_dp
+    real(dp), parameter :: leaky_relu_slope = 0.01_dp
 
     type :: matrix_holder_t
         real(dp), allocatable :: value(:, :)
@@ -72,7 +80,8 @@ contains
         do i = 1, size(self%layer)
             allocate(self%layer(i)%weight(layer_sizes(i), layer_sizes(i + 1)))
             allocate(self%layer(i)%bias(layer_sizes(i + 1)))
-            if (hidden_kind == MLP_RELU .and. i < size(self%layer)) then
+            if ((hidden_kind == MLP_RELU .or. hidden_kind == MLP_LEAKY_RELU) .and. &
+                i < size(self%layer)) then
                 scale = sqrt(2.0_dp/real(layer_sizes(i), dp))
             else
                 scale = sqrt(6.0_dp/real(layer_sizes(i) + layer_sizes(i + 1), dp))
@@ -461,7 +470,9 @@ contains
     logical function valid_activation(kind) result(valid)
         integer, intent(in) :: kind
 
-        valid = kind == MLP_LINEAR .or. kind == MLP_TANH .or. kind == MLP_RELU
+        valid = kind == MLP_LINEAR .or. kind == MLP_TANH .or. kind == MLP_RELU .or. &
+            kind == MLP_GELU .or. kind == MLP_SILU .or. kind == MLP_ELU .or. &
+            kind == MLP_SOFTPLUS .or. kind == MLP_LEAKY_RELU
     end function valid_activation
 
     subroutine apply_activation(input, output, kind)
@@ -479,6 +490,21 @@ contains
                     output(i, j) = tanh(input(i, j))
                 case (MLP_RELU)
                     output(i, j) = max(0.0_dp, input(i, j))
+                case (MLP_GELU)
+                    output(i, j) = gelu_value(input(i, j))
+                case (MLP_SILU)
+                    output(i, j) = input(i, j)*sigmoid_value(input(i, j))
+                case (MLP_ELU)
+                    if (input(i, j) > 0.0_dp) then
+                        output(i, j) = input(i, j)
+                    else
+                        output(i, j) = exp(input(i, j)) - 1.0_dp
+                    end if
+                case (MLP_SOFTPLUS)
+                    output(i, j) = softplus_value(input(i, j))
+                case (MLP_LEAKY_RELU)
+                    output(i, j) = merge(input(i, j), leaky_relu_slope*input(i, j), &
+                        input(i, j) >= 0.0_dp)
                 end select
             end do
         end do
@@ -501,6 +527,22 @@ contains
                     output(i, j) = 1.0_dp - value*value
                 case (MLP_RELU)
                     output(i, j) = merge(1.0_dp, 0.0_dp, input(i, j) > 0.0_dp)
+                case (MLP_GELU)
+                    output(i, j) = gelu_first_derivative(input(i, j))
+                case (MLP_SILU)
+                    value = sigmoid_value(input(i, j))
+                    output(i, j) = value + input(i, j)*value*(1.0_dp - value)
+                case (MLP_ELU)
+                    if (input(i, j) > 0.0_dp) then
+                        output(i, j) = 1.0_dp
+                    else
+                        output(i, j) = exp(input(i, j))
+                    end if
+                case (MLP_SOFTPLUS)
+                    output(i, j) = sigmoid_value(input(i, j))
+                case (MLP_LEAKY_RELU)
+                    output(i, j) = merge(1.0_dp, leaky_relu_slope, &
+                        input(i, j) >= 0.0_dp)
                 end select
             end do
         end do
@@ -516,14 +558,81 @@ contains
         do j = 1, size(input, 2)
             do i = 1, size(input, 1)
                 select case (kind)
-                case (MLP_LINEAR, MLP_RELU)
+                case (MLP_LINEAR, MLP_RELU, MLP_LEAKY_RELU)
                     output(i, j) = 0.0_dp
                 case (MLP_TANH)
                     value = tanh(input(i, j))
                     output(i, j) = -2.0_dp*value*(1.0_dp - value*value)
+                case (MLP_GELU)
+                    output(i, j) = gelu_second_derivative(input(i, j))
+                case (MLP_SILU)
+                    value = sigmoid_value(input(i, j))
+                    output(i, j) = value*(1.0_dp - value)* &
+                        (2.0_dp + input(i, j)*(1.0_dp - 2.0_dp*value))
+                case (MLP_ELU)
+                    if (input(i, j) > 0.0_dp) then
+                        output(i, j) = 0.0_dp
+                    else
+                        output(i, j) = exp(input(i, j))
+                    end if
+                case (MLP_SOFTPLUS)
+                    value = sigmoid_value(input(i, j))
+                    output(i, j) = value*(1.0_dp - value)
                 end select
             end do
         end do
     end subroutine activation_second_derivative
+
+    pure real(dp) function sigmoid_value(x) result(value)
+        real(dp), intent(in) :: x
+
+        if (x >= 0.0_dp) then
+            value = 1.0_dp/(1.0_dp + exp(-x))
+        else
+            value = exp(x)/(1.0_dp + exp(x))
+        end if
+    end function sigmoid_value
+
+    pure real(dp) function softplus_value(x) result(value)
+        real(dp), intent(in) :: x
+
+        if (x > 0.0_dp) then
+            value = x + log(1.0_dp + exp(-x))
+        else
+            value = log(1.0_dp + exp(x))
+        end if
+    end function softplus_value
+
+    pure real(dp) function gelu_value(x) result(value)
+        real(dp), intent(in) :: x
+        real(dp) :: t, u
+
+        u = gelu_c*(x + gelu_k*x*x*x)
+        t = tanh(u)
+        value = 0.5_dp*x*(1.0_dp + t)
+    end function gelu_value
+
+    pure real(dp) function gelu_first_derivative(x) result(value)
+        real(dp), intent(in) :: x
+        real(dp) :: t, q, u_prime, u
+
+        u = gelu_c*(x + gelu_k*x*x*x)
+        t = tanh(u)
+        q = 1.0_dp - t*t
+        u_prime = gelu_c*(1.0_dp + 3.0_dp*gelu_k*x*x)
+        value = 0.5_dp*(1.0_dp + t) + 0.5_dp*x*q*u_prime
+    end function gelu_first_derivative
+
+    pure real(dp) function gelu_second_derivative(x) result(value)
+        real(dp), intent(in) :: x
+        real(dp) :: t, q, u_prime, u_second, u
+
+        u = gelu_c*(x + gelu_k*x*x*x)
+        t = tanh(u)
+        q = 1.0_dp - t*t
+        u_prime = gelu_c*(1.0_dp + 3.0_dp*gelu_k*x*x)
+        u_second = gelu_c*6.0_dp*gelu_k*x
+        value = q*u_prime + 0.5_dp*x*q*(u_second - 2.0_dp*t*u_prime*u_prime)
+    end function gelu_second_derivative
 
 end module fortml_mlp

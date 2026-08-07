@@ -693,10 +693,13 @@ fit preprocessing on each training index set explicitly.
 ### `fortml_mlp`
 
 `mlp_t%initialize(layer_sizes,status[,hidden_activation,output_activation,
-initialization_seed])` constructs dense layers. `MLP_LINEAR`, `MLP_TANH`, and
-`MLP_RELU` are accepted activation constants. The default hidden activation is
-`tanh`, and the default output activation is linear. Weights use deterministic
-Xavier scaling (or He scaling for ReLU hidden layers), with a reproducible
+initialization_seed])` constructs dense layers. `MLP_LINEAR`, `MLP_TANH`,
+`MLP_RELU`, `MLP_GELU`, `MLP_SILU`, `MLP_ELU`, `MLP_SOFTPLUS`, and
+`MLP_LEAKY_RELU` are accepted activation constants. GELU uses the standard
+tanh approximation; leaky ReLU uses a fixed slope of `0.01`. The default hidden
+activation is `tanh`, and the default output activation is linear. Weights use
+deterministic Xavier scaling (or He scaling for ReLU and leaky-ReLU hidden
+layers), with a reproducible
 phase sequence controlled by `initialization_seed` (default `17`).
 
 The parameter vector stores each layer's weight array
@@ -712,7 +715,11 @@ vjp(x, output_bar, theta_bar, x_bar, status)
 hvp(x, output_bar, dtheta, dx, theta_hvp, x_hvp, status)
 ```
 
-`backprop` is an alias for `vjp`. ReLU uses derivative zero at the kink.
+`backprop` is an alias for `vjp`. Every smooth activation exposes analytic
+first and second derivatives through these products, so `jvp`, `vjp`, and
+`hvp` remain exact up to floating-point arithmetic. ReLU uses derivative zero
+at the kink; leaky ReLU uses its fixed negative-side slope and zero second
+derivative away from the kink.
 
 ### `fortml_hamiltonian_mlp`
 
