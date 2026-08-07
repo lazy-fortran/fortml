@@ -6,7 +6,7 @@ module fortml_derivative_gaussian_process
         FORTNUM_DOMAIN_ERROR, FORTNUM_CONVERGENCE_ERROR
     use fortml_kernels, only: kernel_t, clone_kernel_into, KERNEL_RBF, KERNEL_MATERN12, &
         KERNEL_MATERN32, KERNEL_MATERN52, KERNEL_LINEAR, KERNEL_CONSTANT, &
-        KERNEL_WHITE_NOISE, KERNEL_SUM, KERNEL_PRODUCT
+        KERNEL_WHITE_NOISE, KERNEL_SUM, KERNEL_PRODUCT, KERNEL_USER
     implicit none
     private
 
@@ -1200,6 +1200,18 @@ contains
             variance = exp(kernel%log_parameters(1))
             value = variance
             if (parameter == 1) value_dot = value
+            call status_set(status, FORTNUM_OK, "")
+            return
+        case (KERNEL_USER)
+            call kernel%input_derivatives(x1, x2, value, gradient_x1, gradient_x2, &
+                mixed_hessian, status)
+            if (status%code /= FORTNUM_OK) return
+            if (parameter == 1) then
+                value_dot = value
+                gradient_x1_dot = gradient_x1
+                gradient_x2_dot = gradient_x2
+                mixed_hessian_dot = mixed_hessian
+            end if
             call status_set(status, FORTNUM_OK, "")
             return
         case (KERNEL_RBF, KERNEL_MATERN12, KERNEL_MATERN32, KERNEL_MATERN52)

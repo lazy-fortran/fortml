@@ -153,6 +153,9 @@ documentation, refusal behavior, and benchmark evidence are all present.
 - [x] Supply kernel matrix products, parameter JVP/VJP/HVP products, input
   derivatives, generated radial derivative kernels, and independent analytic,
   finite-difference, adjoint, and `fortsym` checks.
+- [x] Extend validated user-formula kernels with a forward value/gradient/mixed
+  Hessian stack, so mixed value/first-derivative GP observations and their
+  kernel-parameter JVPs use an analytic rule rather than an implicit refusal.
 - [x] Implement exact multi-output-column GP regression with Cholesky inference,
   latent predictive variance, log marginal likelihood, hyperparameter
   gradients, prediction products, and differentiated-solve HVPs.

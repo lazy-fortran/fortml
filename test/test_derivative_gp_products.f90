@@ -4,8 +4,9 @@ program test_derivative_gp_products
     !! it does not call the production derivative-covariance helper.
     use, intrinsic :: iso_fortran_env, only: dp => real64, error_unit
     use fortml_derivative_gaussian_process, only: gp_derivative_regression_t
+    use fortml_kernel_formula, only: kernel_formula_t
     use fortml_kernels, only: kernel_t, kernel_multiply, make_linear_kernel, &
-        make_matern32_kernel, make_rbf_kernel
+        make_matern32_kernel, make_rbf_kernel, make_user_kernel
     use fortnum_cholesky, only: cholesky_factorization_t
     use fortnum_status, only: fortnum_status_t, status_ok
     implicit none
@@ -18,6 +19,7 @@ program test_derivative_gp_products
     call test_product_parameter_products(failures)
     call test_prediction_products(failures)
     call test_query_input_products(failures)
+    call test_user_formula_observations(failures)
     call test_parameter_guards(failures)
     if (failures /= 0) then
         write (error_unit, '(i0,a)') failures, &
@@ -330,6 +332,56 @@ contains
             failures = failures + 1
         end if
     end subroutine test_query_input_products
+
+    subroutine test_user_formula_observations(failures)
+        !! A validated formula must support mixed value/derivative GP states,
+        !! including analytic kernel-parameter products.
+        integer, intent(inout) :: failures
+        type(gp_derivative_regression_t) :: model
+        type(kernel_formula_t) :: formula
+        type(kernel_t) :: kernel
+        type(fortnum_status_t) :: status
+        real(dp) :: x_train(3, 1), y_train(3, 1), x_query(2, 1)
+        real(dp) :: mean(2, 1), mean_dot(2, 1), variance(2), variance_dot(2)
+        real(dp) :: mean_plus(2, 1), mean_minus(2, 1), variance_plus(2), variance_minus(2)
+        real(dp) :: direction(2), theta(2), h, error
+
+        call formula%reset()
+        call formula%push_squared_distance()
+        call formula%divide_by_constant(-2.0_dp*0.8_dp*0.8_dp)
+        call formula%exponential()
+        call formula%validate(status)
+        kernel = make_user_kernel(1, 1.2_dp, formula, status)
+        x_train(:, 1) = [0.0_dp, 0.55_dp, 1.15_dp]
+        y_train(:, 1) = [0.7_dp, -0.2_dp, 0.9_dp]
+        call model%fit(x_train, [0, 1, 0], y_train, kernel, 0.05_dp, status, &
+            jitter=1.0e-10_dp)
+        if (.not. status_ok(status)) then
+            write (error_unit, '(a)') "FAIL [user formula GP] mixed fit"
+            failures = failures + 1
+            return
+        end if
+
+        x_query(:, 1) = [0.2_dp, 0.9_dp]
+        call model%predict(x_query, [0, 1], mean, variance, status)
+        direction = [0.13_dp, -0.17_dp]
+        call model%predict_jvp(x_query, [0, 1], direction, mean, mean_dot, &
+            variance, variance_dot, status)
+        theta = model%parameters()
+        h = 2.0e-5_dp
+        call model%set_parameters(theta + h*direction, status)
+        call model%predict(x_query, [0, 1], mean_plus, variance_plus, status)
+        call model%set_parameters(theta - h*direction, status)
+        call model%predict(x_query, [0, 1], mean_minus, variance_minus, status)
+        call model%set_parameters(theta, status)
+        error = max(maxval(abs(mean_dot - (mean_plus - mean_minus)/(2.0_dp*h))), &
+            maxval(abs(variance_dot - (variance_plus - variance_minus)/(2.0_dp*h))))
+        if (.not. status_ok(status) .or. error > 2.0e-5_dp) then
+            write (error_unit, '(a,es12.4)') &
+                "FAIL [user formula GP] parameter JVP finite difference ", error
+            failures = failures + 1
+        end if
+    end subroutine test_user_formula_observations
 
     subroutine test_parameter_guards(failures)
         integer, intent(inout) :: failures

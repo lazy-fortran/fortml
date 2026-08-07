@@ -624,7 +624,9 @@ and then the complete right vector.
 `input_derivatives`. Input derivatives return the value, gradients with respect
 to both arguments, and the mixed Hessian. Matérn 1/2 input derivatives are
 undefined at coincident points. White-noise derivative observations are
-rejected, and user formulas have no input-derivative rule. The free
+rejected. Validated user formulas use the same forward derivative stack for
+their value, both gradients, and mixed Hessian. A `push_distance` formula
+refuses coincident points where its derivative is singular. The free
 `kernel_input_derivatives` procedure has the same arguments as the type-bound
 method with the kernel supplied first.
 
@@ -753,12 +755,14 @@ remains open. Joint posterior covariance remains open.
 `log_marginal_likelihood`, `log_marginal_likelihood_jvp`,
 `hyperparameter_gradient`, and `hyperparameter_hvp` provide likelihood
 products. The gradient uses analytic parameter tangents of the supported RBF,
-Matérn 1/2, 3/2, 5/2, linear, constant, and sum/product kernels. Matérn 1/2
-still refuses coincident derivative observations. The HVP is a deterministic
-directional finite difference of that analytic gradient. It is intentionally
-listed as such until a generated second-order derivative product is added.
-Validated user-formula leaves currently refuse derivative hyperparameter
-products rather than silently approximating their input partials.
+Matérn 1/2, 3/2, 5/2, linear, constant, validated user-formula, and
+sum/product kernels. Matérn 1/2 still refuses coincident derivative
+observations, as do user formulas containing `push_distance` at coincidence.
+The HVP is a deterministic directional finite difference of that analytic
+gradient. It is intentionally listed as such until a generated second-order
+derivative product is added. Built-in radial leaves use the checked
+FortSym-generated products. User formulas use the validated forward derivative
+stack and do not call a procedure pointer.
 
 `fortml_derivative_gp_training` provides
 `gp_optimize_derivative_hyperparameters` with the same bounded FortOpt

@@ -20,6 +20,7 @@ program test_kernel_formula
 
     failures = 0
     call test_rbf_formula_matches_builtin(failures)
+    call test_user_input_derivatives(failures)
     call test_operator_matches_direct_pairwise(failures)
     call test_composite_with_user_leaf(failures)
     call test_refusals(failures)
@@ -107,6 +108,63 @@ contains
             failures = failures + 1
         end if
     end subroutine test_rbf_formula_matches_builtin
+
+    subroutine test_user_input_derivatives(failures)
+        !! Check the formula forward derivative contract against independent
+        !! central differences of the direct scalar reference.
+        integer, intent(inout) :: failures
+        type(kernel_formula_t) :: formula
+        type(kernel_t) :: kernel
+        type(fortnum_status_t) :: status
+        real(dp) :: x1(3), x2(3), value, gradient_x1(3), gradient_x2(3)
+        real(dp) :: mixed_hessian(3, 3), plus, minus, h, expected, worst
+        integer :: i, j
+
+        call build_damped_formula(formula, status)
+        kernel = make_user_kernel(3, 1.3_dp, formula, status)
+        x1 = [0.7_dp, -0.2_dp, 0.5_dp]
+        x2 = [-0.1_dp, 0.4_dp, -0.3_dp]
+        call kernel%input_derivatives(x1, x2, value, gradient_x1, gradient_x2, &
+            mixed_hessian, status)
+        h = 2.0e-5_dp
+        worst = abs(value - damped_reference(x1, x2, 1.3_dp))
+        do i = 1, 3
+            plus = damped_reference(x1 + h*unit_vector(3, i), x2, 1.3_dp)
+            minus = damped_reference(x1 - h*unit_vector(3, i), x2, 1.3_dp)
+            expected = (plus - minus)/(2.0_dp*h)
+            worst = max(worst, abs(gradient_x1(i) - expected))
+            plus = damped_reference(x1, x2 + h*unit_vector(3, i), 1.3_dp)
+            minus = damped_reference(x1, x2 - h*unit_vector(3, i), 1.3_dp)
+            expected = (plus - minus)/(2.0_dp*h)
+            worst = max(worst, abs(gradient_x2(i) - expected))
+            do j = 1, 3
+                plus = damped_reference(x1 + h*unit_vector(3, i), &
+                    x2 + h*unit_vector(3, j), 1.3_dp)
+                minus = damped_reference(x1 + h*unit_vector(3, i), &
+                    x2 - h*unit_vector(3, j), 1.3_dp)
+                expected = plus - minus
+                plus = damped_reference(x1 - h*unit_vector(3, i), &
+                    x2 + h*unit_vector(3, j), 1.3_dp)
+                minus = damped_reference(x1 - h*unit_vector(3, i), &
+                    x2 - h*unit_vector(3, j), 1.3_dp)
+                expected = (expected - plus + minus)/(4.0_dp*h*h)
+                worst = max(worst, abs(mixed_hessian(i, j) - expected))
+            end do
+        end do
+        if (.not. status_ok(status) .or. worst > 3.0e-5_dp) then
+            write (error_unit, '(a,es12.4)') &
+                "FAIL [formula] input derivatives disagree with finite differences ", worst
+            failures = failures + 1
+        end if
+    end subroutine test_user_input_derivatives
+
+    function unit_vector(n, index) result(vector)
+        integer, intent(in) :: n, index
+        real(dp) :: vector(n)
+
+        vector = 0.0_dp
+        vector(index) = 1.0_dp
+    end function unit_vector
 
     subroutine test_operator_matches_direct_pairwise(failures)
         integer, intent(inout) :: failures
