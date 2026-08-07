@@ -52,6 +52,7 @@ module fortml_xgboost
         integer :: depth = 0
         integer, allocatable :: feature(:), left_child(:), right_child(:)
         real(dp), allocatable :: node_threshold(:), weight(:), node_gain(:)
+        real(dp), allocatable :: node_cover(:)
         logical, allocatable :: leaf(:)
         logical, allocatable :: missing_left(:)
     end type xgb_tree_t
@@ -81,10 +82,14 @@ module fortml_xgboost
         generic, public :: predict_margin => predict_margin_matrix, &
             predict_margin_vector
         procedure, public :: predict_jvp => xgb_predict_jvp
+        procedure, public :: predict_staged => xgb_predict_staged
+        procedure, public :: predict_staged_margin => xgb_predict_staged_margin
+        procedure, public :: predict_proba_staged => xgb_predict_proba_staged
         procedure, public :: predict_proba => xgb_predict_proba
         procedure, public :: decision_function => xgb_decision_function
         procedure, public :: split_gain => xgb_split_gain
         procedure, public :: leaf_weights => xgb_leaf_weights
+        procedure, public :: feature_importance => xgb_feature_importance
         procedure, public :: tree_node_count => xgb_tree_node_count
         procedure, public :: tree_depth => xgb_tree_depth
         procedure, public :: feature_count => xgb_feature_count
@@ -308,6 +313,121 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine xgb_predict_margin_vector
 
+    !> Return the cumulative prediction after every boosting stage.
+    !>
+    !> The second dimension is ordered from the first fitted tree through the
+    !> complete ensemble.  Regression stages contain margins; logistic stages
+    !> contain positive-class probabilities, matching `predict`.
+    subroutine xgb_predict_staged(self, x, staged, status)
+        class(xgboost_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: staged(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: margin(:), correction(:)
+        integer :: i
+
+        if (.not. self%initialized .or. size(staged, 1) /= size(x, 1) .or. &
+            size(staged, 2) /= self%n_estimators) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost predict_staged: model, input, or output shape is invalid")
+            return
+        end if
+        if (.not. valid_query_values(self%missing_code, x)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost predict_staged: input has unsupported nonfinite values")
+            return
+        end if
+        allocate(margin(size(x, 1)), correction(size(x, 1)))
+        margin = self%base_score
+        do i = 1, self%n_estimators
+            call tree_predict(self%estimators(i), x, correction, status)
+            if (status%code /= FORTNUM_OK) return
+            margin = margin + self%learning_rate*correction
+            if (self%objective_code == XGB_OBJECTIVE_LOGISTIC) then
+                staged(:, i) = stable_sigmoid_array(margin)
+            else
+                staged(:, i) = margin
+            end if
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine xgb_predict_staged
+
+    !> Return cumulative raw margins after every boosting stage.
+    subroutine xgb_predict_staged_margin(self, x, staged, status)
+        class(xgboost_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: staged(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: correction(:)
+        integer :: i
+
+        if (.not. self%initialized .or. size(staged, 1) /= size(x, 1) .or. &
+            size(staged, 2) /= self%n_estimators) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost predict_staged_margin: model, input, or "// &
+                "output shape is invalid")
+            return
+        end if
+        if (.not. valid_query_values(self%missing_code, x)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost predict_staged_margin: input has unsupported nonfinite values")
+            return
+        end if
+        allocate(correction(size(x, 1)))
+        staged = 0.0_dp
+        staged(:, 1) = self%base_score
+        do i = 1, self%n_estimators
+            call tree_predict(self%estimators(i), x, correction, status)
+            if (status%code /= FORTNUM_OK) return
+            if (i == 1) then
+                staged(:, i) = self%base_score + self%learning_rate*correction
+            else
+                staged(:, i) = staged(:, i - 1) + self%learning_rate*correction
+            end if
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine xgb_predict_staged_margin
+
+    !> Return cumulative binary probabilities after every boosting stage.
+    !>
+    !> The output has shape `(n_samples, 2, n_estimators)` and stores negative
+    !> and positive class probabilities in the second dimension.  A regression
+    !> estimator refuses this classification-only operation.
+    subroutine xgb_predict_proba_staged(self, x, probabilities, status)
+        class(xgboost_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: probabilities(:, :, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: margins(:, :)
+        real(dp) :: positive
+        integer :: i, j
+
+        if (self%objective_code /= XGB_OBJECTIVE_LOGISTIC) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost predict_proba_staged: only logistic objective "// &
+                "has probabilities")
+            return
+        end if
+        if (size(probabilities, 1) /= size(x, 1) .or. &
+            size(probabilities, 2) /= 2 .or. &
+            size(probabilities, 3) /= self%n_estimators) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost predict_proba_staged: output shape is invalid")
+            return
+        end if
+        allocate(margins(size(x, 1), self%n_estimators))
+        call self%predict_staged_margin(x, margins, status)
+        if (status%code /= FORTNUM_OK) return
+        do j = 1, self%n_estimators
+            do i = 1, size(x, 1)
+                positive = stable_sigmoid(margins(i, j))
+                probabilities(i, 1, j) = 1.0_dp - positive
+                probabilities(i, 2, j) = positive
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine xgb_predict_proba_staged
+
     subroutine xgb_predict_proba(self, x, probabilities, status)
         class(xgboost_t), intent(in) :: self
         real(dp), intent(in) :: x(:, :)
@@ -435,6 +555,69 @@ contains
         end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine xgb_leaf_weights
+
+    !> Aggregate split diagnostics by input feature.
+    !>
+    !> `kind` is `gain` (the sum of regularized split gains), `weight` (the
+    !> number of internal split nodes), or `cover` (the sum of Hessians at
+    !> internal nodes).  These are raw sums by default; pass `normalize=.true.`
+    !> to divide by the total, as in scikit-learn's feature-importances API.
+    subroutine xgb_feature_importance(self, importance, status, kind, normalize)
+        class(xgboost_t), intent(in) :: self
+        real(dp), intent(out) :: importance(:)
+        type(fortnum_status_t), intent(out) :: status
+        character(len=*), intent(in), optional :: kind
+        logical, intent(in), optional :: normalize
+        character(len=16) :: metric
+        logical :: should_normalize
+        real(dp) :: total
+        integer :: tree_index, node, feature
+
+        if (.not. self%initialized) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost feature_importance: model is not initialized")
+            return
+        end if
+        if (size(importance) /= self%n_inputs) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost feature_importance: output shape is invalid")
+            return
+        end if
+        metric = "gain"
+        if (present(kind)) metric = trim(adjustl(kind))
+        select case (metric)
+        case ("gain", "weight", "cover")
+            continue
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost feature_importance: kind must be gain, weight, or cover")
+            return
+        end select
+        should_normalize = .false.
+        if (present(normalize)) should_normalize = normalize
+        importance = 0.0_dp
+        do tree_index = 1, self%n_estimators
+            do node = 1, self%estimators(tree_index)%n_nodes
+                if (self%estimators(tree_index)%leaf(node)) cycle
+                feature = self%estimators(tree_index)%feature(node)
+                select case (metric)
+                case ("gain")
+                    importance(feature) = importance(feature) + &
+                        self%estimators(tree_index)%node_gain(node)
+                case ("weight")
+                    importance(feature) = importance(feature) + 1.0_dp
+                case ("cover")
+                    importance(feature) = importance(feature) + &
+                        self%estimators(tree_index)%node_cover(node)
+                end select
+            end do
+        end do
+        if (should_normalize) then
+            total = sum(importance)
+            if (total > 0.0_dp) importance = importance/total
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine xgb_feature_importance
 
     integer function xgb_tree_node_count(self, tree_index) result(count)
         class(xgboost_t), intent(in) :: self
@@ -578,6 +761,7 @@ contains
         allocate(tree%feature(max_nodes), tree%left_child(max_nodes), &
             tree%right_child(max_nodes), tree%node_threshold(max_nodes), &
             tree%weight(max_nodes), tree%node_gain(max_nodes), &
+            tree%node_cover(max_nodes), &
             tree%leaf(max_nodes), tree%missing_left(max_nodes))
         tree%feature = 0
         tree%left_child = 0
@@ -585,6 +769,7 @@ contains
         tree%node_threshold = 0.0_dp
         tree%weight = 0.0_dp
         tree%node_gain = 0.0_dp
+        tree%node_cover = 0.0_dp
         tree%leaf = .true.
         tree%missing_left = .true.
         allocate(sample_index(n_samples))
@@ -641,6 +826,7 @@ contains
         value = regularized_leaf_weight(total_gradient, total_hessian, options)
         tree%weight(node_id) = value
         tree%node_gain(node_id) = 0.0_dp
+        tree%node_cover(node_id) = total_hessian
         tree%leaf(node_id) = .true.
         tree%missing_left(node_id) = .true.
 
