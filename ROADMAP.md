@@ -19,9 +19,9 @@ gate is still open, so this work does not move or recreate that tag.
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
 The checked-in GNU compiler log is the fresh 2026-08-07 run against FortAD
-`origin/main` at `b931cdc0d49a2ccada43754cafff6937d1cf9b7a`. The FortAD checkout
-also contained unrelated local edits during this run; the dependency pin is
-recorded separately so a clean replay can be performed. The run includes the
+`origin/main` at `b931cdc0d49a2ccada43754cafff6937d1cf9b7a`, replayed from clean
+worktrees under `/mnt/storage/code/lazy-fortran/fortml-clean` and
+`fortad-main-clean`. The run includes the
   kernel-catalog, weighted LDA/QDA, robust/absolute XGBoost, neural NLL, random-forest,
 Extra-Trees, grouped MLP HVP and L-BFGS-B, basis/pipeline HVP, cosine
 derivative-GP, multilabel/ROC-AUC/PR-AUC/F-beta ranking, derivative-GP
