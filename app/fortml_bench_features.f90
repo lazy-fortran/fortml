@@ -105,7 +105,9 @@ contains
         real(dp) :: frequencies(2, n_inputs)
         real(dp), allocatable :: phi(:, :), phi_dot(:, :), u(:, :)
         real(dp), allocatable :: theta_dot(:), theta_bar(:), x_bar(:, :)
-        real(dp) :: transform_sum, jvp_sum, theta_bar_sum, x_bar_sum, elapsed
+        real(dp), allocatable :: theta_hvp(:), x_hvp(:, :)
+        real(dp) :: transform_sum, jvp_sum, theta_bar_sum, x_bar_sum
+        real(dp) :: theta_hvp_sum, x_hvp_sum, elapsed
         integer(int64) :: clock_start, clock_end, clock_rate
         integer :: i, j, repetition, n_features
         type(basis_map_t) :: polynomial, fourier
@@ -136,6 +138,7 @@ contains
         allocate(phi(n_samples, n_features), phi_dot(n_samples, n_features))
         allocate(u(n_samples, n_features), theta_dot(pipeline%parameter_count()))
         allocate(theta_bar(size(theta_dot)), x_bar(n_samples, n_inputs))
+        allocate(theta_hvp(size(theta_dot)), x_hvp(n_samples, n_inputs))
         do j = 1, n_features
             do i = 1, n_samples
                 u(i, j) = 0.13_dp*sin(0.013_dp*real(i + j, dp))
@@ -148,9 +151,13 @@ contains
         call pipeline%jvp(x, theta_dot, x_dot, phi, phi_dot, status)
         call pipeline%vjp(x, u, theta_bar, x_bar, status)
         if (.not. status_ok(status)) error stop "basis pipeline products failed"
+        call pipeline%hvp(x, u, theta_dot, x_dot, theta_hvp, x_hvp, status)
+        if (.not. status_ok(status)) error stop "basis pipeline HVP failed"
         jvp_sum = sum(phi_dot)
         theta_bar_sum = sum(theta_bar)
         x_bar_sum = sum(x_bar)
+        theta_hvp_sum = sum(theta_hvp)
+        x_hvp_sum = sum(x_hvp)
 
         call system_clock(clock_start, clock_rate)
         do repetition = 1, repetitions
@@ -184,6 +191,17 @@ contains
         write (*, '(a,i0,a,i0,a,i0,a,es24.16,a,es24.16,a,es24.16)') "basis_vjp,", &
             n_samples, ",", n_inputs, ",", n_features, ",", &
             elapsed/real(repetitions, dp), ",", theta_bar_sum, ",", x_bar_sum
+
+        call system_clock(clock_start, clock_rate)
+        do repetition = 1, repetitions
+            call pipeline%hvp(x, u, theta_dot, x_dot, theta_hvp, x_hvp, status)
+            if (.not. status_ok(status)) error stop "basis HVP timing failed"
+        end do
+        call system_clock(clock_end)
+        elapsed = real(clock_end - clock_start, dp)/real(clock_rate, dp)
+        write (*, '(a,i0,a,i0,a,i0,a,es24.16,a,es24.16,a,es24.16)') "basis_hvp,", &
+            n_samples, ",", n_inputs, ",", n_features, ",", &
+            elapsed/real(repetitions, dp), ",", theta_hvp_sum, ",", x_hvp_sum
     end subroutine benchmark_basis_pipeline
 
     subroutine benchmark_basis_linear_regression()
