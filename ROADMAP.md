@@ -428,20 +428,32 @@ The literature establishes several complementary directions:
   motivates training through a symplectic map.
 - [Physics-informed neural networks](https://doi.org/10.1016/j.jcp.2018.10.045)
   combine data and differential-equation residuals in one objective. The
-  [PIML review](https://arxiv.org/abs/2201.05624) distinguishes residual,
-  guided, and encoded physics constraints.
+  [PIML review](https://arxiv.org/abs/2201.05624) surveys physics-guided,
+  physics-informed, and physics-encoded architectures and the different ways
+  equations and domain knowledge enter a model.
 - [Physics consistency of infinite neural networks](https://ml4physicalsciences.github.io/2023/files/NeurIPS_ML4PS_2023_9.pdf)
-  by Sascha Ranftl connects physics-consistent kernels to the infinite-width
-  neural-network limit. The implementation target is a finite-width initializer
-  whose induced covariance and differential constraints match that GP on a
-  declared design set.
-- Johanna Moser's [Ghosttasking and Monge-GP direction](https://www.tugraz.at/sites/dsp/docdays/past-docdays/september-2026)
-  addresses physics-informed GPs for linear differential equations, including
-  parameter inference for equations outside the constant-coefficient and
-  controllable cases.
+  by Sascha Ranftl connects kernels satisfying linear differential constraints
+  to the infinite-width neural-network limit. Its finite-width construction is
+  an approximation to the limiting GP, so FortML will test seeded ensembles
+  against that covariance instead of claiming an exact initializer.
+- A forthcoming TU Graz DocDay abstract by Johanna Moser describes the
+  [Ghosttasking and Monge-GP direction](https://www.tugraz.at/sites/dsp/docdays/past-docdays/september-2026)
+  for physics-informed GPs for linear differential equations, including
+  parameter inference outside the constant-coefficient and controllable cases.
 - [Symplectic Neural Gaussian Processes](https://www.ijcai.org/proceedings/2024/465)
   combines a GP Hamiltonian with a learned system representation for
   data-efficient Hamiltonian dynamics.
+- [Lagrangian Neural Networks](https://arxiv.org/abs/2003.04630),
+  [SympNets](https://arxiv.org/abs/2001.03750), and
+  [symplectic recurrent neural networks](https://arxiv.org/abs/1909.13334)
+  provide complementary structure-preserving architectures.
+- [Direct Poisson neural networks](https://arxiv.org/abs/2305.05540) extend the
+  target beyond nondegenerate canonical symplectic systems to Poisson systems.
+
+The project-specific symplectic-GP and Hamiltonian/ANN benchmark results from
+the FortML authors and Katharina Rath are a required pinned reference set. The
+roadmap records the interface and reproduction work without treating private
+results as an external literature claim.
 
 #### WP9a: physics contracts and autodiff products
 
@@ -455,22 +467,35 @@ The literature establishes several complementary directions:
   residual, boundary, and event-aware policies. A sampler records the points it
   emitted so a run can be reproduced exactly.
 - [ ] Add residual derivatives through `fortad` or an equivalent analytic
-  product path. A physics objective must not rely on finite differences in its
-  production training path.
+  product path. The current `fortad` `main` checkout is the baseline. Use
+  `fortsym` to derive and emit a kernel when symbolic differentiation produces a
+  smaller proven expression, then verify the emitted code against the symbolic
+  identity and an independent numerical oracle. A physics objective must not
+  rely on finite differences in its production training path.
+- [ ] Record the `fortad` and `fortsym` revisions, proof strength, operation
+  count, and fallback reason in generated-kernel provenance.
 
 #### WP9b: Hamiltonian, Lagrangian, and symplectic networks
 
 - [ ] Add `hamiltonian_mlp_t` with scalar H(q,p), canonical J, symplectic
-  gradient, optional learned Poisson matrix, and parameter/input products.
+  gradient, optional learned skew structure matrix, and parameter/input
+  products. Promote that matrix to a Poisson structure only after skew
+  symmetry and the Jacobi identity have independent tests.
 - [ ] Add `lagrangian_mlp_t` with Euler-Lagrange residuals, mass-matrix checks,
-  and a refusal for singular or non-positive-definite kinetic metrics.
-- [ ] Add SympNet and symplectic recurrent map variants whose layer maps have a
-  declared generating function and a testable symplectic Jacobian.
+  and a refusal for a singular velocity Hessian. Positive definiteness is an
+  additional requirement only for a separable mechanical mass metric.
+- [ ] Add SympNet and symplectic recurrent map variants with architecture-
+  specific composition certificates and a testable symplectic Jacobian. A
+  generating-function certificate is required only for an architecture that
+  explicitly uses one.
 - [ ] Add differentiable symplectic Euler, Verlet, and higher-order splitting
-  integrators. Training can differentiate through the map, while inference
-  reports the integrator and step size used.
-- [ ] Add gauge handling for additive constants in H and L, canonical versus
-  noncanonical coordinates, and optional noisy derivative observations.
+  integrators for separable or otherwise splittable Hamiltonians. General
+  Hamiltonians require an applicable implicit symplectic method or an explicit
+  refusal. Training can differentiate through the map, while inference reports
+  the integrator and step size used.
+- [ ] Add gauge handling for additive constants in H and for the Lagrangian
+  equivalence `L -> L + dF(q,t)/dt`, canonical versus noncanonical coordinates,
+  and optional noisy derivative observations.
 - [ ] Add conservation, reversibility, volume or symplectic-form error, and
   long-horizon trajectory metrics to the benchmark schema.
 
@@ -482,9 +507,11 @@ The literature establishes several complementary directions:
 - [ ] Add physics-consistent kernels and mean functions for linear ODE/PDE
   constraints, boundary conditions, and Green-function constructions. Include
   Ghosttasking and Monge-GP prototypes behind explicit experimental modules.
-- [ ] Add symplectic GP priors for Hamiltonians and vector fields. Posterior
-  derivatives must preserve the declared antisymmetric form and expose joint
-  covariance for values, derivatives, and cross-components.
+- [ ] Add symplectic GP priors for scalar Hamiltonians and vector fields.
+  Construct `f = J grad(H)` for canonical systems or `f = P grad(H)` for
+  Poisson systems, where the structure tensor is the antisymmetric object.
+  Expose joint covariance for values, derivatives, and cross-components, and
+  test symplectic, divergence, or Jacobi properties as applicable.
 - [ ] Add trainable equation parameters, operator hyperparameters, and noise
   blocks to the optimizer-ready parameter registry. FortOpt L-BFGS-B and
   bounded multi-start diagnostics are the reference training path.
@@ -494,15 +521,16 @@ The literature establishes several complementary directions:
 
 #### WP9d: GP-limit, PCA, and linear-optimum initialization
 
-- [ ] Implement NNGP covariance propagation for the supported MLP activations
-  and widths, following the [deep-network GP correspondence](https://arxiv.org/abs/1711.00165).
-  On a user design set, report the finite-network covariance error, mean, and
-  variance calibration before training.
-- [ ] Add `initialize_from_gp` for an MLP. It matches a target GP prior or
-  posterior mean on the design set, supports physics-consistent kernels, and
-  records the kernel, width, seed, and solve tolerance used for the mapping.
-  The initializer must distinguish a sampled prior draw from a posterior-mean
-  or last-layer kernel-ridge initialization.
+- [ ] Implement NNGP covariance propagation for the supported MLP depth,
+  activations, weight and bias priors, and widths, following the [deep-network
+  GP correspondence](https://arxiv.org/abs/1711.00165). On a user design set,
+  estimate covariance from a seeded finite-width ensemble and report its error,
+  mean, and variance calibration against the limiting kernel.
+- [ ] Add three separate MLP initialization contracts: a sampled prior draw,
+  deterministic fitting of a GP posterior mean, and last-layer kernel-ridge
+  initialization. Each records the kernel, architecture, width, seed, design
+  set, and solve tolerance, and states whether it promises a mean fit or a
+  covariance approximation.
 - [ ] Add PCA initialization for linear autoencoders, following the
   [principal-component initialization proposal](https://doi.org/10.1007/978-3-030-30484-3_14).
   The encoder and decoder
@@ -523,6 +551,9 @@ The literature establishes several complementary directions:
 - [ ] Add analytic harmonic oscillator, pendulum, Kepler/two-body, and
   Hénon-Heiles workloads. Compare standard MLP, HNN, LNN, SympNet/SRNN, exact
   GP, symplectic GP, and GP-initialized networks.
+- [ ] Add graph differential-operator workloads for irregular domains, using
+  the [physics-informed graph-network construction](https://arxiv.org/abs/2205.08332)
+  and a manufactured graph oracle for node and edge residuals.
 - [ ] Add Poisson, heat, Burgers, and wave equation workloads with manufactured
   solutions. Compare PINN residual training, physics-consistent GP priors,
   derivative observations, and a numerical solver reference.
@@ -537,11 +568,14 @@ The literature establishes several complementary directions:
   integrator, step size, model width, seed, and stopping criteria.
 
 Acceptance: every model has an analytic or manufactured-solution oracle,
-finite-difference checks for the public products, and a structure check that
-fails when conservation or symplecticity is violated. GP and finite-network
-initializations reproduce their declared design-set covariance or projection.
-Long-horizon conclusions use the same integrator and sampling budget for every
-baseline, and every release row links to raw data and the pinned reference.
+finite-difference checks for the public products, and a structure check for
+each declared invariant. Symplectic tests measure the Jacobian form defect.
+Energy tests distinguish true-system energy error from learned-Hamiltonian
+drift. Forced, dissipative, and time-dependent systems are not required to
+conserve energy. GP and finite-network initializations reproduce their declared
+design-set mean, covariance approximation, or projection. Long-horizon
+conclusions use the same integrator and sampling budget for every baseline, and
+every release row links to raw data and the pinned reference.
 
 ## Benchmark evidence
 
