@@ -1830,7 +1830,9 @@ the same flat registry as MLPs, kernels, and estimators.
 
 `parameter_products_from_mlp(products,name,model,status)` and
 `parameter_products_from_gp(products,name,model,status)` bind a live target
-model. A GP must already be fitted. The resulting `parameter_products_t`
+model. `parameter_products_from_mlp_chain(products,name,model,status)` provides
+the same packed value/JVP/VJP/HVP seam for a named sequential MLP tree. A GP
+must already be fitted. The resulting `parameter_products_t`
 exposes `initialized`, `parameter_count`, `pack`, `unpack`, `range`, `value`, <!-- slop-ok -->
 `jvp`, `vjp`, `hvp`, and `has_hvp`.
 
