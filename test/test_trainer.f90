@@ -10,11 +10,16 @@ program test_trainer
 
     type(objective_t) :: objective
     type(trainer_t) :: trainer, clone
+    type(trainer_t) :: baseline, checkpointed, resumed
     type(trainer_options_t) :: options
     type(trainer_state_t) :: state
     type(fortnum_status_t) :: status
     real(dp), allocatable :: parameters(:)
-    integer :: failures
+    real(dp), allocatable :: before_load(:)
+    type(trainer_state_t) :: baseline_state, resumed_state
+    character(len=*), parameter :: checkpoint_path = "trainer_checkpoint_test.txt"
+    character(len=*), parameter :: truncated_path = "trainer_checkpoint_truncated.txt"
+    integer :: failures, i
 
     failures = 0
     call objective%initialize(2, quadratic_objective, status)
@@ -79,6 +84,60 @@ program test_trainer
     options%upper = [1.0_dp]
     call trainer%initialize(objective, [0.0_dp, 1.0_dp], status, options)
     call check(.not. status_ok(status), "inconsistent bound shape refusal", failures)
+
+    ! A file round trip must preserve the optimizer recurrence, not only the
+    ! current parameters.  The uninterrupted and resumed trajectories are an
+    ! independent behavioral oracle for the serialized Adam moments/history.
+    options = trainer_options_t()
+    options%optimizer = FORTML_TRAIN_ADAM
+    options%learning_rate = 0.05_dp
+    options%max_steps = 8
+    options%tolerance = 0.0_dp
+    options%step_tolerance = 0.0_dp
+    options%objective_tolerance = 0.0_dp
+    call baseline%initialize(objective, [0.0_dp, 1.0_dp], status, options)
+    call checkpointed%initialize(objective, [0.0_dp, 1.0_dp], status, options)
+    call resumed%initialize(objective, [0.0_dp, 1.0_dp], status, options)
+    do i = 1, 2
+        call checkpointed%step(status)
+        call baseline%step(status)
+    end do
+    call checkpointed%save_checkpoint(checkpoint_path, status)
+    call check(status_ok(status), "trainer checkpoint save", failures)
+    call resumed%load_checkpoint(checkpoint_path, status)
+    call check(status_ok(status), "trainer checkpoint load", failures)
+    do i = 1, 3
+        call baseline%step(status)
+        call resumed%step(status)
+    end do
+    baseline_state = baseline%state_copy()
+    resumed_state = resumed%state_copy()
+    call check(maxval(abs(baseline%parameters() - resumed%parameters())) < 1.0e-14_dp .and. &
+        maxval(abs(baseline_state%value_history(:baseline_state%history_length) - &
+        resumed_state%value_history(:resumed_state%history_length))) < 1.0e-14_dp .and. &
+        maxval(abs(baseline_state%gradient_norm_history(:baseline_state%history_length) - &
+        resumed_state%gradient_norm_history(:resumed_state%history_length))) < 1.0e-14_dp, &
+        "save/load continuation matches uninterrupted Adam trajectory", failures)
+
+    ! Extra records and truncation are rejected transactionally; the loaded
+    ! destination remains unchanged after each refusal.
+    before_load = resumed%parameters()
+    open (unit=91, file=checkpoint_path, status="old", position="append", action="write")
+    write (91, '(a)') "extra_record 1"
+    close (91)
+    call resumed%load_checkpoint(checkpoint_path, status)
+    call check(.not. status_ok(status) .and. maxval(abs(before_load - resumed%parameters())) < 1.0e-14_dp, &
+        "extra checkpoint record refusal is transactional", failures)
+    open (unit=91, file=truncated_path, status="replace", action="write")
+    write (91, '(a)') "FORTML_TRAINER_CHECKPOINT_TEXT"
+    close (91)
+    call resumed%load_checkpoint(truncated_path, status)
+    call check(.not. status_ok(status) .and. maxval(abs(before_load - resumed%parameters())) < 1.0e-14_dp, &
+        "truncated checkpoint refusal is transactional", failures)
+    open (unit=91, file=checkpoint_path, status="old")
+    close (91, status="delete")
+    open (unit=91, file=truncated_path, status="old")
+    close (91, status="delete")
 
     if (failures /= 0) then
         write (error_unit, '(a,i0)') "FAIL trainer cases: ", failures

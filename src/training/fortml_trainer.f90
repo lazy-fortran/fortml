@@ -9,6 +9,7 @@ module fortml_trainer
     !! data loading remains the responsibility of the objective adapter; a
     !! hidden callback or host/device copy is never introduced here.
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+    use, intrinsic :: iso_fortran_env, only: iostat_end
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
         FORTNUM_DOMAIN_ERROR, FORTNUM_CONVERGENCE_ERROR
@@ -28,6 +29,9 @@ module fortml_trainer
     integer, parameter, public :: FORTML_TRAIN_ADAGRAD = 4
     integer, parameter, public :: FORTML_TRAIN_RMSPROP = 5
     integer, parameter, public :: FORTML_TRAIN_LBFGSB = 6
+    character(*), parameter, public :: FORTML_TRAINER_CHECKPOINT_MAGIC = &
+        "FORTML_TRAINER_CHECKPOINT_TEXT"
+    integer, parameter, public :: FORTML_TRAINER_CHECKPOINT_SCHEMA_VERSION = 1
 
     abstract interface
         subroutine trainer_step_callback_proc(step, value, gradient_norm, stop, status)
@@ -105,6 +109,8 @@ module fortml_trainer
         procedure, public :: clone => trainer_clone
         procedure, public :: value_gradient => trainer_value_gradient
         procedure, public :: initialized => trainer_initialized
+        procedure, public :: save_checkpoint => trainer_save_checkpoint
+        procedure, public :: load_checkpoint => trainer_load_checkpoint
     end type trainer_t
 
     public :: trainer_step_callback_proc
@@ -413,6 +419,457 @@ contains
         trainer_initialized = self%ready .and. self%state%initialized
     end function trainer_initialized
 
+    subroutine trainer_save_checkpoint(self, path, status)
+        !! Save a complete, portable trainer snapshot.
+        !!
+        !! The objective procedure is intentionally not serialized: a loaded
+        !! snapshot must be attached to the same objective (and therefore is
+        !! loaded into an already initialized trainer).  Optimizer recurrence
+        !! state is serialized for the streaming optimizers.  L-BFGS-B is a
+        !! fit-level optimizer in this API and has no resumable state here.
+        class(trainer_t), intent(in) :: self
+        character(*), intent(in) :: path
+        type(fortnum_status_t), intent(out) :: status
+        integer :: unit, ios, close_ios
+
+        call validate_checkpoint(self, status)
+        if (status%code /= FORTNUM_OK) return
+        open (newunit=unit, file=path, status="replace", action="write", &
+            form="formatted", access="sequential", iostat=ios)
+        if (ios /= 0) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "trainer checkpoint save: cannot open destination")
+            return
+        end if
+
+        write (unit, "(A)", iostat=ios) FORTML_TRAINER_CHECKPOINT_MAGIC
+        if (ios == 0) call write_i(unit, "schema_version", &
+            FORTML_TRAINER_CHECKPOINT_SCHEMA_VERSION, ios)
+        if (ios == 0) call write_i(unit, "optimizer", self%options%optimizer, ios)
+        if (ios == 0) call write_i(unit, "max_steps", self%options%max_steps, ios)
+        if (ios == 0) call write_r(unit, "learning_rate", self%options%learning_rate, ios)
+        if (ios == 0) call write_r(unit, "beta1", self%options%beta1, ios)
+        if (ios == 0) call write_r(unit, "beta2", self%options%beta2, ios)
+        if (ios == 0) call write_r(unit, "epsilon", self%options%epsilon, ios)
+        if (ios == 0) call write_r(unit, "rmsprop_decay", self%options%rmsprop_decay, ios)
+        if (ios == 0) call write_r(unit, "rmsprop_momentum", self%options%rmsprop_momentum, ios)
+        if (ios == 0) call write_l(unit, "rmsprop_centered", self%options%rmsprop_centered, ios)
+        if (ios == 0) call write_r(unit, "momentum", self%options%momentum, ios)
+        if (ios == 0) call write_l(unit, "nesterov", self%options%nesterov, ios)
+        if (ios == 0) call write_r(unit, "weight_decay", self%options%weight_decay, ios)
+        if (ios == 0) call write_r(unit, "gradient_clip_norm", self%options%gradient_clip_norm, ios)
+        if (ios == 0) call write_r(unit, "tolerance", self%options%tolerance, ios)
+        if (ios == 0) call write_r(unit, "step_tolerance", self%options%step_tolerance, ios)
+        if (ios == 0) call write_r(unit, "objective_tolerance", self%options%objective_tolerance, ios)
+        if (ios == 0) call write_r(unit, "ema_decay", self%options%ema_decay, ios)
+        if (ios == 0) call write_l(unit, "use_bounds", self%options%use_bounds, ios)
+        if (ios == 0) call write_i(unit, "lbfgsb_memory", self%options%lbfgsb%memory, ios)
+        if (ios == 0) call write_i(unit, "lbfgsb_max_iterations", self%options%lbfgsb%max_iterations, ios)
+        if (ios == 0) call write_i(unit, "lbfgsb_max_line_search", self%options%lbfgsb%max_line_search, ios)
+        if (ios == 0) call write_r(unit, "lbfgsb_gradient_tolerance", self%options%lbfgsb%gradient_tolerance, ios)
+        if (ios == 0) call write_r(unit, "lbfgsb_step_tolerance", self%options%lbfgsb%step_tolerance, ios)
+        if (ios == 0) call write_r(unit, "lbfgsb_objective_tolerance", self%options%lbfgsb%objective_tolerance, ios)
+        if (ios == 0) call write_r(unit, "lbfgsb_armijo_constant", self%options%lbfgsb%armijo_constant, ios)
+        if (ios == 0) call write_r(unit, "lbfgsb_minimum_step", self%options%lbfgsb%minimum_step, ios)
+        if (ios == 0) call write_r(unit, "lbfgsb_curvature_tolerance", self%options%lbfgsb%curvature_tolerance, ios)
+        if (ios == 0) call write_l(unit, "callback_present", associated(self%options%callback), ios)
+        if (ios == 0 .and. self%options%use_bounds) then
+            call write_r_array(unit, "lower", self%options%lower, ios)
+            if (ios == 0) call write_r_array(unit, "upper", self%options%upper, ios)
+        end if
+
+        if (ios == 0) call write_i(unit, "n_parameters", self%state%n_parameters, ios)
+        if (ios == 0) call write_i(unit, "steps", self%state%steps, ios)
+        if (ios == 0) call write_i(unit, "history_length", self%state%history_length, ios)
+        if (ios == 0) call write_l(unit, "initialized", self%state%initialized, ios)
+        if (ios == 0) call write_l(unit, "converged", self%state%converged, ios)
+        if (ios == 0) call write_l(unit, "stopped_by_callback", self%state%stopped_by_callback, ios)
+        if (ios == 0) call write_i(unit, "clipped_steps", self%state%clipped_steps, ios)
+        if (ios == 0) call write_r(unit, "initial_value", self%state%initial_value, ios)
+        if (ios == 0) call write_r(unit, "final_value", self%state%final_value, ios)
+        if (ios == 0) call write_r(unit, "best_value", self%state%best_value, ios)
+        if (ios == 0) call write_r(unit, "gradient_norm", self%state%gradient_norm, ios)
+        if (ios == 0) call write_r(unit, "last_step_norm", self%state%last_step_norm, ios)
+        if (ios == 0) call write_r_array(unit, "parameters", self%state%parameters, ios)
+        if (ios == 0) call write_r_array(unit, "ema_parameters", self%state%ema_parameters, ios)
+        if (ios == 0) call write_r_array(unit, "value_history", &
+            self%state%value_history(:self%state%history_length), ios)
+        if (ios == 0) call write_r_array(unit, "gradient_norm_history", &
+            self%state%gradient_norm_history(:self%state%history_length), ios)
+
+        if (ios == 0) then
+            select case (self%options%optimizer)
+            case (FORTML_TRAIN_SGD)
+                call write_i(unit, "optimizer_step_count", self%sgd%step_count, ios)
+                if (ios == 0) call write_r_array(unit, "optimizer_velocity", self%sgd%velocity, ios)
+            case (FORTML_TRAIN_ADAM)
+                call write_i(unit, "optimizer_step_count", self%adam%step_count, ios)
+                if (ios == 0) call write_r_array(unit, "optimizer_first_moment", self%adam%first_moment, ios)
+                if (ios == 0) call write_r_array(unit, "optimizer_second_moment", self%adam%second_moment, ios)
+            case (FORTML_TRAIN_ADAMW)
+                call write_i(unit, "optimizer_step_count", self%adamw%step_count, ios)
+                if (ios == 0) call write_r_array(unit, "optimizer_first_moment", self%adamw%first_moment, ios)
+                if (ios == 0) call write_r_array(unit, "optimizer_second_moment", self%adamw%second_moment, ios)
+            case (FORTML_TRAIN_ADAGRAD)
+                call write_i(unit, "optimizer_step_count", self%adagrad%step_count, ios)
+                if (ios == 0) call write_r_array(unit, "optimizer_accumulated_square", self%adagrad%accumulated_square, ios)
+            case (FORTML_TRAIN_RMSPROP)
+                call write_i(unit, "optimizer_step_count", self%rmsprop%step_count, ios)
+                if (ios == 0) call write_r_array(unit, "optimizer_square_average", self%rmsprop%square_average, ios)
+                if (ios == 0) call write_r_array(unit, "optimizer_momentum_buffer", self%rmsprop%momentum_buffer, ios)
+                if (ios == 0) call write_r_array(unit, "optimizer_gradient_average", self%rmsprop%gradient_average, ios)
+            end select
+        end if
+        close_ios = 0
+        close (unit, iostat=close_ios)
+        if (ios /= 0 .or. close_ios /= 0) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "trainer checkpoint save: formatted write failed")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine trainer_save_checkpoint
+
+    subroutine trainer_load_checkpoint(self, path, status)
+        !! Load a snapshot into an initialized trainer with the same objective.
+        !! Parsing is transactional: malformed, truncated, or extra records
+        !! leave the destination untouched.
+        class(trainer_t), intent(inout) :: self
+        character(*), intent(in) :: path
+        type(fortnum_status_t), intent(out) :: status
+        type(trainer_options_t) :: options
+        type(trainer_state_t) :: state
+        character(len=256) :: line
+        integer :: unit, ios, close_ios, schema, n, history_length, optimizer_step
+        logical :: callback_present
+        real(dp), allocatable :: vector(:), payload1(:), payload2(:), payload3(:)
+
+        if (.not. self%ready .or. .not. self%state%initialized) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "trainer checkpoint load: destination is not initialized")
+            return
+        end if
+        open (newunit=unit, file=path, status="old", action="read", &
+            form="formatted", access="sequential", iostat=ios)
+        if (ios /= 0) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "trainer checkpoint load: cannot open source")
+            return
+        end if
+        read (unit, "(A)", iostat=ios) line
+        if (ios /= 0 .or. trim(line) /= FORTML_TRAINER_CHECKPOINT_MAGIC) goto 900
+        call read_i(unit, "schema_version", schema, ios)
+        if (ios /= 0 .or. schema /= FORTML_TRAINER_CHECKPOINT_SCHEMA_VERSION) goto 900
+        call read_i(unit, "optimizer", options%optimizer, ios)
+        if (ios == 0) call read_i(unit, "max_steps", options%max_steps, ios)
+        if (ios == 0) call read_r(unit, "learning_rate", options%learning_rate, ios)
+        if (ios == 0) call read_r(unit, "beta1", options%beta1, ios)
+        if (ios == 0) call read_r(unit, "beta2", options%beta2, ios)
+        if (ios == 0) call read_r(unit, "epsilon", options%epsilon, ios)
+        if (ios == 0) call read_r(unit, "rmsprop_decay", options%rmsprop_decay, ios)
+        if (ios == 0) call read_r(unit, "rmsprop_momentum", options%rmsprop_momentum, ios)
+        if (ios == 0) call read_l(unit, "rmsprop_centered", options%rmsprop_centered, ios)
+        if (ios == 0) call read_r(unit, "momentum", options%momentum, ios)
+        if (ios == 0) call read_l(unit, "nesterov", options%nesterov, ios)
+        if (ios == 0) call read_r(unit, "weight_decay", options%weight_decay, ios)
+        if (ios == 0) call read_r(unit, "gradient_clip_norm", options%gradient_clip_norm, ios)
+        if (ios == 0) call read_r(unit, "tolerance", options%tolerance, ios)
+        if (ios == 0) call read_r(unit, "step_tolerance", options%step_tolerance, ios)
+        if (ios == 0) call read_r(unit, "objective_tolerance", options%objective_tolerance, ios)
+        if (ios == 0) call read_r(unit, "ema_decay", options%ema_decay, ios)
+        if (ios == 0) call read_l(unit, "use_bounds", options%use_bounds, ios)
+        if (ios == 0) call read_i(unit, "lbfgsb_memory", options%lbfgsb%memory, ios)
+        if (ios == 0) call read_i(unit, "lbfgsb_max_iterations", options%lbfgsb%max_iterations, ios)
+        if (ios == 0) call read_i(unit, "lbfgsb_max_line_search", options%lbfgsb%max_line_search, ios)
+        if (ios == 0) call read_r(unit, "lbfgsb_gradient_tolerance", options%lbfgsb%gradient_tolerance, ios)
+        if (ios == 0) call read_r(unit, "lbfgsb_step_tolerance", options%lbfgsb%step_tolerance, ios)
+        if (ios == 0) call read_r(unit, "lbfgsb_objective_tolerance", options%lbfgsb%objective_tolerance, ios)
+        if (ios == 0) call read_r(unit, "lbfgsb_armijo_constant", options%lbfgsb%armijo_constant, ios)
+        if (ios == 0) call read_r(unit, "lbfgsb_minimum_step", options%lbfgsb%minimum_step, ios)
+        if (ios == 0) call read_r(unit, "lbfgsb_curvature_tolerance", options%lbfgsb%curvature_tolerance, ios)
+        if (ios == 0) call read_l(unit, "callback_present", callback_present, ios)
+        if (ios == 0 .and. options%use_bounds) then
+            call read_r_array(unit, "lower_count", "lower_item", self%state%n_parameters, options%lower, ios)
+            if (ios == 0) call read_r_array(unit, "upper_count", "upper_item", self%state%n_parameters, options%upper, ios)
+        end if
+        if (ios /= 0) goto 900
+
+        call read_i(unit, "n_parameters", n, ios)
+        if (ios == 0 .and. n /= self%state%n_parameters) ios = 1
+        call read_i(unit, "steps", state%steps, ios)
+        if (ios == 0) call read_i(unit, "history_length", history_length, ios)
+        if (ios == 0) state%history_length = history_length
+        if (ios == 0) call read_l(unit, "initialized", state%initialized, ios)
+        if (ios == 0) call read_l(unit, "converged", state%converged, ios)
+        if (ios == 0) call read_l(unit, "stopped_by_callback", state%stopped_by_callback, ios)
+        if (ios == 0) call read_i(unit, "clipped_steps", state%clipped_steps, ios)
+        if (ios == 0) call read_r(unit, "initial_value", state%initial_value, ios)
+        if (ios == 0) call read_r(unit, "final_value", state%final_value, ios)
+        if (ios == 0) call read_r(unit, "best_value", state%best_value, ios)
+        if (ios == 0) call read_r(unit, "gradient_norm", state%gradient_norm, ios)
+        if (ios == 0) call read_r(unit, "last_step_norm", state%last_step_norm, ios)
+        if (ios /= 0 .or. .not. state%initialized .or. history_length < 1 .or. &
+            history_length > options%max_steps + 1 .or. state%steps < 0) goto 900
+        state%n_parameters = n
+        call read_r_array(unit, "parameters_count", "parameters_item", n, state%parameters, ios)
+        if (ios == 0) call read_r_array(unit, "ema_parameters_count", "ema_parameters_item", n, state%ema_parameters, ios)
+        if (ios == 0) call read_r_array(unit, "value_history_count", "value_history_item", history_length, vector, ios)
+        if (ios == 0) then
+            allocate(state%value_history(options%max_steps + 1))
+            state%value_history = huge(1.0_dp)
+            state%value_history(:history_length) = vector
+            deallocate(vector)
+        end if
+        if (ios == 0) call read_r_array(unit, "gradient_norm_history_count", "gradient_norm_history_item", history_length, vector, ios)
+        if (ios == 0) then
+            allocate(state%gradient_norm_history(options%max_steps + 1))
+            state%gradient_norm_history = huge(1.0_dp)
+            state%gradient_norm_history(:history_length) = vector
+            deallocate(vector)
+        end if
+        if (ios /= 0) goto 900
+        select case (options%optimizer)
+        case (FORTML_TRAIN_SGD)
+            call read_i(unit, "optimizer_step_count", optimizer_step, ios)
+            call read_r_array(unit, "optimizer_velocity_count", "optimizer_velocity_item", n, payload1, ios)
+        case (FORTML_TRAIN_ADAM, FORTML_TRAIN_ADAMW)
+            call read_i(unit, "optimizer_step_count", optimizer_step, ios)
+            call read_r_array(unit, "optimizer_first_moment_count", "optimizer_first_moment_item", n, payload1, ios)
+            call read_r_array(unit, "optimizer_second_moment_count", "optimizer_second_moment_item", n, payload2, ios)
+        case (FORTML_TRAIN_ADAGRAD)
+            call read_i(unit, "optimizer_step_count", optimizer_step, ios)
+            call read_r_array(unit, "optimizer_accumulated_square_count", "optimizer_accumulated_square_item", n, payload1, ios)
+        case (FORTML_TRAIN_RMSPROP)
+            call read_i(unit, "optimizer_step_count", optimizer_step, ios)
+            call read_r_array(unit, "optimizer_square_average_count", "optimizer_square_average_item", n, payload1, ios)
+            call read_r_array(unit, "optimizer_momentum_buffer_count", "optimizer_momentum_buffer_item", n, payload2, ios)
+            call read_r_array(unit, "optimizer_gradient_average_count", "optimizer_gradient_average_item", n, payload3, ios)
+        case default
+            ios = 1
+        end select
+        if (ios /= 0) goto 900
+        read (unit, "(A)", iostat=ios) line
+        if (ios == 0 .or. ios /= iostat_end) goto 900
+        close_ios = 0
+        close (unit, iostat=close_ios)
+        if (close_ios /= 0) goto 900
+        if (options%optimizer == FORTML_TRAIN_LBFGSB) goto 900
+        call validate_options(options, n, status)
+        if (status%code /= FORTNUM_OK) return
+        if (callback_present .and. .not. associated(self%options%callback)) then
+            ! A callback is process-local and cannot be reconstructed from text.
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "trainer checkpoint load: callback must be attached by caller")
+            return
+        end if
+        call restore_optimizer(self, options, state, optimizer_step, payload1, payload2, payload3, status)
+        if (status%code /= FORTNUM_OK) return
+        if (associated(self%options%callback)) options%callback => self%options%callback
+        self%options = options
+        self%state = state
+        self%ready = .true.
+        call status_set(status, FORTNUM_OK, "")
+        return
+
+        900   continue
+        close_ios = 0
+        close (unit, iostat=close_ios)
+        call status_set(status, FORTNUM_DOMAIN_ERROR, &
+            "trainer checkpoint load: malformed, truncated, or extra record")
+    end subroutine trainer_load_checkpoint
+
+    subroutine validate_checkpoint(self, status)
+        class(trainer_t), intent(in) :: self
+        type(fortnum_status_t), intent(out) :: status
+        integer :: n, h
+
+        if (.not. self%ready .or. .not. self%state%initialized) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "trainer checkpoint save: trainer is not initialized")
+            return
+        end if
+        n = self%state%n_parameters
+        h = self%state%history_length
+        if (self%options%optimizer == FORTML_TRAIN_LBFGSB) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "trainer checkpoint save: L-BFGS-B has no resumable state")
+            return
+        end if
+        call validate_options(self%options, n, status)
+        if (status%code /= FORTNUM_OK) return
+        if (.not. allocated(self%state%parameters) .or. &
+            .not. allocated(self%state%ema_parameters) .or. &
+            .not. allocated(self%state%value_history) .or. &
+            .not. allocated(self%state%gradient_norm_history)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "trainer checkpoint save: state is malformed or non-finite")
+            return
+        end if
+        if (n < 1 .or. self%state%steps < 0 .or. h < 1 .or. &
+            h > size(self%state%value_history) .or. h > self%options%max_steps + 1 .or. &
+            size(self%state%parameters) /= n .or. size(self%state%ema_parameters) /= n .or. &
+            size(self%state%value_history) /= self%options%max_steps + 1 .or. &
+            size(self%state%gradient_norm_history) /= self%options%max_steps + 1 .or. &
+            any(.not. ieee_is_finite(self%state%parameters)) .or. &
+            any(.not. ieee_is_finite(self%state%ema_parameters)) .or. &
+            any(.not. ieee_is_finite(self%state%value_history(:h))) .or. &
+            any(.not. ieee_is_finite(self%state%gradient_norm_history(:h))) .or. &
+            .not. ieee_is_finite(self%state%initial_value) .or. &
+            .not. ieee_is_finite(self%state%final_value) .or. &
+            .not. ieee_is_finite(self%state%best_value) .or. &
+            .not. ieee_is_finite(self%state%gradient_norm) .or. &
+            .not. ieee_is_finite(self%state%last_step_norm)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "trainer checkpoint save: state is malformed or non-finite")
+            return
+        end if
+        select case (self%options%optimizer)
+        case (FORTML_TRAIN_SGD)
+            if (.not. allocated(self%sgd%velocity)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, "trainer checkpoint save: SGD state is invalid")
+                return
+            end if
+            if (size(self%sgd%velocity) /= n) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, "trainer checkpoint save: SGD state is invalid")
+                return
+            end if
+        case (FORTML_TRAIN_ADAM)
+            if (.not. allocated(self%adam%first_moment) .or. .not. allocated(self%adam%second_moment)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, "trainer checkpoint save: Adam state is invalid")
+                return
+            end if
+            if (size(self%adam%first_moment) /= n .or. size(self%adam%second_moment) /= n) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, "trainer checkpoint save: Adam state is invalid")
+                return
+            end if
+        case (FORTML_TRAIN_ADAMW)
+            if (.not. allocated(self%adamw%first_moment) .or. .not. allocated(self%adamw%second_moment)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, "trainer checkpoint save: AdamW state is invalid")
+                return
+            end if
+            if (size(self%adamw%first_moment) /= n .or. size(self%adamw%second_moment) /= n) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, "trainer checkpoint save: AdamW state is invalid")
+                return
+            end if
+        case (FORTML_TRAIN_ADAGRAD)
+            if (.not. allocated(self%adagrad%accumulated_square)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, "trainer checkpoint save: Adagrad state is invalid")
+                return
+            end if
+            if (size(self%adagrad%accumulated_square) /= n) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, "trainer checkpoint save: Adagrad state is invalid")
+                return
+            end if
+        case (FORTML_TRAIN_RMSPROP)
+            if (.not. allocated(self%rmsprop%square_average) .or. &
+                .not. allocated(self%rmsprop%momentum_buffer) .or. &
+                .not. allocated(self%rmsprop%gradient_average) .or. &
+                .false.) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, "trainer checkpoint save: RMSprop state is invalid")
+                return
+            end if
+            if (size(self%rmsprop%square_average) /= n .or. &
+                size(self%rmsprop%momentum_buffer) /= n .or. &
+                size(self%rmsprop%gradient_average) /= n) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, "trainer checkpoint save: RMSprop state is invalid")
+                return
+            end if
+        end select
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine validate_checkpoint
+
+    subroutine restore_optimizer(self, options, state, step_count, payload1, payload2, &
+            payload3, status)
+        class(trainer_t), intent(inout) :: self
+        type(trainer_options_t), intent(in) :: options
+        type(trainer_state_t), intent(in) :: state
+        integer, intent(in) :: step_count
+        real(dp), allocatable, intent(in) :: payload1(:), payload2(:), payload3(:)
+        type(fortnum_status_t), intent(out) :: status
+        integer :: n
+
+        n = state%n_parameters
+        if (step_count < 0 .or. step_count > options%max_steps .or. &
+            step_count /= state%steps .or. &
+            .not. allocated(payload1)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "trainer checkpoint load: optimizer state is invalid")
+            return
+        end if
+        if (size(payload1) /= n .or. any(.not. ieee_is_finite(payload1))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "trainer checkpoint load: optimizer state is invalid")
+            return
+        end if
+        select case (options%optimizer)
+        case (FORTML_TRAIN_SGD)
+            call self%sgd%initialize(n, status, options%learning_rate, options%momentum, options%nesterov)
+            if (status%code /= FORTNUM_OK) return
+            self%sgd%velocity = payload1
+            self%sgd%step_count = step_count
+        case (FORTML_TRAIN_ADAM)
+            if (.not. allocated(payload2)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, "trainer checkpoint load: Adam moments are invalid")
+                return
+            end if
+            if (size(payload2) /= n .or. any(.not. ieee_is_finite(payload2))) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, "trainer checkpoint load: Adam moments are invalid")
+                return
+            end if
+            call self%adam%initialize(n, status, options%learning_rate, options%beta1, options%beta2, options%epsilon)
+            if (status%code /= FORTNUM_OK) return
+            self%adam%first_moment = payload1
+            self%adam%second_moment = payload2
+            self%adam%step_count = step_count
+        case (FORTML_TRAIN_ADAMW)
+            if (.not. allocated(payload2)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, "trainer checkpoint load: AdamW moments are invalid")
+                return
+            end if
+            if (size(payload2) /= n .or. any(.not. ieee_is_finite(payload2))) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, "trainer checkpoint load: AdamW moments are invalid")
+                return
+            end if
+            call self%adamw%initialize(n, status, options%learning_rate, options%beta1, options%beta2, &
+                options%epsilon, options%weight_decay)
+            if (status%code /= FORTNUM_OK) return
+            self%adamw%first_moment = payload1
+            self%adamw%second_moment = payload2
+            self%adamw%step_count = step_count
+        case (FORTML_TRAIN_ADAGRAD)
+            call self%adagrad%initialize(n, status, options%learning_rate, options%epsilon)
+            if (status%code /= FORTNUM_OK) return
+            if (any(payload1 < 0.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, "trainer checkpoint load: Adagrad accumulator is negative")
+                return
+            end if
+            self%adagrad%accumulated_square = payload1
+            self%adagrad%step_count = step_count
+        case (FORTML_TRAIN_RMSPROP)
+            if (.not. allocated(payload2) .or. .not. allocated(payload3)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, "trainer checkpoint load: RMSprop state is invalid")
+                return
+            end if
+            if (size(payload2) /= n .or. size(payload3) /= n .or. &
+                any(.not. ieee_is_finite(payload2)) .or. any(.not. ieee_is_finite(payload3))) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, "trainer checkpoint load: RMSprop state is invalid")
+                return
+            end if
+            call self%rmsprop%initialize(n, status, options%learning_rate, options%rmsprop_decay, &
+                options%epsilon, options%rmsprop_momentum, options%rmsprop_centered)
+            if (status%code /= FORTNUM_OK) return
+            self%rmsprop%square_average = payload1
+            self%rmsprop%momentum_buffer = payload2
+            self%rmsprop%gradient_average = payload3
+            self%rmsprop%step_count = step_count
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "trainer checkpoint load: unsupported optimizer")
+            return
+        end select
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine restore_optimizer
+
     subroutine trainer_state_clear(self)
         class(trainer_state_t), intent(inout) :: self
         self%n_parameters = 0
@@ -498,5 +955,109 @@ contains
         end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine validate_options
+
+    subroutine write_i(unit, key, value, ios)
+        integer, intent(in) :: unit, value
+        character(*), intent(in) :: key
+        integer, intent(out) :: ios
+
+        write (unit, "(A,1X,I0)", iostat=ios) trim(key), value
+    end subroutine write_i
+
+    subroutine write_l(unit, key, value, ios)
+        integer, intent(in) :: unit
+        logical, intent(in) :: value
+        character(*), intent(in) :: key
+        integer, intent(out) :: ios
+
+        write (unit, "(A,1X,I0)", iostat=ios) trim(key), merge(1, 0, value)
+    end subroutine write_l
+
+    subroutine write_r(unit, key, value, ios)
+        integer, intent(in) :: unit
+        real(dp), intent(in) :: value
+        character(*), intent(in) :: key
+        integer, intent(out) :: ios
+
+        write (unit, "(A,1X,ES26.17E3)", iostat=ios) trim(key), value
+    end subroutine write_r
+
+    subroutine write_r_array(unit, key, values, ios)
+        integer, intent(in) :: unit
+        real(dp), intent(in) :: values(:)
+        character(*), intent(in) :: key
+        integer, intent(out) :: ios
+        integer :: i
+        character(len=96) :: count_key, item_key
+
+        write (count_key, '(A,"_count")') trim(key)
+        write (item_key, '(A,"_item")') trim(key)
+        call write_i(unit, trim(count_key), size(values), ios)
+        do i = 1, size(values)
+            if (ios /= 0) return
+            call write_r(unit, trim(item_key), values(i), ios)
+        end do
+    end subroutine write_r_array
+
+    subroutine read_i(unit, expected, value, ios)
+        integer, intent(in) :: unit
+        character(*), intent(in) :: expected
+        integer, intent(out) :: value
+        integer, intent(out) :: ios
+        character(len=96) :: key
+
+        read (unit, *, iostat=ios) key, value
+        if (ios == 0 .and. trim(key) /= trim(expected)) ios = 1
+    end subroutine read_i
+
+    subroutine read_l(unit, expected, value, ios)
+        integer, intent(in) :: unit
+        character(*), intent(in) :: expected
+        logical, intent(out) :: value
+        integer, intent(out) :: ios
+        character(len=96) :: key
+        integer :: encoded
+
+        encoded = 0
+        read (unit, *, iostat=ios) key, encoded
+        if (ios == 0 .and. trim(key) /= trim(expected)) ios = 1
+        if (ios == 0 .and. encoded /= 0 .and. encoded /= 1) ios = 1
+        value = encoded == 1
+    end subroutine read_l
+
+    subroutine read_r(unit, expected, value, ios)
+        integer, intent(in) :: unit
+        character(*), intent(in) :: expected
+        real(dp), intent(out) :: value
+        integer, intent(out) :: ios
+        character(len=96) :: key
+
+        read (unit, *, iostat=ios) key, value
+        if (ios == 0 .and. trim(key) /= trim(expected)) ios = 1
+    end subroutine read_r
+
+    subroutine read_r_array(unit, count_key, item_key, expected_count, values, ios)
+        integer, intent(in) :: unit, expected_count
+        character(*), intent(in) :: count_key, item_key
+        real(dp), allocatable, intent(out) :: values(:)
+        integer, intent(out) :: ios
+        integer :: count, i, alloc_status
+
+        if (allocated(values)) deallocate(values)
+        call read_i(unit, count_key, count, ios)
+        if (ios /= 0 .or. count < 0 .or. count /= expected_count) then
+            ios = 1
+            return
+        end if
+        allocate (values(count), stat=alloc_status)
+        if (alloc_status /= 0) then
+            ios = 1
+            return
+        end if
+        do i = 1, count
+            call read_r(unit, item_key, values(i), ios)
+            if (ios /= 0) return
+        end do
+    end subroutine read_r_array
 
 end module fortml_trainer
