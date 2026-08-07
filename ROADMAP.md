@@ -9,7 +9,7 @@ and implementation limits in [`docs/DESIGN.md`](docs/DESIGN.md) and
 
 | Compiler | Command | Result |
 | --- | --- | --- |
-| GNU Fortran | `fo` | Static, build, test, and lint checks passed. The fresh 2026-08-07 run passed all 133 tests (298 modules; 755 build units). See [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
+| GNU Fortran | `fo` | Static, build, test, and lint checks passed. The fresh 2026-08-07 run passed all 136 tests (303 modules; 757 build units). See [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
 | NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded compiler lane. The checked-in NVIDIA log predates the latest 130-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
@@ -21,9 +21,10 @@ capability refusals, resident-MSE and dense-affine CUDA contracts, resident
 forest plan boundary, PCA-initialized linear autoencoder, seeded exact-GP
 multistart, multilabel/ordinal neural losses, squared-log XGBoost, named MLP
 parameter layout, softmax objective products, and validation-stopping XGBoost
-slices. The build emits three GNU array-temporary warnings at benchmark call
-boundaries. They are non-fatal and isolated to release-app argument
-construction; lint and all behavioral tests pass. NVIDIA compiler coverage remains an
+slices, binary MLP loss products, trainable exact-GP mean products, and
+XGBoost sampling. The build emits five GNU array-temporary warnings in the XGBoost
+release-app call boundaries. They are non-fatal and isolated to benchmark
+argument construction; lint and all behavioral tests pass. NVIDIA compiler coverage remains an
 explicit older-build result.
 
 Behavioral oracles include dense or analytic references, finite differences,
@@ -99,12 +100,25 @@ only listed as gaps:
   trainable/buffer roles. This is the selector seam required by Flux/Lux-style
   functional training state; aliases, tied parameters, and full buffer routing
   remain open.
+- `mlp_binary_classifier_t` adds a one-logit sigmoid head with weighted BCE,
+  deterministic Adam minibatches, early stopping, packed input/parameter
+  JVP/VJP products, exact loss HVPs, and an explicit CUDA refusal. Multilabel,
+  ordinal, calibrated, and resident-GPU neural heads remain separate contracts.
+- Exact GP regression accepts zero, constant, and linear mean templates. Mean
+  coefficients are packed per output after kernel and log-noise parameters, and
+  prediction and likelihood products include their analytic JVP/VJP/HVP terms.
+  ARD, priors, and sparse/multitask mean routing remain open.
 - XGBoost validation monitoring accepts typed validation arrays, computes
   objective-native weighted validation loss, records best iteration and loss,
   and supports restore-best or retain-all ensembles. Warm starts, serialized
   tree state, categorical/ranking policies, and resident GPU histograms remain
   open. The release lane is
   `results/XGBOOST_EARLY_STOPPING.md` in `fortml-bench`.
+- XGBoost also supports deterministic without-replacement row and feature
+  subsampling with positive `int64` seeds. Full fractions preserve the exact
+  historical tree path. Subsampling is covered by a seed and structure oracle,
+  while warm starts, serialized trees, and distributed histogram reduction stay
+  open.
 
 The FortBO and FortMC companion pins were rechecked against their `main`
 branches on this date: FortBO `0141e22` and FortMC `4dde0cc`. Their roadmaps
@@ -743,6 +757,10 @@ CUDA refusal until private CART storage is safely bound to the C ABI.
   normalization, sample/class weighting, and a packed parameter-gradient
   product. Binary, multilabel,
   ordinal, and variational GP adapters remain separate contracts.
+- [x] Add `mlp_binary_classifier_t` with a one-logit sigmoid head, weighted
+  BCE, deterministic Adam minibatches, early stopping, packed input/parameter
+  JVP/VJP products, exact parameter loss HVPs, and typed CUDA refusal. Multilabel,
+  ordinal, calibrated, and resident-GPU neural heads remain open.
 - [x] Add deterministic one-vs-rest and one-vs-one logistic wrappers with
   sorted class/pair ordering, first-max tie handling, shared sample/class
   weights, normalized probabilities, packed parameter metadata, and
@@ -1022,9 +1040,13 @@ hyperparameter block. A deliberate train/validation leakage fixture must fail.
   best-round accounting, ensemble trimming, and restore-best behavior to all
   current XGBoost objectives. Independent early-stopping and malformed-validation
   tests cover the lifecycle.
-- [ ] Add row and feature subsampling, warm-start continuation, serialized tree
-  state, and deterministic distributed feature reduction. Learning-rate
-  shrinkage and L1/L2 leaf penalties are implemented in the current core.
+- [x] Add deterministic without-replacement row and feature subsampling with
+  positive `int64` seed, stable ascending selected-index order, exact full-data
+  defaults, and invalid-fraction refusals. Independent seed and structure tests
+  cover the contract.
+- [ ] Add warm-start continuation, serialized tree state, and deterministic
+  distributed feature reduction. Learning-rate shrinkage and L1/L2 leaf
+  penalties are implemented in the current core.
 - [x] Add a deterministic seeded random-forest classifier built from weighted
   Gini/entropy CART trees. It aligns bootstrap-tree probability columns,
   exposes class/tree/depth metadata, and has independent cluster, simplex,
@@ -1436,9 +1458,11 @@ state phases are reported separately.
   an independently assembled dense oracle. The public HVP is currently a
   deterministic directional finite difference of that gradient. Generated
   second-order derivative products remain a separate capability gate.
-- [ ] Add trainable constant and linear mean functions and automatic relevance
-  determination length scales. Parameter packing must include mean, kernel,
-  likelihood, and optional inducing-location blocks in a documented order.
+- [x] Add trainable constant and linear mean templates to exact GP regression.
+  Per-output mean coefficients follow kernel and log-noise parameters, and
+  prediction/LML JVP, VJP, and HVP products include the mean block. Automatic
+  relevance determination length scales, priors, and inducing-location blocks
+  remain open.
 - [x] Add bounded exact-GP hyperparameter optimization with deterministic
   seeded restarts, explicit first-start retention, convergence accounting, and
   restoration of the best finite converged state. The API reports start and

@@ -1,14 +1,16 @@
-Static: OK (298 modules, 298 changed, 298 affected)
-fo build [--------------------] 0/755 0%
-fo build [####################] 755/755 100%
-fo: warning: Warning: Creating array temporary at (1) [-Warray-temporaries]
-fo: warning: Warning: Creating array temporary at (1) [-Warray-temporaries]
-fo: warning: Warning: Creating array temporary at (1) [-Warray-temporaries]
+Static: OK (303 modules, 303 changed, 303 affected)
+fo build [--------------------] 0/757 0%
+fo build [####################] 757/757 100%
+fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_xgboost_squared_log.f90:124:19: Warning: Creating array temporary at (1) [-Warray-temporaries]
+fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_xgboost.f90:254:18: Warning: Creating array temporary at (1) [-Warray-temporaries]
+fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_xgboost.f90:254:18: Warning: Creating array temporary at (1) [-Warray-temporaries]
+fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_xgboost.f90:254:18: Warning: Creating array temporary at (1) [-Warray-temporaries]
+fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_xgboost.f90:254:18: Warning: Creating array temporary at (1) [-Warray-temporaries]
 Build: OK
 fo build [--------------------] 0/690 0%
 fo build [####################] 690/690 100%
-fo test [--------------------] 0/133 0%
-fo test [####################] 133/133 100%
+fo test [--------------------] 0/136 0%
+fo test [####################] 136/136 100%
 Tests: OK
 Lint: OK
 All stages passed (11.0s)
