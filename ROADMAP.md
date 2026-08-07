@@ -2268,6 +2268,12 @@ The maintained reports and their raw artifacts are in `../fortml-bench/results`:
 - [`DISCRIMINANT_ANALYSIS.md`](../fortml-bench/results/DISCRIMINANT_ANALYSIS.md),
   backed by `discriminant_analysis.csv` for weighted LDA/QDA probabilities,
   predictions, fitted-state diagnostics, input JVPs, and CUDA refusals.
+- [`BASIS_PIPELINE_TRAINING.md`](../fortml-bench/results/BASIS_PIPELINE_TRAINING.md),
+  backed by `basis_pipeline_training.csv` for the joint Fourier/linear
+  objective, derivative gate, and typed CUDA refusal.
+- [`DEVICE_CONTRACTS.md`](../fortml-bench/results/DEVICE_CONTRACTS.md), backed by
+  `device_contracts.csv` for resident kNN, forest, MSE, optimizer-state, and
+  dense-affine value/JVP CUDA correctness gates.
 - [`XGBOOST_ROBUST.md`](../fortml-bench/results/XGBOOST_ROBUST.md), backed by
   `xgboost_robust.csv` for independent Huber and quantile objective oracles.
 - [`DERIVATIVE_GP.md`](../fortml-bench/results/DERIVATIVE_GP.md), backed by
