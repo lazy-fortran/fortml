@@ -7,7 +7,7 @@ fo: warning: Warning: Creating array temporary at (1) [-Warray-temporaries]
 Build: OK
 fo build [--------------------] 0/668 0%
 fo build [####################] 668/668 100%
-fo test [--------------------] 0/89 0%
+fo test [--------------------] 0/90 0%
 fo test [####################] 90/90 100%
 Tests: OK
 Lint: OK
