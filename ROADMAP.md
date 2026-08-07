@@ -9,13 +9,14 @@ and implementation limits in [`docs/DESIGN.md`](docs/DESIGN.md) and
 
 | Compiler | Command | Result |
 | --- | --- | --- |
-| GNU Fortran | `fo` | Static, build, and lint checks passed. The fresh 2026-08-07 run passed all 118 tests (266 modules; 738 build units). See [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
+| GNU Fortran | `fo` | Static, build, and lint checks passed. The fresh 2026-08-07 run passed all 119 tests (269 modules; 740 build units). See [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
 | NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded compiler lane. The checked-in NVIDIA log predates the latest 115-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
 The checked-in GNU compiler log is the fresh 2026-08-07 run. It includes the
 kernel-catalog, weighted LDA/QDA, robust XGBoost, neural NLL, random-forest,
-and basis/pipeline HVP slices. The
+basis/pipeline HVP, cosine derivative-GP, and PCA-initialized linear
+autoencoder slices. The
 build emits three GNU array-temporary warnings in the discriminant benchmark
 path; lint and all behavioral tests pass. NVIDIA compiler coverage remains an
 explicit older-build result.
