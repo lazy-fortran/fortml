@@ -987,21 +987,28 @@ hyperparameter block. A deliberate train/validation leakage fixture must fail.
   CUDA prediction remains an explicit typed refusal until resident trees are
   linked.
 - [ ] Add gradient-boosted regression for squared, absolute, and Tweedie losses.
-- [ ] Add binary and multiclass gradient-boosted classification with stable
-  logistic and softmax objectives.
-- [ ] Add learning-rate shrinkage, row and feature subsampling, L1 and L2 leaf
-  penalties, validation-based early stopping, warm starts, and deterministic
-  feature importance.
+- [x] Add binary and deterministic one-vs-rest multiclass gradient-boosted
+  classification with stable logistic objectives, staged margins, normalized
+  probabilities, feature diagnostics, and typed CUDA refusals.
+- [x] Add weighted validation objectives, patience, minimum improvement,
+  best-round accounting, ensemble trimming, and restore-best behavior to all
+  current XGBoost objectives. Independent early-stopping and malformed-validation
+  tests cover the lifecycle.
+- [ ] Add row and feature subsampling, warm-start continuation, serialized tree
+  state, and deterministic distributed feature reduction. Learning-rate
+  shrinkage and L1/L2 leaf penalties are implemented in the current core.
 - [x] Add a deterministic seeded random-forest classifier built from weighted
   Gini/entropy CART trees. It aligns bootstrap-tree probability columns,
   exposes class/tree/depth metadata, and has independent cluster, simplex,
   determinism, invalid-option, and CUDA-refusal tests plus a NumPy benchmark.
   Extra-trees, bagging, random-subspace, isolation forests, out-of-bag and
   permutation importance remain open.
-- [ ] Add XGBoost-style second-order boosting: per-leaf gradient/Hessian
-  aggregation, regularized split gain, weighted quantile sketch, exact and
-  histogram algorithms, sparse-aware default directions, monotonic and
-  interaction constraints, column blocks, and deterministic feature ordering.
+- [x] Add XGBoost-style second-order boosting: per-leaf gradient/Hessian
+  aggregation, regularized split gain, weighted quantile cuts, exact and
+  histogram algorithms, sparse-aware default directions, monotonic constraints,
+  recursive depth-limited growth, and deterministic feature ordering.
+- [ ] Add interaction constraints, column blocks, categorical partitions, and
+  distributed histogram reduction with independent oracles.
 - [ ] Add LightGBM-style histogram and leaf-wise growth as a separately named
   policy. Cover exclusive-feature bundling, gradient-based one-sided sampling,
   categorical target statistics with leakage guards, and a bounded-memory

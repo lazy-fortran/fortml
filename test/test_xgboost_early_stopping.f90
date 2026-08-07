@@ -108,6 +108,12 @@ contains
                 "FAIL [xgb early] missing validation data was accepted"
             failures = failures + 1
         end if
+        call model%fit_binary(x, y, status, options, validation_x=validation_x)
+        if (status%code /= FORTNUM_DOMAIN_ERROR) then
+            write (error_unit, '(a)') &
+                "FAIL [xgb early] validation_x without validation_y was accepted"
+            failures = failures + 1
+        end if
         call model%fit_binary(x, y, status, options, validation_x=validation_x, &
             validation_y=validation_y)
         if (status%code /= FORTNUM_DOMAIN_ERROR) then

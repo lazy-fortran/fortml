@@ -1742,6 +1742,18 @@ refusal. `missing_policy()` and `accepts_missing()` report the fitted policy.
 returns a zero feature cotangent away from split boundaries and refuses the
 same discontinuities, nonfinite cotangents, and malformed shapes.
 
+Every fit method also accepts an optional validation set through
+`validation_x`, `validation_y`, and `validation_weight`. Set
+`early_stopping_rounds` to a positive patience count and optionally set
+`early_stopping_min_delta` to require a minimum weighted-loss improvement.
+The validation objective matches the selected squared, logistic, Poisson,
+squared-log, Huber, or quantile objective. `restore_best` trims the fitted
+ensemble to the best round. `best_iteration()`, `best_validation_loss()`, and
+`early_stopped()` expose the resulting lifecycle state. Validation arguments
+must be supplied together and are shape-, weight-, target-, and NaN-checked.
+This is deterministic validation-based stopping. Warm-start continuation and
+serialized tree state remain separate contracts.
+
 For `fit_squared_log`, margins are the transformed coordinate
 `log(1 + prediction)` and the public inverse link is `exp(margin) - 1`. The
 constant base margin is the weighted mean of `log(1 + target)`, which is the
