@@ -1,14 +1,16 @@
 # fortml
 
 `fortml` is a machine-learning library for modern Fortran. It provides dense
-regression, neural models, exact and approximate Gaussian processes, lazy
-linear operators, and optimizer-facing derivative products. Numerical kernels
+regression, binary classification, neural models, exact and approximate
+Gaussian processes, lazy linear operators, and optimizer-facing derivative
+products. Numerical kernels
 come from `fortnum`, optimization from `fortopt`, source-generated derivatives
 from `fortad`, and sparse storage from `fortsparse`.
 
-The current public surface concentrates on regression, neural and variational
-model primitives, Gaussian processes, and structured linear algebra.
-Classification, fitted preprocessing pipelines, tree boosting, general trainer
+The current public surface concentrates on regression, binary classification,
+neural and variational model primitives, Gaussian processes, and structured
+linear algebra. Multiclass classification, fitted preprocessing pipelines, tree
+boosting, general trainer
 and checkpoint APIs, model serialization, and distributed execution are parity
 work packages. [ROADMAP.md](ROADMAP.md) records their acceptance criteria and
 delivery order.
@@ -105,6 +107,7 @@ end program exact_gp_example
 | Area | Public modules | Main limits |
 | --- | --- | --- |
 | Regression and features | `fortml_linear_regression`, `fortml_basis` | Dense SVD fit. Basis HVPs are not exposed. |
+| Binary classification | `fortml_logistic_regression`, `fortml_losses` | FortOpt L-BFGS-B fit, stable probabilities, arbitrary two integer labels, and shared sigmoid/softmax cross-entropy products. Sample and class weights are planned. |
 | Neural models | `fortml_mlp`, `fortml_bnn`, `fortml_vae`, `fortml_rnn` | MLPs use deterministic Xavier/He initialization; the recurrent model is one vanilla `tanh` RNN with a zero initial state |
 | Variational inference | `fortml_variational`, `fortml_sparse_gp` | `sparse_gp_t` has scalar targets and caller-supplied variational parameters |
 | Exact GPs | `fortml_kernels`, `fortml_gaussian_process`, `fortml_derivative_gaussian_process`, `fortml_multi_output_gp` | Derivative observations cover function values and first input derivatives |

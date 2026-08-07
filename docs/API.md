@@ -46,6 +46,7 @@ not supplied through a hidden generic interface.
 | Type | Value or prediction | JVP | VJP or gradient | HVP |
 | --- | --- | --- | --- | --- |
 | `linear_regression_t` | `predict` | Free `linear_predict_jvp` | Free `linear_predict_vjp` | No |
+| `logistic_regression_t` | Decision score and probabilities | No | Fit gradient is internal to FortOpt L-BFGS-B | No |
 | `basis_map_t` | `evaluate` | Parameters and inputs | Parameters and inputs | No |
 | `mlp_t` | `predict` | Parameters and inputs | Parameters and inputs | Weighted-output HVP |
 | `bnn_t` | `elbo` | ELBO | ELBO | ELBO |
@@ -78,6 +79,34 @@ The free procedures
 `linear_predict_vjp(coef,x,u,coef_bar,x_bar[,fit_intercept])` operate on an
 explicit coefficient array. They do not return a status object, so all arrays
 must have the model shapes described above.
+
+### `fortml_logistic_regression`
+
+`logistic_regression_t%fit(x,labels,status[,l2,fit_intercept,max_iterations,
+tolerance])` fits a binary logistic model with a stable mean
+cross-entropy objective and L2 penalty on the feature coefficients. The fit is
+delegated to `fortopt_lbfgsb`. Labels are arbitrary integers, but exactly two
+distinct values must occur. They are stored in ascending order and define the
+two probability columns.
+
+`decision_function(x,scores,status)` returns one logit per row.
+`predict_proba(x,probabilities,status)` returns `(n_samples,2)` with columns
+`classes()(1)` and `classes()(2)`. `predict(x,labels,status)` uses a zero-logit
+tie rule that selects the second class. `coefficients()`, `intercept_value()`,
+`classes()`, `feature_count()`, and `fitted()` expose the fitted state.
+Three-class data, one-class data, nonfinite inputs, invalid penalties, and
+shape mismatches return a domain or convergence status.
+
+### `fortml_losses`
+
+The loss facade provides stable matrix-valued `sigmoid_value`, `softmax_value`,
+and `log_softmax_value` procedures with matching JVP and VJP products.
+`binary_cross_entropy_with_logits_value` uses a mean reduction over all matrix
+entries and accepts targets in `[0,1]`. `softmax_cross_entropy_value` uses one
+one-based integer class label per row and a mean reduction over rows. Both loss
+families expose JVP and VJP procedures, reject nonfinite inputs, and evaluate
+the value with a shifted log-sum-exp or softplus expression. These routines are
+the shared objective layer for neural, multiclass, GP, and boosting adapters.
 
 ### `fortml_basis`
 
@@ -116,7 +145,7 @@ packing, value/JVP/VJP operations, validation, and optional static eligibility.
 `mlp_t%initialize(layer_sizes,status[,hidden_activation,output_activation,
 initialization_seed])` constructs dense layers. `MLP_LINEAR`, `MLP_TANH`, and
 `MLP_RELU` are accepted activation constants. The default hidden activation is
-`tanh`; the default output activation is linear. Weights use deterministic
+`tanh`, and the default output activation is linear. Weights use deterministic
 Xavier scaling (or He scaling for ReLU hidden layers), with a reproducible
 phase sequence controlled by `initialization_seed` (default `17`).
 

@@ -37,12 +37,9 @@ an analytic, dense, finite-difference, or pinned external reference within a
 documented tolerance. API naming and floating-point instruction order need not
 match the reference library.
 
-The parity target includes binary and multiclass classification, composable
-preprocessing pipelines, histogram tree boosting, reusable training loops,
-trainable GP hyperparameters and derivative models, end-to-end device execution,
-versioned model files, MPI execution, and release benchmark evidence. An item is
-complete only when its API, implementation, documentation, independent oracle,
-and refusal tests are present.
+The work packages below define the parity target. An item is complete when its
+API, implementation, documentation, independent oracle, and refusal tests are
+present.
 
 ## Current baseline
 
@@ -184,17 +181,15 @@ It does not establish that every model trains or predicts entirely on a GPU.
 
 ## Parity work packages
 
-The table records the repository state on 2026-08-07. "Partial" means that a
-usable primitive exists but the package exit criteria are still open. "Missing"
-means that no public FortML implementation exists.
+The source inventory is dated 2026-08-07.
 
 | Work package | State | Implemented baseline | Package exit |
 | --- | --- | --- | --- |
-| Classification | Missing | Neural outputs and GP latent predictions can be used by application code, but there is no classifier contract, classification loss, probability API, or metric module. | Binary and multiclass linear, neural, GP, and boosted-tree classifiers share label, probability, weighting, and metric conventions. |
+| Classification | Partial | `fortml_logistic_regression` provides binary integer-label fitting, stable probabilities, deterministic class order, and FortOpt L-BFGS-B optimization. Shared losses, metrics, multiclass models, and weighting are open. | Binary and multiclass linear, neural, GP, and boosted-tree classifiers share label, probability, weighting, and metric conventions. |
 | Estimator contracts, pipelines, and bases | Partial | `basis_map_t`, row-oriented sample conventions, status objects, and the parameter registry are public. | Fitted transformers and estimators compose without data leakage, expose routed parameters, and run through cross-validation. |
 | Tree boosting | Missing | No tree, split finder, histogram builder, or ensemble module exists. | Regression and classification trees support deterministic histogram boosting, validation-based stopping, missing values, and model persistence. |
-| Training infrastructure | Partial | Model-specific gradients, `fortopt_adam` integration, natural-gradient seams, and seeded variational draws exist. | One trainer owns batches, optimizer state, schedules, clipping, validation, early stopping, callbacks, and resumable state across supported trainable models. |
-| GP derivatives and hyperparameters | Partial | Exact GP likelihood and prediction products include parameter gradients and HVPs. Mixed value and first-derivative observations can be fitted and predicted. | Exact, derivative, multi-output, sparse, and matrix-free GP families expose documented trainable parameters and optimizer-ready objectives. |
+| Training infrastructure | Partial | Model-specific gradients, `fortopt_adam` integration, natural-gradient seams, and seeded variational draws exist. | One trainer owns batches, optimizer state, schedules, clipping, validation, early stopping, callbacks, and resumable state for every model with a completed trainer adapter. |
+| GP derivatives and hyperparameters | Partial | Exact GP likelihood and prediction products include parameter gradients and HVPs. Mixed value and first-derivative observations can be fitted and predicted. | Exact, derivative, multi-output, sparse, and matrix-free GP families expose documented trainable parameters, scalar objectives, parameter gradients, and train-state adapters. |
 | GPU and device execution | Partial | Kernel, structured, and sparse operator products have selected OpenACC or CUDA paths, including resident CG for kernel operators. | Supported training and prediction workflows keep model, optimizer, and batch state resident on a selected device and have CPU parity tests. |
 | Serialization and distributed execution | Missing | No public model-file or distributed-execution contract exists. | Versioned model and trainer files round-trip across supported compilers, and MPI training or inference agrees with a one-rank oracle. |
 | Benchmark coverage | Partial | Correctness-gated model and GP applications feed release harnesses in `../fortml-bench`. | Every completed parity package has a pinned external oracle, release timings, memory measurements, provenance, raw data, and a maintained report. |
@@ -204,9 +199,10 @@ means that no public FortML implementation exists.
 - [ ] Define one public class-label contract. Classes have a deterministic order,
   predicted labels use that order to break ties, and probability matrices have
   one column per class.
-- [ ] Add binary logistic regression with an intercept, L2 regularization,
-  sample weights, class weights, `fit`, `decision_function`, `predict_proba`, and
-  `predict`.
+- [x] Add binary logistic regression with an intercept, L2 regularization,
+  `fit`, `decision_function`, `predict_proba`, and `predict`.
+- [ ] Add sample weights and class weights to binary logistic regression while
+  preserving the documented reduction and class-label contract.
 - [ ] Add multinomial softmax regression with a numerically stable log-sum-exp
   objective and the same weighting contract.
 - [ ] Add classifier adapters for `mlp_t` and variational GP classification.
@@ -286,8 +282,8 @@ and predict time, peak memory, tree count, depth, and histogram size.
 - [ ] Add a trainer that owns optimizer state, learning-rate schedules, gradient
   clipping, accumulation, validation intervals, early stopping, and callbacks.
 - [ ] Add trainer adapters for linear classifiers, MLPs, BNNs, VAEs, RNNs, exact
-  GPs, derivative GPs, and sparse variational GPs as their objectives become
-  optimizer-ready.
+  GPs, derivative GPs, and sparse variational GPs. Each adapter requires a scalar
+  objective, parameter gradient, reduction rule, and complete train-state update.
 - [ ] Define in-memory train state independently of file serialization. It must
   include parameters, optimizer accumulators, epoch and batch positions, RNG
   streams, schedules, and early-stopping state.
@@ -318,9 +314,9 @@ have known-answer tests.
   cross-covariances between requested components.
 - [ ] Extend derivative observations to second derivatives only for kernels with
   the required smoothness, with explicit refusal at singular coincident cases.
-- [ ] Add optimizer-ready objectives for multi-output, sparse variational, local,
-  SKI, Lanczos, and matrix-free GP paths. Inducing-point and local-gate training
-  remain separate parameter blocks.
+- [ ] Add scalar objectives and parameter gradients for multi-output, sparse
+  variational, local, SKI, Lanczos, and matrix-free GP paths. Inducing-point and
+  local-gate training remain separate parameter blocks.
 - [ ] Add Bernoulli and multiclass variational GP classification after the shared
   classifier likelihood and metric contracts are complete.
 
@@ -345,7 +341,9 @@ and failed factorizations.
 - [ ] Add resident exact or matrix-free GP prediction and hyperparameter-gradient
   paths, including preconditioned CG and batched LOVE work.
 - [ ] Add device Toeplitz transforms, SKI interpolation, sparse variational
-  products, and histogram construction where release profiles show a benefit.
+  products, and histogram construction one path at a time. Retain a path when a
+  correctness-gated release workload reduces median time beyond its recorded
+  run-to-run dispersion or reduces peak host memory.
 - [ ] Extend the backend ABI to one non-CUDA accelerator runtime after the CUDA
   ownership and error contracts are stable.
 - [ ] Add device memory accounting, leak checks, and transfer counters to the
@@ -497,14 +495,17 @@ The literature establishes several complementary directions:
 #### WP9d: GP-limit, PCA, and linear-optimum initialization
 
 - [ ] Implement NNGP covariance propagation for the supported MLP activations
-  and widths. On a user design set, report the finite-network covariance error,
-  mean, and variance calibration before training.
+  and widths, following the [deep-network GP correspondence](https://arxiv.org/abs/1711.00165).
+  On a user design set, report the finite-network covariance error, mean, and
+  variance calibration before training.
 - [ ] Add `initialize_from_gp` for an MLP. It matches a target GP prior or
   posterior mean on the design set, supports physics-consistent kernels, and
   records the kernel, width, seed, and solve tolerance used for the mapping.
   The initializer must distinguish a sampled prior draw from a posterior-mean
   or last-layer kernel-ridge initialization.
-- [ ] Add PCA initialization for linear autoencoders. The encoder and decoder
+- [ ] Add PCA initialization for linear autoencoders, following the
+  [principal-component initialization proposal](https://doi.org/10.1007/978-3-030-30484-3_14).
+  The encoder and decoder
   use the selected principal subspace, with centering, whitening, rank, and
   sign conventions recorded. The reconstruction oracle must match the PCA
   projection to numerical tolerance.
@@ -579,10 +580,11 @@ performance evidence.
 Benchmark and documentation work ships with each implementation slice. The
 dependency order for the remaining code is:
 
-1. Implement binary logistic regression, the class-label contract, accuracy,
-   confusion matrix, and log loss. This is the next slice. It establishes the
-   probability and weighting rules used by pipelines, neural classifiers, GP
-   classification, and boosted trees.
+1. Complete the classification contract around the binary logistic baseline:
+   shared stable losses, sample and class weights, accuracy, confusion matrix,
+   and log loss. Then add multinomial softmax regression. These rules establish
+   the probability and weighting conventions used by pipelines, neural
+   classifiers, GP classification, and boosted trees.
 2. Add the fitted estimator and transformer contracts, standard scaling, and a
    sequential pipeline. Adapt linear regression and binary logistic regression
    before adding feature unions or parameter search.
