@@ -296,6 +296,14 @@ The companion repositories were checked on 2026-08-07 at FortMC `4dde0cc`
 and FortBO `0141e22`, both on their `main` branches. Refresh these pins when
 their protocol or device contracts change.
 
+Both pinned companion revisions also clarify that FortSym is a generation-time
+dependency: generated/proven kernels may be checked into or consumed by the
+runtime packages, but FortBO and FortMC do not require the FortSym executable
+or module at runtime. FortML follows the same boundary for fixed kernels and
+records the FortSym revision in the generated-artifact provenance. This keeps
+the three packages buildable independently while preserving a proof trail for
+CUDA and other no-autodiff kernels.
+
 FortML work packages that depend on these projects must add a focused adapter,
 an independent oracle, and a benchmark row rather than embedding a second
 MCMC or Bayesian-optimization implementation.
