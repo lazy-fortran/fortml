@@ -35,6 +35,13 @@ module fortml_mlp_training
     integer, parameter, public :: MLP_OPTIMIZER_ADAGRAD = 4
     integer, parameter, public :: MLP_OPTIMIZER_RMSPROP = 5
 
+    integer, parameter, public :: MLP_EVENT_TRAIN_BEGIN = 1
+    integer, parameter, public :: MLP_EVENT_UPDATE = 2
+    integer, parameter, public :: MLP_EVENT_VALIDATION = 3
+    integer, parameter, public :: MLP_EVENT_EPOCH_END = 4
+    integer, parameter, public :: MLP_EVENT_CHECKPOINT = 5
+    integer, parameter, public :: MLP_EVENT_TRAIN_END = 6
+
     abstract interface
         subroutine mlp_epoch_callback_proc(epoch, loss, gradient_norm, stop)
             import :: dp
@@ -49,6 +56,16 @@ module fortml_mlp_training
             real(dp), intent(in) :: base_rate
             real(dp), intent(out) :: rate
         end subroutine mlp_learning_rate_schedule_proc
+
+        subroutine mlp_training_event_proc(event, epoch, update, loss, &
+                validation_loss, gradient_norm, learning_rate, stop, status)
+            import :: dp, fortnum_status_t
+            integer, intent(in) :: event, epoch, update
+            real(dp), intent(in) :: loss, validation_loss, gradient_norm
+            real(dp), intent(in) :: learning_rate
+            logical, intent(out) :: stop
+            type(fortnum_status_t), intent(out) :: status
+        end subroutine mlp_training_event_proc
     end interface
 
     type, public :: mlp_training_options_t
@@ -78,6 +95,8 @@ module fortml_mlp_training
         procedure(mlp_epoch_callback_proc), pointer, nopass :: callback => null()
         procedure(mlp_learning_rate_schedule_proc), pointer, nopass :: &
             learning_rate_schedule => null()
+        procedure(mlp_training_event_proc), pointer, nopass :: &
+            event_callback => null()
     end type mlp_training_options_t
 
     type, public :: mlp_training_state_t
@@ -279,6 +298,7 @@ module fortml_mlp_training
 
     public :: mlp_epoch_callback_proc
     public :: mlp_learning_rate_schedule_proc
+    public :: mlp_training_event_proc
     public :: mlp_loss_value_gradient
     public :: mlp_loss_hvp
     public :: mlp_train
@@ -1129,10 +1149,12 @@ contains
         integer :: microbatch_count, accumulated_samples
         integer :: stale_epochs
         integer :: start_epoch, history_length
-        logical :: stop_now, has_batch, resuming, resume_active_epoch
+        logical :: stop_now, event_stop, has_batch, resuming, resume_active_epoch
         logical :: incompatible_checkpoint
 
         resuming = .false.
+        validation_loss = huge(1.0_dp)
+        gradient_norm = 0.0_dp
         if (present(checkpoint)) resuming = checkpoint%initialized
         resume_active_epoch = .false.
         if (present(options)) config = options
@@ -1295,6 +1317,19 @@ contains
                 best_loss = validation_loss
                 monitored_loss = validation_loss
             end if
+        end if
+        call emit_training_event(config, MLP_EVENT_TRAIN_BEGIN, 0, result%updates, &
+            result%initial_loss, result%initial_validation_loss, 0.0_dp, &
+            config%learning_rate, event_stop, status)
+        if (status%code /= FORTNUM_OK) then
+            if (present(state)) state = result
+            return
+        end if
+        if (event_stop) then
+            result%early_stopped = .true.
+            if (present(state)) state = result
+            call status_set(status, FORTNUM_OK, "")
+            return
         end if
         if (config%optimizer == MLP_OPTIMIZER_ADAM) then
             call optimizer%initialize(n_parameters, status, &
@@ -1489,6 +1524,14 @@ contains
                             return
                         end if
                         result%updates = result%updates + 1
+                        call emit_training_event(config, MLP_EVENT_UPDATE, epoch, &
+                            result%updates, loss, validation_loss, &
+                            raw_gradient_norm, effective_rate, event_stop, status)
+                        if (status%code /= FORTNUM_OK) then
+                            if (present(state)) state = result
+                            return
+                        end if
+                        if (event_stop) result%early_stopped = .true.
                         accumulated_gradient = 0.0_dp
                         accumulated_samples = 0
                         microbatch_count = 0
@@ -1506,6 +1549,14 @@ contains
                         if (present(state)) state = result
                         return
                     end if
+                    call emit_training_event(config, MLP_EVENT_CHECKPOINT, epoch, &
+                        result%updates, loss, validation_loss, gradient_norm, &
+                        result%last_learning_rate, event_stop, status)
+                    if (status%code /= FORTNUM_OK) then
+                        if (present(state)) state = result
+                        return
+                    end if
+                    if (event_stop) result%early_stopped = .true.
                 end if
             end do
 
@@ -1530,6 +1581,14 @@ contains
                 end if
                 result%validation_loss_history(epoch) = validation_loss
                 monitored_loss = validation_loss
+                call emit_training_event(config, MLP_EVENT_VALIDATION, epoch, &
+                    result%updates, loss, validation_loss, gradient_norm, &
+                    result%last_learning_rate, event_stop, status)
+                if (status%code /= FORTNUM_OK) then
+                    if (present(state)) state = result
+                    return
+                end if
+                if (event_stop) result%early_stopped = .true.
             else
                 monitored_loss = loss
             end if
@@ -1555,10 +1614,18 @@ contains
                     stale_epochs = stale_epochs + 1
                 end if
             end if
-            stop_now = .false.
+            stop_now = result%early_stopped
             if (associated(config%callback)) then
                 call config%callback(epoch, loss, gradient_norm, stop_now)
             end if
+            call emit_training_event(config, MLP_EVENT_EPOCH_END, epoch, &
+                result%updates, loss, validation_loss, gradient_norm, &
+                result%last_learning_rate, event_stop, status)
+            if (status%code /= FORTNUM_OK) then
+                if (present(state)) state = result
+                return
+            end if
+            if (event_stop) stop_now = .true.
             if (gradient_norm <= config%tolerance) then
                 result%converged = .true.
             end if
@@ -1580,6 +1647,14 @@ contains
                     if (present(state)) state = result
                     return
                 end if
+                call emit_training_event(config, MLP_EVENT_CHECKPOINT, epoch, &
+                    result%updates, loss, validation_loss, gradient_norm, &
+                    result%last_learning_rate, event_stop, status)
+                if (status%code /= FORTNUM_OK) then
+                    if (present(state)) state = result
+                    return
+                end if
+                if (event_stop) result%early_stopped = .true.
             end if
             if (result%converged .or. result%early_stopped) then
                 exit
@@ -1616,6 +1691,13 @@ contains
                 return
             end if
             result%final_validation_loss = validation_loss
+        end if
+        call emit_training_event(config, MLP_EVENT_TRAIN_END, result%epochs, &
+            result%updates, result%final_loss, result%final_validation_loss, &
+            result%gradient_norm, result%last_learning_rate, event_stop, status)
+        if (status%code /= FORTNUM_OK) then
+            if (present(state)) state = result
+            return
         end if
         if (present(state)) state = result
         call status_set(status, FORTNUM_OK, "")
@@ -1821,6 +1903,24 @@ contains
         end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine checkpoint_capture
+
+    subroutine emit_training_event(config, event, epoch, update, loss, &
+            validation_loss, gradient_norm, learning_rate, stop, status)
+        type(mlp_training_options_t), intent(in) :: config
+        integer, intent(in) :: event, epoch, update
+        real(dp), intent(in) :: loss, validation_loss, gradient_norm
+        real(dp), intent(in) :: learning_rate
+        logical, intent(out) :: stop
+        type(fortnum_status_t), intent(out) :: status
+
+        stop = .false.
+        if (associated(config%event_callback)) then
+            call config%event_callback(event, epoch, update, loss, &
+                validation_loss, gradient_norm, learning_rate, stop, status)
+        else
+            call status_set(status, FORTNUM_OK, "")
+        end if
+    end subroutine emit_training_event
 
     logical function valid_options(options) result(valid)
         type(mlp_training_options_t), intent(in) :: options

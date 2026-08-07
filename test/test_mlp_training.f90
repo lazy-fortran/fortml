@@ -1,7 +1,7 @@
 program test_mlp_training
     !! Independent behavioral checks for deterministic MLP training products.
     use fortnum_kinds, only: dp
-    use fortnum_status, only: fortnum_status_t, status_ok
+    use fortnum_status, only: fortnum_status_t, status_ok, status_set, FORTNUM_OK
     use fortopt_objective, only: objective_t
     use fortml_mlp, only: mlp_t, MLP_LINEAR
     use fortml_mlp_training, only: mlp_training_options_t, &
@@ -9,16 +9,20 @@ program test_mlp_training
         mlp_training_checkpoint_t, &
         mlp_loss_diagnostics_t, MLP_REDUCTION_MEAN, MLP_REDUCTION_SUM, &
         MLP_OPTIMIZER_SGD, &
+        MLP_EVENT_TRAIN_BEGIN, MLP_EVENT_UPDATE, MLP_EVENT_VALIDATION, &
+        MLP_EVENT_EPOCH_END, MLP_EVENT_CHECKPOINT, MLP_EVENT_TRAIN_END, &
         mlp_loss_value_gradient, mlp_loss_hvp, mlp_train
     implicit none
 
     integer :: failures
+    integer :: event_counts(6)
 
     failures = 0
     call test_first_adam_step(failures)
     call test_sgd_step_and_checkpoint(failures)
     call test_sgd_option_refusals(failures)
     call test_reproducible_minibatch_and_callback(failures)
+    call test_typed_event_callback(failures)
     call test_resume_checkpoint(failures)
     call test_l2_hyperparameter_product(failures)
     call test_loss_hvp_oracle(failures)
@@ -32,6 +36,50 @@ program test_mlp_training
     write (*, '(a)') "PASS MLP training independent behavioral oracles"
 
 contains
+
+    subroutine test_typed_event_callback(failures)
+        integer, intent(inout) :: failures
+        type(mlp_t) :: model
+        type(mlp_training_options_t) :: options
+        type(mlp_training_state_t) :: state
+        type(mlp_training_checkpoint_t) :: checkpoint
+        type(fortnum_status_t) :: status
+        real(dp) :: x(4, 1), target(4, 1)
+
+        x(:, 1) = [-1.0_dp, -0.25_dp, 0.25_dp, 1.0_dp]
+        target(:, 1) = 0.5_dp*x(:, 1) + 0.2_dp
+        call model%initialize([1, 1], status, output_activation=MLP_LINEAR)
+        options%max_epochs = 2
+        options%batch_size = 2
+        options%learning_rate = 0.02_dp
+        options%tolerance = 0.0_dp
+        options%restore_best = .false.
+        options%event_callback => record_training_event
+        event_counts = 0
+        call mlp_train(model, x, target, status, options, state, &
+            validation_x=x, validation_target=target, checkpoint=checkpoint)
+        call check(status_ok(status), "typed event callback status", failures)
+        call check(event_counts(MLP_EVENT_TRAIN_BEGIN) == 1 .and. &
+            event_counts(MLP_EVENT_UPDATE) == state%updates .and. &
+            event_counts(MLP_EVENT_VALIDATION) == state%epochs .and. &
+            event_counts(MLP_EVENT_EPOCH_END) == state%epochs .and. &
+            event_counts(MLP_EVENT_CHECKPOINT) > state%epochs .and. &
+            event_counts(MLP_EVENT_TRAIN_END) == 1 .and. checkpoint%valid(), &
+            "typed event sequence and checkpoint", failures)
+    end subroutine test_typed_event_callback
+
+    subroutine record_training_event(event, epoch, update, loss, &
+            validation_loss, gradient_norm, learning_rate, stop, status)
+        integer, intent(in) :: event, epoch, update
+        real(dp), intent(in) :: loss, validation_loss, gradient_norm, learning_rate
+        logical, intent(out) :: stop
+        type(fortnum_status_t), intent(out) :: status
+
+        if (event >= 1 .and. event <= 6) event_counts(event) = &
+            event_counts(event) + 1
+        stop = .false.
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine record_training_event
 
     subroutine test_resume_checkpoint(failures)
         integer, intent(inout) :: failures
