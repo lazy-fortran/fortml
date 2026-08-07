@@ -957,6 +957,11 @@ return status errors.
   parameters before column-major coefficients, and chains exact input and
   parameter JVP/VJP products. Independent finite-difference and adjoint tests
   cover the complete composition.
+- [x] Add `basis_pipeline_training_objective_t` for joint basis-frequency or
+  knot and linear-coefficient optimization. The packed CPU objective exposes
+  analytic value/gradient/JVP/VJP/HVP products, an L2 ridge block, a FortOpt
+  callback, and an explicit CUDA refusal. Its independent test checks a
+  Fourier basis against coordinate and directional finite differences.
 - [ ] Add parallel feature-union execution, device-resident transforms, and
   general column-wise transformer graphs beyond fixed basis maps.
 - [ ] Add named DAG composition with fan-out/fan-in, residual branches,
@@ -1850,6 +1855,9 @@ peak memory, and batch-size scaling with the same correctness gate as training.
   oracle and timing row for polynomial/Fourier basis-pipeline HVPs. The raw
   record is [`results/features_workloads.csv`](../fortml-bench/results/features_workloads.csv)
   and the contract is documented in [`results/FEATURES.md`](../fortml-bench/results/FEATURES.md).
+- [ ] Add a release-app benchmark for joint basis-pipeline training, including
+  linear and Fourier initializations, FortOpt convergence, and a typed CUDA
+  refusal row.
 - [x] Add the deterministic seeded random-forest classifier benchmark with a
   direct NumPy threshold oracle, aligned probability-simplex checks, CPU fit
   and prediction timings, and an explicit CUDA refusal in
