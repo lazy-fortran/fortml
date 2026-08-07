@@ -4,7 +4,9 @@ module fortml_xgboost_multiclass
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite, ieee_is_nan
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
-        FORTNUM_DOMAIN_ERROR
+        FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED
+    use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU, &
+        FORTML_DEVICE_CUDA
     use fortml_xgboost, only: xgboost_t, xgboost_options_t
     implicit none
     private
@@ -25,6 +27,8 @@ module fortml_xgboost_multiclass
     contains
         procedure, public :: fit => xgb_multiclass_fit
         procedure, public :: predict_proba => xgb_multiclass_predict_proba
+        procedure, public :: predict_proba_device => &
+            xgb_multiclass_predict_proba_device
         procedure, public :: predict_proba_staged => &
             xgb_multiclass_predict_proba_staged
         procedure, public :: decision_function_staged => &
@@ -33,12 +37,16 @@ module fortml_xgboost_multiclass
         procedure, public :: predict_proba_vjp => xgb_multiclass_predict_proba_vjp
         procedure, public :: decision_function => xgb_multiclass_decision_function
         procedure, public :: predict => xgb_multiclass_predict
+        procedure, public :: predict_device => xgb_multiclass_predict_device
+        procedure, public :: device_supported => xgb_multiclass_device_supported
         procedure, public :: feature_importance => &
             xgb_multiclass_feature_importance
         procedure, public :: classes => xgb_multiclass_classes
         procedure, public :: feature_count => xgb_multiclass_feature_count
         procedure, public :: class_count => xgb_multiclass_class_count
         procedure, public :: estimator_count => xgb_multiclass_estimator_count
+        procedure, public :: monotone_constraint => &
+            xgb_multiclass_monotone_constraint
         procedure, public :: fitted => xgb_multiclass_fitted
     end type xgboost_multiclass_t
 
@@ -137,6 +145,34 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine xgb_multiclass_predict_proba
+
+    subroutine xgb_multiclass_predict_proba_device(self, device, x, probabilities, &
+            status)
+        !! Predict normalized OVR probabilities through the explicit device
+        !! contract.  CUDA remains a typed refusal until a resident
+        !! multiclass/tree kernel is linked; host fallback is never hidden.
+        class(xgboost_multiclass_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: probabilities(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "XGBoost multiclass device prediction: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_proba(x, probabilities, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "XGBoost multiclass device prediction: no resident CUDA tree kernel is linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "XGBoost multiclass device prediction: device kind is invalid")
+        end select
+    end subroutine xgb_multiclass_predict_proba_device
 
     !> Return normalized one-vs-rest probabilities after every boosting stage.
     !>
@@ -391,6 +427,30 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine xgb_multiclass_predict
 
+    subroutine xgb_multiclass_predict_device(self, device, x, labels, status)
+        class(xgboost_multiclass_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :)
+        integer, intent(out) :: labels(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "XGBoost multiclass device prediction: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict(x, labels, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "XGBoost multiclass device prediction: no resident CUDA tree kernel is linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "XGBoost multiclass device prediction: device kind is invalid")
+        end select
+    end subroutine xgb_multiclass_predict_device
+
     function xgb_multiclass_classes(self) result(classes)
         class(xgboost_multiclass_t), intent(in) :: self
         integer, allocatable :: classes(:)
@@ -424,6 +484,25 @@ contains
         if (size(self%one_vs_rest) < 1) return
         count = self%one_vs_rest(1)%estimator_count()
     end function xgb_multiclass_estimator_count
+
+    integer function xgb_multiclass_monotone_constraint(self, feature_index) &
+            result(value)
+        class(xgboost_multiclass_t), intent(in) :: self
+        integer, intent(in) :: feature_index
+
+        value = 0
+        if (.not. self%initialized .or. .not. allocated(self%one_vs_rest)) return
+        if (size(self%one_vs_rest) < 1) return
+        value = self%one_vs_rest(1)%monotone_constraint(feature_index)
+    end function xgb_multiclass_monotone_constraint
+
+    logical function xgb_multiclass_device_supported(self, device_kind) &
+            result(supported)
+        class(xgboost_multiclass_t), intent(in) :: self
+        integer, intent(in) :: device_kind
+
+        supported = self%initialized .and. device_kind == FORTML_DEVICE_CPU
+    end function xgb_multiclass_device_supported
 
     logical function xgb_multiclass_fitted(self) result(fitted)
         class(xgboost_multiclass_t), intent(in) :: self
