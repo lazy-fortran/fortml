@@ -889,6 +889,12 @@ before any allocation or evaluation.
 
 `hyperparameter_lbfgsb_search(objective,initial,lower,upper,result,status[,
 options,device])` routes the same objective directly to FortOpt L-BFGS-B.
+`hyperparameter_random_search(objective,lower,upper,samples,seed,result,status[,
+options,device])` draws a deterministic bounded candidate stream from the
+caller-provided seed. It evaluates the complete value/gradient product for
+each candidate, retains the lowest finite value, and reports the method code
+`HYPERPARAMETER_SEARCH_RANDOM` together with the evaluation count. The random
+stream is a search coordinate, not a differentiable model variable.
 `hyperparameter_search_result_t` reports the best packed coordinates, value,
 evaluation count, method, and convergence flag. Bounds are projected by the
 optimizer and malformed or nonfinite products return status errors. This layer
@@ -1659,7 +1665,7 @@ remains open.
 `log_marginal_likelihood`, `log_marginal_likelihood_jvp`,
 `hyperparameter_gradient`, and `hyperparameter_hvp` provide likelihood
 products. The gradient uses analytic parameter tangents of the supported RBF,
-Matérn 1/2, 3/2, 5/2, linear, constant, validated user-formula, and
+Matérn 1/2, 3/2, 5/2, periodic, rational-quadratic, linear, constant, validated user-formula, and
 sum/product kernels. Matérn 1/2 still refuses coincident derivative
 observations, as do user formulas containing `push_distance` at coincidence.
 

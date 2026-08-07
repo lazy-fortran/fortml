@@ -9,12 +9,12 @@ and implementation limits in [`docs/DESIGN.md`](docs/DESIGN.md) and
 
 | Compiler | Command | Result |
 | --- | --- | --- |
-| GNU Fortran | `fo` | Static, build, and lint checks passed. The fresh 2026-08-07 run passed all 90 tests. See [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
-| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded compiler lane. The checked-in NVIDIA log predates the latest 90-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
+| GNU Fortran | `fo` | Static, build, and lint checks passed. The fresh 2026-08-07 run passed all 107 tests. See [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
+| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded compiler lane. The checked-in NVIDIA log predates the latest 107-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
 The checked-in compiler logs above are older compiler snapshots. A fresh GNU
-Fortran `fo` run on 2026-08-07 passed static analysis, the build, all 90 tests,
+Fortran `fo` run on 2026-08-07 passed static analysis, the build, all 107 tests,
 and lint. The fresh run includes implementation work whose compiler logs have
 not yet replaced those snapshots. NVIDIA compiler coverage therefore remains
 an explicit older-build result.
@@ -757,14 +757,19 @@ return status errors.
 - [ ] Add deterministic train/test, K-fold, stratified K-fold, and grouped split
   iterators plus cross-validation scoring and routed parameters.
 - [x] Add `fortml_hyperparameter_search` orchestration for deterministic bounded
-  Cartesian grids and FortOpt L-BFGS-B. The grid path guards product overflow,
-  requires complete finite value/gradient objectives, and records every
-  evaluation; the L-BFGS-B path consumes the same analytic callback without
-  hidden finite differences. Independent quadratic tests and a release
-  benchmark cover the CPU optimum and typed CUDA refusal until resident search
-  state and objective kernels are linked.
-- [ ] Add grid and seeded random parameter search after estimator cloning and
-  scoring are stable.
+  Cartesian grids, seeded random candidates, and FortOpt L-BFGS-B. The grid
+  path guards product overflow, the random path uses a caller-provided
+  Fortnum RNG seed and finite-value budget, and both require complete finite
+  value/gradient objectives. Each path records every evaluation; the L-BFGS-B
+  path consumes the same analytic callback without hidden finite differences.
+  Independent quadratic tests and release benchmarks cover the CPU optima and
+  typed CUDA refusal until resident search state and objective kernels are
+  linked.
+- [ ] Add estimator cloning/scoring, successive-halving, Bayesian, and
+  differentiable hyperparameter search. Differentiable search must distinguish
+  validation objectives from training objectives and expose implicit
+  differentiation through the fitted estimator only when its linear solves and
+  stopping policy are differentiable.
 - [ ] Add successive-halving, Bayesian, and differentiable hyperparameter
   search. Differentiable search must distinguish validation objectives from
   training objectives and expose implicit differentiation through the fitted
