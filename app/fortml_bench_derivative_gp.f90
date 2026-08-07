@@ -3,7 +3,7 @@ program fortml_bench_derivative_gp
     use, intrinsic :: iso_fortran_env, only: dp => real64, int64
     use fortml_derivative_gaussian_process, only: gp_derivative_regression_t
     use fortml_kernels, only: kernel_t, make_periodic_kernel, &
-        make_rational_quadratic_kernel
+        make_rational_quadratic_kernel, make_cosine_kernel
     use fortnum_status, only: fortnum_status_t, status_ok
     implicit none
 
@@ -13,7 +13,7 @@ program fortml_bench_derivative_gp
     real(dp) :: mean_bar(q, 1), variance_bar(q), x_bar(q, d)
     real(dp) :: covariance(q, q)
     integer :: components(n), query_components(q), i, j
-    type(kernel_t) :: periodic, rational_quadratic
+    type(kernel_t) :: periodic, rational_quadratic, cosine
     type(fortnum_status_t) :: status
     integer(int64) :: begin_clock, end_clock, rate
 
@@ -37,10 +37,14 @@ program fortml_bench_derivative_gp
     if (.not. status_ok(status)) error stop "periodic constructor failed"
     rational_quadratic = make_rational_quadratic_kernel(d, 1.3_dp, 0.8_dp, 1.7_dp, status)
     if (.not. status_ok(status)) error stop "rational quadratic constructor failed"
+    cosine = make_cosine_kernel(d, 1.3_dp, 0.8_dp, status)
+    if (.not. status_ok(status)) error stop "cosine constructor failed"
     call benchmark(periodic, "periodic", status)
     if (.not. status_ok(status)) error stop "periodic derivative GP benchmark failed"
     call benchmark(rational_quadratic, "rational_quadratic", status)
     if (.not. status_ok(status)) error stop "rational quadratic derivative GP benchmark failed"
+    call benchmark(cosine, "cosine", status)
+    if (.not. status_ok(status)) error stop "cosine derivative GP benchmark failed"
 
 contains
 
