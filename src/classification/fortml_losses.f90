@@ -20,12 +20,45 @@ module fortml_losses
     public :: softmax_cross_entropy_hvp
     public :: weighted_mse_loss_value, weighted_mse_loss_jvp
     public :: weighted_mse_loss_vjp, weighted_mse_loss_hvp
+    public :: mae_loss_value, mae_loss_jvp, mae_loss_vjp
+    public :: focal_binary_cross_entropy_with_logits_value
+    public :: focal_binary_cross_entropy_with_logits_jvp
+    public :: focal_binary_cross_entropy_with_logits_vjp
+    public :: mean_absolute_error_loss_value, mean_absolute_error_loss_jvp
+    public :: mean_absolute_error_loss_vjp
+    public :: binary_focal_cross_entropy_with_logits_value
+    public :: binary_focal_cross_entropy_with_logits_jvp
+    public :: binary_focal_cross_entropy_with_logits_vjp
     public :: huber_loss_value, huber_loss_jvp, huber_loss_vjp
     public :: huber_loss_hvp
     public :: quantile_loss_value, quantile_loss_jvp, quantile_loss_vjp
 
     integer, parameter, public :: LOSS_REDUCTION_MEAN = 1
     integer, parameter, public :: LOSS_REDUCTION_SUM = 2
+
+    interface mean_absolute_error_loss_value
+        module procedure mae_loss_value
+    end interface mean_absolute_error_loss_value
+
+    interface mean_absolute_error_loss_jvp
+        module procedure mae_loss_jvp
+    end interface mean_absolute_error_loss_jvp
+
+    interface mean_absolute_error_loss_vjp
+        module procedure mae_loss_vjp
+    end interface mean_absolute_error_loss_vjp
+
+    interface binary_focal_cross_entropy_with_logits_value
+        module procedure focal_binary_cross_entropy_with_logits_value
+    end interface binary_focal_cross_entropy_with_logits_value
+
+    interface binary_focal_cross_entropy_with_logits_jvp
+        module procedure focal_binary_cross_entropy_with_logits_jvp
+    end interface binary_focal_cross_entropy_with_logits_jvp
+
+    interface binary_focal_cross_entropy_with_logits_vjp
+        module procedure focal_binary_cross_entropy_with_logits_vjp
+    end interface binary_focal_cross_entropy_with_logits_vjp
 
 contains
 
@@ -644,6 +677,232 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine weighted_mse_loss_hvp
 
+    subroutine mae_loss_value(prediction, targets, value, status, sample_weight, &
+            reduction)
+        !! Weighted mean/sum mean-absolute-error value.
+        !!
+        !! The optional row weights follow the same positive-mass reduction
+        !! contract as weighted MSE.  Targets are constants; derivative
+        !! products deliberately refuse an exact zero residual.
+        real(dp), intent(in) :: prediction(:, :), targets(:, :)
+        real(dp), intent(out) :: value
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
+        integer, intent(in), optional :: reduction
+        real(dp), allocatable :: weights(:)
+        real(dp) :: normalization
+        integer :: i
+
+        value = 0.0_dp
+        call validate_loss_matrix_inputs(prediction, targets, "MAE", status)
+        if (status%code /= FORTNUM_OK) return
+        call prepare_loss_weights(size(prediction, 1), sample_weight, reduction, &
+            weights, normalization, status)
+        if (status%code /= FORTNUM_OK) return
+        do i = 1, size(prediction, 1)
+            value = value + weights(i)*sum(abs(prediction(i, :) - targets(i, :)))
+        end do
+        value = value/normalization
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine mae_loss_value
+
+    subroutine mae_loss_jvp(prediction, targets, prediction_dot, value, value_dot, &
+            status, sample_weight, reduction)
+        !! Value/JVP of weighted MAE.  An exact zero residual is a true kink,
+        !! so the routine returns a domain refusal rather than choosing a
+        !! subgradient.
+        real(dp), intent(in) :: prediction(:, :), targets(:, :), prediction_dot(:, :)
+        real(dp), intent(out) :: value, value_dot
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
+        integer, intent(in), optional :: reduction
+        real(dp), allocatable :: weights(:)
+        real(dp) :: normalization, residual
+        integer :: i, j
+
+        value = 0.0_dp
+        value_dot = 0.0_dp
+        if (any(shape(prediction_dot) /= shape(prediction)) .or. &
+            any(.not. ieee_is_finite(prediction_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MAE JVP: tangent shape or values are invalid")
+            return
+        end if
+        call validate_loss_matrix_inputs(prediction, targets, "MAE", status)
+        if (status%code /= FORTNUM_OK) return
+        call prepare_loss_weights(size(prediction, 1), sample_weight, reduction, &
+            weights, normalization, status)
+        if (status%code /= FORTNUM_OK) return
+        do j = 1, size(prediction, 2)
+            do i = 1, size(prediction, 1)
+                residual = prediction(i, j) - targets(i, j)
+                if (residual == 0.0_dp) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "MAE JVP: derivative is undefined at zero residual")
+                    value = 0.0_dp
+                    value_dot = 0.0_dp
+                    return
+                end if
+                value = value + weights(i)*abs(residual)
+                value_dot = value_dot + weights(i)*sign(1.0_dp, residual)* &
+                    prediction_dot(i, j)
+            end do
+        end do
+        value = value/normalization
+        value_dot = value_dot/normalization
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine mae_loss_jvp
+
+    subroutine mae_loss_vjp(prediction, targets, value_bar, prediction_bar, status, &
+            sample_weight, reduction)
+        !! VJP of weighted MAE with respect to predictions.
+        real(dp), intent(in) :: prediction(:, :), targets(:, :), value_bar
+        real(dp), intent(out) :: prediction_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
+        integer, intent(in), optional :: reduction
+        real(dp), allocatable :: weights(:)
+        real(dp) :: normalization, residual
+        integer :: i, j
+
+        prediction_bar = 0.0_dp
+        if (any(shape(prediction_bar) /= shape(prediction)) .or. &
+            .not. ieee_is_finite(value_bar)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MAE VJP: cotangent or output shape is invalid")
+            return
+        end if
+        call validate_loss_matrix_inputs(prediction, targets, "MAE", status)
+        if (status%code /= FORTNUM_OK) return
+        call prepare_loss_weights(size(prediction, 1), sample_weight, reduction, &
+            weights, normalization, status)
+        if (status%code /= FORTNUM_OK) return
+        do j = 1, size(prediction, 2)
+            do i = 1, size(prediction, 1)
+                residual = prediction(i, j) - targets(i, j)
+                if (residual == 0.0_dp) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "MAE VJP: derivative is undefined at zero residual")
+                    prediction_bar = 0.0_dp
+                    return
+                end if
+                prediction_bar(i, j) = value_bar*weights(i)* &
+                    sign(1.0_dp, residual)/normalization
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine mae_loss_vjp
+
+    subroutine focal_binary_cross_entropy_with_logits_value(logits, targets, &
+            alpha, gamma, value, status, sample_weight, reduction)
+        !! Stable focal binary cross-entropy value for logits.
+        !!
+        !! `alpha` is the positive-class weight in `[0,1]` and `gamma` is the
+        !! nonnegative focusing exponent.  The target may be a relaxed value
+        !! in `[0,1]`; binary targets reduce to the usual `alpha_t *
+        !! (1-p_t)**gamma * BCE` expression.  Log-probabilities are formed
+        !! with stable softplus/log-sum-exp identities, so large finite logits
+        !! do not create `log(0)` or `exp(overflow)` intermediates.
+        real(dp), intent(in) :: logits(:, :), targets(:, :), alpha, gamma
+        real(dp), intent(out) :: value
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
+        integer, intent(in), optional :: reduction
+        real(dp), allocatable :: weights(:)
+        real(dp) :: normalization, loss, derivative
+        integer :: i, j
+
+        value = 0.0_dp
+        call validate_focal_inputs(logits, targets, alpha, gamma, status)
+        if (status%code /= FORTNUM_OK) return
+        call prepare_loss_weights(size(logits, 1), sample_weight, reduction, &
+            weights, normalization, status)
+        if (status%code /= FORTNUM_OK) return
+        do j = 1, size(logits, 2)
+            do i = 1, size(logits, 1)
+                call focal_terms(logits(i, j), targets(i, j), alpha, gamma, &
+                    loss, derivative)
+                value = value + weights(i)*loss
+            end do
+        end do
+        value = value/normalization
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine focal_binary_cross_entropy_with_logits_value
+
+    subroutine focal_binary_cross_entropy_with_logits_jvp(logits, targets, &
+            alpha, gamma, logits_dot, value, value_dot, status, sample_weight, &
+            reduction)
+        !! Value/JVP of focal binary cross-entropy with respect to logits.
+        real(dp), intent(in) :: logits(:, :), targets(:, :), alpha, gamma
+        real(dp), intent(in) :: logits_dot(:, :)
+        real(dp), intent(out) :: value, value_dot
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
+        integer, intent(in), optional :: reduction
+        real(dp), allocatable :: weights(:)
+        real(dp) :: normalization, loss, derivative
+        integer :: i, j
+
+        value = 0.0_dp
+        value_dot = 0.0_dp
+        if (any(shape(logits_dot) /= shape(logits)) .or. &
+            any(.not. ieee_is_finite(logits_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "focal BCE JVP: tangent shape or values are invalid")
+            return
+        end if
+        call validate_focal_inputs(logits, targets, alpha, gamma, status)
+        if (status%code /= FORTNUM_OK) return
+        call prepare_loss_weights(size(logits, 1), sample_weight, reduction, &
+            weights, normalization, status)
+        if (status%code /= FORTNUM_OK) return
+        do j = 1, size(logits, 2)
+            do i = 1, size(logits, 1)
+                call focal_terms(logits(i, j), targets(i, j), alpha, gamma, &
+                    loss, derivative)
+                value = value + weights(i)*loss
+                value_dot = value_dot + weights(i)*derivative*logits_dot(i, j)
+            end do
+        end do
+        value = value/normalization
+        value_dot = value_dot/normalization
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine focal_binary_cross_entropy_with_logits_jvp
+
+    subroutine focal_binary_cross_entropy_with_logits_vjp(logits, targets, alpha, &
+            gamma, value_bar, logits_bar, status, sample_weight, reduction)
+        !! VJP of focal binary cross-entropy with respect to logits.
+        real(dp), intent(in) :: logits(:, :), targets(:, :), alpha, gamma, value_bar
+        real(dp), intent(out) :: logits_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
+        integer, intent(in), optional :: reduction
+        real(dp), allocatable :: weights(:)
+        real(dp) :: normalization, loss, derivative
+        integer :: i, j
+
+        logits_bar = 0.0_dp
+        if (any(shape(logits_bar) /= shape(logits)) .or. &
+            .not. ieee_is_finite(value_bar)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "focal BCE VJP: cotangent or output shape is invalid")
+            return
+        end if
+        call validate_focal_inputs(logits, targets, alpha, gamma, status)
+        if (status%code /= FORTNUM_OK) return
+        call prepare_loss_weights(size(logits, 1), sample_weight, reduction, &
+            weights, normalization, status)
+        if (status%code /= FORTNUM_OK) return
+        do j = 1, size(logits, 2)
+            do i = 1, size(logits, 1)
+                call focal_terms(logits(i, j), targets(i, j), alpha, gamma, &
+                    loss, derivative)
+                logits_bar(i, j) = value_bar*weights(i)*derivative/normalization
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine focal_binary_cross_entropy_with_logits_vjp
+
     !> Mean Huber loss for real-valued predictions.  The derivative is with
     !> respect to `prediction`; targets are treated as constants.
     subroutine huber_loss_value(prediction, targets, delta, value, status)
@@ -940,6 +1199,154 @@ contains
         normalization = 1.0_dp
         if (reduction_kind == LOSS_REDUCTION_MEAN) normalization = sum(sample_weight)
     end function weighted_mse_normalization
+
+    subroutine validate_loss_matrix_inputs(prediction, targets, name, status)
+        real(dp), intent(in) :: prediction(:, :), targets(:, :)
+        character(len=*), intent(in) :: name
+        type(fortnum_status_t), intent(out) :: status
+
+        if (size(prediction, 1) < 1 .or. size(prediction, 2) < 1 .or. &
+            any(shape(targets) /= shape(prediction)) .or. &
+            any(.not. ieee_is_finite(prediction)) .or. &
+            any(.not. ieee_is_finite(targets))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                trim(name)//": inputs must be finite, nonempty, and shape-compatible")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine validate_loss_matrix_inputs
+
+    subroutine prepare_loss_weights(n_samples, sample_weight, reduction, weights, &
+            normalization, status)
+        integer, intent(in) :: n_samples
+        real(dp), intent(in), optional :: sample_weight(:)
+        integer, intent(in), optional :: reduction
+        real(dp), allocatable, intent(out) :: weights(:)
+        real(dp), intent(out) :: normalization
+        type(fortnum_status_t), intent(out) :: status
+        integer :: reduction_kind
+        real(dp) :: weight_mass
+
+        normalization = 0.0_dp
+        reduction_kind = LOSS_REDUCTION_MEAN
+        if (present(reduction)) reduction_kind = reduction
+        if (reduction_kind /= LOSS_REDUCTION_MEAN .and. &
+            reduction_kind /= LOSS_REDUCTION_SUM) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "loss: reduction must be mean or sum")
+            return
+        end if
+        if (n_samples < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "loss: sample count must be positive")
+            return
+        end if
+        allocate(weights(n_samples))
+        if (present(sample_weight)) then
+            if (size(sample_weight) /= n_samples .or. &
+                any(.not. ieee_is_finite(sample_weight)) .or. &
+                any(sample_weight < 0.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "loss: sample weights must be finite and nonnegative")
+                return
+            end if
+            weights = sample_weight
+        else
+            weights = 1.0_dp
+        end if
+        weight_mass = sum(weights)
+        if (.not. ieee_is_finite(weight_mass) .or. weight_mass <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "loss: sample weights have zero support")
+            return
+        end if
+        normalization = 1.0_dp
+        if (reduction_kind == LOSS_REDUCTION_MEAN) normalization = weight_mass
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine prepare_loss_weights
+
+    subroutine validate_focal_inputs(logits, targets, alpha, gamma, status)
+        real(dp), intent(in) :: logits(:, :), targets(:, :), alpha, gamma
+        type(fortnum_status_t), intent(out) :: status
+
+        if (size(logits, 1) < 1 .or. size(logits, 2) < 1 .or. &
+            any(shape(targets) /= shape(logits)) .or. &
+            any(.not. ieee_is_finite(logits)) .or. &
+            any(.not. ieee_is_finite(targets)) .or. &
+            any(targets < 0.0_dp) .or. any(targets > 1.0_dp) .or. &
+            .not. ieee_is_finite(alpha) .or. alpha < 0.0_dp .or. alpha > 1.0_dp .or. &
+            .not. ieee_is_finite(gamma) .or. gamma < 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "focal BCE: logits, targets, alpha, or gamma are invalid")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine validate_focal_inputs
+
+    real(dp) function stable_softplus(value) result(output)
+        real(dp), intent(in) :: value
+
+        if (value > 0.0_dp) then
+            output = value + log(1.0_dp + exp(-value))
+        else
+            output = log(1.0_dp + exp(value))
+        end if
+    end function stable_softplus
+
+    real(dp) function stable_log_weighted_sum(first_weight, first_log, &
+            second_weight, second_log) result(output)
+        real(dp), intent(in) :: first_weight, first_log, second_weight, second_log
+        real(dp) :: largest, smallest
+
+        if (first_weight <= 0.0_dp) then
+            output = second_log
+        else if (second_weight <= 0.0_dp) then
+            output = first_log
+        else
+            largest = max(first_log + log(first_weight), &
+                second_log + log(second_weight))
+            smallest = min(first_log + log(first_weight), &
+                second_log + log(second_weight))
+            output = largest + log(1.0_dp + exp(smallest - largest))
+        end if
+    end function stable_log_weighted_sum
+
+    subroutine focal_terms(logit, target, alpha, gamma, loss, derivative)
+        real(dp), intent(in) :: logit, target, alpha, gamma
+        real(dp), intent(out) :: loss, derivative
+        real(dp) :: log_probability, log_one_probability, log_one_minus_pt
+        real(dp) :: probability, residual, alpha_t, focal_factor
+        real(dp) :: focal_derivative, ratio
+
+        log_probability = -stable_softplus(-logit)
+        log_one_probability = -stable_softplus(logit)
+        residual = stable_sigmoid(logit) - target
+        probability = stable_sigmoid(logit)
+        alpha_t = alpha*target + (1.0_dp - alpha)*(1.0_dp - target)
+        log_one_minus_pt = stable_log_weighted_sum(target, log_one_probability, &
+            1.0_dp - target, log_probability)
+        if (gamma == 0.0_dp) then
+            focal_factor = 1.0_dp
+            focal_derivative = 0.0_dp
+        else if (gamma*log_one_minus_pt <= log(tiny(1.0_dp))) then
+            ! A finite logit can round a probability to exactly one.  The
+            ! limiting focal value and derivative are both zero in this case.
+            focal_factor = 0.0_dp
+            focal_derivative = 0.0_dp
+        else
+            focal_factor = exp(gamma*log_one_minus_pt)
+            ! Combine the focusing factor and its `1/(1-p_t)` term in
+            ! log-space.  This avoids underflowing the denominator first.
+            ratio = (gamma - 1.0_dp)*log_one_minus_pt
+            focal_derivative = -gamma*(2.0_dp*target - 1.0_dp)*probability* &
+                (1.0_dp - probability)*exp(ratio)
+        end if
+        loss = alpha_t*focal_factor*( &
+            -target*log_probability - (1.0_dp - target)*log_one_probability)
+        derivative = alpha_t*(focal_derivative*( &
+            -target*log_probability - (1.0_dp - target)*log_one_probability) + &
+            focal_factor*residual)
+    end subroutine focal_terms
 
     subroutine validate_elementwise(logits, output, operation, status)
         real(dp), intent(in) :: logits(:, :), output(:, :)

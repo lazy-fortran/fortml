@@ -3,7 +3,8 @@ program fortml_bench_neural_losses
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_ok
     use fortml_losses, only: binary_cross_entropy_with_logits_hvp, &
-        softmax_cross_entropy_hvp, weighted_mse_loss_hvp, huber_loss_hvp
+        softmax_cross_entropy_hvp, weighted_mse_loss_hvp, huber_loss_hvp, &
+        mae_loss_jvp, focal_binary_cross_entropy_with_logits_jvp
     use fortml_mlp, only: mlp_t
     use fortml_mlp_training, only: mlp_loss_value_gradient
     implicit none
@@ -11,6 +12,7 @@ program fortml_bench_neural_losses
     integer, parameter :: n = 64, k = 3, repetitions = 2048
     real(dp) :: logits(n, k), targets(n, k), direction(n, k), product(n, k)
     real(dp) :: prediction(n, 1), target(n, 1), weights(n), value, l2_gradient
+    real(dp) :: value_dot, loss_value
     real(dp), allocatable :: gradient(:)
     integer :: labels(n), i, repetition
     real(dp) :: start, finish
@@ -70,6 +72,28 @@ program fortml_bench_neural_losses
     end do
     call cpu_time(finish)
     call emit("huber_hvp", finish - start, sum(product(:, 1:1)))
+
+    call mae_loss_jvp(prediction, target, direction(:, 1:1), loss_value, value_dot, &
+        status, weights)
+    if (.not. status_ok(status)) error stop "MAE warmup failed"
+    call cpu_time(start)
+    do repetition = 1, repetitions
+        call mae_loss_jvp(prediction, target, direction(:, 1:1), loss_value, &
+            value_dot, status, weights)
+    end do
+    call cpu_time(finish)
+    call emit("mae_jvp", finish - start, value_dot)
+
+    call focal_binary_cross_entropy_with_logits_jvp(logits, targets, 0.25_dp, &
+        2.0_dp, direction, loss_value, value_dot, status, weights)
+    if (.not. status_ok(status)) error stop "focal BCE warmup failed"
+    call cpu_time(start)
+    do repetition = 1, repetitions
+        call focal_binary_cross_entropy_with_logits_jvp(logits, targets, 0.25_dp, &
+            2.0_dp, direction, loss_value, value_dot, status, weights)
+    end do
+    call cpu_time(finish)
+    call emit("focal_bce_jvp", finish - start, value_dot)
 
     call model%initialize([1, 4, 1], status, initialization_seed=29)
     if (.not. status_ok(status)) error stop "MLP initialization failed"

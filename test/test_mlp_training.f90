@@ -1,7 +1,8 @@
 program test_mlp_training
     !! Independent behavioral checks for deterministic MLP training products.
     use fortnum_kinds, only: dp
-    use fortnum_status, only: fortnum_status_t, status_ok, status_set, FORTNUM_OK
+    use fortnum_status, only: fortnum_status_t, status_ok, status_set, FORTNUM_OK, &
+        FORTNUM_DOMAIN_ERROR
     use fortopt_objective, only: objective_t
     use fortml_mlp, only: mlp_t, MLP_LINEAR
     use fortml_mlp_training, only: mlp_training_options_t, &
@@ -16,6 +17,7 @@ program test_mlp_training
 
     integer :: failures
     integer :: event_counts(6)
+    logical :: event_fail
 
     failures = 0
     call test_first_adam_step(failures)
@@ -66,6 +68,16 @@ contains
             event_counts(MLP_EVENT_CHECKPOINT) > state%epochs .and. &
             event_counts(MLP_EVENT_TRAIN_END) == 1 .and. checkpoint%valid(), &
             "typed event sequence and checkpoint", failures)
+        call model%initialize([1, 1], status, output_activation=MLP_LINEAR)
+        event_counts = 0
+        event_fail = .true.
+        call mlp_train(model, x, target, status, options, state, &
+            validation_x=x, validation_target=target)
+        call check(.not. status_ok(status) .and. &
+            event_counts(MLP_EVENT_VALIDATION) == 1 .and. &
+            event_counts(MLP_EVENT_TRAIN_END) == 0, &
+            "typed event failure propagation", failures)
+        event_fail = .false.
     end subroutine test_typed_event_callback
 
     subroutine record_training_event(event, epoch, update, loss, &
@@ -78,6 +90,10 @@ contains
         if (event >= 1 .and. event <= 6) event_counts(event) = &
             event_counts(event) + 1
         stop = .false.
+        if (event_fail .and. event == MLP_EVENT_VALIDATION) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, "test event failure")
+            return
+        end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine record_training_event
 

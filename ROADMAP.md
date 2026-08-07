@@ -1084,6 +1084,13 @@ trials remain visible in the result schema.
   cover finite-difference curvature, adjoint identities, reductions, and the
   MLP integration. Resident CUDA loss kernels remain open; unsupported device
   requests must return a typed refusal rather than copying through the host.
+- [x] Add production MAE and focal BCE-with-logits products to the shared loss
+  facade. MAE has weighted mean/sum value products and explicitly refuses exact
+  zero-residual JVP/VJP calls; focal BCE accepts stable logits, relaxed binary
+  targets, `alpha`/`gamma`, row weights, and both reductions with analytic
+  value/JVP/VJP products. Independent finite-difference, adjoint, reduction,
+  extreme-logit, and parameter-refusal tests cover the slice. Resident CUDA
+  loss kernels remain open and never fall back silently to host execution.
 - [x] Define a sequential nested-MLP parameter-tree seam with stable named
   stage paths, contiguous offsets, exact chain-rule products, and an analytic
   FortOpt L-BFGS-B objective. Independent JVP finite-difference, VJP adjoint,
