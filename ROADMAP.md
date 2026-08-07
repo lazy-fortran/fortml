@@ -51,6 +51,13 @@ The work packages below define the parity target. An item is complete when its
 API, implementation, documentation, independent oracle, and refusal tests are
 present.
 
+The external feature inventory is maintained in
+[`docs/PARITY_REFERENCE.md`](docs/PARITY_REFERENCE.md). It tracks the current
+scikit-learn, PyTorch, JAX, GPyTorch, GPflow, XGBoost, LightGBM, Flux, and Lux
+surfaces that drive the gap register. The reference links are part of the
+roadmap evidence and should be refreshed when a package changes its public
+workflow or device contract.
+
 ## Scope, architecture, and release rules
 
 The target is a clean, Fortran-native estimator stack rather than a thin
