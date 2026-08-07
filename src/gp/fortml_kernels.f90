@@ -44,6 +44,8 @@ module fortml_kernels
     integer, parameter, public :: KERNEL_USER = 10
     integer, parameter, public :: KERNEL_PERIODIC = 11
     integer, parameter, public :: KERNEL_RATIONAL_QUADRATIC = 12
+    integer, parameter, public :: KERNEL_COSINE = 13
+    integer, parameter, public :: KERNEL_POLYNOMIAL = 14
 
     type, public :: kernel_t
         integer :: kind = 0
@@ -74,6 +76,8 @@ module fortml_kernels
     public :: make_white_noise_kernel
     public :: make_periodic_kernel
     public :: make_rational_quadratic_kernel
+    public :: make_cosine_kernel
+    public :: make_polynomial_kernel
     public :: make_user_kernel
     public :: kernel_add
     public :: kernel_multiply
@@ -168,6 +172,35 @@ contains
             variance, lengthscale, alpha, status)
     end function make_rational_quadratic_kernel
 
+    function make_cosine_kernel(input_dim, variance, lengthscale, status) result(kernel)
+        integer, intent(in) :: input_dim
+        real(dp), intent(in) :: variance, lengthscale
+        type(fortnum_status_t), intent(out) :: status
+        type(kernel_t) :: kernel
+
+        call make_leaf(kernel, KERNEL_COSINE, input_dim, variance, lengthscale, status)
+    end function make_cosine_kernel
+
+    function make_polynomial_kernel(input_dim, variance, scale, offset, degree, status) &
+            result(kernel)
+        integer, intent(in) :: input_dim
+        real(dp), intent(in) :: variance, scale, offset, degree
+        type(fortnum_status_t), intent(out) :: status
+        type(kernel_t) :: kernel
+
+        if (input_dim < 1 .or. variance <= 0.0_dp .or. scale <= 0.0_dp .or. &
+            offset <= 0.0_dp .or. degree < 1.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "polynomial kernel constructor: dimensions and scales must be positive")
+            return
+        end if
+        kernel%kind = KERNEL_POLYNOMIAL
+        kernel%input_dim = input_dim
+        allocate(kernel%log_parameters(4))
+        kernel%log_parameters = [log(variance), log(scale), log(offset), log(degree)]
+        call status_set(status, FORTNUM_OK, "")
+    end function make_polynomial_kernel
+
     function make_user_kernel(input_dim, variance, formula, status) result(kernel)
         !! Build a leaf from a user formula. The formula must already validate:
         !! this is the refusal boundary, so nothing downstream has to decide
@@ -253,10 +286,13 @@ contains
 
         count = 0
         select case (self%kind)
-        case (KERNEL_RBF, KERNEL_MATERN12, KERNEL_MATERN32, KERNEL_MATERN52)
+        case (KERNEL_RBF, KERNEL_MATERN12, KERNEL_MATERN32, KERNEL_MATERN52, &
+                KERNEL_COSINE)
             count = 2
         case (KERNEL_PERIODIC, KERNEL_RATIONAL_QUADRATIC)
             count = 3
+        case (KERNEL_POLYNOMIAL)
+            count = 4
         case (KERNEL_LINEAR, KERNEL_CONSTANT, KERNEL_WHITE_NOISE, KERNEL_USER)
             count = 1
         case (KERNEL_SUM, KERNEL_PRODUCT)
@@ -325,6 +361,7 @@ contains
         real(dp), intent(in) :: x1(:), x2(:)
         real(dp) :: value
         real(dp) :: variance, lengthscale, third_parameter, r2, length_derivative
+        real(dp) :: polynomial_scale, polynomial_offset, polynomial_degree
         real(dp) :: parameter_derivative_1, parameter_derivative_2
 
         value = 0.0_dp
@@ -340,7 +377,7 @@ contains
             variance = exp(self%log_parameters(1))
             if (self%kind == KERNEL_RBF .or. self%kind == KERNEL_MATERN12 .or. &
                 self%kind == KERNEL_MATERN32 .or. self%kind == KERNEL_MATERN52 .or. &
-                self%kind == KERNEL_PERIODIC .or. &
+                self%kind == KERNEL_PERIODIC .or. self%kind == KERNEL_COSINE .or. &
                 self%kind == KERNEL_RATIONAL_QUADRATIC) then
                 lengthscale = exp(self%log_parameters(2))
             else
@@ -364,6 +401,17 @@ contains
                 call rational_quadratic_value_derivatives(variance, lengthscale, &
                     third_parameter, r2, value, parameter_derivative_1, &
                     parameter_derivative_2, length_derivative)
+            else if (self%kind == KERNEL_COSINE) then
+                call cosine_value_derivatives(variance, lengthscale, r2, value, &
+                    parameter_derivative_1, parameter_derivative_2)
+            else if (self%kind == KERNEL_POLYNOMIAL) then
+                polynomial_scale = exp(self%log_parameters(2))
+                polynomial_offset = exp(self%log_parameters(3))
+                polynomial_degree = exp(self%log_parameters(4))
+                call polynomial_value_derivatives(variance, polynomial_scale, &
+                    polynomial_offset, polynomial_degree, dot_product(x1, x2), value, &
+                    parameter_derivative_1, parameter_derivative_2, length_derivative, &
+                    third_parameter)
             else if (self%kind /= KERNEL_USER) then
                 call leaf_value_and_length_derivative(self%kind, variance, &
                     lengthscale, r2, value, length_derivative)
@@ -493,8 +541,9 @@ contains
         real(dp) :: lengthscale_bar, lengthscale_bar_dot
         real(dp) :: distance_bar, distance_bar_dot
         real(dp) :: third_log, third_log_dot
-        real(dp) :: derivative_1, derivative_2, derivative_3
-        real(dp) :: derivative_1_dot, derivative_2_dot, derivative_3_dot
+        real(dp) :: derivative_1, derivative_2, derivative_3, derivative_4
+        real(dp) :: derivative_1_dot, derivative_2_dot, derivative_3_dot, derivative_4_dot
+        real(dp) :: polynomial_scale, polynomial_offset, polynomial_degree, inner_product
         integer :: i, j, left_count
 
         select case (self%kind)
@@ -540,7 +589,7 @@ contains
         variance_log = self%log_parameters(1)
         if (self%kind == KERNEL_RBF .or. self%kind == KERNEL_MATERN12 .or. &
             self%kind == KERNEL_MATERN32 .or. self%kind == KERNEL_MATERN52 .or. &
-            self%kind == KERNEL_PERIODIC .or. &
+            self%kind == KERNEL_PERIODIC .or. self%kind == KERNEL_COSINE .or. &
             self%kind == KERNEL_RATIONAL_QUADRATIC) then
             lengthscale_log = self%log_parameters(2)
         else
@@ -633,6 +682,45 @@ contains
                         matrix_bar(i, j)*derivative_2_dot
                     parameter_bar_dot(offset + 2) = parameter_bar_dot(offset + 2) + &
                         matrix_bar(i, j)*derivative_3_dot
+                case (KERNEL_COSINE)
+                    call cosine_value_hvp(variance_log, lengthscale_log, direction(1), &
+                        direction(2), r2, value, value_dot, derivative_1, derivative_1_dot, &
+                        derivative_2, derivative_2_dot)
+                    parameter_bar(offset) = parameter_bar(offset) + &
+                        matrix_bar(i, j)*derivative_1
+                    parameter_bar(offset + 1) = parameter_bar(offset + 1) + &
+                        matrix_bar(i, j)*derivative_2
+                    parameter_bar_dot(offset) = parameter_bar_dot(offset) + &
+                        matrix_bar(i, j)*derivative_1_dot
+                    parameter_bar_dot(offset + 1) = parameter_bar_dot(offset + 1) + &
+                        matrix_bar(i, j)*derivative_2_dot
+                case (KERNEL_POLYNOMIAL)
+                    polynomial_scale = exp(self%log_parameters(2))
+                    polynomial_offset = exp(self%log_parameters(3))
+                    polynomial_degree = exp(self%log_parameters(4))
+                    inner_product = dot_product(x1(i, :), x2(j, :))
+                    call polynomial_value_hvp(variance_log, self%log_parameters(2), &
+                        self%log_parameters(3), self%log_parameters(4), direction(1), &
+                        direction(2), direction(3), direction(4), inner_product, value, &
+                        value_dot, derivative_1, derivative_1_dot, derivative_2, &
+                        derivative_2_dot, derivative_3, derivative_3_dot, derivative_4, &
+                        derivative_4_dot)
+                    parameter_bar(offset) = parameter_bar(offset) + &
+                        matrix_bar(i, j)*derivative_1
+                    parameter_bar(offset + 1) = parameter_bar(offset + 1) + &
+                        matrix_bar(i, j)*derivative_2
+                    parameter_bar(offset + 2) = parameter_bar(offset + 2) + &
+                        matrix_bar(i, j)*derivative_3
+                    parameter_bar(offset + 3) = parameter_bar(offset + 3) + &
+                        matrix_bar(i, j)*derivative_4
+                    parameter_bar_dot(offset) = parameter_bar_dot(offset) + &
+                        matrix_bar(i, j)*derivative_1_dot
+                    parameter_bar_dot(offset + 1) = parameter_bar_dot(offset + 1) + &
+                        matrix_bar(i, j)*derivative_2_dot
+                    parameter_bar_dot(offset + 2) = parameter_bar_dot(offset + 2) + &
+                        matrix_bar(i, j)*derivative_3_dot
+                    parameter_bar_dot(offset + 3) = parameter_bar_dot(offset + 3) + &
+                        matrix_bar(i, j)*derivative_4_dot
                 case (KERNEL_LINEAR)
                     value = exp(variance_log)*dot_product(x1(i, :), x2(j, :))
                     parameter_bar(offset) = parameter_bar(offset) + matrix_bar(i, j)*value
@@ -787,6 +875,231 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine periodic_input_derivatives
 
+    subroutine cosine_value_derivatives(variance, lengthscale, squared_distance, &
+            value, derivative_variance, derivative_lengthscale)
+        real(dp), intent(in) :: variance, lengthscale, squared_distance
+        real(dp), intent(out) :: value, derivative_variance, derivative_lengthscale
+        real(dp) :: distance, argument
+
+        distance = sqrt(max(squared_distance, 0.0_dp))
+        argument = distance/lengthscale
+        value = variance*cos(argument)
+        derivative_variance = value
+        derivative_lengthscale = variance*argument*sin(argument)
+    end subroutine cosine_value_derivatives
+
+    subroutine cosine_value_jvp(variance, lengthscale, squared_distance, &
+            variance_dot, lengthscale_dot, value, value_dot)
+        real(dp), intent(in) :: variance, lengthscale, squared_distance
+        real(dp), intent(in) :: variance_dot, lengthscale_dot
+        real(dp), intent(out) :: value, value_dot
+        real(dp) :: derivative_variance, derivative_lengthscale
+
+        call cosine_value_derivatives(variance, lengthscale, squared_distance, value, &
+            derivative_variance, derivative_lengthscale)
+        value_dot = derivative_variance*variance_dot + derivative_lengthscale*lengthscale_dot
+    end subroutine cosine_value_jvp
+
+    subroutine cosine_value_hvp(log_variance, log_lengthscale, variance_dot, &
+            lengthscale_dot, squared_distance, value, value_dot, derivative_variance, &
+            derivative_variance_dot, derivative_lengthscale, derivative_lengthscale_dot)
+        real(dp), intent(in) :: log_variance, log_lengthscale, variance_dot, lengthscale_dot
+        real(dp), intent(in) :: squared_distance
+        real(dp), intent(out) :: value, value_dot, derivative_variance, derivative_variance_dot
+        real(dp), intent(out) :: derivative_lengthscale, derivative_lengthscale_dot
+        real(dp) :: variance, lengthscale, distance, argument, sine_value, cosine_value
+        real(dp) :: length_derivative_direction
+
+        variance = exp(log_variance)
+        lengthscale = exp(log_lengthscale)
+        distance = sqrt(max(squared_distance, 0.0_dp))
+        argument = distance/lengthscale
+        sine_value = sin(argument)
+        cosine_value = cos(argument)
+        value = variance*cosine_value
+        derivative_variance = value
+        derivative_lengthscale = variance*argument*sine_value
+        value_dot = value*variance_dot + variance*argument*sine_value*lengthscale_dot
+        derivative_variance_dot = value_dot
+        length_derivative_direction = variance_dot*variance*argument*sine_value + &
+            lengthscale_dot*variance*(-argument*sine_value - argument*argument*cosine_value)
+        derivative_lengthscale_dot = length_derivative_direction
+    end subroutine cosine_value_hvp
+
+    subroutine cosine_input_derivatives(self, x1, x2, value, gradient_x1, gradient_x2, &
+            mixed_hessian, status)
+        class(kernel_t), intent(in) :: self
+        real(dp), intent(in) :: x1(:), x2(:)
+        real(dp), intent(out) :: value, gradient_x1(:), gradient_x2(:)
+        real(dp), intent(out) :: mixed_hessian(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: variance, lengthscale, squared_distance, distance
+        real(dp) :: radial_first, radial_second, radial_scale, radial_coefficient
+        real(dp) :: difference(size(x1))
+        integer :: i, j
+
+        variance = exp(self%log_parameters(1))
+        lengthscale = exp(self%log_parameters(2))
+        difference = x1 - x2
+        squared_distance = sum(difference*difference)
+        distance = sqrt(squared_distance)
+        value = variance*cos(distance/lengthscale)
+        radial_first = -variance*sin(distance/lengthscale)/lengthscale
+        radial_second = -value/(lengthscale*lengthscale)
+        if (distance == 0.0_dp) then
+            gradient_x1 = 0.0_dp
+            gradient_x2 = 0.0_dp
+            mixed_hessian = 0.0_dp
+            do i = 1, size(x1)
+                mixed_hessian(i, i) = -radial_second
+            end do
+        else
+            radial_scale = radial_first/distance
+            radial_coefficient = (radial_second - radial_scale)/squared_distance
+            do i = 1, size(x1)
+                gradient_x1(i) = radial_scale*difference(i)
+                gradient_x2(i) = -gradient_x1(i)
+                do j = 1, size(x2)
+                    mixed_hessian(i, j) = -(radial_scale*merge(1.0_dp, 0.0_dp, i == j) + &
+                        radial_coefficient*difference(i)*difference(j))
+                end do
+            end do
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine cosine_input_derivatives
+
+    subroutine polynomial_value_derivatives(variance, scale, offset, degree, inner_product, &
+            value, derivative_variance, derivative_scale, derivative_offset, derivative_degree)
+        real(dp), intent(in) :: variance, scale, offset, degree, inner_product
+        real(dp), intent(out) :: value, derivative_variance, derivative_scale
+        real(dp), intent(out) :: derivative_offset, derivative_degree
+        real(dp) :: base, log_base
+
+        base = offset + scale*inner_product
+        if (base <= 0.0_dp) then
+            value = 0.0_dp
+            derivative_variance = 0.0_dp
+            derivative_scale = 0.0_dp
+            derivative_offset = 0.0_dp
+            derivative_degree = 0.0_dp
+            return
+        end if
+        log_base = log(base)
+        value = variance*exp(degree*log_base)
+        derivative_variance = value
+        derivative_scale = value*degree*scale*inner_product/base
+        derivative_offset = value*degree*offset/base
+        derivative_degree = value*degree*log_base
+    end subroutine polynomial_value_derivatives
+
+    subroutine polynomial_value_jvp(variance, scale, offset, degree, inner_product, &
+            variance_dot, scale_dot, offset_dot, degree_dot, value, value_dot)
+        real(dp), intent(in) :: variance, scale, offset, degree, inner_product
+        real(dp), intent(in) :: variance_dot, scale_dot, offset_dot, degree_dot
+        real(dp), intent(out) :: value, value_dot
+        real(dp) :: derivative_variance, derivative_scale, derivative_offset
+        real(dp) :: derivative_degree
+
+        call polynomial_value_derivatives(variance, scale, offset, degree, inner_product, &
+            value, derivative_variance, derivative_scale, derivative_offset, derivative_degree)
+        value_dot = derivative_variance*variance_dot + derivative_scale*scale_dot + &
+            derivative_offset*offset_dot + derivative_degree*degree_dot
+    end subroutine polynomial_value_jvp
+
+    subroutine polynomial_value_hvp(log_variance, log_scale, log_offset, log_degree, &
+            variance_dot, scale_dot, offset_dot, degree_log_dot, inner_product, value, &
+            value_dot, derivative_variance, derivative_variance_dot, derivative_scale, &
+            derivative_scale_dot, derivative_offset, derivative_offset_dot, derivative_degree, &
+            derivative_degree_dot)
+        real(dp), intent(in) :: log_variance, log_scale, log_offset, log_degree
+        real(dp), intent(in) :: variance_dot, scale_dot, offset_dot, degree_log_dot
+        real(dp), intent(in) :: inner_product
+        real(dp), intent(out) :: value, value_dot, derivative_variance, derivative_variance_dot
+        real(dp), intent(out) :: derivative_scale, derivative_scale_dot
+        real(dp), intent(out) :: derivative_offset, derivative_offset_dot
+        real(dp), intent(out) :: derivative_degree, derivative_degree_dot
+        real(dp) :: variance, scale, offset, degree, base, log_base, base_dot, degree_dot
+        real(dp) :: h_scale, h_offset, h_degree, h_scale_dot, h_offset_dot, h_degree_dot
+        real(dp) :: log_direction
+
+        variance = exp(log_variance)
+        scale = exp(log_scale)
+        offset = exp(log_offset)
+        degree = exp(log_degree)
+        base = offset + scale*inner_product
+        if (base <= 0.0_dp) then
+            value = 0.0_dp
+            value_dot = 0.0_dp
+            derivative_variance = 0.0_dp
+            derivative_variance_dot = 0.0_dp
+            derivative_scale = 0.0_dp
+            derivative_scale_dot = 0.0_dp
+            derivative_offset = 0.0_dp
+            derivative_offset_dot = 0.0_dp
+            derivative_degree = 0.0_dp
+            derivative_degree_dot = 0.0_dp
+            return
+        end if
+        log_base = log(base)
+        degree_dot = degree*degree_log_dot
+        base_dot = scale*inner_product*scale_dot + offset*offset_dot
+        value = variance*exp(degree*log_base)
+        log_direction = variance_dot + degree*base_dot/base + degree_log_dot*degree*log_base
+        value_dot = value*log_direction
+        derivative_variance = value
+        derivative_variance_dot = value_dot
+        h_scale = degree*scale*inner_product/base
+        h_offset = degree*offset/base
+        h_degree = degree*log_base
+        h_scale_dot = degree_dot*scale*inner_product/base + degree*scale*inner_product* &
+            scale_dot/base - degree*scale*inner_product*base_dot/(base*base)
+        h_offset_dot = degree_dot*offset/base + degree*offset*offset_dot/base - &
+            degree*offset*base_dot/(base*base)
+        h_degree_dot = degree_dot*log_base + degree*base_dot/base
+        derivative_scale = value*h_scale
+        derivative_scale_dot = value_dot*h_scale + value*h_scale_dot
+        derivative_offset = value*h_offset
+        derivative_offset_dot = value_dot*h_offset + value*h_offset_dot
+        derivative_degree = value*h_degree
+        derivative_degree_dot = value_dot*h_degree + value*h_degree_dot
+    end subroutine polynomial_value_hvp
+
+    subroutine polynomial_input_derivatives(self, x1, x2, value, gradient_x1, gradient_x2, &
+            mixed_hessian, status)
+        class(kernel_t), intent(in) :: self
+        real(dp), intent(in) :: x1(:), x2(:)
+        real(dp), intent(out) :: value, gradient_x1(:), gradient_x2(:)
+        real(dp), intent(out) :: mixed_hessian(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: variance, scale, offset, degree, base, coefficient, curvature
+        real(dp) :: inner_product
+        integer :: i, j
+
+        variance = exp(self%log_parameters(1))
+        scale = exp(self%log_parameters(2))
+        offset = exp(self%log_parameters(3))
+        degree = exp(self%log_parameters(4))
+        inner_product = dot_product(x1, x2)
+        base = offset + scale*inner_product
+        if (base <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "polynomial kernel input derivatives: base must be positive")
+            return
+        end if
+        value = variance*base**degree
+        coefficient = variance*degree*scale*base**(degree - 1.0_dp)
+        curvature = variance*degree*(degree - 1.0_dp)*scale*scale*base**(degree - 2.0_dp)
+        gradient_x1 = coefficient*x2
+        gradient_x2 = coefficient*x1
+        do i = 1, size(x1)
+            do j = 1, size(x2)
+                mixed_hessian(i, j) = coefficient*merge(1.0_dp, 0.0_dp, i == j) + &
+                    curvature*x2(i)*x1(j)
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine polynomial_input_derivatives
+
     subroutine rational_quadratic_value_derivatives(variance, lengthscale, alpha, &
             squared_distance, value, derivative_variance, derivative_lengthscale, derivative_alpha)
         real(dp), intent(in) :: variance, lengthscale, alpha, squared_distance
@@ -903,7 +1216,8 @@ contains
         kernel%kind = kind
         kernel%input_dim = input_dim
         if (kind == KERNEL_RBF .or. kind == KERNEL_MATERN12 .or. &
-            kind == KERNEL_MATERN32 .or. kind == KERNEL_MATERN52) then
+            kind == KERNEL_MATERN32 .or. kind == KERNEL_MATERN52 .or. &
+            kind == KERNEL_COSINE) then
             allocate(kernel%log_parameters(2))
             kernel%log_parameters = [log(variance), log(lengthscale)]
         else
@@ -1002,7 +1316,7 @@ contains
             variance = exp(self%log_parameters(1))
             if (self%kind == KERNEL_RBF .or. self%kind == KERNEL_MATERN12 .or. &
                 self%kind == KERNEL_MATERN32 .or. self%kind == KERNEL_MATERN52 .or. &
-                self%kind == KERNEL_PERIODIC .or. &
+                self%kind == KERNEL_PERIODIC .or. self%kind == KERNEL_COSINE .or. &
                 self%kind == KERNEL_RATIONAL_QUADRATIC) then
                 lengthscale = exp(self%log_parameters(2))
             else
@@ -1028,6 +1342,14 @@ contains
                         call rational_quadratic_value_derivatives(variance, lengthscale, &
                             third_parameter, r2, value, parameter_derivative_1, &
                             parameter_derivative_2, dummy)
+                    else if (self%kind == KERNEL_COSINE) then
+                        call cosine_value_derivatives(variance, lengthscale, r2, value, &
+                            parameter_derivative_1, parameter_derivative_2)
+                    else if (self%kind == KERNEL_POLYNOMIAL) then
+                        call polynomial_value_derivatives(variance, exp(self%log_parameters(2)), &
+                            exp(self%log_parameters(3)), exp(self%log_parameters(4)), &
+                            dot_product(x1(i, :), x2(j, :)), value, parameter_derivative_1, &
+                            parameter_derivative_2, dummy, third_parameter)
                     else if (self%kind /= KERNEL_USER) then
                         call leaf_value_and_length_derivative(self%kind, variance, &
                             lengthscale, r2, value, dummy)
@@ -1133,6 +1455,12 @@ contains
         case (KERNEL_RATIONAL_QUADRATIC)
             call rational_quadratic_input_derivatives(self, x1, x2, value, &
                 gradient_x1, gradient_x2, mixed_hessian, status)
+        case (KERNEL_COSINE)
+            call cosine_input_derivatives(self, x1, x2, value, gradient_x1, &
+                gradient_x2, mixed_hessian, status)
+        case (KERNEL_POLYNOMIAL)
+            call polynomial_input_derivatives(self, x1, x2, value, gradient_x1, &
+                gradient_x2, mixed_hessian, status)
         case (KERNEL_LINEAR)
             variance = exp(self%log_parameters(1))
             value = variance*dot_product(x1, x2)
@@ -1391,6 +1719,7 @@ contains
         real(dp) :: variance, lengthscale, third_parameter, r2, value, length_derivative
         real(dp) :: log_variance_dot, log_lengthscale_dot, log_third_parameter_dot
         real(dp) :: dvariance, ddistance, dlengthscale
+        real(dp) :: polynomial_scale, polynomial_offset, polynomial_degree
         integer :: i, j, left_count
 
         select case (self%kind)
@@ -1414,7 +1743,7 @@ contains
             log_variance_dot = direction(1)
             if (self%kind == KERNEL_RBF .or. self%kind == KERNEL_MATERN12 .or. &
                 self%kind == KERNEL_MATERN32 .or. self%kind == KERNEL_MATERN52 .or. &
-                self%kind == KERNEL_PERIODIC .or. &
+                self%kind == KERNEL_PERIODIC .or. self%kind == KERNEL_COSINE .or. &
                 self%kind == KERNEL_RATIONAL_QUADRATIC) then
                 lengthscale = exp(self%log_parameters(2))
                 log_lengthscale_dot = direction(2)
@@ -1448,6 +1777,17 @@ contains
                             third_parameter, r2, log_variance_dot, &
                             log_lengthscale_dot, log_third_parameter_dot, value, &
                             matrix_dot(i, j))
+                    else if (self%kind == KERNEL_COSINE) then
+                        call cosine_value_jvp(variance, lengthscale, r2, log_variance_dot, &
+                            log_lengthscale_dot, value, matrix_dot(i, j))
+                    else if (self%kind == KERNEL_POLYNOMIAL) then
+                        polynomial_scale = exp(self%log_parameters(2))
+                        polynomial_offset = exp(self%log_parameters(3))
+                        polynomial_degree = exp(self%log_parameters(4))
+                        call polynomial_value_jvp(variance, polynomial_scale, polynomial_offset, &
+                            polynomial_degree, dot_product(x1(i, :), x2(j, :)), &
+                            log_variance_dot, direction(2), direction(3), direction(4), &
+                            value, matrix_dot(i, j))
                     else
                         call leaf_value_and_length_derivative(self%kind, variance, &
                             lengthscale, r2, value, length_derivative)
@@ -1480,7 +1820,8 @@ contains
         integer, intent(in) :: offset
         real(dp), allocatable :: left_matrix(:, :), right_matrix(:, :)
         real(dp) :: variance, lengthscale, third_parameter, r2, value
-        real(dp) :: derivative_1, derivative_2, derivative_3
+        real(dp) :: polynomial_scale, polynomial_offset, polynomial_degree, inner_product
+        real(dp) :: derivative_1, derivative_2, derivative_3, derivative_4
         integer :: i, j
         integer :: left_count
 
@@ -1505,7 +1846,7 @@ contains
             variance = exp(self%log_parameters(1))
             if (self%kind == KERNEL_RBF .or. self%kind == KERNEL_MATERN12 .or. &
                 self%kind == KERNEL_MATERN32 .or. self%kind == KERNEL_MATERN52 .or. &
-                self%kind == KERNEL_PERIODIC .or. &
+                self%kind == KERNEL_PERIODIC .or. self%kind == KERNEL_COSINE .or. &
                 self%kind == KERNEL_RATIONAL_QUADRATIC) then
                 lengthscale = exp(self%log_parameters(2))
             else
@@ -1520,6 +1861,18 @@ contains
             if (self%kind == KERNEL_RBF) then
                 call kernel_rbf_parameter_vjp(self, x1, x2, matrix_bar, &
                     parameter_bar, offset)
+            else if (self%kind == KERNEL_COSINE) then
+                do j = 1, size(x2, 1)
+                    do i = 1, size(x1, 1)
+                        r2 = sum((x1(i, :) - x2(j, :))**2)
+                        call cosine_value_derivatives(variance, lengthscale, r2, value, &
+                            derivative_1, derivative_2)
+                        parameter_bar(offset) = parameter_bar(offset) + &
+                            matrix_bar(i, j)*derivative_1
+                        parameter_bar(offset + 1) = parameter_bar(offset + 1) + &
+                            matrix_bar(i, j)*derivative_2
+                    end do
+                end do
             else if (self%kind == KERNEL_PERIODIC .or. &
                 self%kind == KERNEL_RATIONAL_QUADRATIC) then
                 do j = 1, size(x2, 1)
@@ -1540,6 +1893,26 @@ contains
                             matrix_bar(i, j)*derivative_2
                         parameter_bar(offset + 2) = parameter_bar(offset + 2) + &
                             matrix_bar(i, j)*derivative_3
+                    end do
+                end do
+            else if (self%kind == KERNEL_POLYNOMIAL) then
+                polynomial_scale = exp(self%log_parameters(2))
+                polynomial_offset = exp(self%log_parameters(3))
+                polynomial_degree = exp(self%log_parameters(4))
+                do j = 1, size(x2, 1)
+                    do i = 1, size(x1, 1)
+                        inner_product = dot_product(x1(i, :), x2(j, :))
+                        call polynomial_value_derivatives(variance, polynomial_scale, &
+                            polynomial_offset, polynomial_degree, inner_product, value, &
+                            derivative_1, derivative_2, derivative_3, derivative_4)
+                        parameter_bar(offset) = parameter_bar(offset) + &
+                            matrix_bar(i, j)*derivative_1
+                        parameter_bar(offset + 1) = parameter_bar(offset + 1) + &
+                            matrix_bar(i, j)*derivative_2
+                        parameter_bar(offset + 2) = parameter_bar(offset + 2) + &
+                            matrix_bar(i, j)*derivative_3
+                        parameter_bar(offset + 3) = parameter_bar(offset + 3) + &
+                            matrix_bar(i, j)*derivative_4
                     end do
                 end do
             else
@@ -1658,7 +2031,8 @@ contains
         valid = self%input_dim > 0
         if (.not. valid) return
         select case (self%kind)
-        case (KERNEL_RBF, KERNEL_MATERN12, KERNEL_MATERN32, KERNEL_MATERN52)
+        case (KERNEL_RBF, KERNEL_MATERN12, KERNEL_MATERN32, KERNEL_MATERN52, &
+                KERNEL_COSINE)
             valid = allocated(self%log_parameters)
             if (.not. valid) return
             valid = size(self%log_parameters) == 2
@@ -1666,6 +2040,10 @@ contains
             valid = allocated(self%log_parameters)
             if (.not. valid) return
             valid = size(self%log_parameters) == 3
+        case (KERNEL_POLYNOMIAL)
+            valid = allocated(self%log_parameters)
+            if (.not. valid) return
+            valid = size(self%log_parameters) == 4
         case (KERNEL_LINEAR, KERNEL_CONSTANT, KERNEL_WHITE_NOISE)
             valid = allocated(self%log_parameters)
             if (.not. valid) return

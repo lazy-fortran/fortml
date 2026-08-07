@@ -1516,13 +1516,16 @@ make_constant_kernel(input_dim, variance, status)
 make_white_noise_kernel(input_dim, variance, status)
 make_periodic_kernel(input_dim, variance, lengthscale, period, status)
 make_rational_quadratic_kernel(input_dim, variance, lengthscale, alpha, status)
+make_cosine_kernel(input_dim, variance, lengthscale, status)
+make_polynomial_kernel(input_dim, variance, scale, offset, degree, status)
 make_user_kernel(input_dim, variance, formula, status)
 ```
 
 The corresponding kind constants are `KERNEL_RBF`, `KERNEL_MATERN12`,
 `KERNEL_MATERN32`, `KERNEL_MATERN52`, `KERNEL_LINEAR`, `KERNEL_CONSTANT`,
 `KERNEL_WHITE_NOISE`, `KERNEL_PERIODIC`, `KERNEL_RATIONAL_QUADRATIC`,
-`KERNEL_SUM`, `KERNEL_PRODUCT`, and `KERNEL_USER`.
+`KERNEL_COSINE`, `KERNEL_POLYNOMIAL`, `KERNEL_SUM`, `KERNEL_PRODUCT`, and
+`KERNEL_USER`.
 Combine initialized kernels with `kernel_add(left,right,status)` or
 `kernel_multiply(left,right,status)`.
 `clone_kernel(kernel)` makes an independent copy of the complete expression
@@ -1534,16 +1537,20 @@ Leaf parameters are stored as logarithms. RBF and Matérn leaves have
 `[log_variance,log_lengthscale]`. Periodic leaves use
 `[log_variance,log_lengthscale,log_period]`; rational-quadratic leaves use
 `[log_variance,log_lengthscale,log_alpha]`. Linear, constant, white-noise, and
-user leaves have `[log_variance]`. Composite vectors concatenate the complete
-left vector and then the complete right vector.
+user leaves have `[log_variance]`. Cosine leaves use
+`[log_variance,log_lengthscale]`. Polynomial leaves use
+`[log_variance,log_scale,log_offset,log_degree]` and require
+`offset + scale*dot(x1,x2) > 0` for input derivatives. Composite vectors
+concatenate the complete left vector and then the complete right vector.
 
 `kernel_t` exposes `parameter_count`, `parameters`, `set_parameters`, `value`,
 `matrix`, `matrix_jvp`, `parameter_vjp`, `parameter_hvp`, and
 `input_derivatives`. Input derivatives return the value, gradients with respect
 to both arguments, and the mixed Hessian. Periodic and rational-quadratic
-leaves provide smooth coincident-point limits for these products. Their
-parameter JVP/VJP/HVP products are analytic in the logarithmic parameters;
-the periodic scale is the Euclidean period and the rational-quadratic tail is
+leaves provide smooth coincident-point limits for these products. Cosine and
+polynomial leaves also expose analytic parameter JVP/VJP/HVP products in their
+logarithmic parameters. The periodic scale is the Euclidean period and the
+rational-quadratic tail is
 controlled by positive `alpha`. Matérn 1/2 input derivatives remain undefined
 at coincident points, and white-noise derivative observations are rejected.
 Validated user formulas use the same forward derivative stack for their value,

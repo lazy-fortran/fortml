@@ -1,30 +1,35 @@
 program fortml_bench_kernel_catalog
-    !! Correctness-gated timing protocol for the periodic/RQ kernel leaves.
+    !! Correctness-gated timing protocol for smooth kernel leaves.
     use, intrinsic :: iso_fortran_env, only: dp => real64, int64
     use fortml_kernels, only: kernel_t, make_periodic_kernel, &
-        make_rational_quadratic_kernel
+        make_rational_quadratic_kernel, make_cosine_kernel, make_polynomial_kernel
     use fortnum_status, only: fortnum_status_t, status_ok
     implicit none
 
     integer, parameter :: n = 256, d = 3, repetitions = 24
     real(dp) :: x(n, d), matrix(n, n), matrix_dot(n, n), matrix_bar(n, n)
-    real(dp) :: direction(3), parameter_bar(3), parameter_bar_dot(3)
     real(dp) :: value, value_dot, gradient_x1(d), gradient_x2(d), mixed_hessian(d, d)
-    type(kernel_t) :: periodic, rational_quadratic
+    type(kernel_t) :: periodic, rational_quadratic, cosine, polynomial
     type(fortnum_status_t) :: status
     integer(int64) :: begin_clock, end_clock, rate
 
     call fill_fixture(x, matrix_bar)
-    direction = [0.11_dp, -0.07_dp, 0.03_dp]
     periodic = make_periodic_kernel(d, 1.3_dp, 0.7_dp, 1.1_dp, status)
     if (.not. status_ok(status)) error stop "periodic constructor failed"
     rational_quadratic = make_rational_quadratic_kernel(d, 1.2_dp, 0.9_dp, 1.4_dp, status)
     if (.not. status_ok(status)) error stop "rational quadratic constructor failed"
-    call benchmark_kernel(periodic, "periodic", x, matrix_bar, direction, status)
+    call benchmark_kernel(periodic, "periodic", x, matrix_bar, status)
     if (.not. status_ok(status)) error stop "periodic benchmark failed"
-    call benchmark_kernel(rational_quadratic, "rational_quadratic", x, matrix_bar, &
-        direction, status)
+    call benchmark_kernel(rational_quadratic, "rational_quadratic", x, matrix_bar, status)
     if (.not. status_ok(status)) error stop "rational quadratic benchmark failed"
+    cosine = make_cosine_kernel(d, 1.3_dp, 0.7_dp, status)
+    if (.not. status_ok(status)) error stop "cosine constructor failed"
+    call benchmark_kernel(cosine, "cosine", x, matrix_bar, status)
+    if (.not. status_ok(status)) error stop "cosine benchmark failed"
+    polynomial = make_polynomial_kernel(d, 1.1_dp, 0.1_dp, 5.0_dp, 2.3_dp, status)
+    if (.not. status_ok(status)) error stop "polynomial constructor failed"
+    call benchmark_kernel(polynomial, "polynomial", x, matrix_bar, status)
+    if (.not. status_ok(status)) error stop "polynomial benchmark failed"
 
 contains
 
@@ -45,14 +50,22 @@ contains
         end do
     end subroutine fill_fixture
 
-    subroutine benchmark_kernel(kernel, name, points, cotangent, direction, final_status)
+    subroutine benchmark_kernel(kernel, name, points, cotangent, final_status)
         type(kernel_t), intent(inout) :: kernel
         character(len=*), intent(in) :: name
-        real(dp), intent(in) :: points(:, :), cotangent(:, :), direction(:)
+        real(dp), intent(in) :: points(:, :), cotangent(:, :)
         type(fortnum_status_t), intent(out) :: final_status
+        real(dp), allocatable :: direction(:), parameter_bar(:), parameter_bar_dot(:)
+        integer :: n_parameters, parameter
         integer :: repetition
         real(dp) :: seconds, checksum
 
+        n_parameters = kernel%parameter_count()
+        allocate(direction(n_parameters), parameter_bar(n_parameters), &
+            parameter_bar_dot(n_parameters))
+        do parameter = 1, n_parameters
+            direction(parameter) = 0.03_dp*real(parameter, dp) - 0.08_dp
+        end do
         call kernel%matrix(points, points, matrix, final_status)
         if (.not. status_ok(final_status)) return
         call system_clock(begin_clock, rate)

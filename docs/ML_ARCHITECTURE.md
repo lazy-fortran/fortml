@@ -236,10 +236,10 @@ mode-solve, and derivative buffers before it can be reported as end-to-end
 GPU.
 
 The current kernel expression tree composes covariance leaves with sum and
-product nodes. Its built-in leaves are RBF, Matérn 1/2, 3/2, and 5/2, linear,
-constant, and white noise. Validated postfix formulas provide a bounded user
-leaf. Rational quadratic, periodic, polynomial, spectral-mixture, and direct
-Wendland constructors remain design targets.
+product nodes. Its built-in leaves are RBF, Matérn 1/2, 3/2, and 5/2, periodic,
+rational quadratic, cosine, polynomial, linear, constant, and white noise.
+Validated postfix formulas provide a bounded user leaf. Spectral-mixture and
+direct Wendland constructors remain design targets.
 
 The derivative GP assigns an integer component to each observation row:
 component 0 is a function value and component `j` is the first derivative with
