@@ -7,10 +7,13 @@ module fortml_gp_training
     !! marginal-likelihood gradient.  This keeps optimization and derivative
     !! contracts on the same code path as prediction.
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+    use, intrinsic :: iso_fortran_env, only: int64
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
-        FORTNUM_DOMAIN_ERROR, FORTNUM_CONVERGENCE_ERROR
+        FORTNUM_DOMAIN_ERROR, FORTNUM_CONVERGENCE_ERROR, FORTNUM_NOT_IMPLEMENTED
+    use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU, FORTML_DEVICE_CUDA
     use fortml_gaussian_process, only: gp_regression_t
+    use fortnum_rng, only: rng_t, rng_seed, rng_uniform
     use fortopt_objective, only: objective_t
     use fortopt_lbfgsb, only: lbfgsb_t, lbfgsb_options_t, lbfgsb_result_t
     implicit none
@@ -25,6 +28,9 @@ module fortml_gp_training
         real(dp) :: objective_tolerance = 1.0e-12_dp
         real(dp) :: lower_bound = -20.0_dp
         real(dp) :: upper_bound = 20.0_dp
+        integer :: starts = 1
+        integer(int64) :: seed = 17_int64
+        logical :: include_current = .true.
     end type gp_hyperparameter_options_t
 
     type, public :: gp_hyperparameter_result_t
@@ -32,25 +38,71 @@ module fortml_gp_training
         integer :: iterations = 0
         real(dp) :: negative_log_marginal_likelihood = huge(1.0_dp)
         real(dp) :: gradient_norm = huge(1.0_dp)
+        integer :: start_count = 0
+        integer :: successful_starts = 0
+        integer :: best_start = 0
+        integer :: objective_evaluations = 0
     end type gp_hyperparameter_result_t
 
     public :: gp_optimize_hyperparameters
+    public :: gp_optimize_hyperparameters_multistart
 
 contains
 
-    subroutine gp_optimize_hyperparameters(model, options, result, status)
+    subroutine gp_optimize_hyperparameters(model, options, result, status, device)
         type(gp_regression_t), target, intent(inout) :: model
         type(gp_hyperparameter_options_t), intent(in) :: options
         type(gp_hyperparameter_result_t), intent(out) :: result
         type(fortnum_status_t), intent(out) :: status
+        type(fortml_device_t), intent(in), optional :: device
+
+        call gp_optimize_hyperparameters_multistart(model, options, result, status, device)
+    end subroutine gp_optimize_hyperparameters
+
+    subroutine gp_optimize_hyperparameters_multistart(model, options, result, status, device)
+        !! Optimize exact-GP log parameters from deterministic seeded starts.
+        !!
+        !! The first start may reuse the fitted state.  Remaining starts are
+        !! uniform draws in the closed bound box from `options%seed`.  Only
+        !! converged finite runs compete for retention; after all starts the
+        !! model is restored to the best parameter vector.  CUDA is refused
+        !! explicitly because exact GP factorization and this optimizer are
+        !! not resident-device implementations yet.
+        type(gp_regression_t), target, intent(inout) :: model
+        type(gp_hyperparameter_options_t), intent(in) :: options
+        type(gp_hyperparameter_result_t), intent(out) :: result
+        type(fortnum_status_t), intent(out) :: status
+        type(fortml_device_t), intent(in), optional :: device
         type(objective_t) :: objective
         type(lbfgsb_t) :: optimizer
         type(lbfgsb_options_t) :: optimizer_options
         type(lbfgsb_result_t) :: optimizer_result
+        type(rng_t) :: generator
         real(dp), allocatable :: parameters(:), lower(:), upper(:), gradient(:)
-        integer :: n_parameters
+        real(dp), allocatable :: best_parameters(:), initial_parameters(:)
+        real(dp) :: local_value, local_gradient_norm, uniform
+        integer :: n_parameters, start, j
+        logical :: run_converged
 
         result = gp_hyperparameter_result_t()
+        result%start_count = options%starts
+        if (present(device)) then
+            if (.not. device%selected .or. .not. device%available) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "GP hyperparameter training: selected device is unavailable")
+                return
+            end if
+            if (device%kind == FORTML_DEVICE_CUDA) then
+                call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                    "GP hyperparameter training: no resident CUDA exact-GP optimizer")
+                return
+            end if
+            if (device%kind /= FORTML_DEVICE_CPU) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "GP hyperparameter training: device kind is invalid")
+                return
+            end if
+        end if
         if (.not. valid_options(options)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "GP hyperparameter training: options are invalid")
@@ -62,11 +114,12 @@ contains
                 "GP hyperparameter training: model has no parameters")
             return
         end if
-
-        parameters = model%parameters()
-        allocate(lower(n_parameters), upper(n_parameters), gradient(n_parameters))
+        initial_parameters = model%parameters()
+        allocate(parameters(n_parameters), best_parameters(n_parameters), &
+            lower(n_parameters), upper(n_parameters), gradient(n_parameters))
         lower = options%lower_bound
         upper = options%upper_bound
+        best_parameters = initial_parameters
         call objective%initialize_context(n_parameters, model, &
             gp_negative_lml_objective, status)
         if (status%code /= FORTNUM_OK) return
@@ -77,31 +130,67 @@ contains
         optimizer_options%gradient_tolerance = options%gradient_tolerance
         optimizer_options%step_tolerance = options%step_tolerance
         optimizer_options%objective_tolerance = options%objective_tolerance
-        call optimizer%minimize(objective, parameters, lower, upper, &
-            optimizer_options, optimizer_result, status)
+        call rng_seed(generator, options%seed, status)
         if (status%code /= FORTNUM_OK) return
-        call model%set_parameters(parameters, status)
+        do start = 1, options%starts
+            if (start == 1 .and. options%include_current) then
+                parameters = initial_parameters
+            else
+                do j = 1, n_parameters
+                    call rng_uniform(generator, uniform)
+                    parameters(j) = lower(j) + (upper(j) - lower(j))*uniform
+                end do
+            end if
+            call optimizer%minimize(objective, parameters, lower, upper, &
+                optimizer_options, optimizer_result, status)
+            result%objective_evaluations = result%objective_evaluations + &
+                optimizer_result%line_search_evaluations + 1
+            run_converged = optimizer_result%state%converged
+            if (status%code == FORTNUM_CONVERGENCE_ERROR) then
+                ! Armijo failure or iteration exhaustion is a failed start,
+                ! not a reason to discard finite results from other starts.
+                call status_set(status, FORTNUM_OK, "")
+            else if (status%code /= FORTNUM_OK) then
+                return
+            end if
+            call gp_negative_lml_objective(model, parameters, local_value, gradient, status)
+            if (status%code /= FORTNUM_OK) return
+            if (.not. ieee_is_finite(local_value) .or. &
+                any(.not. ieee_is_finite(gradient))) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "GP hyperparameter training: start returned a nonfinite state")
+                return
+            end if
+            local_gradient_norm = sqrt(sum(gradient**2))
+            if (run_converged) then
+                result%successful_starts = result%successful_starts + 1
+                if (result%successful_starts == 1 .or. &
+                    local_value < result%negative_log_marginal_likelihood) then
+                    result%negative_log_marginal_likelihood = local_value
+                    result%gradient_norm = local_gradient_norm
+                    result%iterations = optimizer_result%state%iteration
+                    result%best_start = start
+                    best_parameters = parameters
+                end if
+            end if
+        end do
+
+        if (result%successful_starts < 1) then
+            call model%set_parameters(initial_parameters, status)
+            if (status%code /= FORTNUM_OK) return
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "GP hyperparameter training: no multistart run converged")
+            return
+        end if
+        call model%set_parameters(best_parameters, status)
         if (status%code /= FORTNUM_OK) return
-        call gp_negative_lml_objective(model, parameters, &
+        call gp_negative_lml_objective(model, best_parameters, &
             result%negative_log_marginal_likelihood, gradient, status)
         if (status%code /= FORTNUM_OK) return
-
-        result%converged = optimizer_result%state%converged
-        result%iterations = optimizer_result%state%iteration
         result%gradient_norm = sqrt(sum(gradient**2))
-        if (.not. result%converged) then
-            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
-                "GP hyperparameter training: iteration limit reached")
-            return
-        end if
-        if (.not. ieee_is_finite(result%negative_log_marginal_likelihood) .or. &
-            .not. ieee_is_finite(result%gradient_norm)) then
-            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
-                "GP hyperparameter training: result is not finite")
-            return
-        end if
+        result%converged = .true.
         call status_set(status, FORTNUM_OK, "")
-    end subroutine gp_optimize_hyperparameters
+    end subroutine gp_optimize_hyperparameters_multistart
 
     subroutine gp_negative_lml_objective(context, parameters, value, gradient, status)
         class(*), intent(inout) :: context
@@ -153,7 +242,8 @@ contains
             options%gradient_tolerance >= 0.0_dp .and. &
             options%step_tolerance >= 0.0_dp .and. &
             options%objective_tolerance >= 0.0_dp .and. &
-            options%lower_bound <= options%upper_bound
+            options%lower_bound <= options%upper_bound .and. &
+            options%starts >= 1 .and. options%seed > 0_int64
     end function valid_options
 
 end module fortml_gp_training

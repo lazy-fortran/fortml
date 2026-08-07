@@ -1904,14 +1904,23 @@ The HVP covers a weighted predictive mean. The LML methods are
 
 ### `fortml_gp_training`
 
-`gp_optimize_hyperparameters(model,options,result,status)` minimizes the
+`gp_optimize_hyperparameters(model,options,result,status[,device])` minimizes the
 negative exact-GP log marginal likelihood with FortOpt L-BFGS-B. The model
 must already be fitted, and each objective evaluation refactorizes the model
 through `set_parameters`, so the optimizer uses the same analytic
 hyperparameter gradient as the public likelihood product. Parameters are the
 kernel log parameters followed by log observation-noise variance. Bounds are
 applied uniformly through `gp_hyperparameter_options_t`. The default interval
-is `[-20,20]`.
+is `[-20,20]`. `gp_optimize_hyperparameters_multistart` is the explicit
+multi-start entry point; the main entry point delegates to it. Set
+`options%starts` and `options%seed` for deterministic uniform starts in the
+closed box. With `include_current=.true.` (the default), the fitted parameter
+vector is the first start. Only finite converged runs compete for retention,
+and the model is restored to the lowest negative log marginal likelihood.
+The result reports `start_count`, `successful_starts`, `best_start`, and
+`objective_evaluations` in addition to the single-start diagnostics. An
+optional selected CUDA device returns `FORTNUM_NOT_IMPLEMENTED`; exact GP
+factorization and this optimizer do not silently fall back to a host path.
 
 `gp_hyperparameter_result_t` reports convergence, iteration count, final
 negative log marginal likelihood, and the final gradient norm. A nonconverged

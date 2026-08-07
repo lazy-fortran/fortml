@@ -110,6 +110,10 @@ acquisition work packages:
 - [`fortmc/ROADMAP.md`](https://github.com/lazy-fortran/fortmc/blob/main/ROADMAP.md)
 - [`fortbo/ROADMAP.md`](https://github.com/lazy-fortran/fortbo/blob/main/ROADMAP.md)
 
+The companion repositories were checked on 2026-08-07 at FortMC `4dde0cc`
+and FortBO `0141e22`, both on their `main` branches. Refresh these pins when
+their protocol or device contracts change.
+
 FortML work packages that depend on these projects must add a focused adapter,
 an independent oracle, and a benchmark row rather than embedding a second
 MCMC or Bayesian-optimization implementation.
@@ -1361,8 +1365,13 @@ state phases are reported separately.
 - [ ] Add trainable constant and linear mean functions and automatic relevance
   determination length scales. Parameter packing must include mean, kernel,
   likelihood, and optional inducing-location blocks in a documented order.
-- [ ] Add bounded hyperparameter optimization with multiple seeded restarts,
-  priors, jitter escalation, convergence diagnostics, and retained best state.
+- [x] Add bounded exact-GP hyperparameter optimization with deterministic
+  seeded restarts, explicit first-start retention, convergence accounting, and
+  restoration of the best finite converged state. The API reports start and
+  success counts, best-start index, objective evaluations, and refuses a
+  selected CUDA device until exact factorization and optimizer state are
+  resident. Priors, jitter escalation, and derivative-GP multistart remain
+  separate follow-up contracts.
 - [ ] Define a derivative capability table for every estimator, transform,
   objective, and backend. It must list supported value, input JVP/VJP/HVP,
   parameter JVP/VJP/HVP, stochastic-path derivative, and refusal conditions.
