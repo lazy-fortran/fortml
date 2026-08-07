@@ -608,6 +608,20 @@ parameters, nonfinite data, malformed weights, and zero-support reductions
 return typed domain statuses. No CUDA loss kernel is linked; device requests
 remain an explicit unavailable capability rather than a host fallback.
 
+`gaussian_nll_*` adds a heteroscedastic Gaussian negative log likelihood in
+`(prediction, log_variance)` coordinates, including the normalizing
+`log(2*pi)` constant. Value, JVP, VJP, and HVP products cover both mean and log
+variance; `gaussian_nll_hvp` returns both output blocks. `poisson_nll_*` (also
+available through the `poisson_count_nll_*` aliases) uses log-rate coordinates
+and includes `log_gamma(target+1)`, accepting finite nonnegative real counts.
+Both families accept optional nonnegative row weights and
+`LOSS_REDUCTION_MEAN`/`LOSS_REDUCTION_SUM`; mean divides by positive weight
+mass and sum leaves the weighted sum unnormalised. Log variances below
+`log(tiny)` and log rates above `log(huge)`, nonfinite products, malformed
+weights, and negative counts return typed domain errors. No CUDA NLL kernels are
+resident, so CUDA requests remain an explicit unavailable capability with no
+host fallback.
+
 ### `fortml_softmax_regression`
 
 `softmax_regression_t%fit(x,labels,status[,l2,fit_intercept,max_iterations,

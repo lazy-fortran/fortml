@@ -1099,6 +1099,13 @@ trials remain visible in the result schema.
   value/JVP/VJP products. Independent finite-difference, adjoint, reduction,
   extreme-logit, and parameter-refusal tests cover the slice. Resident CUDA
   loss kernels remain open and never fall back silently to host execution.
+- [x] Add Gaussian and Poisson/count negative-log-likelihood products to the
+  shared neural-loss facade. Gaussian NLL uses mean/log-variance coordinates
+  and includes the normalizing constant; Poisson NLL uses log-rate coordinates
+  and `log_gamma(count+1)`. Both expose weighted mean/sum value/JVP/VJP/HVP
+  products, aliases, finite-scale and nonnegative-count validation, and
+  independent finite-difference/adjoint/curvature tests. Resident CUDA NLL
+  kernels remain open; CUDA requests are typed refusals with no host fallback.
 - [x] Define a sequential nested-MLP parameter-tree seam with stable named
   stage paths, contiguous offsets, exact chain-rule products, and an analytic
   FortOpt L-BFGS-B objective. Independent JVP finite-difference, VJP adjoint,
@@ -1106,7 +1113,7 @@ trials remain visible in the result schema.
   scope. Buffers, frozen/tied blocks, masks, stateful layers, and alias-aware
   flattening remain open extensions of the general tree.
 - [ ] Add the remaining common neural losses and metrics: multilabel and
-  ordinal losses, Gaussian and count likelihoods, contrastive and triplet
+  ordinal losses, contrastive and triplet
   losses, KL terms, and sequence masking. MSE/MAE/Huber/quantile, binary and
   softmax cross-entropy, and focal BCE are implemented with explicit
   reduction/weighting contracts; the remaining families still need the same

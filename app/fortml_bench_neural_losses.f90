@@ -4,7 +4,8 @@ program fortml_bench_neural_losses
     use fortnum_status, only: fortnum_status_t, status_ok
     use fortml_losses, only: binary_cross_entropy_with_logits_hvp, &
         softmax_cross_entropy_hvp, weighted_mse_loss_hvp, huber_loss_hvp, &
-        mae_loss_jvp, focal_binary_cross_entropy_with_logits_jvp
+        mae_loss_jvp, focal_binary_cross_entropy_with_logits_jvp, &
+        gaussian_nll_hvp, poisson_nll_hvp
     use fortml_mlp, only: mlp_t
     use fortml_mlp_training, only: mlp_loss_value_gradient
     implicit none
@@ -12,6 +13,8 @@ program fortml_bench_neural_losses
     integer, parameter :: n = 64, k = 3, repetitions = 2048
     real(dp) :: logits(n, k), targets(n, k), direction(n, k), product(n, k)
     real(dp) :: prediction(n, 1), target(n, 1), weights(n), value, l2_gradient
+    real(dp) :: log_variance(n, k), count_targets(n, k), variance_direction(n, k)
+    real(dp) :: variance_product(n, k)
     real(dp) :: value_dot, loss_value
     real(dp), allocatable :: gradient(:)
     integer :: labels(n), i, repetition
@@ -27,6 +30,12 @@ program fortml_bench_neural_losses
             merge(1.0_dp, 0.0_dp, mod(i, 3) == 2)]
         direction(i, :) = [0.01_dp*sin(0.11_dp*real(i, dp)), &
             -0.02_dp*cos(0.17_dp*real(i, dp)), 0.03_dp]
+        log_variance(i, :) = [0.2_dp*sin(0.03_dp*real(i, dp)), &
+            -0.1_dp*cos(0.05_dp*real(i, dp)), 0.15_dp*sin(0.07_dp*real(i, dp))]
+        count_targets(i, :) = [real(mod(i, 5), dp), real(mod(i + 1, 5), dp), &
+            0.5_dp + real(mod(i + 2, 4), dp)]
+        variance_direction(i, :) = [0.02_dp*cos(0.09_dp*real(i, dp)), &
+            -0.01_dp*sin(0.08_dp*real(i, dp)), 0.015_dp]
         labels(i) = 1 + mod(i - 1, k)
         prediction(i, 1) = logits(i, 1)
         target(i, 1) = 0.4_dp*sin(0.05_dp*real(i, dp))
@@ -94,6 +103,26 @@ program fortml_bench_neural_losses
     end do
     call cpu_time(finish)
     call emit("focal_bce_jvp", finish - start, value_dot)
+
+    call gaussian_nll_hvp(logits, targets, log_variance, direction, &
+        variance_direction, product, variance_product, status, weights)
+    if (.not. status_ok(status)) error stop "Gaussian NLL warmup failed"
+    call cpu_time(start)
+    do repetition = 1, repetitions
+        call gaussian_nll_hvp(logits, targets, log_variance, direction, &
+            variance_direction, product, variance_product, status, weights)
+    end do
+    call cpu_time(finish)
+    call emit("gaussian_nll_hvp", finish - start, sum(product) + sum(variance_product))
+
+    call poisson_nll_hvp(logits, count_targets, direction, product, status, weights)
+    if (.not. status_ok(status)) error stop "Poisson NLL warmup failed"
+    call cpu_time(start)
+    do repetition = 1, repetitions
+        call poisson_nll_hvp(logits, count_targets, direction, product, status, weights)
+    end do
+    call cpu_time(finish)
+    call emit("poisson_nll_hvp", finish - start, sum(product))
 
     call model%initialize([1, 4, 1], status, initialization_seed=29)
     if (.not. status_ok(status)) error stop "MLP initialization failed"

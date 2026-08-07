@@ -29,6 +29,12 @@ module fortml_losses
     public :: binary_focal_cross_entropy_with_logits_value
     public :: binary_focal_cross_entropy_with_logits_jvp
     public :: binary_focal_cross_entropy_with_logits_vjp
+    public :: gaussian_nll_value, gaussian_nll_jvp, gaussian_nll_vjp
+    public :: gaussian_nll_hvp
+    public :: poisson_nll_value, poisson_nll_jvp, poisson_nll_vjp
+    public :: poisson_nll_hvp
+    public :: poisson_count_nll_value, poisson_count_nll_jvp
+    public :: poisson_count_nll_vjp, poisson_count_nll_hvp
     public :: huber_loss_value, huber_loss_jvp, huber_loss_vjp
     public :: huber_loss_hvp
     public :: quantile_loss_value, quantile_loss_jvp, quantile_loss_vjp
@@ -59,6 +65,22 @@ module fortml_losses
     interface binary_focal_cross_entropy_with_logits_vjp
         module procedure focal_binary_cross_entropy_with_logits_vjp
     end interface binary_focal_cross_entropy_with_logits_vjp
+
+    interface poisson_count_nll_value
+        module procedure poisson_nll_value
+    end interface poisson_count_nll_value
+
+    interface poisson_count_nll_jvp
+        module procedure poisson_nll_jvp
+    end interface poisson_count_nll_jvp
+
+    interface poisson_count_nll_vjp
+        module procedure poisson_nll_vjp
+    end interface poisson_count_nll_vjp
+
+    interface poisson_count_nll_hvp
+        module procedure poisson_nll_hvp
+    end interface poisson_count_nll_hvp
 
 contains
 
@@ -903,6 +925,416 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine focal_binary_cross_entropy_with_logits_vjp
 
+    subroutine gaussian_nll_value(prediction, targets, log_variance, value, &
+            status, sample_weight, reduction)
+        !! Gaussian negative log likelihood with a learned log variance.
+        !!
+        !! The per-element value is `0.5*(log_variance + residual**2 /
+        !! variance + log(2*pi))`.  Optional row weights and mean/sum
+        !! reductions follow the shared positive-weight-mass contract.
+        real(dp), intent(in) :: prediction(:, :), targets(:, :), log_variance(:, :)
+        real(dp), intent(out) :: value
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
+        integer, intent(in), optional :: reduction
+        real(dp), allocatable :: weights(:)
+        real(dp) :: normalization, residual, inverse_variance, term
+        integer :: i, j
+
+        value = 0.0_dp
+        call validate_gaussian_nll_inputs(prediction, targets, log_variance, status)
+        if (status%code /= FORTNUM_OK) return
+        call prepare_loss_weights(size(prediction, 1), sample_weight, reduction, &
+            weights, normalization, status)
+        if (status%code /= FORTNUM_OK) return
+        do j = 1, size(prediction, 2)
+            do i = 1, size(prediction, 1)
+                residual = prediction(i, j) - targets(i, j)
+                inverse_variance = exp(-log_variance(i, j))
+                term = 0.5_dp*(log_variance(i, j) + residual*residual* &
+                    inverse_variance + log(2.0_dp*acos(-1.0_dp)))
+                if (.not. ieee_is_finite(term)) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "Gaussian NLL: value is not finite")
+                    value = 0.0_dp
+                    return
+                end if
+                value = value + weights(i)*term
+            end do
+        end do
+        value = value/normalization
+        if (.not. ieee_is_finite(value)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "Gaussian NLL: reduction is not finite")
+            value = 0.0_dp
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gaussian_nll_value
+
+    subroutine gaussian_nll_jvp(prediction, targets, log_variance, prediction_dot, &
+            log_variance_dot, value, value_dot, status, sample_weight, reduction)
+        !! Value/JVP of Gaussian NLL with respect to mean and log variance.
+        real(dp), intent(in) :: prediction(:, :), targets(:, :), log_variance(:, :)
+        real(dp), intent(in) :: prediction_dot(:, :), log_variance_dot(:, :)
+        real(dp), intent(out) :: value, value_dot
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
+        integer, intent(in), optional :: reduction
+        real(dp), allocatable :: weights(:)
+        real(dp) :: normalization, residual, inverse_variance, term
+        real(dp) :: mean_gradient, variance_gradient
+        integer :: i, j
+
+        value = 0.0_dp
+        value_dot = 0.0_dp
+        if (any(shape(prediction_dot) /= shape(prediction)) .or. &
+            any(shape(log_variance_dot) /= shape(prediction))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "Gaussian NLL JVP: tangent shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(prediction_dot)) .or. &
+            any(.not. ieee_is_finite(log_variance_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "Gaussian NLL JVP: tangents must be finite")
+            return
+        end if
+        call validate_gaussian_nll_inputs(prediction, targets, log_variance, status)
+        if (status%code /= FORTNUM_OK) return
+        call prepare_loss_weights(size(prediction, 1), sample_weight, reduction, &
+            weights, normalization, status)
+        if (status%code /= FORTNUM_OK) return
+        do j = 1, size(prediction, 2)
+            do i = 1, size(prediction, 1)
+                residual = prediction(i, j) - targets(i, j)
+                inverse_variance = exp(-log_variance(i, j))
+                term = 0.5_dp*(log_variance(i, j) + residual*residual* &
+                    inverse_variance + log(2.0_dp*acos(-1.0_dp)))
+                mean_gradient = residual*inverse_variance
+                variance_gradient = 0.5_dp*(1.0_dp - residual*residual* &
+                    inverse_variance)
+                if (.not. ieee_is_finite(term) .or. &
+                    .not. ieee_is_finite(mean_gradient) .or. &
+                    .not. ieee_is_finite(variance_gradient)) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "Gaussian NLL JVP: product is not finite")
+                    value = 0.0_dp
+                    value_dot = 0.0_dp
+                    return
+                end if
+                value = value + weights(i)*term
+                value_dot = value_dot + weights(i)*(mean_gradient* &
+                    prediction_dot(i, j) + variance_gradient*log_variance_dot(i, j))
+            end do
+        end do
+        value = value/normalization
+        value_dot = value_dot/normalization
+        if (.not. ieee_is_finite(value) .or. .not. ieee_is_finite(value_dot)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "Gaussian NLL JVP: reduction is not finite")
+            value = 0.0_dp
+            value_dot = 0.0_dp
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gaussian_nll_jvp
+
+    subroutine gaussian_nll_vjp(prediction, targets, log_variance, value_bar, &
+            prediction_bar, log_variance_bar, status, sample_weight, reduction)
+        !! VJP of Gaussian NLL with respect to mean and log variance.
+        real(dp), intent(in) :: prediction(:, :), targets(:, :), log_variance(:, :)
+        real(dp), intent(in) :: value_bar
+        real(dp), intent(out) :: prediction_bar(:, :), log_variance_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
+        integer, intent(in), optional :: reduction
+        real(dp), allocatable :: weights(:)
+        real(dp) :: normalization, residual, inverse_variance
+        integer :: i, j
+
+        prediction_bar = 0.0_dp
+        log_variance_bar = 0.0_dp
+        if (any(shape(prediction_bar) /= shape(prediction)) .or. &
+            any(shape(log_variance_bar) /= shape(prediction)) .or. &
+            .not. ieee_is_finite(value_bar)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "Gaussian NLL VJP: cotangent or output shape is invalid")
+            return
+        end if
+        call validate_gaussian_nll_inputs(prediction, targets, log_variance, status)
+        if (status%code /= FORTNUM_OK) return
+        call prepare_loss_weights(size(prediction, 1), sample_weight, reduction, &
+            weights, normalization, status)
+        if (status%code /= FORTNUM_OK) return
+        do j = 1, size(prediction, 2)
+            do i = 1, size(prediction, 1)
+                residual = prediction(i, j) - targets(i, j)
+                inverse_variance = exp(-log_variance(i, j))
+                prediction_bar(i, j) = value_bar*weights(i)*residual* &
+                    inverse_variance/normalization
+                log_variance_bar(i, j) = value_bar*weights(i)*0.5_dp*(1.0_dp - &
+                    residual*residual*inverse_variance)/normalization
+            end do
+        end do
+        if (any(.not. ieee_is_finite(prediction_bar)) .or. &
+            any(.not. ieee_is_finite(log_variance_bar))) then
+            prediction_bar = 0.0_dp
+            log_variance_bar = 0.0_dp
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "Gaussian NLL VJP: product is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gaussian_nll_vjp
+
+    subroutine gaussian_nll_hvp(prediction, targets, log_variance, prediction_dot, &
+            log_variance_dot, prediction_hvp, log_variance_hvp, status, &
+            sample_weight, reduction)
+        !! Hessian-vector product of Gaussian NLL with respect to mean/log variance.
+        real(dp), intent(in) :: prediction(:, :), targets(:, :), log_variance(:, :)
+        real(dp), intent(in) :: prediction_dot(:, :), log_variance_dot(:, :)
+        real(dp), intent(out) :: prediction_hvp(:, :), log_variance_hvp(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
+        integer, intent(in), optional :: reduction
+        real(dp), allocatable :: weights(:)
+        real(dp) :: normalization, residual, inverse_variance, scale
+        integer :: i, j
+
+        prediction_hvp = 0.0_dp
+        log_variance_hvp = 0.0_dp
+        if (any(shape(prediction_dot) /= shape(prediction)) .or. &
+            any(shape(log_variance_dot) /= shape(prediction)) .or. &
+            any(shape(prediction_hvp) /= shape(prediction)) .or. &
+            any(shape(log_variance_hvp) /= shape(prediction))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "Gaussian NLL HVP: tangent or output shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(prediction_dot)) .or. &
+            any(.not. ieee_is_finite(log_variance_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "Gaussian NLL HVP: tangents must be finite")
+            return
+        end if
+        call validate_gaussian_nll_inputs(prediction, targets, log_variance, status)
+        if (status%code /= FORTNUM_OK) return
+        call prepare_loss_weights(size(prediction, 1), sample_weight, reduction, &
+            weights, normalization, status)
+        if (status%code /= FORTNUM_OK) return
+        do j = 1, size(prediction, 2)
+            do i = 1, size(prediction, 1)
+                residual = prediction(i, j) - targets(i, j)
+                inverse_variance = exp(-log_variance(i, j))
+                scale = weights(i)*inverse_variance/normalization
+                prediction_hvp(i, j) = scale*(prediction_dot(i, j) - residual* &
+                    log_variance_dot(i, j))
+                log_variance_hvp(i, j) = scale*(-residual*prediction_dot(i, j) + &
+                    0.5_dp*residual*residual*log_variance_dot(i, j))
+            end do
+        end do
+        if (any(.not. ieee_is_finite(prediction_hvp)) .or. &
+            any(.not. ieee_is_finite(log_variance_hvp))) then
+            prediction_hvp = 0.0_dp
+            log_variance_hvp = 0.0_dp
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "Gaussian NLL HVP: product is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gaussian_nll_hvp
+
+    subroutine poisson_nll_value(log_rate, targets, value, status, sample_weight, &
+            reduction)
+        !! Poisson/count negative log likelihood in log-rate coordinates.
+        !!
+        !! The per-element value is `exp(log_rate) - target*log_rate +
+        !! log_gamma(target+1)`.  Targets are finite nonnegative counts (real
+        !! values are accepted for relaxed/count-weighted objectives).
+        real(dp), intent(in) :: log_rate(:, :), targets(:, :)
+        real(dp), intent(out) :: value
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
+        integer, intent(in), optional :: reduction
+        real(dp), allocatable :: weights(:)
+        real(dp) :: normalization, rate, term
+        integer :: i, j
+
+        value = 0.0_dp
+        call validate_poisson_nll_inputs(log_rate, targets, status)
+        if (status%code /= FORTNUM_OK) return
+        call prepare_loss_weights(size(log_rate, 1), sample_weight, reduction, &
+            weights, normalization, status)
+        if (status%code /= FORTNUM_OK) return
+        do j = 1, size(log_rate, 2)
+            do i = 1, size(log_rate, 1)
+                rate = exp(log_rate(i, j))
+                term = rate - targets(i, j)*log_rate(i, j) + &
+                    log_gamma(targets(i, j) + 1.0_dp)
+                if (.not. ieee_is_finite(term)) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "Poisson NLL: value is not finite")
+                    value = 0.0_dp
+                    return
+                end if
+                value = value + weights(i)*term
+            end do
+        end do
+        value = value/normalization
+        if (.not. ieee_is_finite(value)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "Poisson NLL: reduction is not finite")
+            value = 0.0_dp
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine poisson_nll_value
+
+    subroutine poisson_nll_jvp(log_rate, targets, log_rate_dot, value, value_dot, &
+            status, sample_weight, reduction)
+        !! Value/JVP of Poisson NLL with respect to log rates.
+        real(dp), intent(in) :: log_rate(:, :), targets(:, :), log_rate_dot(:, :)
+        real(dp), intent(out) :: value, value_dot
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
+        integer, intent(in), optional :: reduction
+        real(dp), allocatable :: weights(:)
+        real(dp) :: normalization, rate, term
+        integer :: i, j
+
+        value = 0.0_dp
+        value_dot = 0.0_dp
+        if (any(shape(log_rate_dot) /= shape(log_rate))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "Poisson NLL JVP: tangent shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(log_rate_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "Poisson NLL JVP: tangent must be finite")
+            return
+        end if
+        call validate_poisson_nll_inputs(log_rate, targets, status)
+        if (status%code /= FORTNUM_OK) return
+        call prepare_loss_weights(size(log_rate, 1), sample_weight, reduction, &
+            weights, normalization, status)
+        if (status%code /= FORTNUM_OK) return
+        do j = 1, size(log_rate, 2)
+            do i = 1, size(log_rate, 1)
+                rate = exp(log_rate(i, j))
+                term = rate - targets(i, j)*log_rate(i, j) + &
+                    log_gamma(targets(i, j) + 1.0_dp)
+                if (.not. ieee_is_finite(term) .or. &
+                    .not. ieee_is_finite(rate - targets(i, j))) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "Poisson NLL JVP: product is not finite")
+                    value = 0.0_dp
+                    value_dot = 0.0_dp
+                    return
+                end if
+                value = value + weights(i)*term
+                value_dot = value_dot + weights(i)*(rate - targets(i, j))* &
+                    log_rate_dot(i, j)
+            end do
+        end do
+        value = value/normalization
+        value_dot = value_dot/normalization
+        if (.not. ieee_is_finite(value) .or. .not. ieee_is_finite(value_dot)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "Poisson NLL JVP: reduction is not finite")
+            value = 0.0_dp
+            value_dot = 0.0_dp
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine poisson_nll_jvp
+
+    subroutine poisson_nll_vjp(log_rate, targets, value_bar, log_rate_bar, status, &
+            sample_weight, reduction)
+        !! VJP of Poisson NLL with respect to log rates.
+        real(dp), intent(in) :: log_rate(:, :), targets(:, :), value_bar
+        real(dp), intent(out) :: log_rate_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
+        integer, intent(in), optional :: reduction
+        real(dp), allocatable :: weights(:)
+        real(dp) :: normalization, rate
+        integer :: i, j
+
+        log_rate_bar = 0.0_dp
+        if (any(shape(log_rate_bar) /= shape(log_rate)) .or. &
+            .not. ieee_is_finite(value_bar)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "Poisson NLL VJP: cotangent or output shape is invalid")
+            return
+        end if
+        call validate_poisson_nll_inputs(log_rate, targets, status)
+        if (status%code /= FORTNUM_OK) return
+        call prepare_loss_weights(size(log_rate, 1), sample_weight, reduction, &
+            weights, normalization, status)
+        if (status%code /= FORTNUM_OK) return
+        do j = 1, size(log_rate, 2)
+            do i = 1, size(log_rate, 1)
+                rate = exp(log_rate(i, j))
+                log_rate_bar(i, j) = value_bar*weights(i)*(rate - targets(i, j))/ &
+                    normalization
+            end do
+        end do
+        if (any(.not. ieee_is_finite(log_rate_bar))) then
+            log_rate_bar = 0.0_dp
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "Poisson NLL VJP: product is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine poisson_nll_vjp
+
+    subroutine poisson_nll_hvp(log_rate, targets, log_rate_dot, log_rate_hvp, &
+            status, sample_weight, reduction)
+        !! Hessian-vector product of Poisson NLL in log-rate coordinates.
+        real(dp), intent(in) :: log_rate(:, :), targets(:, :), log_rate_dot(:, :)
+        real(dp), intent(out) :: log_rate_hvp(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
+        integer, intent(in), optional :: reduction
+        real(dp), allocatable :: weights(:)
+        real(dp) :: normalization, rate
+        integer :: i, j
+
+        log_rate_hvp = 0.0_dp
+        if (any(shape(log_rate_dot) /= shape(log_rate)) .or. &
+            any(shape(log_rate_hvp) /= shape(log_rate))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "Poisson NLL HVP: tangent or output shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(log_rate_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "Poisson NLL HVP: tangent must be finite")
+            return
+        end if
+        call validate_poisson_nll_inputs(log_rate, targets, status)
+        if (status%code /= FORTNUM_OK) return
+        call prepare_loss_weights(size(log_rate, 1), sample_weight, reduction, &
+            weights, normalization, status)
+        if (status%code /= FORTNUM_OK) return
+        do j = 1, size(log_rate, 2)
+            do i = 1, size(log_rate, 1)
+                rate = exp(log_rate(i, j))
+                log_rate_hvp(i, j) = weights(i)*rate*log_rate_dot(i, j)/ &
+                    normalization
+            end do
+        end do
+        if (any(.not. ieee_is_finite(log_rate_hvp))) then
+            log_rate_hvp = 0.0_dp
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "Poisson NLL HVP: product is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine poisson_nll_hvp
+
     !> Mean Huber loss for real-valued predictions.  The derivative is with
     !> respect to `prediction`; targets are treated as constants.
     subroutine huber_loss_value(prediction, targets, delta, value, status)
@@ -1282,6 +1714,40 @@ contains
         end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine validate_focal_inputs
+
+    subroutine validate_gaussian_nll_inputs(prediction, targets, log_variance, status)
+        real(dp), intent(in) :: prediction(:, :), targets(:, :), log_variance(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (size(prediction, 1) < 1 .or. size(prediction, 2) < 1 .or. &
+            any(shape(targets) /= shape(prediction)) .or. &
+            any(shape(log_variance) /= shape(prediction)) .or. &
+            any(.not. ieee_is_finite(prediction)) .or. &
+            any(.not. ieee_is_finite(targets)) .or. &
+            any(.not. ieee_is_finite(log_variance)) .or. &
+            any(log_variance < log(tiny(1.0_dp)))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "Gaussian NLL: inputs or log variance are invalid")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine validate_gaussian_nll_inputs
+
+    subroutine validate_poisson_nll_inputs(log_rate, targets, status)
+        real(dp), intent(in) :: log_rate(:, :), targets(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (size(log_rate, 1) < 1 .or. size(log_rate, 2) < 1 .or. &
+            any(shape(targets) /= shape(log_rate)) .or. &
+            any(.not. ieee_is_finite(log_rate)) .or. &
+            any(.not. ieee_is_finite(targets)) .or. any(targets < 0.0_dp) .or. &
+            any(log_rate > log(huge(1.0_dp)))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "Poisson NLL: log rates and targets are invalid")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine validate_poisson_nll_inputs
 
     real(dp) function stable_softplus(value) result(output)
         real(dp), intent(in) :: value
