@@ -6,21 +6,25 @@ program test_gp_multiclass_classification
         gp_multiclass_classification_options_t, &
         gp_multiclass_classification_state_t
     use fortml_kernels, only: kernel_t, make_rbf_kernel
+    use fortml_kernels, only: clone_kernel
     use fortnum_status, only: fortnum_status_t, status_ok
     implicit none
 
     type(gp_multiclass_classification_t) :: model, repeat_model, probit_model, unfitted
+    type(gp_multiclass_classification_t) :: model_plus, model_minus
     type(gp_multiclass_classification_options_t) :: options, probit_options
     type(gp_multiclass_classification_state_t) :: state, repeat_state
+    type(gp_multiclass_classification_state_t) :: state_plus, state_minus
     type(fortnum_status_t) :: status
-    type(kernel_t) :: kernel
+    type(kernel_t) :: kernel, kernel_plus, kernel_minus
     real(dp) :: x(9, 2), query(6, 2), query_dot(6, 2), query_plus(6, 2)
     real(dp) :: query_minus(6, 2), probabilities(6, 3), probabilities_dot(6, 3)
     real(dp) :: probabilities_plus(6, 3), probabilities_minus(6, 3)
     real(dp) :: repeat_probabilities(6, 3), probit_probabilities(6, 3)
     real(dp), allocatable :: kernel_parameters(:), model_parameters(:), gradient(:)
+    real(dp), allocatable :: gradient_fd(:), theta_plus(:), theta_minus(:)
     integer :: labels(9), predicted(9), query_predicted(6), classes(3)
-    integer :: failures
+    integer :: failures, k, class_index
 
     x(1, :) = [-0.1_dp, 1.9_dp]
     x(2, :) = [0.1_dp, 2.1_dp]
@@ -60,8 +64,39 @@ program test_gp_multiclass_classification
         size(model_parameters) == model%parameter_count(), &
         "multiclass packed kernel metadata", failures)
     call model%hyperparameter_gradient(gradient, status)
-    call check(.not. status_ok(status), &
-        "unimplemented multiclass hyperparameter gradient refusal", failures)
+    call check(status_ok(status), "multiclass hyperparameter gradient status", failures)
+    ! The fitted wrapper stores one independent binary parameter block per
+    ! sorted class.  Perturbing the single constructor kernel probes all
+    ! blocks together; the oracle therefore compares against the sum of the
+    ! corresponding packed gradient blocks.
+    allocate(gradient_fd(size(kernel_parameters)))
+    allocate(theta_plus(size(kernel_parameters)), theta_minus(size(kernel_parameters)))
+    do k = 1, size(kernel_parameters)
+        theta_plus = kernel_parameters
+        theta_minus = kernel_parameters
+        theta_plus(k) = theta_plus(k) + 1.0e-5_dp
+        theta_minus(k) = theta_minus(k) - 1.0e-5_dp
+        kernel_plus = clone_kernel(kernel)
+        kernel_minus = clone_kernel(kernel)
+        call kernel_plus%set_parameters(theta_plus, status)
+        call check(status_ok(status), "multiclass positive probe setup", failures)
+        call kernel_minus%set_parameters(theta_minus, status)
+        call check(status_ok(status), "multiclass negative probe setup", failures)
+        call model_plus%fit(x, labels, kernel_plus, status, options, state_plus)
+        call check(status_ok(status) .and. state_plus%converged, &
+            "multiclass positive probe fit", failures)
+        call model_minus%fit(x, labels, kernel_minus, status, options, state_minus)
+        call check(status_ok(status) .and. state_minus%converged, &
+            "multiclass negative probe fit", failures)
+        gradient_fd(k) = 0.0_dp
+        do class_index = 1, model%class_count()
+            gradient_fd(k) = gradient_fd(k) + gradient( &
+                (class_index - 1)*size(kernel_parameters) + k)
+        end do
+        call check(abs(gradient_fd(k) - (state_plus%log_posterior - &
+            state_minus%log_posterior)/(2.0e-5_dp)) < 2.0e-5_dp, &
+            "multiclass hyperparameter gradient finite difference", failures)
+    end do
     call model%predict_proba(query, probabilities, status)
     call model%predict(query, query_predicted, status)
     call check(status_ok(status) .and. &

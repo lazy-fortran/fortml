@@ -5,21 +5,24 @@ program test_gp_classification
         gp_classification_options_t, gp_classification_state_t, &
         GP_LIKELIHOOD_PROBIT
     use fortml_kernels, only: kernel_t, make_rbf_kernel
+    use fortml_kernels, only: clone_kernel
     use fortnum_status, only: fortnum_status_t, status_ok
     implicit none
 
     type(gp_classification_t) :: model, probit_model, unfitted
+    type(gp_classification_t) :: model_plus, model_minus
     type(gp_classification_options_t) :: options
-    type(gp_classification_state_t) :: state
+    type(gp_classification_state_t) :: state, state_plus, state_minus
     type(fortnum_status_t) :: status
-    type(kernel_t) :: kernel
+    type(kernel_t) :: kernel, kernel_plus, kernel_minus
     real(dp) :: x(8, 1), x_test(5, 1), x_dot(5, 1), x_plus(5, 1), x_minus(5, 1)
     real(dp) :: mean(5), mean_dot(5), variance(5), variance_dot(5)
     real(dp) :: mean_plus(5), mean_minus(5), variance_plus(5), variance_minus(5)
     real(dp) :: probabilities(5, 2), probabilities_dot(5, 2)
     real(dp) :: probabilities_plus(5, 2), probabilities_minus(5, 2)
     real(dp), allocatable :: kernel_parameters(:), model_parameters(:), gradient(:)
-    integer :: labels(8), predicted(8), classes(2), failures
+    real(dp), allocatable :: gradient_fd(:), theta_plus(:), theta_minus(:)
+    integer :: labels(8), predicted(8), classes(2), failures, k
     real(dp) :: h
 
     x(:, 1) = [-1.5_dp, -1.0_dp, -0.5_dp, -0.1_dp, 0.1_dp, 0.5_dp, 1.0_dp, 1.5_dp]
@@ -40,13 +43,38 @@ program test_gp_classification
         "class metadata", failures)
     kernel_parameters = kernel%parameters()
     model_parameters = model%parameters()
-    allocate(gradient(model%parameter_count()))
+    allocate(gradient(model%parameter_count()), gradient_fd(model%parameter_count()))
     call check(model%parameter_count() == size(kernel_parameters) .and. &
         maxval(abs(model_parameters - kernel_parameters)) < 1.0e-14_dp, &
         "kernel parameter metadata", failures)
     call model%hyperparameter_gradient(gradient, status)
-    call check(.not. status_ok(status), &
-        "unimplemented Laplace hyperparameter gradient refusal", failures)
+    call check(status_ok(status), "Laplace hyperparameter gradient status", failures)
+    ! The independent oracle refits at perturbed log-kernel parameters and
+    ! differentiates the converged mode log posterior returned in state.
+    h = 1.0e-5_dp
+    allocate(theta_plus(size(kernel_parameters)), theta_minus(size(kernel_parameters)))
+    do k = 1, size(kernel_parameters)
+        theta_plus = kernel_parameters
+        theta_minus = kernel_parameters
+        theta_plus(k) = theta_plus(k) + h
+        theta_minus(k) = theta_minus(k) - h
+        kernel_plus = clone_kernel(kernel)
+        kernel_minus = clone_kernel(kernel)
+        call kernel_plus%set_parameters(theta_plus, status)
+        call check(status_ok(status), "positive kernel probe setup", failures)
+        call kernel_minus%set_parameters(theta_minus, status)
+        call check(status_ok(status), "negative kernel probe setup", failures)
+        call model_plus%fit(x, labels, kernel_plus, status, options, state_plus)
+        call check(status_ok(status) .and. state_plus%converged, &
+            "positive kernel probe fit", failures)
+        call model_minus%fit(x, labels, kernel_minus, status, options, state_minus)
+        call check(status_ok(status) .and. state_minus%converged, &
+            "negative kernel probe fit", failures)
+        gradient_fd(k) = (state_plus%log_posterior - state_minus%log_posterior)/ &
+            (2.0_dp*h)
+    end do
+    call check(maxval(abs(gradient - gradient_fd)) < 2.0e-5_dp, &
+        "Laplace hyperparameter gradient finite difference", failures)
     call model%predict(x, predicted, status)
     call check(status_ok(status) .and. count(predicted == labels) >= 7, &
         "training classification", failures)

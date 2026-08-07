@@ -395,6 +395,8 @@ contains
         class(gp_classification_t), intent(in) :: self
         real(dp), intent(out) :: gradient(:)
         type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: matrix_bar(:, :)
+        integer :: i, j
 
         gradient = 0.0_dp
         if (.not. self%fitted()) then
@@ -407,8 +409,21 @@ contains
                 "GP classification hyperparameter gradient: output shape is invalid")
             return
         end if
-        call status_set(status, FORTNUM_DOMAIN_ERROR, &
-            "GP classification hyperparameter gradient: Laplace parameter products are not implemented")
+        ! The reported objective is the Laplace mode log posterior without
+        ! the optional evidence correction.  At a converged mode the envelope
+        ! theorem removes the implicit mode derivative, leaving
+        ! d log p(y,f_mode | theta) / d theta =
+        ! 1/2 * alpha^T (dK/dtheta) alpha, where alpha = K^{-1} f_mode.
+        ! The kernel VJP supplies this contraction for every supported kernel
+        ! expression, including sums and products.
+        allocate(matrix_bar(self%n_samples, self%n_samples))
+        do j = 1, self%n_samples
+            do i = 1, self%n_samples
+                matrix_bar(i, j) = 0.5_dp*self%alpha(i)*self%alpha(j)
+            end do
+        end do
+        call self%kernel%parameter_vjp(self%x_train, self%x_train, matrix_bar, &
+            gradient, status)
     end subroutine gp_classification_hyperparameter_gradient
 
     logical function gp_classification_fitted(self) result(fitted)

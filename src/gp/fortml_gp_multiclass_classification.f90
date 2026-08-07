@@ -303,6 +303,8 @@ contains
         class(gp_multiclass_classification_t), intent(in) :: self
         real(dp), intent(out) :: gradient(:)
         type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: local_gradient(:)
+        integer :: i, first, last, local_count
 
         gradient = 0.0_dp
         if (.not. self%fitted()) then
@@ -315,8 +317,21 @@ contains
                 "GP multiclass hyperparameter gradient: output shape is invalid")
             return
         end if
-        call status_set(status, FORTNUM_DOMAIN_ERROR, &
-            "GP multiclass hyperparameter gradient: Laplace parameter products are not implemented")
+        ! The one-vs-rest state objective is the sum of the independent
+        ! binary mode log posteriors.  Pack each exact binary envelope
+        ! gradient in the same sorted-class order as parameters().
+        first = 1
+        do i = 1, self%n_classes
+            local_count = self%models(i)%parameter_count()
+            allocate(local_gradient(local_count))
+            call self%models(i)%hyperparameter_gradient(local_gradient, status)
+            if (status%code /= FORTNUM_OK) return
+            last = first + local_count - 1
+            gradient(first:last) = local_gradient
+            first = last + 1
+            deallocate(local_gradient)
+        end do
+        call status_set(status, FORTNUM_OK, "")
     end subroutine gp_multiclass_classification_hyperparameter_gradient
 
     logical function gp_multiclass_classification_fitted(self) result(fitted)
