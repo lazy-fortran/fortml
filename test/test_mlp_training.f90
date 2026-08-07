@@ -8,6 +8,7 @@ program test_mlp_training
         mlp_training_state_t, mlp_training_objective_t, &
         mlp_training_checkpoint_t, &
         mlp_loss_diagnostics_t, MLP_REDUCTION_MEAN, MLP_REDUCTION_SUM, &
+        MLP_OPTIMIZER_SGD, &
         mlp_loss_value_gradient, mlp_loss_hvp, mlp_train
     implicit none
 
@@ -15,6 +16,7 @@ program test_mlp_training
 
     failures = 0
     call test_first_adam_step(failures)
+    call test_sgd_step_and_checkpoint(failures)
     call test_reproducible_minibatch_and_callback(failures)
     call test_resume_checkpoint(failures)
     call test_l2_hyperparameter_product(failures)
@@ -135,6 +137,61 @@ contains
             state%final_loss < state%initial_loss, "loss history and decrease", &
             failures)
     end subroutine test_first_adam_step
+
+    subroutine test_sgd_step_and_checkpoint(failures)
+        integer, intent(inout) :: failures
+        type(mlp_t) :: one_step_model, full_model, resumed_model
+        type(mlp_training_options_t) :: one_step_options, full_options, split_options
+        type(mlp_training_state_t) :: one_step_state, full_state, resumed_state
+        type(mlp_training_checkpoint_t) :: full_checkpoint, resumed_checkpoint
+        type(fortnum_status_t) :: status
+        real(dp) :: x(3, 1), target(3, 1), theta(2), full_theta(2), resumed_theta(2)
+
+        x(:, 1) = [-1.0_dp, 0.0_dp, 1.0_dp]
+        target(:, 1) = [-1.0_dp, 0.0_dp, 1.0_dp]
+        call one_step_model%initialize([1, 1], status, output_activation=MLP_LINEAR)
+        theta = 0.0_dp
+        call one_step_model%set_parameters(theta, status)
+        one_step_options%optimizer = MLP_OPTIMIZER_SGD
+        one_step_options%momentum = 0.8_dp
+        one_step_options%max_epochs = 1
+        one_step_options%learning_rate = 0.1_dp
+        one_step_options%tolerance = 0.0_dp
+        one_step_options%restore_best = .false.
+        call mlp_train(one_step_model, x, target, status, one_step_options, &
+            one_step_state)
+        theta = one_step_model%parameters()
+        call check(status_ok(status), "first SGD status", failures)
+        call check(one_step_state%updates == 1 .and. &
+            maxval(abs(theta - [1.0_dp/15.0_dp, 0.0_dp])) < 1.0e-14_dp, &
+            "first SGD step independent oracle", failures)
+
+        call full_model%initialize([1, 1], status, output_activation=MLP_LINEAR)
+        call resumed_model%initialize([1, 1], status, output_activation=MLP_LINEAR)
+        call full_model%set_parameters([0.0_dp, 0.0_dp], status)
+        call resumed_model%set_parameters([0.0_dp, 0.0_dp], status)
+        full_options = one_step_options
+        full_options%max_epochs = 2
+        split_options = full_options
+        split_options%max_epochs = 1
+        call mlp_train(full_model, x, target, status, full_options, full_state, &
+            checkpoint=full_checkpoint)
+        call mlp_train(resumed_model, x, target, status, split_options, &
+            checkpoint=resumed_checkpoint)
+        call check(status_ok(status) .and. resumed_checkpoint%valid() .and. &
+            resumed_checkpoint%optimizer == MLP_OPTIMIZER_SGD .and. &
+            maxval(abs(resumed_checkpoint%first_moment - &
+            [-2.0_dp/3.0_dp, 0.0_dp])) < 1.0e-14_dp, &
+            "SGD checkpoint velocity", failures)
+        call mlp_train(resumed_model, x, target, status, full_options, resumed_state, &
+            checkpoint=resumed_checkpoint)
+        full_theta = full_model%parameters()
+        resumed_theta = resumed_model%parameters()
+        call check(status_ok(status) .and. resumed_state%updates == full_state%updates &
+            .and. maxval(abs(full_theta - resumed_theta)) < 1.0e-14_dp .and. &
+            maxval(abs(full_state%loss_history - resumed_state%loss_history)) < &
+            1.0e-14_dp, "resumed SGD trajectory", failures)
+    end subroutine test_sgd_step_and_checkpoint
 
     subroutine test_reproducible_minibatch_and_callback(failures)
         integer, intent(inout) :: failures
