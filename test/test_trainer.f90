@@ -5,7 +5,7 @@ program test_trainer
     use fortnum_status, only: fortnum_status_t, status_ok, status_set, FORTNUM_OK
     use fortopt_objective, only: objective_t
     use fortml_trainer, only: trainer_t, trainer_options_t, trainer_state_t, &
-        FORTML_TRAIN_SGD, FORTML_TRAIN_ADAM, FORTML_TRAIN_LBFGSB
+        FORTML_TRAIN_SGD, FORTML_TRAIN_ADAM, FORTML_TRAIN_ADAFACTOR, FORTML_TRAIN_LBFGSB
     implicit none
 
     type(objective_t) :: objective
@@ -18,8 +18,10 @@ program test_trainer
     real(dp), allocatable :: before_load(:)
     type(trainer_state_t) :: baseline_state, resumed_state
     character(len=*), parameter :: checkpoint_path = "trainer_checkpoint_test.txt"
+    character(len=*), parameter :: adafactor_checkpoint_path = "trainer_adafactor_checkpoint_test.txt"
     character(len=*), parameter :: truncated_path = "trainer_checkpoint_truncated.txt"
     integer :: failures, i
+    real(dp) :: expected(2), moment(2), gradient(2), update_rms, clip_scale
 
     failures = 0
     call objective%initialize(2, quadratic_objective, status)
@@ -62,6 +64,54 @@ program test_trainer
     call check(status_ok(status) .and. state%clipped_steps == 1 .and. &
         state%final_value < state%initial_value, &
         "Adam and gradient clipping decrease the objective", failures)
+
+    ! Independent unfactored Adafactor oracle.  The flat trainer contract has
+    ! no matrix shape metadata, so this tests the exact vector recurrence and
+    ! then verifies that its serialized second moment resumes identically.
+    options = trainer_options_t()
+    options%optimizer = FORTML_TRAIN_ADAFACTOR
+    options%learning_rate = 0.2_dp
+    options%adafactor_decay = 0.7_dp
+    options%adafactor_clip_threshold = 0.8_dp
+    options%epsilon = 0.05_dp
+    options%max_steps = 4
+    options%tolerance = 0.0_dp
+    options%step_tolerance = 0.0_dp
+    options%objective_tolerance = 0.0_dp
+    call trainer%initialize(objective, [0.0_dp, 1.0_dp], status, options)
+    expected = [0.0_dp, 1.0_dp]
+    moment = 0.0_dp
+    do i = 1, 4
+        gradient = [2.0_dp*(expected(1) - 1.5_dp), 4.0_dp*(expected(2) + 0.5_dp)]
+        moment = options%adafactor_decay*moment + &
+            (1.0_dp - options%adafactor_decay)*gradient**2
+        update_rms = sqrt(sum(moment)/2.0_dp)
+        clip_scale = max(1.0_dp, update_rms/options%adafactor_clip_threshold)
+        expected = expected - options%learning_rate*gradient/clip_scale/ &
+            (sqrt(moment) + options%epsilon)
+        call trainer%step(status)
+    end do
+    call check(status_ok(status) .and. maxval(abs(trainer%parameters() - expected)) < 2.0e-14_dp, &
+        "Adafactor vector recurrence matches independent oracle", failures)
+    call baseline%initialize(objective, [0.0_dp, 1.0_dp], status, options)
+    call checkpointed%initialize(objective, [0.0_dp, 1.0_dp], status, options)
+    call resumed%initialize(objective, [0.0_dp, 1.0_dp], status, options)
+    do i = 1, 2
+        call baseline%step(status)
+        call checkpointed%step(status)
+    end do
+    call checkpointed%save_checkpoint(adafactor_checkpoint_path, status)
+    call check(status_ok(status), "Adafactor checkpoint save", failures)
+    call resumed%load_checkpoint(adafactor_checkpoint_path, status)
+    call check(status_ok(status), "Adafactor checkpoint load", failures)
+    do i = 1, 2
+        call baseline%step(status)
+        call resumed%step(status)
+    end do
+    call check(status_ok(status) .and. maxval(abs(baseline%parameters() - resumed%parameters())) < 2.0e-14_dp, &
+        "Adafactor checkpoint continuation matches uninterrupted trajectory", failures)
+    open (unit=92, file=adafactor_checkpoint_path, status="old")
+    close (92, status="delete")
 
     options = trainer_options_t()
     options%optimizer = FORTML_TRAIN_LBFGSB

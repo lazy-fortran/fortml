@@ -20,6 +20,7 @@ module fortml_trainer
     use fortopt_rmsprop, only: rmsprop_t
     use fortopt_sgd, only: sgd_t
     use fortopt_lbfgsb, only: lbfgsb_t, lbfgsb_options_t, lbfgsb_result_t
+    use fortml_adafactor, only: adafactor_t
     implicit none
     private
 
@@ -29,9 +30,10 @@ module fortml_trainer
     integer, parameter, public :: FORTML_TRAIN_ADAGRAD = 4
     integer, parameter, public :: FORTML_TRAIN_RMSPROP = 5
     integer, parameter, public :: FORTML_TRAIN_LBFGSB = 6
+    integer, parameter, public :: FORTML_TRAIN_ADAFACTOR = 7
     character(*), parameter, public :: FORTML_TRAINER_CHECKPOINT_MAGIC = &
         "FORTML_TRAINER_CHECKPOINT_TEXT"
-    integer, parameter, public :: FORTML_TRAINER_CHECKPOINT_SCHEMA_VERSION = 1
+    integer, parameter, public :: FORTML_TRAINER_CHECKPOINT_SCHEMA_VERSION = 2
 
     abstract interface
         subroutine trainer_step_callback_proc(step, value, gradient_norm, stop, status)
@@ -50,6 +52,10 @@ module fortml_trainer
         real(dp) :: beta1 = 0.9_dp
         real(dp) :: beta2 = 0.999_dp
         real(dp) :: epsilon = 1.0e-8_dp
+        real(dp) :: adafactor_decay = 0.999_dp
+        real(dp) :: adafactor_clip_threshold = 1.0_dp
+        logical :: adafactor_relative_step = .false.
+        logical :: adafactor_scale_parameter = .false.
         real(dp) :: rmsprop_decay = 0.99_dp
         real(dp) :: rmsprop_momentum = 0.0_dp
         logical :: rmsprop_centered = .false.
@@ -98,6 +104,7 @@ module fortml_trainer
         type(adamw_t) :: adamw
         type(adagrad_t) :: adagrad
         type(rmsprop_t) :: rmsprop
+        type(adafactor_t) :: adafactor
         type(lbfgsb_t) :: lbfgsb
         logical :: ready = .false.
     contains
@@ -191,6 +198,11 @@ contains
             call self%rmsprop%initialize(n, status, settings%learning_rate, &
                 settings%rmsprop_decay, settings%epsilon, &
                 settings%rmsprop_momentum, settings%rmsprop_centered)
+        case (FORTML_TRAIN_ADAFACTOR)
+            call self%adafactor%initialize(n, status, settings%learning_rate, &
+                settings%adafactor_decay, settings%epsilon, &
+                settings%adafactor_clip_threshold, settings%adafactor_relative_step, &
+                settings%adafactor_scale_parameter)
         case (FORTML_TRAIN_LBFGSB)
             ! L-BFGS-B initializes its own history during fit.
             call status_set(status, FORTNUM_OK, "")
@@ -257,6 +269,8 @@ contains
             call self%adagrad%step(self%state%parameters, gradient, status)
         case (FORTML_TRAIN_RMSPROP)
             call self%rmsprop%step(self%state%parameters, gradient, status)
+        case (FORTML_TRAIN_ADAFACTOR)
+            call self%adafactor%step(self%state%parameters, gradient, status)
         case default
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "trainer: unsupported optimizer kind")
@@ -451,6 +465,10 @@ contains
         if (ios == 0) call write_r(unit, "beta1", self%options%beta1, ios)
         if (ios == 0) call write_r(unit, "beta2", self%options%beta2, ios)
         if (ios == 0) call write_r(unit, "epsilon", self%options%epsilon, ios)
+        if (ios == 0) call write_r(unit, "adafactor_decay", self%options%adafactor_decay, ios)
+        if (ios == 0) call write_r(unit, "adafactor_clip_threshold", self%options%adafactor_clip_threshold, ios)
+        if (ios == 0) call write_l(unit, "adafactor_relative_step", self%options%adafactor_relative_step, ios)
+        if (ios == 0) call write_l(unit, "adafactor_scale_parameter", self%options%adafactor_scale_parameter, ios)
         if (ios == 0) call write_r(unit, "rmsprop_decay", self%options%rmsprop_decay, ios)
         if (ios == 0) call write_r(unit, "rmsprop_momentum", self%options%rmsprop_momentum, ios)
         if (ios == 0) call write_l(unit, "rmsprop_centered", self%options%rmsprop_centered, ios)
@@ -518,6 +536,9 @@ contains
                 if (ios == 0) call write_r_array(unit, "optimizer_square_average", self%rmsprop%square_average, ios)
                 if (ios == 0) call write_r_array(unit, "optimizer_momentum_buffer", self%rmsprop%momentum_buffer, ios)
                 if (ios == 0) call write_r_array(unit, "optimizer_gradient_average", self%rmsprop%gradient_average, ios)
+            case (FORTML_TRAIN_ADAFACTOR)
+                call write_i(unit, "optimizer_step_count", self%adafactor%step_count, ios)
+                if (ios == 0) call write_r_array(unit, "optimizer_second_moment", self%adafactor%second_moment, ios)
             end select
         end if
         close_ios = 0
@@ -566,6 +587,10 @@ contains
         if (ios == 0) call read_r(unit, "beta1", options%beta1, ios)
         if (ios == 0) call read_r(unit, "beta2", options%beta2, ios)
         if (ios == 0) call read_r(unit, "epsilon", options%epsilon, ios)
+        if (ios == 0) call read_r(unit, "adafactor_decay", options%adafactor_decay, ios)
+        if (ios == 0) call read_r(unit, "adafactor_clip_threshold", options%adafactor_clip_threshold, ios)
+        if (ios == 0) call read_l(unit, "adafactor_relative_step", options%adafactor_relative_step, ios)
+        if (ios == 0) call read_l(unit, "adafactor_scale_parameter", options%adafactor_scale_parameter, ios)
         if (ios == 0) call read_r(unit, "rmsprop_decay", options%rmsprop_decay, ios)
         if (ios == 0) call read_r(unit, "rmsprop_momentum", options%rmsprop_momentum, ios)
         if (ios == 0) call read_l(unit, "rmsprop_centered", options%rmsprop_centered, ios)
@@ -644,6 +669,9 @@ contains
             call read_r_array(unit, "optimizer_square_average_count", "optimizer_square_average_item", n, payload1, ios)
             call read_r_array(unit, "optimizer_momentum_buffer_count", "optimizer_momentum_buffer_item", n, payload2, ios)
             call read_r_array(unit, "optimizer_gradient_average_count", "optimizer_gradient_average_item", n, payload3, ios)
+        case (FORTML_TRAIN_ADAFACTOR)
+            call read_i(unit, "optimizer_step_count", optimizer_step, ios)
+            call read_r_array(unit, "optimizer_second_moment_count", "optimizer_second_moment_item", n, payload1, ios)
         case default
             ios = 1
         end select
@@ -774,6 +802,17 @@ contains
                 call status_set(status, FORTNUM_DOMAIN_ERROR, "trainer checkpoint save: RMSprop state is invalid")
                 return
             end if
+        case (FORTML_TRAIN_ADAFACTOR)
+            if (.not. allocated(self%adafactor%second_moment)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, "trainer checkpoint save: Adafactor state is invalid")
+                return
+            end if
+            if (size(self%adafactor%second_moment) /= n .or. &
+                any(.not. ieee_is_finite(self%adafactor%second_moment)) .or. &
+                any(self%adafactor%second_moment < 0.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, "trainer checkpoint save: Adafactor state is invalid")
+                return
+            end if
         end select
         call status_set(status, FORTNUM_OK, "")
     end subroutine validate_checkpoint
@@ -862,6 +901,18 @@ contains
             self%rmsprop%momentum_buffer = payload2
             self%rmsprop%gradient_average = payload3
             self%rmsprop%step_count = step_count
+        case (FORTML_TRAIN_ADAFACTOR)
+            if (any(payload1 < 0.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "trainer checkpoint load: Adafactor second moment is negative")
+                return
+            end if
+            call self%adafactor%initialize(n, status, options%learning_rate, &
+                options%adafactor_decay, options%epsilon, options%adafactor_clip_threshold, &
+                options%adafactor_relative_step, options%adafactor_scale_parameter)
+            if (status%code /= FORTNUM_OK) return
+            self%adafactor%second_moment = payload1
+            self%adafactor%step_count = step_count
         case default
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "trainer checkpoint load: unsupported optimizer")
@@ -917,13 +968,17 @@ contains
 
         if (n_parameters < 1 .or. options%max_steps < 1 .or. &
             options%optimizer < FORTML_TRAIN_SGD .or. &
-            options%optimizer > FORTML_TRAIN_LBFGSB .or. &
+            options%optimizer > FORTML_TRAIN_ADAFACTOR .or. &
             .not. ieee_is_finite(options%learning_rate) .or. &
             options%learning_rate <= 0.0_dp .or. &
             .not. ieee_is_finite(options%beta1) .or. options%beta1 < 0.0_dp .or. &
             options%beta1 >= 1.0_dp .or. .not. ieee_is_finite(options%beta2) .or. &
             options%beta2 < 0.0_dp .or. options%beta2 >= 1.0_dp .or. &
             .not. ieee_is_finite(options%epsilon) .or. options%epsilon <= 0.0_dp .or. &
+            .not. ieee_is_finite(options%adafactor_decay) .or. &
+            options%adafactor_decay < 0.0_dp .or. options%adafactor_decay >= 1.0_dp .or. &
+            .not. ieee_is_finite(options%adafactor_clip_threshold) .or. &
+            options%adafactor_clip_threshold <= 0.0_dp .or. &
             .not. ieee_is_finite(options%rmsprop_decay) .or. &
             options%rmsprop_decay < 0.0_dp .or. options%rmsprop_decay >= 1.0_dp .or. &
             .not. ieee_is_finite(options%rmsprop_momentum) .or. &

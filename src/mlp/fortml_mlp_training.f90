@@ -24,6 +24,7 @@ module fortml_mlp_training
     use fortopt_adagrad, only: adagrad_t
     use fortopt_rmsprop, only: rmsprop_t
     use fortopt_sgd, only: sgd_t
+    use fortml_adafactor, only: adafactor_t
     use fortopt_lbfgsb, only: lbfgsb_t, lbfgsb_options_t, lbfgsb_result_t
     implicit none
     private
@@ -35,6 +36,7 @@ module fortml_mlp_training
     integer, parameter, public :: MLP_OPTIMIZER_ADAMW = 3
     integer, parameter, public :: MLP_OPTIMIZER_ADAGRAD = 4
     integer, parameter, public :: MLP_OPTIMIZER_RMSPROP = 5
+    integer, parameter, public :: MLP_OPTIMIZER_ADAFACTOR = 6
 
     integer, parameter, public :: MLP_EVENT_TRAIN_BEGIN = 1
     integer, parameter, public :: MLP_EVENT_UPDATE = 2
@@ -82,6 +84,10 @@ module fortml_mlp_training
         real(dp) :: beta1 = 0.9_dp
         real(dp) :: beta2 = 0.999_dp
         real(dp) :: epsilon = 1.0e-8_dp
+        real(dp) :: adafactor_decay = 0.999_dp
+        real(dp) :: adafactor_clip_threshold = 1.0_dp
+        logical :: adafactor_relative_step = .false.
+        logical :: adafactor_scale_parameter = .false.
         real(dp) :: rmsprop_decay = 0.99_dp
         real(dp) :: rmsprop_momentum = 0.0_dp
         logical :: rmsprop_centered = .false.
@@ -182,6 +188,10 @@ module fortml_mlp_training
         real(dp) :: beta1 = 0.9_dp
         real(dp) :: beta2 = 0.999_dp
         real(dp) :: epsilon = 1.0e-8_dp
+        real(dp) :: adafactor_decay = 0.999_dp
+        real(dp) :: adafactor_clip_threshold = 1.0_dp
+        logical :: adafactor_relative_step = .false.
+        logical :: adafactor_scale_parameter = .false.
         real(dp) :: rmsprop_decay = 0.99_dp
         real(dp) :: rmsprop_momentum = 0.0_dp
         logical :: rmsprop_centered = .false.
@@ -494,6 +504,10 @@ contains
         self%beta1 = 0.9_dp
         self%beta2 = 0.999_dp
         self%epsilon = 1.0e-8_dp
+        self%adafactor_decay = 0.999_dp
+        self%adafactor_clip_threshold = 1.0_dp
+        self%adafactor_relative_step = .false.
+        self%adafactor_scale_parameter = .false.
         self%rmsprop_decay = 0.99_dp
         self%rmsprop_momentum = 0.0_dp
         self%rmsprop_centered = .false.
@@ -537,7 +551,8 @@ contains
             self%optimizer == MLP_OPTIMIZER_SGD .or. &
             self%optimizer == MLP_OPTIMIZER_ADAMW .or. &
             self%optimizer == MLP_OPTIMIZER_ADAGRAD .or. &
-            self%optimizer == MLP_OPTIMIZER_RMSPROP) .and. &
+            self%optimizer == MLP_OPTIMIZER_RMSPROP .or. &
+            self%optimizer == MLP_OPTIMIZER_ADAFACTOR) .and. &
             self%validation_interval > 0 .and. self%patience >= 0 .and. &
             self%gradient_clipped_updates >= 0 .and. &
             allocated(self%parameters) .and. allocated(self%first_moment) .and. &
@@ -625,6 +640,9 @@ contains
         valid = valid .and. self%rmsprop_decay >= 0.0_dp .and. &
             self%rmsprop_decay < 1.0_dp .and. self%rmsprop_momentum >= 0.0_dp .and. &
             self%rmsprop_momentum < 1.0_dp
+        valid = valid .and. self%adafactor_decay >= 0.0_dp .and. &
+            self%adafactor_decay < 1.0_dp .and. self%adafactor_clip_threshold > 0.0_dp .and. &
+            ieee_is_finite(self%adafactor_decay) .and. ieee_is_finite(self%adafactor_clip_threshold)
         valid = valid .and. self%weight_decay >= 0.0_dp
         if (self%nesterov) valid = valid .and. self%optimizer == MLP_OPTIMIZER_SGD .and. &
             self%momentum > 0.0_dp
@@ -1177,6 +1195,7 @@ contains
         type(adagrad_t) :: adagrad_optimizer
         type(rmsprop_t) :: rmsprop_optimizer
         type(sgd_t) :: sgd_optimizer
+        type(adafactor_t) :: adafactor_optimizer
         type(mlp_batch_iterator_t) :: iterator
         real(dp), allocatable :: theta(:), best_theta(:), gradient(:)
         real(dp), allocatable :: accumulated_gradient(:)
@@ -1252,6 +1271,18 @@ contains
             if (checkpoint%beta1 /= config%beta1) incompatible_checkpoint = .true.
             if (checkpoint%beta2 /= config%beta2) incompatible_checkpoint = .true.
             if (checkpoint%epsilon /= config%epsilon) incompatible_checkpoint = .true.
+            if (checkpoint%adafactor_decay /= config%adafactor_decay) then
+                incompatible_checkpoint = .true.
+            end if
+            if (checkpoint%adafactor_clip_threshold /= config%adafactor_clip_threshold) then
+                incompatible_checkpoint = .true.
+            end if
+            if (checkpoint%adafactor_relative_step .neqv. config%adafactor_relative_step) then
+                incompatible_checkpoint = .true.
+            end if
+            if (checkpoint%adafactor_scale_parameter .neqv. config%adafactor_scale_parameter) then
+                incompatible_checkpoint = .true.
+            end if
             if (checkpoint%rmsprop_decay /= config%rmsprop_decay) then
                 incompatible_checkpoint = .true.
             end if
@@ -1417,6 +1448,12 @@ contains
         else if (config%optimizer == MLP_OPTIMIZER_ADAGRAD) then
             call adagrad_optimizer%initialize(n_parameters, status, &
                 learning_rate=config%learning_rate, epsilon=config%epsilon)
+        else if (config%optimizer == MLP_OPTIMIZER_ADAFACTOR) then
+            call adafactor_optimizer%initialize(n_parameters, status, &
+                learning_rate=config%learning_rate, decay=config%adafactor_decay, &
+                epsilon=config%epsilon, clip_threshold=config%adafactor_clip_threshold, &
+                relative_step=config%adafactor_relative_step, &
+                scale_parameter=config%adafactor_scale_parameter)
         else
             call rmsprop_optimizer%initialize(n_parameters, status, &
                 learning_rate=config%learning_rate, decay=config%rmsprop_decay, &
@@ -1457,6 +1494,13 @@ contains
                 adagrad_optimizer%learning_rate = checkpoint%last_learning_rate
                 if (adagrad_optimizer%learning_rate <= 0.0_dp) then
                     adagrad_optimizer%learning_rate = config%learning_rate
+                end if
+            else if (config%optimizer == MLP_OPTIMIZER_ADAFACTOR) then
+                adafactor_optimizer%second_moment = checkpoint%first_moment
+                adafactor_optimizer%step_count = checkpoint%adam_step_count
+                adafactor_optimizer%learning_rate = checkpoint%last_learning_rate
+                if (adafactor_optimizer%learning_rate <= 0.0_dp) then
+                    adafactor_optimizer%learning_rate = config%learning_rate
                 end if
             else
                 rmsprop_optimizer%square_average = checkpoint%first_moment
@@ -1576,6 +1620,8 @@ contains
                             adamw_optimizer%learning_rate = effective_rate
                         else if (config%optimizer == MLP_OPTIMIZER_ADAGRAD) then
                             adagrad_optimizer%learning_rate = effective_rate
+                        else if (config%optimizer == MLP_OPTIMIZER_ADAFACTOR) then
+                            adafactor_optimizer%learning_rate = effective_rate
                         else
                             rmsprop_optimizer%learning_rate = effective_rate
                         end if
@@ -1588,6 +1634,8 @@ contains
                             call adamw_optimizer%step(theta, gradient, status)
                         else if (config%optimizer == MLP_OPTIMIZER_ADAGRAD) then
                             call adagrad_optimizer%step(theta, gradient, status)
+                        else if (config%optimizer == MLP_OPTIMIZER_ADAFACTOR) then
+                            call adafactor_optimizer%step(theta, gradient, status)
                         else
                             call rmsprop_optimizer%step(theta, gradient, status)
                         end if
@@ -1622,7 +1670,7 @@ contains
                 if (present(checkpoint)) then
                     call checkpoint_capture(checkpoint, x, target, config, result, &
                         iterator, optimizer, adamw_optimizer, adagrad_optimizer, &
-                        rmsprop_optimizer, &
+                        rmsprop_optimizer, adafactor_optimizer, &
                         sgd_optimizer, theta, &
                         best_theta, stale_epochs, &
                         epoch, microbatch_count, accumulated_samples, &
@@ -1721,7 +1769,7 @@ contains
             if (present(checkpoint)) then
                 call checkpoint_capture(checkpoint, x, target, config, result, &
                     iterator, optimizer, adamw_optimizer, adagrad_optimizer, &
-                    rmsprop_optimizer, &
+                    rmsprop_optimizer, adafactor_optimizer, &
                     sgd_optimizer, theta, &
                     best_theta, stale_epochs, &
                     epoch, microbatch_count, accumulated_samples, &
@@ -1789,6 +1837,7 @@ contains
 
     subroutine checkpoint_capture(checkpoint, x, target, config, result, iterator, &
             optimizer, adamw_optimizer, adagrad_optimizer, rmsprop_optimizer, &
+            adafactor_optimizer, &
             sgd_optimizer, theta, best_theta, &
             stale_epochs, active_epoch, &
             active_microbatches, accumulated_samples, accumulated_gradient, &
@@ -1802,6 +1851,7 @@ contains
         type(adamw_t), intent(in) :: adamw_optimizer
         type(adagrad_t), intent(in) :: adagrad_optimizer
         type(rmsprop_t), intent(in) :: rmsprop_optimizer
+        type(adafactor_t), intent(in) :: adafactor_optimizer
         type(sgd_t), intent(in) :: sgd_optimizer
         real(dp), intent(in) :: theta(:), best_theta(:)
         integer, intent(in) :: stale_epochs
@@ -1864,6 +1914,12 @@ contains
                     invalid_state = .true.
                 end if
             end if
+        else if (config%optimizer == MLP_OPTIMIZER_ADAFACTOR) then
+            if (.not. allocated(adafactor_optimizer%second_moment)) then
+                invalid_state = .true.
+            else if (size(adafactor_optimizer%second_moment) /= size(theta)) then
+                invalid_state = .true.
+            end if
         else if (config%optimizer == MLP_OPTIMIZER_RMSPROP) then
             if (.not. allocated(rmsprop_optimizer%square_average) .or. &
                 .not. allocated(rmsprop_optimizer%gradient_average) .or. &
@@ -1921,6 +1977,8 @@ contains
             checkpoint%adam_step_count = adamw_optimizer%step_count
         else if (config%optimizer == MLP_OPTIMIZER_ADAGRAD) then
             checkpoint%adam_step_count = adagrad_optimizer%step_count
+        else if (config%optimizer == MLP_OPTIMIZER_ADAFACTOR) then
+            checkpoint%adam_step_count = adafactor_optimizer%step_count
         else
             checkpoint%adam_step_count = rmsprop_optimizer%step_count
         end if
@@ -1939,6 +1997,10 @@ contains
         checkpoint%beta1 = config%beta1
         checkpoint%beta2 = config%beta2
         checkpoint%epsilon = config%epsilon
+        checkpoint%adafactor_decay = config%adafactor_decay
+        checkpoint%adafactor_clip_threshold = config%adafactor_clip_threshold
+        checkpoint%adafactor_relative_step = config%adafactor_relative_step
+        checkpoint%adafactor_scale_parameter = config%adafactor_scale_parameter
         checkpoint%rmsprop_decay = config%rmsprop_decay
         checkpoint%rmsprop_momentum = config%rmsprop_momentum
         checkpoint%rmsprop_centered = config%rmsprop_centered
@@ -1972,6 +2034,10 @@ contains
             allocate(checkpoint%second_moment, source=adamw_optimizer%second_moment)
         else if (config%optimizer == MLP_OPTIMIZER_ADAGRAD) then
             allocate(checkpoint%first_moment, source=adagrad_optimizer%accumulated_square)
+            allocate(checkpoint%second_moment(size(theta)))
+            checkpoint%second_moment = 0.0_dp
+        else if (config%optimizer == MLP_OPTIMIZER_ADAFACTOR) then
+            allocate(checkpoint%first_moment, source=adafactor_optimizer%second_moment)
             allocate(checkpoint%second_moment(size(theta)))
             checkpoint%second_moment = 0.0_dp
         else
@@ -2034,7 +2100,8 @@ contains
             options%optimizer == MLP_OPTIMIZER_SGD .or. &
             options%optimizer == MLP_OPTIMIZER_ADAMW .or. &
             options%optimizer == MLP_OPTIMIZER_ADAGRAD .or. &
-            options%optimizer == MLP_OPTIMIZER_RMSPROP) .and. &
+            options%optimizer == MLP_OPTIMIZER_RMSPROP .or. &
+            options%optimizer == MLP_OPTIMIZER_ADAFACTOR) .and. &
             options%beta1 >= 0.0_dp .and. options%beta1 < 1.0_dp .and. &
             options%beta2 >= 0.0_dp .and. options%beta2 < 1.0_dp .and. &
             options%epsilon > 0.0_dp .and. options%l2 >= 0.0_dp .and. &
@@ -2046,6 +2113,8 @@ contains
         valid = valid .and. ieee_is_finite(options%learning_rate) .and. &
             ieee_is_finite(options%beta1) .and. ieee_is_finite(options%beta2) .and. &
             ieee_is_finite(options%epsilon) .and. ieee_is_finite(options%l2) .and. &
+            ieee_is_finite(options%adafactor_decay) .and. &
+            ieee_is_finite(options%adafactor_clip_threshold) .and. &
             ieee_is_finite(options%rmsprop_decay) .and. &
             ieee_is_finite(options%rmsprop_momentum) .and. &
             ieee_is_finite(options%momentum) .and. &
@@ -2058,6 +2127,8 @@ contains
         valid = valid .and. options%rmsprop_decay >= 0.0_dp .and. &
             options%rmsprop_decay < 1.0_dp .and. options%rmsprop_momentum >= 0.0_dp .and. &
             options%rmsprop_momentum < 1.0_dp
+        valid = valid .and. options%adafactor_decay >= 0.0_dp .and. &
+            options%adafactor_decay < 1.0_dp .and. options%adafactor_clip_threshold > 0.0_dp
         if (options%shuffle) valid = valid .and. options%shuffle_seed > 0
         if (options%nesterov) valid = valid .and. &
             options%optimizer == MLP_OPTIMIZER_SGD .and. options%momentum > 0.0_dp
