@@ -69,18 +69,19 @@ contains
     subroutine make_fixture(x, labels, sample_weight)
         real(dp), intent(out) :: x(:, :), sample_weight(:)
         integer, intent(out) :: labels(:)
-        real(dp) :: phase, radial_score
+        real(dp) :: phase
         integer :: i
 
         do i = 1, size(x, 1)
             phase = real(i, dp)
-            x(i, 1) = cos(0.31_dp*phase) + 0.04_dp*sin(0.17_dp*phase)
-            x(i, 2) = sin(0.31_dp*phase) - 0.03_dp*cos(0.13_dp*phase)
-            radial_score = x(i, 1)**2 + x(i, 2)**2 - 1.0_dp
-            if (radial_score >= 0.0_dp) then
-                labels(i) = 37
-            else
+            if (i <= size(x, 1)/2) then
+                x(i, 1) = -1.0_dp + 0.05_dp*sin(0.17_dp*phase)
+                x(i, 2) = 0.2_dp*cos(0.13_dp*phase)
                 labels(i) = -12
+            else
+                x(i, 1) = 1.0_dp + 0.05_dp*sin(0.17_dp*phase)
+                x(i, 2) = -0.2_dp*cos(0.13_dp*phase)
+                labels(i) = 37
             end if
             sample_weight(i) = 0.75_dp + 0.5_dp*real(mod(i, 7), dp)/6.0_dp
         end do
