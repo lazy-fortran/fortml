@@ -58,6 +58,62 @@ surfaces that drive the gap register. The reference links are part of the
 roadmap evidence and should be refreshed when a package changes its public
 workflow or device contract.
 
+## Bayesian ecosystem split
+
+FortML remains the owner of probabilistic ML objects. The probability layer is
+not a fourth repository: distributions, constraints, transforms, priors,
+likelihoods, posterior objects, predictive sampling, variational objectives,
+and generic differentiable log-density/model protocols live inside FortML and
+are shared by its GP, neural, regression, and classification models.
+
+Two companion repositories own algorithms that should not be coupled to the
+full estimator catalog:
+
+| Repository | Responsibility | Dependencies |
+| --- | --- | --- |
+| [`fortmc`](https://github.com/lazy-fortran/fortmc) | MCMC and Monte Carlo inference: Metropolis, slice, HMC, NUTS, SMC, chain state, diagnostics, warmup, and checkpoint/resume | FortML probability/model protocols, FortNum, FortAD, FortSym, FortOpt |
+| [`fortbo`](https://github.com/lazy-fortran/fortbo) | Bayesian optimization: posterior-aware acquisitions, sequential design, constraints, batch/fantasy policies, and candidate search | FortML posterior protocols, FortNum, FortAD, FortSym, FortOpt; optional FortMC integration |
+
+The dependency direction is deliberately one-way:
+
+```text
+FortNum + FortAD + FortSym + FortOpt
+                 ↓
+              FortML
+          ↙              ↘
+       FortMC            FortBO
+```
+
+FortML must not depend on FortMC or FortBO. FortMC consumes a generic FortML
+log-density contract (`value`, `gradient`, packed parameters, transforms, and
+optional HVP). FortBO consumes a generic FortML posterior contract (moments,
+joint or reparameterized samples, covariance, and input derivatives), and uses
+FortOpt for bounded local acquisition optimization. This keeps HMC/NUTS and BO
+usable for GP and neural models without adding sampler or acquisition state to
+every estimator.
+
+All three repositories use MIT licensing. FortAD is the default source of
+general derivatives. FortSym is preferred for compact fixed transition,
+acquisition, likelihood, and reduction kernels when it can prove the identity
+and generate a smaller implementation. FortNum owns numerical kernels, RNG,
+linear algebra, reductions, and device-safe array primitives. FortOpt owns
+local optimization, including L-BFGS-B, line searches, multistart, and bounded
+inner solves. Every differentiable path must expose an independent analytic,
+finite-difference, adjoint, or pinned external oracle. Every GPU path must keep
+the complete operation graph resident or return a typed refusal; OpenACC is the
+first choice when it preserves semantics, and native CUDA is reserved for
+fixed no-autodiff hot loops where OpenACC cannot.
+
+The companion implementation roadmaps are authoritative for their sampler and
+acquisition work packages:
+
+- [`fortmc/ROADMAP.md`](https://github.com/lazy-fortran/fortmc/blob/main/ROADMAP.md)
+- [`fortbo/ROADMAP.md`](https://github.com/lazy-fortran/fortbo/blob/main/ROADMAP.md)
+
+FortML work packages that depend on these projects must add a focused adapter,
+an independent oracle, and a benchmark row rather than embedding a second
+MCMC or Bayesian-optimization implementation.
+
 ## Scope, architecture, and release rules
 
 The target is a clean, Fortran-native estimator stack rather than a thin
@@ -2100,11 +2156,17 @@ dependency order for the remaining code is:
    derivatives, GPyTorch/GPflow parity, and bounded FortOpt L-BFGS-B training.
    Extend every completed objective to resident GPU products before claiming
    device parity.
-7. Add model schemas, C ABI, serving, MPI/sharded execution, and reproducibility
+7. Expose FortML probability/model protocols to FortMC and FortBO. Keep MCMC,
+   chain diagnostics, acquisition policies, and candidate-search state in
+   those companion projects, while retaining priors, likelihoods, posterior
+   objects, variational objectives, and differentiable log densities here.
+   Benchmark HMC/NUTS and Bayesian optimization against pinned PyMC/Stan/
+   BoTorch/GPyTorch references before claiming parity.
+8. Add model schemas, C ABI, serving, MPI/sharded execution, and reproducibility
    manifests once in-memory trainer state and ownership rules are stable.
-8. Add physics constraints, Hamiltonian/Lagrangian/symplectic models, operator
+9. Add physics constraints, Hamiltonian/Lagrangian/symplectic models, operator
    GPs, and Ghosttasking/Monge-GP prototypes behind residual and structure
    oracles. Use current FortAD main and FortSym-generated kernels where proven.
-9. Add NNGP, PCA, autoencoder, and physics-consistent initializers as explicit
+10. Add NNGP, PCA, autoencoder, and physics-consistent initializers as explicit
    experiments before making any initializer a default. Expand release
    benchmarks after every slice, and run the `ifx` compiler lane when available.
