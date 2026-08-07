@@ -23,6 +23,7 @@ contains
         integer, parameter :: prediction_repetitions = 32
         real(dp) :: x(n_samples, n_features), y(n_samples)
         real(dp) :: prediction(n_samples), weights(2)
+        real(dp) :: staged(n_samples, n_estimators), importance(n_features)
         real(dp) :: mse, elapsed_fit, elapsed_predict, split_gain
         integer(int64) :: clock_start, clock_end, clock_rate
         integer :: i, repetition
@@ -56,6 +57,10 @@ contains
         split_gain = model%split_gain(1)
         call model%leaf_weights(1, weights, status)
         if (.not. status_ok(status)) error stop "XGBoost regression leaf query failed"
+        call model%predict_staged(x, staged, status)
+        if (.not. status_ok(status)) error stop "XGBoost regression staged prediction failed"
+        call model%feature_importance(importance, status, kind="gain", normalize=.true.)
+        if (.not. status_ok(status)) error stop "XGBoost regression feature importance failed"
         write (*, '(a,i0,a,i0,a,i0,a,es24.16,a,es24.16,a,es24.16,a,es24.16)') &
             "xgb_regression_fit,", n_samples, ",", n_features, ",", &
             n_estimators, ",", elapsed_fit, ",", mse, ",", split_gain, ",", &
@@ -72,6 +77,10 @@ contains
         write (*, '(a,i0,a,i0,a,i0,a,es24.16,a,es24.16,a,es24.16)') &
             "xgb_regression_predict,", n_samples, ",", n_features, ",", &
             n_estimators, ",", elapsed_predict, ",", mse, ",", sum(prediction)
+        write (*, '(a,i0,a,i0,a,i0,a,es24.16,a,es24.16,a,es24.16,a,es24.16)') &
+            "xgb_regression_staged,", n_samples, ",", n_features, ",", &
+            n_estimators, ",", 0.0_dp, ",", sum(staged(:, 1)), ",", &
+            sum(staged(:, n_estimators)), ",", sum(importance)
     end subroutine benchmark_regression
 
     subroutine benchmark_logistic()
@@ -80,6 +89,7 @@ contains
         integer, parameter :: prediction_repetitions = 32
         real(dp) :: x(n_samples, n_features), labels(n_samples)
         real(dp) :: probabilities(n_samples), probability_matrix(n_samples, 2)
+        real(dp) :: staged(n_samples, 2, n_estimators), importance(n_features)
         real(dp) :: logloss, elapsed_fit, elapsed_predict, split_gain
         real(dp) :: accuracy
         integer(int64) :: clock_start, clock_end, clock_rate
@@ -116,6 +126,10 @@ contains
         if (.not. status_ok(status)) error stop "XGBoost logistic prediction failed"
         call model%predict_proba(x, probability_matrix, status)
         if (.not. status_ok(status)) error stop "XGBoost probability prediction failed"
+        call model%predict_proba_staged(x, staged, status)
+        if (.not. status_ok(status)) error stop "XGBoost logistic staged prediction failed"
+        call model%feature_importance(importance, status, kind="gain", normalize=.true.)
+        if (.not. status_ok(status)) error stop "XGBoost logistic feature importance failed"
         logloss = -sum(labels*log(max(probabilities, 1.0e-15_dp)) + &
             (1.0_dp - labels)*log(max(1.0_dp - probabilities, 1.0e-15_dp))) &
             /real(n_samples, dp)
@@ -138,6 +152,10 @@ contains
         write (*, '(a,i0,a,i0,a,i0,a,es24.16,a,es24.16,a,es24.16)') &
             "xgb_logistic_predict,", n_samples, ",", n_features, ",", &
             n_estimators, ",", elapsed_predict, ",", logloss, ",", accuracy
+        write (*, '(a,i0,a,i0,a,i0,a,es24.16,a,es24.16,a,es24.16,a,es24.16)') &
+            "xgb_logistic_staged,", n_samples, ",", n_features, ",", &
+            n_estimators, ",", 0.0_dp, ",", sum(staged(:, 2, 1)), ",", &
+            sum(staged(:, 2, n_estimators)), ",", sum(importance)
     end subroutine benchmark_logistic
 
     subroutine benchmark_multiclass()
@@ -146,6 +164,9 @@ contains
         integer, parameter :: prediction_repetitions = 32
         real(dp) :: x(n_samples, n_features), target(n_samples)
         real(dp) :: probabilities(n_samples, 3), margins(n_samples, 3)
+        real(dp) :: staged(n_samples, 3, n_estimators)
+        real(dp) :: staged_margins(n_samples, 3, n_estimators)
+        real(dp) :: importance(n_features)
         real(dp) :: elapsed_fit, elapsed_predict, accuracy
         integer :: labels(n_samples), predicted(n_samples)
         integer(int64) :: clock_start, clock_end, clock_rate
@@ -183,6 +204,12 @@ contains
         call model%decision_function(x, margins, status)
         accuracy = real(count(predicted == labels), dp)/real(n_samples, dp)
         if (.not. status_ok(status)) error stop "XGBoost multiclass prediction failed"
+        call model%predict_proba_staged(x, staged, status)
+        if (.not. status_ok(status)) error stop "XGBoost multiclass staged prediction failed"
+        call model%decision_function_staged(x, staged_margins, status)
+        if (.not. status_ok(status)) error stop "XGBoost multiclass staged margins failed"
+        call model%feature_importance(importance, status, kind="gain", normalize=.true.)
+        if (.not. status_ok(status)) error stop "XGBoost multiclass feature importance failed"
         write (*, '(a,i0,a,i0,a,i0,a,es24.16,a,es24.16,a,es24.16)') &
             "xgb_multiclass_fit,", n_samples, ",", n_features, ",", &
             n_estimators, ",", elapsed_fit, ",", accuracy, ",", &
@@ -200,6 +227,14 @@ contains
             "xgb_multiclass_predict,", n_samples, ",", n_features, ",", &
             n_estimators, ",", elapsed_predict, ",", accuracy, ",", &
             sum(probabilities)
+        write (*, '(a,i0,a,i0,a,i0,a,es24.16,a,es24.16,a,es24.16,a,es24.16)') &
+            "xgb_multiclass_staged,", n_samples, ",", n_features, ",", &
+            n_estimators, ",", 0.0_dp, ",", sum(staged(:, :, 1)), ",", &
+            sum(staged(:, :, n_estimators)), ",", sum(importance)
+        write (*, '(a,i0,a,i0,a,i0,a,es24.16,a,es24.16,a,es24.16)') &
+            "xgb_multiclass_staged_margin,", n_samples, ",", n_features, ",", &
+            n_estimators, ",", 0.0_dp, ",", maxval(abs(staged_margins(:, :, n_estimators))), ",", &
+            maxval(abs(margins))
     end subroutine benchmark_multiclass
 
     subroutine benchmark_missing()
