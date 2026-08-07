@@ -15,7 +15,7 @@ and implementation limits in [`docs/DESIGN.md`](docs/DESIGN.md) and
 
 The checked-in compiler logs above are the 2026-08-06 30-test verification
 snapshot. A fresh GNU Fortran `fo` run on 2026-08-07 passed static analysis,
-the build, all 42 tests, and lint in 6.3 seconds. The fresh run includes
+the build, all 43 tests, and lint in 4.9 seconds. The fresh run includes
 implementation work whose compiler logs have not yet replaced that snapshot.
 
 Behavioral oracles include dense or analytic references, finite differences,
@@ -102,7 +102,7 @@ documentation, refusal behavior, and benchmark evidence are all present.
 | Trees and ensembles | Partial | Deterministic exhaustive-split regression stumps, squared-loss stump boosting, and exact depth-one second-order squared/logistic boosting are implemented. CART, forests, histograms, deeper XGBoost/LightGBM growth, ranking, monotonic and interaction constraints remain planned |
 | Clustering and unsupervised learning | Missing | k-means/minibatch k-means, Gaussian mixtures/EM, density and graph clustering, manifold methods, outlier detection, decomposition, matrix factorization, and density metrics |
 | Neural networks | MLP/BNN/VAE/RNN primitives, selected products, and a deterministic MLP Adam trainer exist | A production module/parameter tree, all common activations and losses, convolution/attention/sequence/graph extensions, mixed precision, distributed training, compile/fusion, and resumable trainers |
-| Gaussian processes | Exact, derivative, sparse, structured and local variants are partial-to-implemented. Exact fitted GPs have a bounded FortOpt L-BFGS-B adapter, and binary Laplace logistic/probit GP classification is implemented | GPyTorch/GPflow-style kernels, likelihoods, multitask/batch shapes, exact/variational/lazy inference, derivative operators, constraints, calibration, multiclass GP classification, and trainable hyperparameters |
+| Gaussian processes | Exact, derivative, sparse, structured and local variants are partial-to-implemented. Exact fitted GPs have a bounded FortOpt L-BFGS-B adapter, and binary plus one-vs-rest multiclass Laplace logistic/probit GP classification is implemented | GPyTorch/GPflow-style kernels, likelihoods, multitask/batch shapes, exact/variational/lazy inference, derivative operators, constraints, calibration, multiclass GP classification, and trainable hyperparameters |
 | Derivatives | Exact GP and selected neural/kernel products exist | Value/JVP/VJP/HVP and implicit/hypergradients for every declared parameter/input path, including preprocessing, likelihood, optimizer/search variables, and device kernels |
 | Model selection and metrics | Benchmark-specific checks exist | Shared metrics, splitters, cross-validation, calibration, grid/random/Bayesian/differentiable search, nested validation, and leakage/refusal checks |
 | Persistence and serving | Missing public contract | Versioned state dictionaries, safe model/trainer serialization, compiler-independent metadata, streaming inference, batching, and reproducible deployment manifests |
@@ -805,8 +805,8 @@ peak memory, and batch-size scaling with the same correctness gate as training.
   and explicit PyTorch/JAX/XGBoost availability or refusal rows. The release
   record is [`results/FEATURES.md`](../fortml-bench/results/FEATURES.md).
 - [x] Add the exact depth-one XGBoost-style squared/logistic lane and the
-  fitted-scaler plus binary Laplace GP logistic/probit lane with independent
-  NumPy oracles. The release records are
+  fitted-scaler plus binary and one-vs-rest multiclass Laplace GP
+  logistic/probit lanes with independent NumPy oracles. The release records are
   [`results/XGBOOST.md`](../fortml-bench/results/XGBOOST.md) and
   [`results/CLASSIFICATION_EXTENSIONS.md`](../fortml-bench/results/CLASSIFICATION_EXTENSIONS.md).
 - [ ] Define one versioned result schema for correctness, train time, predict
