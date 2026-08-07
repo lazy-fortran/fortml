@@ -1301,9 +1301,11 @@ their own resident products when they expose a stronger contract.
 
 `mlp_t%initialize(layer_sizes,status[,hidden_activation,output_activation,
 initialization_seed])` constructs dense layers. `MLP_LINEAR`, `MLP_TANH`,
-`MLP_RELU`, `MLP_GELU`, `MLP_SILU`, `MLP_ELU`, `MLP_SOFTPLUS`, and
-`MLP_LEAKY_RELU` are accepted activation constants. GELU uses the standard
-tanh approximation; leaky ReLU uses a fixed slope of `0.01`. The default hidden
+`MLP_RELU`, `MLP_GELU`, `MLP_SILU`, `MLP_ELU`, `MLP_SOFTPLUS`,
+`MLP_LEAKY_RELU`, `MLP_SIGMOID`, and `MLP_MISH` are accepted activation
+constants. GELU uses the standard tanh approximation; leaky ReLU uses a fixed
+slope of `0.01`; sigmoid uses a branch-stable extreme-logit evaluation; and
+Mish is `x*tanh(softplus(x))`. The default hidden
 activation is `tanh`, and the default output activation is linear. Weights use
 deterministic Xavier scaling (or He scaling for ReLU and leaky-ReLU hidden
 layers), with a reproducible
@@ -1326,7 +1328,9 @@ hvp(x, output_bar, dtheta, dx, theta_hvp, x_hvp, status)
 first and second derivatives through these products, so `jvp`, `vjp`, and
 `hvp` remain exact up to floating-point arithmetic. ReLU uses derivative zero
 at the kink; leaky ReLU uses its fixed negative-side slope and zero second
-derivative away from the kink.
+derivative away from the kink. The resident CUDA dense plan currently accepts
+only the original eight activation codes and returns a typed refusal for
+sigmoid or Mish.
 
 ### `fortml_mlp_chain`
 
@@ -2493,13 +2497,15 @@ differences of `elbo` therefore provide a direct independent oracle. `scale`
 scales only the likelihood term for minibatch callers. `predict_latent` returns
 the posterior latent mean and variance, while `predict_proba` applies the
 logistic variance correction or analytic probit Gaussian integral and returns
-columns `[negative,positive]`. Their parameter-JVP variants differentiate the
-packed variational mean/log-Cholesky vector. `elbo_device` and prediction
-device dispatch execute CPU exactly and return `FORTNUM_NOT_IMPLEMENTED` for
-CUDA until the inducing solve, likelihood evaluation, and reduction are
-resident; they never stage a hidden host fallback. Kernel and inducing-point
-products, natural-gradient updates, and resident GPU inference remain
-separate roadmap work.
+columns `[negative,positive]`. Their parameter-JVP and parameter-VJP variants
+differentiate the packed variational mean/log-Cholesky vector. The VJP accepts
+cotangents for both latent outputs or both probability columns and satisfies
+the JVP/VJP dot-product identity. CPU dispatch executes these products exactly;
+CUDA prediction and reverse-product paths return `FORTNUM_NOT_IMPLEMENTED`
+until the inducing solve, likelihood evaluation, and reduction are resident.
+No hidden host fallback is used. Kernel and inducing-point hyperparameter
+products, natural-gradient updates, and resident GPU inference remain separate
+roadmap work.
 
 ### `fortml_gp_variational_multiclass_classification`
 
@@ -2510,12 +2516,13 @@ validates unique integer classes, creates one seeded model per class, and
 packs their mean/log-Cholesky vectors in sorted-class order. `elbo`,
 `elbo_gradient`, and `elbo_jvp` sum the independent binary objectives;
 `predict_latent` returns per-class margins/variances and `predict_proba`
-normalizes positive margins to a simplex. `predict_proba_parameter_jvp`
-provides the exact packed-parameter tangent, and `predict` uses first-max
-ties in sorted class order. CPU dispatch is exact; CUDA ELBO and prediction
-requests return a typed refusal until a resident OVR graph is linked. Coupled
-categorical likelihoods, natural gradients, and kernel/inducing
-hyperparameter products remain open.
+normalizes positive margins to a simplex. `predict_proba_parameter_jvp` and
+`predict_proba_parameter_vjp` provide the exact packed-parameter tangent and
+reverse product through the OVR simplex normalization, and `predict` uses
+first-max ties in sorted class order. CPU dispatch is exact; CUDA ELBO and
+prediction/reverse-product requests return a typed refusal until a resident OVR
+graph is linked. Coupled categorical likelihoods, natural gradients, and
+kernel/inducing hyperparameter products remain open.
 
 ### `fortml_sparse_prior_gp`
 

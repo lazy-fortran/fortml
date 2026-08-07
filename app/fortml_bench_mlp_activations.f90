@@ -1,7 +1,7 @@
 program fortml_bench_mlp_activations
     use, intrinsic :: iso_fortran_env, only: dp => real64, int64
     use fortml_mlp, only: mlp_t, MLP_LINEAR, MLP_TANH, MLP_RELU, MLP_GELU, &
-        MLP_SILU, MLP_ELU, MLP_SOFTPLUS, MLP_LEAKY_RELU
+        MLP_SILU, MLP_ELU, MLP_SOFTPLUS, MLP_LEAKY_RELU, MLP_SIGMOID, MLP_MISH
     use fortnum_status, only: fortnum_status_t, status_ok
     implicit none
 
@@ -12,11 +12,11 @@ program fortml_bench_mlp_activations
     integer, parameter :: repetitions = 32
     integer, parameter :: n_parameters = n_features*n_hidden + n_hidden + &
         n_hidden*n_outputs + n_outputs
-    integer, parameter :: kinds(8) = [MLP_LINEAR, MLP_TANH, MLP_RELU, MLP_GELU, &
-        MLP_SILU, MLP_ELU, MLP_SOFTPLUS, MLP_LEAKY_RELU]
-    character(len=16), parameter :: names(8) = [character(len=16) :: &
+    integer, parameter :: kinds(10) = [MLP_LINEAR, MLP_TANH, MLP_RELU, MLP_GELU, &
+        MLP_SILU, MLP_ELU, MLP_SOFTPLUS, MLP_LEAKY_RELU, MLP_SIGMOID, MLP_MISH]
+    character(len=16), parameter :: names(10) = [character(len=16) :: &
         "linear", "tanh", "relu", "gelu", "silu", "elu", "softplus", &
-        "leaky_relu"]
+        "leaky_relu", "sigmoid", "mish"]
     real(dp) :: x(n_samples, n_features), y(n_samples, n_outputs)
     real(dp) :: theta(n_parameters), checksum, elapsed
     integer(int64) :: clock_start, clock_end, clock_rate

@@ -66,12 +66,16 @@ structure-specific optimizer adapter.
 The current implementation provides batched prediction, parameter/input JVPs,
 parameter/input VJPs, HVPs, and a `backprop` alias for the reverse product.
 Hidden and output layers support linear, `tanh`, ReLU, GELU (the standard tanh
-approximation), SiLU, ELU, softplus, and fixed-slope leaky ReLU activations.
-Smooth activations provide analytic first and second derivatives, which feed
-the MLP JVP, VJP, and HVP products without finite differences. ReLU uses
-derivative zero at its kink; leaky ReLU uses a fixed negative-side slope and
-zero second derivative away from the kink. The explicit products are the
-reference for the `fortad`-generated scalar fixture comparison.
+approximation), SiLU, ELU, softplus, fixed-slope leaky ReLU, stable sigmoid,
+and Mish activations. Smooth activations provide analytic first and second
+derivatives, which feed the MLP JVP, VJP, and HVP products without finite
+differences. ReLU uses derivative zero at its kink; leaky ReLU uses a fixed
+negative-side slope and zero second derivative away from the kink. Sigmoid
+uses a branch-stable evaluation at extreme logits. The explicit products are
+the reference for the `fortad`-generated scalar fixture comparison. CUDA dense
+inference currently covers the original eight activation codes; sigmoid and
+Mish requests return a typed capability boundary until matching resident
+kernels are linked.
 
 ## Exact GP baseline
 
