@@ -56,6 +56,11 @@ ordinary covariance-block refusal for kernels that cannot form the requested
 derivative observation; there is no finite-difference fallback. CUDA remains
 an explicit `FORTNUM_NOT_IMPLEMENTED` boundary until the resident covariance
 and factorization graph is linked.
+`joint_covariance_jvp_device` and `joint_covariance_vjp_device` make the
+backend boundary explicit: selected CPU contexts dispatch exactly to these
+products, while selected CUDA contexts return `FORTNUM_NOT_IMPLEMENTED` before
+touching their outputs. `test_derivative_gp_device` checks both refusal and
+CPU-dispatch contracts.
 
 The independent behavior gates are `test_derivative_gp_products`,
 `test_derivative_gp_device`, and `test_derivative_gp_capabilities`. The

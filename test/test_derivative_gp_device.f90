@@ -18,6 +18,9 @@ program test_derivative_gp_device
     real(dp) :: mean(2, 1), reference_mean(2, 1)
     real(dp) :: variance(2), reference_variance(2)
     real(dp) :: covariance(2, 2), reference_covariance(2, 2)
+    real(dp) :: covariance_dot(2, 2), reference_covariance_dot(2, 2)
+    real(dp) :: covariance_bar(2, 2), parameter_bar(3), reference_parameter_bar(3)
+    real(dp) :: parameter_direction(3)
     integer :: failures
 
     failures = 0
@@ -48,6 +51,21 @@ program test_derivative_gp_device
         "CUDA joint covariance refusal", failures)
     call check(all(covariance == 4321.0_dp), &
         "CUDA joint covariance refusal leaves output untouched", failures)
+    covariance = 4321.0_dp
+    covariance_dot = 8765.0_dp
+    call model%joint_covariance_jvp_device(cuda, query, [1, 0], [0.13_dp, -0.09_dp, 0.07_dp], &
+        covariance, covariance_dot, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
+        "CUDA joint covariance JVP refusal", failures)
+    call check(all(covariance == 4321.0_dp) .and. all(covariance_dot == 8765.0_dp), &
+        "CUDA joint covariance JVP refusal leaves outputs untouched", failures)
+    covariance_bar = reshape([0.4_dp, -0.2_dp, 0.1_dp, 0.3_dp], [2, 2])
+    parameter_bar = 2468.0_dp
+    call model%joint_covariance_vjp_device(cuda, query, [1, 0], covariance_bar, parameter_bar, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
+        "CUDA joint covariance VJP refusal", failures)
+    call check(all(parameter_bar == 2468.0_dp), &
+        "CUDA joint covariance VJP refusal leaves output untouched", failures)
 
     call cpu%select(FORTML_DEVICE_CPU, status)
     call check(status_ok(status), "CPU device selection", failures)
@@ -60,6 +78,19 @@ program test_derivative_gp_device
     call model%joint_covariance(query, [1, 0], reference_covariance, status)
     call check(status_ok(status) .and. maxval(abs(covariance - reference_covariance)) < 2.0e-14_dp, &
         "CPU joint covariance dispatch matches reference", failures)
+    parameter_direction = [0.13_dp, -0.09_dp, 0.07_dp]
+    call model%joint_covariance_jvp_device(cpu, query, [1, 0], parameter_direction, &
+        covariance, covariance_dot, status)
+    call model%joint_covariance_jvp(query, [1, 0], parameter_direction, &
+        reference_covariance, reference_covariance_dot, status)
+    call check(status_ok(status) .and. maxval(abs(covariance - reference_covariance)) < 2.0e-14_dp &
+        .and. maxval(abs(covariance_dot - reference_covariance_dot)) < 2.0e-13_dp, &
+        "CPU joint covariance JVP dispatch matches reference", failures)
+    call model%joint_covariance_vjp_device(cpu, query, [1, 0], covariance_bar, &
+        parameter_bar, status)
+    call model%joint_covariance_vjp(query, [1, 0], covariance_bar, reference_parameter_bar, status)
+    call check(status_ok(status) .and. maxval(abs(parameter_bar - reference_parameter_bar)) < 2.0e-13_dp, &
+        "CPU joint covariance VJP dispatch matches reference", failures)
 
     call model%predict_device(unselected, query, [1, 0], mean, variance, status)
     call check(status%code == FORTNUM_DOMAIN_ERROR, &

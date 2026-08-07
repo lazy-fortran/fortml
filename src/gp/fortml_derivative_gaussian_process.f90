@@ -35,6 +35,10 @@ module fortml_derivative_gaussian_process
         procedure, public :: joint_covariance_device => gp_derivative_joint_covariance_device
         procedure, public :: joint_covariance_jvp => gp_derivative_joint_covariance_jvp
         procedure, public :: joint_covariance_vjp => gp_derivative_joint_covariance_vjp
+        procedure, public :: joint_covariance_jvp_device => &
+            gp_derivative_joint_covariance_jvp_device
+        procedure, public :: joint_covariance_vjp_device => &
+            gp_derivative_joint_covariance_vjp_device
         procedure, public :: device_supported => gp_derivative_device_supported
         procedure, public :: predict_jvp => gp_derivative_predict_jvp
         procedure, public :: predict_vjp => gp_derivative_predict_vjp
@@ -64,6 +68,8 @@ module fortml_derivative_gaussian_process
     public :: gp_derivative_joint_covariance_device
     public :: gp_derivative_joint_covariance_jvp
     public :: gp_derivative_joint_covariance_vjp
+    public :: gp_derivative_joint_covariance_jvp_device
+    public :: gp_derivative_joint_covariance_vjp_device
     public :: gp_derivative_device_supported
     public :: gp_derivative_predict_jvp
     public :: gp_derivative_predict_vjp
@@ -472,6 +478,64 @@ contains
         end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine gp_derivative_joint_covariance_vjp
+
+    subroutine gp_derivative_joint_covariance_jvp_device(self, device, x, components, &
+            direction, covariance, covariance_dot, status)
+        !! Explicit backend boundary for the joint-covariance JVP.  A selected
+        !! CPU context dispatches to the reference product.  CUDA refuses
+        !! before touching outputs until the resident covariance graph exists.
+        class(gp_derivative_regression_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :), direction(:)
+        integer, intent(in) :: components(:)
+        real(dp), intent(out) :: covariance(:, :), covariance_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "derivative GP joint covariance JVP device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%joint_covariance_jvp(x, components, direction, covariance, &
+                covariance_dot, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "derivative GP joint covariance JVP device: no resident CUDA covariance graph is linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "derivative GP joint covariance JVP device: device kind is invalid")
+        end select
+    end subroutine gp_derivative_joint_covariance_jvp_device
+
+    subroutine gp_derivative_joint_covariance_vjp_device(self, device, x, components, &
+            covariance_bar, parameter_bar, status)
+        !! Explicit backend boundary for the joint-covariance VJP.  CUDA is a
+        !! typed refusal and never falls back to host execution.
+        class(gp_derivative_regression_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :), covariance_bar(:, :)
+        integer, intent(in) :: components(:)
+        real(dp), intent(out) :: parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "derivative GP joint covariance VJP device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%joint_covariance_vjp(x, components, covariance_bar, parameter_bar, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "derivative GP joint covariance VJP device: no resident CUDA covariance graph is linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "derivative GP joint covariance VJP device: device kind is invalid")
+        end select
+    end subroutine gp_derivative_joint_covariance_vjp_device
 
     logical function gp_derivative_device_supported(self, device_kind) result(supported)
         !! Report capability without implying an implicit host fallback.

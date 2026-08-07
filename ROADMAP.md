@@ -2229,6 +2229,13 @@ peak memory, and batch-size scaling with the same correctness gate as training.
   record is [`results/adagrad.csv`](../fortml-bench/results/adagrad.csv), with
   the contract documented in
   [`results/ADAGRAD.md`](../fortml-bench/results/ADAGRAD.md).
+- [x] Add the deterministic mini-batch SGD trajectory hypergradient objective
+  over `[log(learning_rate), log(l2)]`. Its private seeded batch cursor is
+  replayed for every FortOpt evaluation, and exact per-batch MLP HVPs provide
+  value/gradient, JVP, and scalar VJP products for validation MSE. The
+  independent `test_mlp_minibatch_hypergradient` fixture covers central
+  differences, adjoints, optimizer convergence, and the CUDA refusal; the
+  release workload is `fortml_bench_mlp_minibatch_hypergradient`.
 - [x] Add independent kNN uniform/inverse-distance, RMSprop direct/MLP, and
   binary/multiclass staged-XGBoost benchmark lanes. Their reports and raw
   records are [`results/KNN.md`](../fortml-bench/results/KNN.md),
