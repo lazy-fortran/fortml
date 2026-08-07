@@ -554,6 +554,27 @@ single-class support, malformed shapes, or zero pair mass. Their
 `*_device` entry points preserve outputs and return `FORTNUM_NOT_IMPLEMENTED`
 for CUDA until a resident ranking kernel is linked.
 
+`classification_pr_auc` computes binary average precision (the step area under
+the precision-recall curve) from descending score thresholds. Equal-score rows
+are consumed as one threshold group, and optional sample weights contribute to
+both precision and recall mass. `classification_pr_auc_ovr` applies the same
+contract to each score column and returns the unweighted macro average plus
+optional per-class values. Both refuse malformed/nonfinite inputs and require
+positive weighted support for both the selected positive class and its negative
+class. The corresponding `*_device` entry points preserve outputs and return
+`FORTNUM_NOT_IMPLEMENTED` for CUDA until a resident ranking reduction is
+linked; no host fallback is implicit.
+
+`classification_multilabel_jaccard` evaluates intersection over union for
+binary indicator matrices with micro, macro, or samples averaging. Its optional
+sample weights are row weights, and `zero_division` explicitly selects the
+value for empty unions. `classification_multilabel_hamming_loss` reports the
+weighted fraction of mismatched indicators with the same averaging choices;
+`classification_multilabel_hamming` is a short alias. Both reject empty,
+malformed, nonbinary matrices, invalid averaging policies, and nonfinite or
+zero-mass weights with a domain status. These reductions are CPU reference
+routines until resident CUDA kernels are linked.
+
 ### `fortml_probability_calibration`
 
 `probability_calibrator_t%fit(scores,labels,status[,options,sample_weight,state])`
@@ -1492,6 +1513,17 @@ the fitted shape/device metadata without allocating or copying host trees;
 its create/predict/destroy methods remain typed refusals until the native
 no-autodiff kernel is linked. The sibling benchmark records both prediction
 and plan-creation rows as explicit unavailable results.
+
+For callers that already have a flattened tree representation, the
+`fortml_cuda_forest_api` module exposes `cuda_forest_plan_t`. `create` accepts
+zero-based `tree_offset`, child, and feature arrays, node-major leaf
+probabilities, sorted class labels, and a CUDA device index; `predict_proba`
+and `predict` transfer only each query batch and return the native result.
+Model arrays remain resident across calls. The ordinary Fortran build links a
+typed unavailable stub, while the native C ABI in
+`src/classification/fortml_cuda_forest.{h,cu}` supplies the device kernel.
+This wrapper intentionally does not expose or copy private CART storage, and
+it provides no autodiff path or hidden CPU fallback.
 
 ### `fortml_extra_trees_classifier`
 

@@ -687,8 +687,11 @@ CUDA refusal until private CART storage is safely bound to the C ABI.
   with micro, macro, and sample averaging, explicit zero-division policy, and
   probability threshold (`>=` is positive) semantics. Add pairwise binary and
   one-vs-rest ROC AUC with half-credit ties, sample weights, and typed CUDA
-  refusals. Independent indicator and pairwise ranking oracles cover all
-  paths. PR AUC and multilabel Jaccard/Hamming metrics remain open.
+  refusals. Add weighted binary/OVR PR AUC with average-precision step
+  semantics, and multilabel Jaccard and Hamming reductions with micro, macro,
+  and samples averaging. Independent indicator and ranking oracles cover all
+  CPU paths; malformed and zero-support behavior is explicit, and ranking
+  device entry points return typed CUDA refusals until resident kernels exist.
 - [x] Add deterministic multiclass expected and maximum calibration error
   metrics with row normalization, first-maximum tie handling, equal-width
   bins, optional sample weights, and explicit empty-bin and confidence-one
@@ -1009,7 +1012,8 @@ mathematical objective.
   equal-width confidence-bin metrics with deterministic tie handling and
   refusal of invalid rows, labels, weights, or bin counts.
 - [ ] Define finite, NaN, masked, zero-support, zero-division, multiclass,
-  multilabel, and sample-weight behavior for every metric. Metrics return a
+  multilabel, PR/ROC-AUC, Jaccard, Hamming, and sample-weight behavior for
+  every metric. Metrics return a
   value plus diagnostics rather than silently dropping invalid rows.
 - [ ] Add train/test, K-fold, repeated K-fold, stratified, grouped,
   time-series/blocked, and Monte Carlo splitters. Index generation is seeded,
@@ -1503,6 +1507,10 @@ count as a production lazy implementation.
   model refusal are checked against an independent CPU tree-walk oracle. The
   higher-level Fortran random-forest adapter remains an explicit refusal until
   its private CART storage is safely bound to this ABI.
+- [x] Add a Fortran-facing `cuda_forest_plan_t` wrapper for explicit flattened
+  models. The ordinary build links a typed unavailable stub and preserves
+  caller buffers on refusal; native CUDA applications can bind the C plan
+  without exposing private CART storage or adding an autodiff path.
 - [ ] Keep batches, parameters, gradients, optimizer accumulators, and workspaces
   resident through complete MLP and variational training steps.
 - [ ] Extend residency to basis/pipeline transforms, tree histograms, classifier
@@ -1958,6 +1966,10 @@ every release row links to raw data and the pinned reference.
 ## Benchmark evidence
 
 The maintained reports and their raw artifacts are in `../fortml-bench/results`:
+
+- [`PARITY_MATRIX.md`](../fortml-bench/results/PARITY_MATRIX.md) is the
+  family-level status index. It separates CPU correctness, resident CUDA
+  correctness, transfer-inclusive measurements, and typed refusals.
 
 - [`MODEL_WORKLOADS.md`](../fortml-bench/results/MODEL_WORKLOADS.md), backed by
   `model_workloads.csv`, `exact_gp_workloads.png`, and `mlp_workloads.png`.

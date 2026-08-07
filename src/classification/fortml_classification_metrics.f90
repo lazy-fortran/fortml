@@ -26,6 +26,9 @@ module fortml_classification_metrics
     public :: classification_maximum_calibration_error
     public :: classification_multilabel_precision_recall_f1
     public :: classification_multilabel_probability_metrics
+    public :: classification_multilabel_jaccard
+    public :: classification_multilabel_hamming_loss
+    public :: classification_multilabel_hamming
 
     integer, parameter, public :: CLASSIFICATION_AVERAGE_MICRO = 1
     integer, parameter, public :: CLASSIFICATION_AVERAGE_MACRO = 2
@@ -36,6 +39,10 @@ module fortml_classification_metrics
     public :: classification_roc_auc_ovr
     public :: classification_roc_auc_device
     public :: classification_roc_auc_ovr_device
+    public :: classification_pr_auc
+    public :: classification_pr_auc_ovr
+    public :: classification_pr_auc_device
+    public :: classification_pr_auc_ovr_device
 
 contains
 
@@ -517,6 +524,179 @@ contains
             precision, recall, f1, status, average, sample_weight, zero_division)
     end subroutine classification_multilabel_probability_metrics
 
+    subroutine classification_multilabel_jaccard(labels, predictions, value, &
+            status, average, sample_weight, zero_division)
+        !! Jaccard similarity for binary indicator matrices.
+        !!
+        !! `average` has the same values as the precision/recall contract:
+        !! micro aggregates intersections and unions globally, macro averages
+        !! one score per label, and samples averages one score per row.  A
+        !! zero union is assigned `zero_division` (zero by default), making
+        !! empty-target and empty-prediction rows explicit and deterministic.
+        integer, intent(in) :: labels(:, :), predictions(:, :)
+        real(dp), intent(out) :: value
+        type(fortnum_status_t), intent(out) :: status
+        integer, intent(in), optional :: average
+        real(dp), intent(in), optional :: sample_weight(:)
+        integer, intent(in), optional :: zero_division
+        integer :: average_value, zero_value, i, j
+        real(dp) :: denominator, weight, intersection, union, row_intersection
+        real(dp) :: row_union
+
+        value = 0.0_dp
+        average_value = CLASSIFICATION_AVERAGE_MACRO
+        if (present(average)) average_value = average
+        zero_value = CLASSIFICATION_ZERO_DIVISION_ZERO
+        if (present(zero_division)) zero_value = zero_division
+        if (average_value < CLASSIFICATION_AVERAGE_MICRO .or. &
+                average_value > CLASSIFICATION_AVERAGE_SAMPLES .or. &
+                (zero_value /= CLASSIFICATION_ZERO_DIVISION_ZERO .and. &
+                zero_value /= CLASSIFICATION_ZERO_DIVISION_ONE)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multilabel Jaccard: average or zero-division policy is invalid")
+            return
+        end if
+        call validate_multilabel_inputs(labels, predictions, status, &
+            "multilabel Jaccard")
+        if (status%code /= FORTNUM_OK) return
+        call validate_weights(size(labels, 1), sample_weight, denominator, status, &
+            "multilabel Jaccard")
+        if (status%code /= FORTNUM_OK) return
+
+        select case (average_value)
+        case (CLASSIFICATION_AVERAGE_MICRO)
+            intersection = 0.0_dp
+            union = 0.0_dp
+            do i = 1, size(labels, 1)
+                weight = 1.0_dp
+                if (present(sample_weight)) weight = sample_weight(i)
+                do j = 1, size(labels, 2)
+                    if (labels(i, j) == 1 .and. predictions(i, j) == 1) &
+                        intersection = intersection + weight
+                    if (labels(i, j) == 1 .or. predictions(i, j) == 1) &
+                        union = union + weight
+                end do
+            end do
+            value = safe_multilabel_ratio(intersection, union, zero_value)
+        case (CLASSIFICATION_AVERAGE_MACRO)
+            do j = 1, size(labels, 2)
+                intersection = 0.0_dp
+                union = 0.0_dp
+                do i = 1, size(labels, 1)
+                    weight = 1.0_dp
+                    if (present(sample_weight)) weight = sample_weight(i)
+                    if (labels(i, j) == 1 .and. predictions(i, j) == 1) &
+                        intersection = intersection + weight
+                    if (labels(i, j) == 1 .or. predictions(i, j) == 1) &
+                        union = union + weight
+                end do
+                value = value + safe_multilabel_ratio(intersection, union, zero_value)
+            end do
+            value = value/real(size(labels, 2), dp)
+        case (CLASSIFICATION_AVERAGE_SAMPLES)
+            do i = 1, size(labels, 1)
+                weight = 1.0_dp
+                if (present(sample_weight)) weight = sample_weight(i)
+                row_intersection = 0.0_dp
+                row_union = 0.0_dp
+                do j = 1, size(labels, 2)
+                    if (labels(i, j) == 1 .and. predictions(i, j) == 1) &
+                        row_intersection = row_intersection + 1.0_dp
+                    if (labels(i, j) == 1 .or. predictions(i, j) == 1) &
+                        row_union = row_union + 1.0_dp
+                end do
+                value = value + weight*safe_multilabel_ratio(row_intersection, &
+                    row_union, zero_value)/denominator
+            end do
+        end select
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine classification_multilabel_jaccard
+
+    subroutine classification_multilabel_hamming_loss(labels, predictions, value, &
+            status, sample_weight, average)
+        !! Hamming loss for binary indicator matrices.
+        !!
+        !! The default `micro` contract is the weighted fraction of incorrect
+        !! indicators.  `macro` averages per-label fractions and `samples`
+        !! averages per-row fractions.  All forms use row sample weights.
+        integer, intent(in) :: labels(:, :), predictions(:, :)
+        real(dp), intent(out) :: value
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
+        integer, intent(in), optional :: average
+        integer :: average_value, i, j
+        real(dp) :: denominator, weight, errors, row_errors
+
+        value = 0.0_dp
+        average_value = CLASSIFICATION_AVERAGE_MICRO
+        if (present(average)) average_value = average
+        if (average_value < CLASSIFICATION_AVERAGE_MICRO .or. &
+                average_value > CLASSIFICATION_AVERAGE_SAMPLES) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multilabel Hamming loss: average policy is invalid")
+            return
+        end if
+        call validate_multilabel_inputs(labels, predictions, status, &
+            "multilabel Hamming loss")
+        if (status%code /= FORTNUM_OK) return
+        call validate_weights(size(labels, 1), sample_weight, denominator, status, &
+            "multilabel Hamming loss")
+        if (status%code /= FORTNUM_OK) return
+
+        select case (average_value)
+        case (CLASSIFICATION_AVERAGE_MICRO)
+            errors = 0.0_dp
+            do i = 1, size(labels, 1)
+                weight = 1.0_dp
+                if (present(sample_weight)) weight = sample_weight(i)
+                do j = 1, size(labels, 2)
+                    if (labels(i, j) /= predictions(i, j)) errors = errors + weight
+                end do
+            end do
+            value = errors/(denominator*real(size(labels, 2), dp))
+        case (CLASSIFICATION_AVERAGE_MACRO)
+            do j = 1, size(labels, 2)
+                errors = 0.0_dp
+                do i = 1, size(labels, 1)
+                    weight = 1.0_dp
+                    if (present(sample_weight)) weight = sample_weight(i)
+                    if (labels(i, j) /= predictions(i, j)) errors = errors + weight
+                end do
+                value = value + errors/denominator
+            end do
+            value = value/real(size(labels, 2), dp)
+        case (CLASSIFICATION_AVERAGE_SAMPLES)
+            do i = 1, size(labels, 1)
+                weight = 1.0_dp
+                if (present(sample_weight)) weight = sample_weight(i)
+                row_errors = 0.0_dp
+                do j = 1, size(labels, 2)
+                    if (labels(i, j) /= predictions(i, j)) &
+                        row_errors = row_errors + 1.0_dp
+                end do
+                value = value + weight*row_errors/ &
+                    (denominator*real(size(labels, 2), dp))
+            end do
+        end select
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine classification_multilabel_hamming_loss
+
+    subroutine classification_multilabel_hamming(labels, predictions, value, &
+            status, sample_weight)
+        !! Short alias for `classification_multilabel_hamming_loss`.
+        integer, intent(in) :: labels(:, :), predictions(:, :)
+        real(dp), intent(out) :: value
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
+
+        if (present(sample_weight)) then
+            call classification_multilabel_hamming_loss(labels, predictions, value, &
+                status, sample_weight=sample_weight)
+        else
+            call classification_multilabel_hamming_loss(labels, predictions, value, status)
+        end if
+    end subroutine classification_multilabel_hamming
+
     subroutine classification_roc_auc(scores, labels, positive_class, value, &
             status, sample_weight)
         !! Weighted binary ROC area with deterministic half-credit ties.
@@ -533,6 +713,7 @@ contains
         real(dp), allocatable :: weights(:)
         real(dp) :: denominator
         integer :: i, negative_class
+        logical :: negative_seen
 
         value = 0.0_dp
         if (size(scores) < 1 .or. size(labels) /= size(scores) .or. &
@@ -548,10 +729,12 @@ contains
         weights = 1.0_dp
         if (present(sample_weight)) weights = sample_weight
         negative_class = 0
+        negative_seen = .false.
         do i = 1, size(labels)
             if (labels(i) /= positive_class) then
-                if (negative_class == 0) then
+                if (.not. negative_seen) then
                     negative_class = labels(i)
+                    negative_seen = .true.
                 else if (labels(i) /= negative_class) then
                     call status_set(status, FORTNUM_DOMAIN_ERROR, &
                         "ROC AUC: binary labels contain more than two classes")
@@ -559,7 +742,7 @@ contains
                 end if
             end if
         end do
-        if (negative_class == 0 .or. sum(weights, mask=labels == positive_class) <= 0.0_dp .or. &
+        if (.not. negative_seen .or. sum(weights, mask=labels == positive_class) <= 0.0_dp .or. &
             sum(weights, mask=labels /= positive_class) <= 0.0_dp) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "ROC AUC: positive and negative support are both required")
@@ -712,6 +895,187 @@ contains
         end select
     end subroutine classification_roc_auc_ovr_device
 
+    subroutine classification_pr_auc(scores, labels, positive_class, value, &
+            status, sample_weight)
+        !! Binary precision-recall area using average-precision step semantics.
+        !!
+        !! Scores are processed in descending threshold order.  Equal-score
+        !! rows are consumed as one threshold group, avoiding arbitrary input
+        !! order dependence.  The area is the sum of precision at each group
+        !! times its recall increment, matching the usual weighted average
+        !! precision definition.  Both positive and negative weighted support
+        !! are required; otherwise a domain status is returned.
+        real(dp), intent(in) :: scores(:)
+        integer, intent(in) :: labels(:), positive_class
+        real(dp), intent(out) :: value
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
+        real(dp), allocatable :: weights(:)
+        real(dp) :: denominator, positive_mass, negative_mass
+        integer :: negative_class
+
+        value = 0.0_dp
+        if (size(scores) < 1 .or. size(labels) /= size(scores) .or. &
+                any(.not. ieee_is_finite(scores))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "PR AUC: scores and labels have invalid shapes or scores are nonfinite")
+            return
+        end if
+        call validate_weights(size(labels), sample_weight, denominator, status, &
+            "PR AUC")
+        if (status%code /= FORTNUM_OK) return
+        allocate(weights(size(labels)))
+        weights = 1.0_dp
+        if (present(sample_weight)) weights = sample_weight
+        call validate_binary_ranking_labels(labels, positive_class, negative_class, &
+            status, "PR AUC")
+        if (status%code /= FORTNUM_OK) return
+        positive_mass = sum(weights, mask=labels == positive_class)
+        negative_mass = sum(weights, mask=labels == negative_class)
+        if (positive_mass <= 0.0_dp .or. negative_mass <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "PR AUC: positive and negative support must have positive weight")
+            return
+        end if
+        call pr_auc_average_precision(scores, labels == positive_class, weights, value)
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine classification_pr_auc
+
+    subroutine classification_pr_auc_ovr(scores, labels, classes, value, status, &
+            sample_weight, per_class)
+        !! Macro one-vs-rest weighted average precision.
+        real(dp), intent(in) :: scores(:, :)
+        integer, intent(in) :: labels(:), classes(:)
+        real(dp), intent(out) :: value
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
+        real(dp), intent(out), optional :: per_class(:)
+        real(dp), allocatable :: weights(:)
+        real(dp) :: denominator, positive_mass, negative_mass, ap
+        integer :: i, j, class_index
+
+        value = 0.0_dp
+        if (present(per_class)) per_class = 0.0_dp
+        if (size(scores, 1) < 1 .or. size(scores, 2) /= size(classes) .or. &
+                size(classes) < 2 .or. size(labels) /= size(scores, 1) .or. &
+                any(.not. ieee_is_finite(scores))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "PR AUC OVR: scores, labels, or class shapes are invalid")
+            return
+        end if
+        if (present(per_class)) then
+            if (size(per_class) /= size(classes)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "PR AUC OVR: per-class output shape is invalid")
+                return
+            end if
+        end if
+        call validate_classes(classes, status, "PR AUC OVR")
+        if (status%code /= FORTNUM_OK) return
+        call validate_weights(size(labels), sample_weight, denominator, status, &
+            "PR AUC OVR")
+        if (status%code /= FORTNUM_OK) return
+        allocate(weights(size(labels)))
+        weights = 1.0_dp
+        if (present(sample_weight)) weights = sample_weight
+        do i = 1, size(labels)
+            class_index = class_position(labels(i), classes)
+            if (class_index == 0) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "PR AUC OVR: labels must belong to classes")
+                return
+            end if
+        end do
+        do j = 1, size(classes)
+            positive_mass = sum(weights, mask=labels == classes(j))
+            negative_mass = sum(weights, mask=labels /= classes(j))
+            if (positive_mass <= 0.0_dp .or. negative_mass <= 0.0_dp) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "PR AUC OVR: every class needs positive and negative support")
+                return
+            end if
+            call pr_auc_average_precision(scores(:, j), labels == classes(j), &
+                weights, ap)
+            if (present(per_class)) per_class(j) = ap
+            value = value + ap
+        end do
+        value = value/real(size(classes), dp)
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine classification_pr_auc_ovr
+
+    subroutine classification_pr_auc_device(device, scores, labels, positive_class, &
+            value, status, sample_weight)
+        !! Device dispatch for binary PR AUC; CUDA has no linked ranking kernel.
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: scores(:)
+        integer, intent(in) :: labels(:), positive_class
+        real(dp), intent(out) :: value
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "PR AUC device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            if (present(sample_weight)) then
+                call classification_pr_auc(scores, labels, positive_class, value, &
+                    status, sample_weight)
+            else
+                call classification_pr_auc(scores, labels, positive_class, value, status)
+            end if
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "PR AUC device: no resident ranking reduction is linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "PR AUC device: device kind is invalid")
+        end select
+    end subroutine classification_pr_auc_device
+
+    subroutine classification_pr_auc_ovr_device(device, scores, labels, classes, value, &
+            status, sample_weight, per_class)
+        !! Device dispatch for macro one-vs-rest PR AUC.
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: scores(:, :)
+        integer, intent(in) :: labels(:), classes(:)
+        real(dp), intent(out) :: value
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
+        real(dp), intent(out), optional :: per_class(:)
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "PR AUC OVR device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            if (present(sample_weight)) then
+                if (present(per_class)) then
+                    call classification_pr_auc_ovr(scores, labels, classes, value, &
+                        status, sample_weight, per_class)
+                else
+                    call classification_pr_auc_ovr(scores, labels, classes, value, &
+                        status, sample_weight=sample_weight)
+                end if
+            else if (present(per_class)) then
+                call classification_pr_auc_ovr(scores, labels, classes, value, status, &
+                    per_class=per_class)
+            else
+                call classification_pr_auc_ovr(scores, labels, classes, value, status)
+            end if
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "PR AUC OVR device: no resident ranking reduction is linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "PR AUC OVR device: device kind is invalid")
+        end select
+    end subroutine classification_pr_auc_ovr_device
+
     subroutine roc_auc_pair(scores, positive, weights, value)
         real(dp), intent(in) :: scores(:), weights(:)
         logical, intent(in) :: positive(:)
@@ -833,6 +1197,93 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine calibration_errors
+
+    subroutine validate_multilabel_inputs(labels, predictions, status, context)
+        integer, intent(in) :: labels(:, :), predictions(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        character(*), intent(in) :: context
+
+        if (size(labels, 1) < 1 .or. size(labels, 2) < 1 .or. &
+                any(shape(predictions) /= shape(labels))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                trim(context)//": indicator matrices must be nonempty and have equal shape")
+            return
+        end if
+        if (any((labels /= 0) .and. (labels /= 1)) .or. &
+                any((predictions /= 0) .and. (predictions /= 1))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                trim(context)//": indicators must be exactly zero or one")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine validate_multilabel_inputs
+
+    subroutine validate_binary_ranking_labels(labels, positive_class, negative_class, &
+            status, context)
+        integer, intent(in) :: labels(:), positive_class
+        integer, intent(out) :: negative_class
+        type(fortnum_status_t), intent(out) :: status
+        character(*), intent(in) :: context
+        integer :: i
+        logical :: negative_seen
+
+        negative_class = 0
+        negative_seen = .false.
+        do i = 1, size(labels)
+            if (labels(i) == positive_class) cycle
+            if (.not. negative_seen) then
+                negative_class = labels(i)
+                negative_seen = .true.
+            else if (labels(i) /= negative_class) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    trim(context)//": labels must contain exactly two classes")
+                return
+            end if
+        end do
+        if (.not. negative_seen) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                trim(context)//": positive and negative classes are both required")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine validate_binary_ranking_labels
+
+    subroutine pr_auc_average_precision(scores, positive, weights, value)
+        real(dp), intent(in) :: scores(:), weights(:)
+        logical, intent(in) :: positive(:)
+        real(dp), intent(out) :: value
+        logical, allocatable :: consumed(:)
+        real(dp) :: threshold, previous_true_mass, true_mass, predicted_mass
+        real(dp) :: positive_mass, recall_increment, precision
+        integer :: i, n_consumed
+
+        value = 0.0_dp
+        positive_mass = sum(weights, mask=positive)
+        previous_true_mass = 0.0_dp
+        allocate(consumed(size(scores)))
+        consumed = .false.
+        n_consumed = 0
+        do while (n_consumed < size(scores))
+            threshold = -huge(1.0_dp)
+            do i = 1, size(scores)
+                if (.not. consumed(i)) threshold = max(threshold, scores(i))
+            end do
+            do i = 1, size(scores)
+                if (.not. consumed(i) .and. scores(i) == threshold) then
+                    consumed(i) = .true.
+                    n_consumed = n_consumed + 1
+                end if
+            end do
+            true_mass = sum(weights, mask=positive .and. scores >= threshold)
+            predicted_mass = sum(weights, mask=scores >= threshold)
+            recall_increment = (true_mass - previous_true_mass)/positive_mass
+            if (predicted_mass > 0.0_dp .and. recall_increment > 0.0_dp) then
+                precision = true_mass/predicted_mass
+                value = value + recall_increment*precision
+            end if
+            previous_true_mass = true_mass
+        end do
+    end subroutine pr_auc_average_precision
 
     subroutine validate_probability_inputs(probabilities, labels, classes, status, &
             context)
