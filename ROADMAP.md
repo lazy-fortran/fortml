@@ -97,7 +97,7 @@ documentation, refusal behavior, and benchmark evidence are all present.
 
 | Area | Current state | Production target |
 | --- | --- | --- |
-| Linear regression and generalized linear models | Linear regression is implemented. Logistic and softmax support sample and positive sorted-class weights | OLS, weighted/ridge/lasso/elastic-net, robust, quantile, Poisson/Gamma/Tweedie, multinomial, calibrated and regularized classifiers with shared solver and derivative contracts |
+| Linear regression and generalized linear models | Linear regression, weighted ridge, and weighted elastic-net/lasso coordinate descent are implemented. Logistic and softmax support sample and positive sorted-class weights | Robust, quantile, Poisson/Gamma/Tweedie, multinomial, calibrated and regularized classifiers with shared solver and derivative contracts |
 | Feature transforms and basis maps | Polynomial, Fourier, radial, B-spline, callback bases, standard/min-max scalers, integer categorical one-hot encoding, horizontal/sequential basis pipelines, and a fitted basis-to-linear estimator are implemented | Sparse/categorical feature views, feature names, DAG pipelines, leakage-safe cross-validation, differentiable basis hyperparameters |
 | Nearest-neighbor and margin methods | Dense exact kNN classifier | KD-tree or ball-tree search, radius neighbors, sparse inputs, linear/kernel SVM and SVR, calibrated probabilities, and differentiable soft-neighbor policies |
 | Trees and ensembles | Partial | Deterministic finite-only regression stumps, weighted depth-limited CART regression and classification, squared-loss stump boosting, and exact/histogram depth-limited second-order squared/logistic boosting are implemented. XGBoost-style trees support weighted quantile cuts, bounded histograms, explicit NaN rejection, learned default directions, and forced-left/right routing; forests, ranking, monotonic and interaction constraints remain planned |
@@ -153,9 +153,12 @@ when a lower-level primitive already exists.
   regularization, optional intercept, positive-mass sample weights, packed
   coefficient state, and fixed-fit input/parameter JVP/VJP products. The SVD
   fit and rank decisions are an explicit nondifferentiable boundary.
-- [ ] Lasso, elastic-net, Huber, quantile, Poisson, Gamma, Tweedie, ordinal,
-  multilabel, multioutput, and partial-fit estimators with the shared parameter
-  registry and sample-weight contract.
+- [x] Lasso and elastic-net estimators with deterministic weighted coordinate
+  descent, multi-output packed state, fixed-fit input/parameter JVP/VJP
+  products, convergence/refusal statuses, and an independent fixture oracle.
+- [ ] Huber, quantile, Poisson, Gamma, Tweedie, ordinal, multilabel,
+  multioutput, and partial-fit estimators with the shared parameter registry
+  and sample-weight contract.
 - [x] Dense k-nearest-neighbor classification with deterministic ties, uniform
   or inverse-distance voting, optional sample weights, and explicit
   nondifferentiable neighbor-selection boundaries.
@@ -300,7 +303,9 @@ when a lower-level primitive already exists.
 ### Regression, features, and neural models
 
 - [x] Implement multi-output linear regression with intercepts, ridge
-  regularization, an SVD least-squares fit, and prediction JVP/VJP products.
+  regularization, an SVD least-squares fit, and prediction JVP/VJP products;
+  weighted ridge and elastic-net/lasso coordinate fits share the packed
+  prediction derivative contract.
 - [x] Implement polynomial, Fourier, radial, B-spline, and callback basis maps
   behind one facade, with value/JVP/VJP products and differentiable radial and
   Fourier parameters.
@@ -477,14 +482,14 @@ The source inventory is dated 2026-08-07.
 
 | Work package | State | Implemented baseline | Package exit |
 | --- | --- | --- | --- |
-| Classification | Partial | `fortml_logistic_regression` and `fortml_softmax_regression` provide binary and multinomial integer-label fitting with sample-weighted reductions, `fortml_ovr_logistic_classifier` adds deterministic one-vs-rest binary logistic fits with normalized probabilities and parameter products, `fortml_gaussian_naive_bayes` adds weighted Gaussian class moments and input/parameter probability products, `fortml_bernoulli_naive_bayes` adds weighted relaxed-[0,1] Bernoulli features, positive smoothing, packed state, and input/parameter probability products, `fortml_multinomial_naive_bayes` adds weighted relaxed nonnegative counts, token-mass smoothing, packed state, and input/parameter probability products, `fortml_complement_naive_bayes` adds weighted complement distributions, optional weight normalization, packed state, and input/parameter probability products, `fortml_knn_classifier` adds deterministic dense uniform or inverse-distance neighbors with explicit discrete derivative refusals, `fortml_logistic_training` adds an exact weighted logistic objective with parameter/L2 gradients and HVPs plus bounded FortOpt L-BFGS-B, `fortml_cart_classifier` adds deterministic weighted Gini/entropy trees and leaf probabilities, `fortml_mlp_classifier` adds deterministic multiclass logits training with Adam and sample/class weights, `fortml_gp_classification` adds binary Laplace logistic/probit inference plus an exact mode-envelope kernel gradient and query-feature JVP/VJP products, `fortml_gp_multiclass_classification` adds packed one-vs-rest envelope gradients, latent margins, and query-feature JVP/VJP products, and shared metrics cover accuracy, top-k, balanced accuracy, confusion, precision/recall/F1, Brier, binary Matthews, weighted accuracy, log loss, and expected/maximum calibration error. | Binary and multiclass linear, tree, neural, GP, and boosted-tree classifiers share label, probability, weighting, and metric conventions. |
-| Estimator contracts, pipelines, and bases | Partial | `basis_map_t`, horizontal and sequential basis pipelines, fitted standard/min-max scalers with input JVPs, `basis_linear_regression_t`, weighted multi-output `ridge_regression_t`, row-oriented sample conventions, status objects, and the parameter registry are public. | Fitted transformers and estimators compose without data leakage, expose routed parameters, and run through cross-validation. |
+| Classification | Partial | `fortml_logistic_regression` and `fortml_softmax_regression` provide binary and multinomial integer-label fitting with sample-weighted reductions, `fortml_ovr_logistic_classifier` adds deterministic one-vs-rest binary logistic fits with normalized probabilities and parameter products, `fortml_ovo_logistic_classifier` adds deterministic one-vs-one pairwise-vote probabilities and input/parameter products, `fortml_gaussian_naive_bayes` adds weighted Gaussian class moments and input/parameter probability products, `fortml_bernoulli_naive_bayes` adds weighted relaxed-[0,1] Bernoulli features, positive smoothing, packed state, and input/parameter probability products, `fortml_multinomial_naive_bayes` adds weighted relaxed nonnegative counts, token-mass smoothing, packed state, and input/parameter probability products, `fortml_complement_naive_bayes` adds weighted complement distributions, optional weight normalization, packed state, and input/parameter probability products, `fortml_knn_classifier` adds deterministic dense uniform or inverse-distance neighbors with explicit discrete derivative refusals, `fortml_logistic_training` adds an exact weighted logistic objective with parameter/L2 gradients and HVPs plus bounded FortOpt L-BFGS-B, `fortml_cart_classifier` adds deterministic weighted Gini/entropy trees and leaf probabilities, `fortml_mlp_classifier` adds deterministic multiclass logits training with Adam and sample/class weights, `fortml_gp_classification` adds binary Laplace logistic/probit inference plus an exact mode-envelope kernel gradient and query-feature JVP/VJP products, `fortml_gp_multiclass_classification` adds packed one-vs-rest envelope gradients, latent margins, and query-feature JVP/VJP products, and shared metrics cover accuracy, top-k, balanced accuracy, confusion, precision/recall/F1, Brier, binary Matthews, weighted accuracy, log loss, and expected/maximum calibration error. | Binary and multiclass linear, tree, neural, GP, and boosted-tree classifiers share label, probability, weighting, and metric conventions. |
+| Estimator contracts, pipelines, and bases | Partial | `basis_map_t`, horizontal and sequential basis pipelines, fitted standard/min-max scalers with input JVPs, `basis_linear_regression_t`, weighted multi-output `ridge_regression_t` and `elastic_net_regression_t`, row-oriented sample conventions, status objects, and the parameter registry are public. | Fitted transformers and estimators compose without data leakage, expose routed parameters, and run through cross-validation. |
 | Tree boosting | Partial | `decision_stump_t`, weighted depth-limited `cart_regressor_t` and `cart_classifier_t`, squared-loss `gradient_boosting_regressor_t`, `xgboost_t`, and `xgboost_multiclass_t` provide deterministic exhaustive and bounded-histogram split products. The CART lanes have weighted squared-error or Gini/entropy criteria, depth and leaf constraints, fixed feature/threshold tie ordering, piecewise input JVP/refusal for regression, and finite-only probability/prediction paths for classification. The XGBoost-style lane has exact and weighted-histogram squared/logistic gradients, Hessians, regularized gains, recursive Newton leaves, tree-depth/node diagnostics, binary and one-vs-rest multiclass probabilities, staged predictions/margins, and gain/weight/cover feature importance. | Regression and classification trees support validation-based stopping, categorical/ranking objectives, monotonic/interaction constraints, deeper growth, and model persistence. |
 | Training infrastructure | Partial | Model-specific gradients, exact MSE+L2 neural HVPs including the L2 mixed hyperparameter block, `mlp_training_objective_t` scalar JVP/VJP products (including the optional optimized L2 coordinate), differentiable Huber/quantile loss products, `fortopt_adam` and FortOpt SGD momentum/Nesterov integration, AdamW with decoupled decay, Adagrad with an explicit accumulated-square state, RMSprop with centered/uncentered statistics and optional momentum, deterministic seeded batch cursors, per-update learning-rate callbacks, norm clipping, sample-weighted gradient accumulation, validation/early stopping, resumable optimizer state, versioned portable MLP checkpoint files, fixed-trajectory SGD/AdamW/RMSprop hypergradients, natural-gradient seams, and seeded variational draws exist. | One trainer owns batches, optimizer state, schedules, clipping, validation, early stopping, callbacks, and resumable state for every model with a completed trainer adapter; stochastic and device-resident optimizer hypergradients remain open. |
 | GP derivatives and hyperparameters | Partial | Exact GP likelihood and prediction products include parameter gradients and HVPs. Mixed value and first-derivative observations can be fitted and predicted. | Exact, derivative, multi-output, sparse, and matrix-free GP families expose documented trainable parameters, scalar objectives, parameter gradients, and train-state adapters. |
 | GPU and device execution | Partial | Kernel, structured, and sparse operator products have selected OpenACC or CUDA paths, including resident CG for kernel operators. The kNN classifier has a resident native-CUDA training-set plan with a direct kernel oracle; no-autodiff RMSprop and AdamW state recurrences have resident CUDA C plans with independent recurrence tests. `fortml_device` gives callers an explicit CPU/CUDA selector, runtime capability probe, backend identity, residency ownership metadata, transfer counters, and typed refusal when a CUDA object is not linked. The sibling benchmark harness records independent-NumPy CUDA gates for the resident micro-kernels. | Supported training and prediction workflows keep model, optimizer, and batch state resident on a selected device and have CPU parity tests. |
 | Serialization and distributed execution | Partial | `fortml_mlp_checkpoint` provides a versioned compiler-independent formatted-text representation with schema magic/version, exact optimizer/iterator/history state, validated temporary loading, and malformed/truncated/extra-record refusals. Other model/pipeline files and distributed execution remain open. | Versioned model and trainer files round-trip across supported compilers, and MPI training or inference agrees with a one-rank oracle. |
-| Benchmark coverage | Partial | Correctness-gated model and GP applications feed release harnesses in `../fortml-bench`; current release lanes include Bernoulli/Multinomial/ComplementNB, integer one-hot encoding, weighted ridge and derivative products, MLP SGD/Nesterov/AdamW, five-parameter AdamW beta-logit and fixed-trajectory MLP hypergradients, differentiable imputation, basis/pipeline, exact/approximate GP, exact and weighted-histogram boosting workloads, and resident CUDA device-contract gates. | Every completed parity package has a pinned external oracle, release timings, memory measurements, provenance, raw data, and a maintained report. |
+| Benchmark coverage | Partial | Correctness-gated model and GP applications feed release harnesses in `../fortml-bench`; current release lanes include Bernoulli/Multinomial/ComplementNB, integer one-hot encoding, weighted ridge and elastic-net derivative products, OVR/OVO classification, MLP SGD/Nesterov/AdamW, typed schedules, five-parameter AdamW beta-logit and fixed-trajectory MLP hypergradients, differentiable imputation, basis/pipeline, exact/approximate GP, analytic GP likelihood products, exact and weighted-histogram boosting workloads, and resident CUDA device-contract gates. | Every completed parity package has a pinned external oracle, release timings, memory measurements, provenance, raw data, and a maintained report. |
 
 ### WP1: classification
 
@@ -515,11 +520,12 @@ The source inventory is dated 2026-08-07.
   normalization, sample/class weighting, and a packed parameter-gradient
   product. Binary, multilabel,
   ordinal, and variational GP adapters remain separate contracts.
-- [x] Add a deterministic one-vs-rest logistic wrapper with sorted class
-  ordering, first-max tie handling, shared sample/class weights, normalized
-  positive probabilities, packed parameter metadata, and input/parameter
-  JVP/VJP products. One-vs-one wrappers and shared preprocessing ownership
-  remain open.
+- [x] Add deterministic one-vs-rest and one-vs-one logistic wrappers with
+  sorted class/pair ordering, first-max tie handling, shared sample/class
+  weights, normalized probabilities, packed parameter metadata, and
+  input/parameter JVP/VJP products. OVO uses an explicit pairwise-vote
+  probability policy; scikit-learn's separate pairwise coupling and shared
+  preprocessing ownership remain open.
 - [x] Add deterministic Gaussian Naive Bayes with weighted class moments,
   sorted arbitrary integer labels, empirical or explicit priors, global
   variance smoothing, packed means/variances/priors, stable log-probabilities,
@@ -764,8 +770,12 @@ The following families are the concrete scikit-learn parity inventory. They are
 separate from the differentiable GP and neural work because each has different
 state, scoring, and refusal rules.
 
-- [ ] Add weighted OLS, ridge, lasso, elastic-net, positive-constrained,
-  Bayesian ridge, ARD regression, Huber, Theil-Sen, RANSAC, quantile,
+- [x] Add weighted ridge, lasso, and elastic-net regression with deterministic
+  coordinate/SVD solvers, nonnegative sample weights, multi-output state, and
+  fixed-fit coefficient/input JVP/VJP products. Fit-time nonsmooth solver
+  decisions remain explicit derivative boundaries.
+- [ ] Add weighted OLS, positive-constrained, Bayesian ridge, ARD regression,
+  Huber, Theil-Sen, RANSAC, quantile,
   Poisson, Gamma, and Tweedie regression. Solvers expose convergence status,
   regularization scaling, warm starts, and coefficient covariance where it is
   defined.
@@ -907,6 +917,13 @@ trials remain visible in the result schema.
   clipping to the MLP Adam trainer. The resulting state records the effective
   per-epoch rates and clipping count, with independent schedule, clipping, and
   iterator oracles.
+- [x] Add a stateless typed schedule contract with constant, linear warm-up,
+  cosine, warm-up-plus-cosine, and exponential-decay families. Each schedule
+  validates update/rate domains and returns analytic products with respect to
+  the base rate, minimum-rate fraction, and decay factor. Independent formula
+  and central-difference oracles cover transitions, terminal clamping, and
+  malformed schedules; schedule-trajectory hypergradients remain a separate
+  stateful optimizer contract.
 - [x] Add sample-weighted MLP gradient accumulation. `accumulation_steps`
   flushes a configurable number of consecutive microbatches into one Adam
   update, adds L2 exactly once, clips only the accumulated gradient, and flushes
@@ -1107,6 +1124,11 @@ state phases are reported separately.
   with damped Newton state, latent/probability prediction, input JVP/VJP
   products over the kernel derivative contract, and an exact envelope gradient
   for the converged mode log posterior (without evidence correction).
+- [x] Expose the shared signed-margin binary GP likelihood as analytic
+  `value`/`JVP`/`VJP` products for logistic and probit links, with a stable
+  negative-tail log-CDF and independent scalar/finite-difference/adjoint
+  tests. This is a backend-independent building block for future variational
+  and minibatch objectives; it does not claim resident GPU GP training.
 - [x] Publish fitted-kernel parameter metadata and exact mode-envelope
   hyperparameter gradients for binary and one-vs-rest GP classifiers. The
   multiclass wrapper packs independent binary gradients; a shared categorical

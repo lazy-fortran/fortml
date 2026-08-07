@@ -60,6 +60,13 @@ these.
 
 `linear_regression_t` is the stable dense baseline: sample rows, feature
 columns, output columns, SVD fitting, optional intercept, and ridge penalty.
+`ridge_regression_t` adds weighted SVD fitting with an explicit packed state;
+`elastic_net_regression_t` adds weighted multi-output lasso/elastic-net fitting
+through deterministic coordinate descent. Both estimators expose the same
+fixed-state coefficient/input JVP/VJP contract, so a basis pipeline can feed
+either estimator without changing parameter routing. Their nonsmooth fit
+solvers, active-set decisions, and regularization hyperparameters remain
+declared derivative boundaries.
 `basis_map_t` has a value/JVP/VJP contract and an explicit parameter layout.
 The implemented basis families are:
 
@@ -159,6 +166,17 @@ stacked recurrent layers, checkpointing, and long-lag tests remain design
 targets.
 
 ## GP and derivative observations
+
+Binary GP classification shares one signed-margin likelihood layer across
+Laplace, future variational, and minibatch objectives. The public
+`gp_classification_log_likelihood_value/jvp/vjp` products implement the
+logistic and probit Bernoulli likelihoods analytically, with stable negative
+probit-tail evaluation and explicit finite-input/refusal checks. The
+primitive is backend independent and therefore suitable for later device
+lowering, but the current release only claims host execution for this scalar
+likelihood layer; a CUDA GP classifier must still provide resident covariance,
+mode-solve, and derivative buffers before it can be reported as end-to-end
+GPU.
 
 The current kernel expression tree composes covariance leaves with sum and
 product nodes. Its built-in leaves are RBF, Matérn 1/2, 3/2, and 5/2, linear,

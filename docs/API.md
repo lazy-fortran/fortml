@@ -58,6 +58,7 @@ not supplied through a hidden generic interface.
 | --- | --- | --- | --- | --- |
 | `linear_regression_t` | `predict` | Free `linear_predict_jvp` | Free `linear_predict_vjp` | No |
 | `ridge_regression_t` | Weighted `predict` | Packed-parameter and continuous-input JVP | Packed-parameter and continuous-input VJP | No |
+| `elastic_net_regression_t` | Weighted `predict` | Packed-parameter and continuous-input JVP | Packed-parameter and continuous-input VJP | No |
 | `pca_t` | Centered projection and reconstruction | Input JVP for a fixed fitted state | Input VJP for a fixed fitted state | Fit-time SVD derivatives are not exposed |
 | `logistic_regression_t` | Decision score and probabilities | Parameter/input JVP, probability JVP | Parameter/input VJP, probability VJP | No |
 | `softmax_regression_t` | Multiclass decision scores and probabilities | Parameter/input JVP, probability JVP | Parameter/input VJP, probability VJP | No |
@@ -138,6 +139,25 @@ estimator rather than a silent host fallback. Unfitted calls, malformed
 packs, nonfinite arrays, nonpositive weight mass, and shape mismatches return
 `FORTNUM_DOMAIN_ERROR`.
 
+### `fortml_elastic_net_regression`
+
+`elastic_net_regression_t%fit(x,y,status[,alpha,l1_ratio,fit_intercept,
+sample_weight,max_iterations,tolerance])` fits weighted multi-output elastic
+net regression by deterministic coordinate descent. The normalized objective is
+`0.5*sum(w*(y-pred)**2)/sum(w) + alpha*(l1_ratio*L1 +
+0.5*(1-l1_ratio)*L2)`, with the intercept excluded from both penalties.
+`alpha` is nonnegative and `l1_ratio` lies in `[0,1]`; `l1_ratio=1` is lasso
+and `l1_ratio=0` is ridge-like coordinate descent. Finite nonnegative sample
+weights must have positive mass. Nonconvergence, malformed options, and
+nonfinite data return typed status errors.
+
+`predict`, `coefficients`, `parameters`, `set_parameters`, and the feature,
+output, and solver metadata methods expose the fitted state. `jvp`/`vjp`
+provide exact fixed-state products over packed coefficients and continuous
+inputs. The nonsmooth coordinate fit, active-set decisions, solver tolerance,
+and regularization hyperparameters are not differentiated; those fit-time
+boundaries are explicit rather than hidden finite-difference fallbacks.
+
 ### `fortml_pca`
 
 `pca_t%fit(x,status[,n_components,whiten])` fits centered dense PCA by a thin
@@ -215,23 +235,6 @@ parameters and, when requested, the L2 coordinate. The result reports
 convergence, iterations, line-search evaluations, objective, gradient norm,
 and final L2. The adapter requires a fitted binary model. Use `fit` first when
 an initial parameter state is needed.
-
-### `fortml_ovr_logistic_classifier`
-
-`ovr_logistic_classifier_t` fits one binary `logistic_regression_t` per sorted
-integer class. `fit(x,labels,status[,l2,fit_intercept,max_iterations,tolerance,
-sample_weight,class_weight])` applies optional sample and sorted-class weights
-to every one-vs-rest objective. `predict_proba` normalizes the positive binary
-probabilities row-wise, `predict` uses a deterministic first-column tie rule,
-and `decision_function` returns the unnormalized binary logits. `classes`,
-`class_count`, `feature_count`, `parameter_count`, `parameters`,
-`set_parameters`, and `fitted` expose the packed state.
-
-`predict_proba_jvp` and `predict_proba_vjp` differentiate through the input
-rows. `predict_proba_parameter_jvp` and `predict_proba_parameter_vjp` provide
-the corresponding products for the packed binary-model parameters. The
-quotient-rule normalization is included in every product, and finite,
-unfitted, shape, and zero-support cases return status errors.
 
 ### `fortml_gaussian_naive_bayes`
 
@@ -446,6 +449,28 @@ the packed fitted-parameter products. All normalized products include the
 quotient rule. Tangents and cotangents must be finite and shape-compatible.
 Hyperparameter derivatives through the discrete optimizer fit remain a
 separate trainer contract.
+
+### `fortml_ovo_logistic_classifier`
+
+`ovo_logistic_classifier_t%fit(x,labels,status[,l2,fit_intercept,
+max_iterations,tolerance,sample_weight,class_weight])` fits one binary
+logistic estimator for every pair of sorted integer classes. `pair_classes()`
+returns the deterministic `(negative,positive)` label columns in lexicographic
+pair order, and `decision_function` returns one binary score per pair.
+`predict_proba` aggregates the positive and negative pair probabilities as
+votes and divides by the number of fitted pair models, so each row is a probability
+simplex. This explicit vote policy is differentiable and does not claim to
+implement scikit-learn's separate pairwise coupling solver. `predict` uses the
+first class on probability ties.
+
+`classes`, `pair_count`, `class_count`, `feature_count`, `parameter_count`,
+`parameters`, `set_parameters`, and `fitted` expose packed pair-model state.
+Input and packed-parameter products are available through
+`predict_proba_jvp`/`predict_proba_vjp` and
+`predict_proba_parameter_jvp`/`predict_proba_parameter_vjp`. The pairwise vote
+aggregation is linear, so every product propagates the binary logistic
+products with a fixed opponent-count factor. Finite, shape, zero-support, and
+unfitted violations return status errors.
 
 ### `fortml_knn_classifier`
 
@@ -803,6 +828,16 @@ optimizer update, clipping is applied after accumulation, and the state records
 exact full-batch equivalence oracle when the model and options are otherwise
 identical, while reducing optimizer-state updates for memory-constrained
 training.
+
+`fortml_mlp_schedules` supplies stateless built-in schedule values for that
+callback seam: constant, linear warm-up, cosine decay, warm-up plus cosine,
+and exponential decay. `mlp_learning_rate_schedule_t%rate` validates the
+update and returns a finite positive rate; `rate_with_derivatives` additionally
+returns exact products with respect to the base rate, minimum-rate fraction,
+and decay factor. The schedule receives an explicit update index rather than
+owning hidden mutable state, so a replayed training run uses the same rates.
+See [`docs/MLP_SCHEDULES.md`](MLP_SCHEDULES.md) for constructors and a
+callback adapter.
 
 ### `fortml_mlp_hypergradient`
 
@@ -1176,6 +1211,18 @@ remains a separate contract. The wrapper inherits the selected logistic or probi
 kernel/refusal behavior. It is a coupling policy rather than a multinomial
 likelihood, so variational categorical likelihoods and shared multiclass
 hyperparameter training remain separate work.
+
+The same module exposes a backend-independent likelihood primitive,
+`gp_classification_log_likelihood_value(eta,likelihood,value,status)`, for a
+vector of signed latent margins. `eta(i)` is the encoded label times the
+latent function, and the result is the summed Bernoulli log likelihood.
+`gp_classification_log_likelihood_jvp` and `_vjp` provide exact products with
+respect to those margins for both `GP_LIKELIHOOD_LOGISTIC` and
+`GP_LIKELIHOOD_PROBIT`, including stable evaluation in the negative probit
+tail. Finite inputs and tangent/cotangent shapes are checked explicitly.
+This primitive is separate from fitted Laplace state so it can be composed
+into variational or minibatch objectives; its presence does not imply a
+complete resident-GPU GP training path.
 
 ### `fortml_gp_classification_training`
 
