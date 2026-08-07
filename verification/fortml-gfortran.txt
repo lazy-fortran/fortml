@@ -1,15 +1,16 @@
-Static: OK (292 modules, 292 changed, 292 affected)
-fo build [--------------------] 0/752 0%
-fo build [####################] 752/752 100%
-fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_gp_hyperparameter_training.f90:51:17: Warning: Creating array temporary at (1) [-Warray-temporaries]
-fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_gp_hyperparameter_training.f90:51:17: Warning: Creating array temporary at (1) [-Warray-temporaries]
-fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_gp_hyperparameter_training.f90:51:17: Warning: Creating array temporary at (1) [-Warray-temporaries]
-fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_gp_hyperparameter_training.f90:51:17: Warning: Creating array temporary at (1) [-Warray-temporaries]
+Static: OK (296 modules, 296 changed, 296 affected)
+fo build [--------------------] 0/753 0%
+fo build [####################] 753/753 100%
+fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_classifiers.f90:116:20: Warning: Creating array temporary at (1) [-Warray-temporaries]
+fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_classifiers.f90:119:19: Warning: Creating array temporary at (1) [-Warray-temporaries]
+fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_classifiers.f90:119:19: Warning: Creating array temporary at (1) [-Warray-temporaries]
+fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_classifiers.f90:119:19: Warning: Creating array temporary at (1) [-Warray-temporaries]
+fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_classifiers.f90:119:19: Warning: Creating array temporary at (1) [-Warray-temporaries]
 Build: OK
-fo build [--------------------] 0/689 0%
-fo build [####################] 689/689 100%
-fo test [--------------------] 0/130 0%
-fo test [####################] 130/130 100%
+fo build [--------------------] 0/690 0%
+fo build [####################] 690/690 100%
+fo test [--------------------] 0/133 0%
+fo test [####################] 133/133 100%
 Tests: OK
 Lint: OK
-All stages passed (8.6s)
+All stages passed (11.0s)
