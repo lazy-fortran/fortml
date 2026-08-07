@@ -1179,8 +1179,8 @@ linear map's exact contractions. `fortopt` supplies the same value/gradient
 callback to FortOpt L-BFGS-B. CPU is the current execution path. A CUDA
 request returns `FORTNUM_NOT_IMPLEMENTED` before fitting, so no host callback
 is hidden behind a device selection. The independent
-`test_basis_pipeline_training` fixture checks value/JVP, coordinate and
-directional HVP finite differences, and the typed CUDA refusal.
+`test_basis_pipeline_training` fixture checks value/JVP and directional HVP
+finite differences, and the typed CUDA refusal.
 
 ### `fortml_validation`
 

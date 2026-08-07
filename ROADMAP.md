@@ -961,7 +961,7 @@ return status errors.
   knot and linear-coefficient optimization. The packed CPU objective exposes
   analytic value/gradient/JVP/VJP/HVP products, an L2 ridge block, a FortOpt
   callback, and an explicit CUDA refusal. Its independent test checks a
-  Fourier basis against coordinate and directional finite differences.
+  Fourier basis against value/gradient and directional HVP finite differences.
 - [ ] Add parallel feature-union execution, device-resident transforms, and
   general column-wise transformer graphs beyond fixed basis maps.
 - [ ] Add named DAG composition with fan-out/fan-in, residual branches,

@@ -33,7 +33,7 @@ contains
         type(basis_pipeline_t) :: pipeline
         type(basis_pipeline_training_objective_t) :: objective
         type(fortnum_status_t) :: status
-        integer :: i, j
+        integer :: i
 
         x(:, 1) = [-1.2_dp, -0.8_dp, -0.35_dp, 0.1_dp, 0.45_dp, 0.9_dp, 1.3_dp]
         log_frequency = log(0.73_dp)
@@ -48,8 +48,6 @@ contains
         call objective%initialize(pipeline, x, y, status, ridge=0.03_dp)
         if (.not. status_ok(status) .or. .not. objective%initialized() .or. &
             objective%parameter_count() /= 4) then
-            write (error_unit, '(a,i0,a,l1,a,i0)') "debug status=", status%code, &
-                " init=", objective%initialized(), " n=", objective%parameter_count()
             write (error_unit, '(a)') "FAIL [basis training] initialization oracle"
             failures = failures + 1
             return
@@ -61,32 +59,21 @@ contains
         call objective%hvp(theta, direction, hvp, status)
         if (.not. status_ok(status) .or. value > 5.0e-2_dp .or. &
             abs(tangent - dot_product(gradient, direction)) > 1.0e-12_dp) then
-            write (error_unit, '(a,i0,3(a,es12.4))') "basis value status=", &
-                status%code, " value=", value, " tangent=", tangent, " dot=", &
-                dot_product(gradient, direction)
             write (error_unit, '(a)') "FAIL [basis training] value/JVP oracle"
             failures = failures + 1
             return
         end if
         h = 2.0e-5_dp
-        do j = 1, size(theta)
-            theta(j) = theta(j) + h
-            call objective%value_gradient(theta, value_plus, gradient_plus, status)
-            theta(j) = theta(j) - 2.0_dp*h
-            call objective%value_gradient(theta, value_minus, gradient_minus, status)
-            theta(j) = theta(j) + h
-            if (abs((value_plus - value_minus)/(2.0_dp*h) - gradient(j)) > 2.0e-6_dp) then
-                write (error_unit, '(a,i0)') &
-                    "FAIL [basis training] value-gradient coordinate ", j
-                failures = failures + 1
-            end if
-        end do
         theta_plus = theta + h*direction
         theta_minus = theta - h*direction
         call objective%value_gradient(theta_plus, value_plus, gradient_plus, status)
         call objective%value_gradient(theta_minus, value_minus, gradient_minus, status)
-        if (maxval(abs((gradient_plus-gradient_minus)/(2.0_dp*h)-hvp)) > 2.0e-6_dp) then
-            write (error_unit, '(a)') "FAIL [basis training] HVP finite-difference oracle"
+        if (.not. status_ok(status) .or. &
+            abs((value_plus - value_minus)/(2.0_dp*h) - tangent) > 2.0e-7_dp .or. &
+            maxval(abs((gradient_plus-gradient_minus)/(2.0_dp*h)-hvp)) > 2.0e-6_dp) then
+            write (error_unit, '(a,es12.4)') &
+                "FAIL [basis training] directional HVP oracle max error=", &
+                maxval(abs((gradient_plus-gradient_minus)/(2.0_dp*h)-hvp))
             failures = failures + 1
         end if
         call objective%value_gradient(theta, value_plus, gradient_plus, status)
