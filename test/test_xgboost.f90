@@ -26,6 +26,8 @@ contains
         type(xgboost_options_t) :: options
         type(fortnum_status_t) :: status
         real(dp) :: x(4, 1), y(4), prediction(4), weights(2)
+        real(dp) :: x_dot(4, 1), prediction_dot(4)
+        real(dp) :: boundary(1, 1), boundary_dot(1, 1), boundary_value(1)
         real(dp) :: expected(4), expected_gain
 
         x(:, 1) = [0.0_dp, 1.0_dp, 2.0_dp, 3.0_dp]
@@ -36,6 +38,8 @@ contains
         options%min_child_weight = 0.0_dp
         call model%fit_regression(x, y, status, options)
         call model%predict(x, prediction, status)
+        x_dot(:, 1) = [0.2_dp, -0.1_dp, 0.3_dp, -0.2_dp]
+        call model%predict_jvp(x, x_dot, prediction, prediction_dot, status)
         call model%leaf_weights(1, weights, status)
 
         ! Base margin is 2.  At the exact split x=1.5, G_L=4, H_L=2 and
@@ -47,11 +51,21 @@ contains
         if (.not. status_ok(status) .or. .not. model%fitted() .or. &
             model%estimator_count() /= 1 .or. model%feature_count() /= 1 .or. &
             maxval(abs(prediction - expected)) > 2.0e-13_dp .or. &
+            maxval(abs(prediction_dot)) > 2.0e-14_dp .or. &
             maxval(abs(weights - [-4.0_dp/3.0_dp, 4.0_dp/3.0_dp])) > 2.0e-13_dp .or. &
             abs(model%split_gain(1) - expected_gain) > 2.0e-13_dp) then
             write (error_unit, '(a,es12.4)') &
                 "FAIL [xgb squared] second-order split oracle ", &
                 maxval(abs(prediction - expected))
+            failures = failures + 1
+        end if
+        boundary(1, 1) = 1.5_dp
+        boundary_dot(1, 1) = 1.0_dp
+        call model%predict_jvp(boundary, boundary_dot, boundary_value, &
+            prediction_dot(:1), status)
+        if (status%code /= FORTNUM_DOMAIN_ERROR) then
+            write (error_unit, '(a)') &
+                "FAIL [xgb squared] split-boundary derivative refusal"
             failures = failures + 1
         end if
     end subroutine test_squared_second_order_oracle

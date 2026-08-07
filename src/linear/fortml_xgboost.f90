@@ -63,6 +63,7 @@ module fortml_xgboost
         procedure, public :: predict_margin_vector => xgb_predict_margin_vector
         generic, public :: predict_margin => predict_margin_matrix, &
             predict_margin_vector
+        procedure, public :: predict_jvp => xgb_predict_jvp
         procedure, public :: predict_proba => xgb_predict_proba
         procedure, public :: decision_function => xgb_decision_function
         procedure, public :: split_gain => xgb_split_gain
@@ -292,6 +293,42 @@ contains
         probabilities(:, 2) = positive
         call status_set(status, FORTNUM_OK, "")
     end subroutine xgb_predict_proba
+
+    !> Input JVP of the piecewise-constant fitted predictor.
+    !>
+    !> The derivative is zero away from split surfaces.  A query exactly on a
+    !> learned threshold is rejected because the tree has no classical
+    !> derivative there.
+    subroutine xgb_predict_jvp(self, x, x_dot, y, y_dot, status)
+        class(xgboost_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), x_dot(:, :)
+        real(dp), intent(out) :: y(:), y_dot(:)
+        type(fortnum_status_t), intent(out) :: status
+        integer :: i, j
+
+        if (.not. self%initialized .or. size(x, 2) /= self%n_inputs .or. &
+            any(shape(x_dot) /= shape(x)) .or. size(y) /= size(x, 1) .or. &
+            size(y_dot) /= size(y) .or. any(.not. ieee_is_finite(x))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost predict_jvp: model, input, or output shape is invalid")
+            return
+        end if
+        do j = 1, self%n_estimators
+            if (.not. self%estimators(j)%has_split) cycle
+            do i = 1, size(x, 1)
+                if (x(i, self%estimators(j)%feature_index) == &
+                        self%estimators(j)%threshold) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "xgboost predict_jvp: derivative is undefined on split")
+                    return
+                end if
+            end do
+        end do
+        call xgb_predict_vector(self, x, y, status)
+        if (status%code /= FORTNUM_OK) return
+        y_dot = 0.0_dp
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine xgb_predict_jvp
 
     subroutine xgb_decision_function(self, x, margin, status)
         class(xgboost_t), intent(in) :: self
