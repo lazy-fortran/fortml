@@ -17,8 +17,8 @@ The checked-in GNU compiler log is the fresh 2026-08-07 run. It includes the
 kernel-catalog, weighted LDA/QDA, robust XGBoost, neural NLL, random-forest,
 Extra-Trees, grouped MLP HVP, basis/pipeline HVP, cosine derivative-GP, and
 PCA-initialized linear autoencoder slices. The
-build emits three GNU array-temporary warnings in the discriminant benchmark
-path; lint and all behavioral tests pass. NVIDIA compiler coverage remains an
+build emits four GNU array-temporary warnings in the grouped-MLP benchmark app;
+lint and all behavioral tests pass. NVIDIA compiler coverage remains an
 explicit older-build result.
 
 Behavioral oracles include dense or analytic references, finite differences,
