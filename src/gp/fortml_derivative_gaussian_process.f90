@@ -9,7 +9,7 @@ module fortml_derivative_gaussian_process
     use fortml_kernels, only: kernel_t, clone_kernel_into, KERNEL_RBF, KERNEL_MATERN12, &
         KERNEL_MATERN32, KERNEL_MATERN52, KERNEL_LINEAR, KERNEL_CONSTANT, &
         KERNEL_WHITE_NOISE, KERNEL_SUM, KERNEL_PRODUCT, KERNEL_USER, &
-        KERNEL_PERIODIC, KERNEL_RATIONAL_QUADRATIC, KERNEL_COSINE
+        KERNEL_PERIODIC, KERNEL_RATIONAL_QUADRATIC, KERNEL_COSINE, KERNEL_POLYNOMIAL
     implicit none
     private
 
@@ -1397,6 +1397,9 @@ contains
         real(dp) :: frequency, argument, t1, t2, t1_dot, t2_dot, b, b_dot
         real(dp) :: p, p2, p_dot, p2_dot, curvature, curvature_dot, logf_dot
         real(dp) :: sine_value, cosine_value, cosine_numerator
+        real(dp) :: scale, offset, degree, base, inner_product, base_dot
+        real(dp) :: variance_log_dot, scale_log_dot, offset_log_dot, degree_log_dot
+        real(dp) :: coefficient, coefficient_dot, curvature_dot_input, log_direction
         integer :: i, j
 
         value = 0.0_dp
@@ -1439,6 +1442,74 @@ contains
             variance = exp(kernel%log_parameters(1))
             value = variance
             if (parameter == 1) value_dot = value
+            call status_set(status, FORTNUM_OK, "")
+            return
+        case (KERNEL_POLYNOMIAL)
+            !! k(x1,x2) = variance*(offset + scale*dot(x1,x2))**degree.
+            !! Keep the input derivatives and their parameter tangents in
+            !! closed form so derivative-observation GP likelihoods can use
+            !! all four logarithmic polynomial parameters.
+            variance = exp(kernel%log_parameters(1))
+            scale = exp(kernel%log_parameters(2))
+            offset = exp(kernel%log_parameters(3))
+            degree = exp(kernel%log_parameters(4))
+            inner_product = dot_product(x1, x2)
+            base = offset + scale*inner_product
+            if (base <= 0.0_dp) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "kernel polynomial parameter JVP: base must be positive")
+                return
+            end if
+            variance_log_dot = 0.0_dp
+            scale_log_dot = 0.0_dp
+            offset_log_dot = 0.0_dp
+            degree_log_dot = 0.0_dp
+            select case (parameter)
+            case (1)
+                variance_log_dot = 1.0_dp
+            case (2)
+                scale_log_dot = 1.0_dp
+            case (3)
+                offset_log_dot = 1.0_dp
+            case (4)
+                degree_log_dot = 1.0_dp
+            case default
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "kernel polynomial parameter JVP: parameter index is invalid")
+                return
+            end select
+            base_dot = scale*inner_product*scale_log_dot + offset*offset_log_dot
+            value = variance*base**degree
+            log_direction = variance_log_dot + degree*base_dot/base + &
+                degree*degree_log_dot*log(base)
+            value_dot = value*log_direction
+            coefficient = variance*degree*scale*base**(degree - 1.0_dp)
+            coefficient_dot = coefficient*(variance_log_dot + degree_log_dot + &
+                scale_log_dot + (degree - 1.0_dp)*base_dot/base + &
+                degree*degree_log_dot*log(base))
+            curvature = variance*degree*(degree - 1.0_dp)*scale*scale* &
+                base**(degree - 2.0_dp)
+            if (parameter == 4) then
+                !! d/dd [d(d-1)b**(d-2)] times dd/d(log d)=d.
+                curvature_dot_input = variance*scale*scale*base**(degree - 2.0_dp)*degree*( &
+                    2.0_dp*degree - 1.0_dp + degree*(degree - 1.0_dp)*log(base))
+            else
+                curvature_dot_input = curvature*(variance_log_dot + degree_log_dot + &
+                    2.0_dp*scale_log_dot + (degree - 2.0_dp)*base_dot/base + &
+                    degree*degree_log_dot*log(base))
+            end if
+            gradient_x1 = coefficient*x2
+            gradient_x2 = coefficient*x1
+            gradient_x1_dot = coefficient_dot*x2
+            gradient_x2_dot = coefficient_dot*x1
+            do i = 1, size(x1)
+                do j = 1, size(x2)
+                    mixed_hessian(i, j) = coefficient*merge(1.0_dp, 0.0_dp, i == j) + &
+                        curvature*x2(i)*x1(j)
+                    mixed_hessian_dot(i, j) = coefficient_dot*merge(1.0_dp, 0.0_dp, i == j) + &
+                        curvature_dot_input*x2(i)*x1(j)
+                end do
+            end do
             call status_set(status, FORTNUM_OK, "")
             return
         case (KERNEL_USER)
@@ -1866,6 +1937,46 @@ contains
             gradient_x2_dot = variance*direction1
             do i = 1, size(x1)
                 mixed_hessian(i, i) = variance
+            end do
+            call status_set(status, FORTNUM_OK, "")
+            return
+        end if
+        if (kernel%kind == KERNEL_POLYNOMIAL) then
+            !! Polynomial covariance depends on the inner product rather
+            !! than the Euclidean distance.  The closed-form directional
+            !! product below supplies the third input derivative required by
+            !! derivative-observation query JVP/VJP products.
+            variance = exp(kernel%log_parameters(1))
+            lengthscale = exp(kernel%log_parameters(2))
+            alpha = exp(kernel%log_parameters(3))
+            period = exp(kernel%log_parameters(4))
+            dot_difference = dot_product(x1, x2)
+            dot_difference = alpha + lengthscale*dot_difference
+            if (dot_difference <= 0.0_dp) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "derivative GP polynomial query products: base must be positive")
+                return
+            end if
+            dot_difference = dot_product(direction1, x2) + dot_product(x1, direction2)
+            value = variance*(alpha + lengthscale*dot_product(x1, x2))**period
+            p = variance*period*lengthscale*(alpha + lengthscale*dot_product(x1, x2))** &
+                (period - 1.0_dp)
+            p2 = variance*period*(period - 1.0_dp)*lengthscale*lengthscale* &
+                (alpha + lengthscale*dot_product(x1, x2))**(period - 2.0_dp)
+            value_dot = p*dot_difference
+            gradient_x1 = p*x2
+            gradient_x2 = p*x1
+            gradient_x1_dot = p2*dot_difference*x2 + p*direction2
+            gradient_x2_dot = p2*dot_difference*x1 + p*direction1
+            do i = 1, size(x1)
+                do j = 1, size(x2)
+                    mixed_hessian(i, j) = p*merge(1.0_dp, 0.0_dp, i == j) + p2*x2(i)*x1(j)
+                    mixed_hessian_dot(i, j) = p2*dot_difference*merge(1.0_dp, 0.0_dp, i == j) + &
+                        p2*direction2(i)*x1(j) + p2*x2(i)*direction1(j) + &
+                        variance*period*(period - 1.0_dp)*(period - 2.0_dp)*lengthscale**3* &
+                        (alpha + lengthscale*dot_product(x1, x2))**(period - 3.0_dp)* &
+                        dot_difference*x2(i)*x1(j)
+                end do
             end do
             call status_set(status, FORTNUM_OK, "")
             return

@@ -21,12 +21,14 @@ the requested pair is smooth and finite.  A refusal is a typed
 | Matérn 5/2 | Yes | Yes | Yes | — |
 | Periodic, rational-quadratic, cosine | Yes | Yes | Yes | — |
 | Linear, constant | Yes | Yes | Yes | — |
-| Polynomial | Input derivative blocks are available | Not implemented for derivative-GP parameter products | Not implemented | Use value/input products only; optimize through a supported kernel |
+| Polynomial | Yes when the positive polynomial base is finite | Yes (all four logarithmic parameters) | Yes when the positive base is finite | `FORTNUM_DOMAIN_ERROR` for a nonpositive base |
 | Sum/product composites | Yes when every child supports the requested product | Yes when every child supports it | Yes when every child supports it | The first unsupported child propagates its typed refusal |
 | Validated user formula | Yes for formulas with defined input derivatives | Variance and formula input products where defined | Not implemented | `push_distance` additionally refuses at coincident points |
 | White noise | Value-only | Value-only | Not a differentiable query covariance | Any derivative observation is refused as nonsmooth |
 
-The exact derivative-GP likelihood gradient is analytic.  Its
+The exact derivative-GP likelihood gradient is analytic for every smooth
+built-in leaf listed above, including the four logarithmic polynomial
+parameters.  Its
 `hyperparameter_hvp` is intentionally a deterministic central difference of
 that gradient; it is not advertised as an analytic third-order product.
 Second-derivative observations, operator-valued outputs, sparse/variational
@@ -41,3 +43,11 @@ product test compares dense covariance, parameter products, query JVP/VJP,
 and adjoint identities against independent finite-difference oracles; the
 capability test checks the refusal statuses above and verifies that a refused
 query product does not invalidate a fitted value-only model.
+`test_derivative_gp_polynomial` additionally assembles polynomial covariance
+blocks independently and checks the likelihood gradient and query-input
+JVP/VJP products against finite differences and an adjoint identity.
+The polynomial path is intentionally kept as a short closed-form expression
+(`b = offset + scale*dot(x1,x2)`, `k = variance*b**degree`) rather than a
+generated FortSym leaf; the independent block oracle covers every packed
+parameter and the query third derivative, while the general FortSym kernel
+generation task remains tracked in the roadmap.
