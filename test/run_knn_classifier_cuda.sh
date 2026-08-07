@@ -23,6 +23,7 @@ nvfortran ${FFLAGS:--O3} -module "$build_dir" \
     "$repo_dir/src/gp/fortml_cuda_kernel_stub.f90" \
     "$repo_dir/src/gp/fortml_cuda_rbf_stub.f90" \
     "$repo_dir/src/validation/fortml_cuda_metrics_stub.f90" \
+    "$repo_dir/src/classification/fortml_cuda_forest_stub.f90" \
     "$repo_dir/src/fortml_device.f90" \
     "$repo_dir/src/classification/fortml_knn_classifier.f90" \
     "$repo_dir/test/test_knn_classifier_cuda.f90" \
