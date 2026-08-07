@@ -4,7 +4,8 @@ program test_xgboost_monotonic_constraints
     !! must be nondecreasing and a -1 feature nonincreasing on an independent
     !! query grid, for both exact and weighted-histogram tree growth.
     use, intrinsic :: iso_fortran_env, only: dp => real64, error_unit
-    use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+    use, intrinsic :: ieee_arithmetic, only: ieee_is_finite, ieee_value, &
+        ieee_quiet_nan
     use fortml_xgboost, only: xgboost_t, xgboost_options_t
     use fortnum_status, only: fortnum_status_t, FORTNUM_OK, FORTNUM_DOMAIN_ERROR, &
         FORTNUM_NOT_IMPLEMENTED
@@ -20,6 +21,7 @@ program test_xgboost_monotonic_constraints
     call test_constraint_validation(failures)
     call test_cuda_refusal(failures)
     call test_large_finite_midpoints(failures)
+    call test_missing_monotone_policies(failures)
     if (failures /= 0) then
         write (error_unit, '(i0,a)') failures, &
             " XGBoost monotonic-constraint test(s) failed"
@@ -217,6 +219,45 @@ contains
             maxval(prediction(1:3) - prediction(2:4)) <= 2.0e-13_dp, &
             "large finite midpoint stability", failures)
     end subroutine test_large_finite_midpoints
+
+    subroutine test_missing_monotone_policies(failures)
+        integer, intent(inout) :: failures
+        type(xgboost_t) :: model
+        type(xgboost_options_t) :: options
+        type(fortnum_status_t) :: status
+        real(dp) :: x(8, 2), y(8), query(33, 2), prediction(33)
+        character(len=16) :: policies(3)
+        real(dp) :: nan
+        integer :: i, j
+
+        nan = ieee_value(0.0_dp, ieee_quiet_nan)
+        x(:, 1) = [0.0_dp, 1.0_dp, nan, 3.0_dp, 4.0_dp, 5.0_dp, 6.0_dp, 7.0_dp]
+        x(:, 2) = [0.0_dp, nan, 2.0_dp, 3.0_dp, 4.0_dp, nan, 6.0_dp, 7.0_dp]
+        y = [0.0_dp, 1.0_dp, 2.0_dp, 3.0_dp, 4.0_dp, 5.0_dp, 6.0_dp, 7.0_dp]
+        do i = 1, size(query, 1)
+            query(i, 1) = 7.0_dp*real(i - 1, dp)/real(size(query, 1) - 1, dp)
+            query(i, 2) = 2.5_dp
+        end do
+        options%n_estimators = 2
+        options%max_depth = 2
+        options%learning_rate = 0.5_dp
+        options%l2 = 0.5_dp
+        options%min_child_weight = 0.0_dp
+        options%monotone_constraints = [1, 0]
+        policies = [character(len=16) :: "learn", "left", "right"]
+        do j = 1, size(policies)
+            options%missing_policy = policies(j)
+            call model%fit_regression(x, y, status, options)
+            call model%predict(query, prediction, status)
+            call check(status%code == FORTNUM_OK .and. &
+                all(ieee_is_finite(prediction)), &
+                "missing monotone fit/predict status", failures)
+            do i = 1, size(prediction) - 1
+                call check(prediction(i + 1) >= prediction(i) - 2.0e-13_dp, &
+                    "missing monotone +1 prediction", failures)
+            end do
+        end do
+    end subroutine test_missing_monotone_policies
 
     subroutine check(condition, label, failures)
         logical, intent(in) :: condition
