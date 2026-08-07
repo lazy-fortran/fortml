@@ -7,13 +7,13 @@ products. Numerical kernels
 come from `fortnum`, optimization from `fortopt`, source-generated derivatives
 from `fortad`, and sparse storage from `fortsparse`.
 
-The current public surface concentrates on regression, binary classification,
-neural and variational model primitives, Gaussian processes, and structured
-linear algebra. Multiclass classification, fitted preprocessing pipelines, tree
-boosting, general trainer
-and checkpoint APIs, model serialization, and distributed execution are parity
-work packages. [ROADMAP.md](ROADMAP.md) records their acceptance criteria and
-delivery order.
+The current public surface concentrates on regression, binary and multinomial
+classification, differentiable basis pipelines, a deterministic MLP trainer,
+tree-stump boosting, neural and variational model primitives, Gaussian
+processes, and structured linear algebra. Full estimator-family parity,
+histogram/XGBoost policy variants, checkpoint APIs, model serialization, and
+distributed execution remain parity work packages. [ROADMAP.md](ROADMAP.md)
+records their acceptance criteria and delivery order.
 
 The library uses separate Fortran modules instead of an umbrella `fortml`
 module. For example, exact GP regression uses `fortml_kernels` and
@@ -106,11 +106,12 @@ end program exact_gp_example
 
 | Area | Public modules | Main limits |
 | --- | --- | --- |
-| Regression and features | `fortml_linear_regression`, `fortml_basis` | Dense SVD fit. Basis HVPs are not exposed. |
+| Regression and features | `fortml_linear_regression`, `fortml_basis`, `fortml_pipeline` | Dense SVD fit. Basis HVPs are not exposed. Pipelines currently form horizontal unions of fixed basis stages. |
 | Classification | `fortml_logistic_regression`, `fortml_softmax_regression`, `fortml_losses` | FortOpt L-BFGS-B binary and multinomial fits, stable probabilities, deterministic integer-label ordering, and shared sigmoid/softmax cross-entropy products. Sample and class weights are planned. |
-| Neural models | `fortml_mlp`, `fortml_bnn`, `fortml_vae`, `fortml_rnn` | MLPs use deterministic Xavier/He initialization; the recurrent model is one vanilla `tanh` RNN with a zero initial state |
+| Neural models | `fortml_mlp`, `fortml_mlp_training`, `fortml_bnn`, `fortml_vae`, `fortml_rnn` | MLPs use deterministic Xavier/He initialization and Adam training; the recurrent model is one vanilla `tanh` RNN with a zero initial state |
+| Trees and boosting | `fortml_tree` | Deterministic regression stumps and squared-loss residual boosting; histogram, classification, ranking, and XGBoost/LightGBM policies are planned |
 | Variational inference | `fortml_variational`, `fortml_sparse_gp` | `sparse_gp_t` has scalar targets and caller-supplied variational parameters |
-| Exact GPs | `fortml_kernels`, `fortml_gaussian_process`, `fortml_derivative_gaussian_process`, `fortml_multi_output_gp` | Derivative observations cover function values and first input derivatives |
+| Exact GPs | `fortml_kernels`, `fortml_gaussian_process`, `fortml_gp_training`, `fortml_derivative_gaussian_process`, `fortml_multi_output_gp` | Exact-GP hyperparameters can be optimized with FortOpt L-BFGS-B; derivative observations cover function values and first input derivatives |
 | Approximate GPs | `fortml_sparse_prior_gp`, `fortml_local_experts`, `fortml_ski_gp` | Multidimensional SKI requires one isotropic RBF leaf. Local experts support contiguous or deterministic clustered partitions. |
 | Lazy inference | `fortml_linear_operator`, `fortml_kernel_operator`, `fortml_sparse_operator`, `fortml_structured_operator`, `fortml_toeplitz_operator`, `fortml_banded_precision` | Toeplitz products are host-resident |
 | Supporting contracts | `fortml_kernel_formula`, `fortml_lanczos`, `fortml_multilevel_grid`, `fortml_inference_policy`, `fortml_parameter_registry`, `fortml_parameter_products` | Product availability depends on the wrapped model |

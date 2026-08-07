@@ -92,6 +92,14 @@ verified against an independent finite-difference kernel oracle and a
 hand-derived dense mixed-covariance solve. Parameter JVP/VJP/HVP products for
 this extended covariance are not exposed.
 
+`fortml_gp_training` is the first optimizer adapter at the model boundary. It
+binds a fitted exact GP to FortOpt's context-aware objective, packs kernel and
+noise hyperparameters in the same order as `gp_regression_t`, and evaluates
+the negative log marginal likelihood and its analytic gradient after every
+parameter update. The adapter owns no duplicate covariance state. Bounds,
+convergence tolerances, and result diagnostics are explicit options, which
+leaves derivative-observation and approximate-GP adapters on the same seam.
+
 ## Lazy operators and iterative solves
 
 `fortml_linear_operator` defines the matrix-free boundary used by scalable<!-- slop-ok -->

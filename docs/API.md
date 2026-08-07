@@ -152,6 +152,22 @@ constructors in `fortml_basis_impl` serve compiled basis families.
 An extension of `basis_impl_t` supplies input and feature counts, parameter
 packing, value/JVP/VJP operations, validation, and optional static eligibility.
 
+### `fortml_pipeline`
+
+`basis_pipeline_t` is a horizontal feature union. Construct it with
+`make_basis_pipeline(n_inputs,status)`, append initialized `basis_map_t` stages
+with `append`, and call `fit(x,status)` before `transform(x,features,status)`.
+Every stage receives the original sample matrix. The output columns are the
+stage feature blocks in append order, so polynomial, Fourier, radial, spline,
+and callback maps can be composed without an implicit parameter remapping.
+
+`parameters` and `set_parameters` flatten the stage parameter blocks in the
+same order. `jvp` and `vjp` return exact products over both stage parameters
+and inputs. `stage_count`, `feature_count`, `parameter_count`, `valid`,
+`is_fitted`, and `static_lowering_eligible` expose shape and backend
+capabilities. Sequential transforms and DAG branches require separate input
+and output contracts and are not inferred from this horizontal union.
+
 ## Neural models and variational inference
 
 ### `fortml_mlp`
@@ -177,6 +193,36 @@ hvp(x, output_bar, dtheta, dx, theta_hvp, x_hvp, status)
 ```
 
 `backprop` is an alias for `vjp`. ReLU uses derivative zero at the kink.
+
+### `fortml_mlp_training`
+
+`mlp_train(model,x,target,status,options,state)` trains an existing `mlp_t`
+with deterministic Adam. A zero `batch_size` selects full-batch updates.
+Mini-batch shuffling uses an explicit Park-Miller stream controlled by
+`shuffle_seed`, and does not mutate process-global random state. The options
+also provide learning-rate and Adam coefficients, L2 regularization,
+gradient tolerance, patience, best-state restoration, and an epoch callback.
+
+`mlp_training_state_t` records epoch and update counts, the best epoch and
+loss, the final loss and gradient norm, convergence flags, and a compact loss
+history. `mlp_loss_value_gradient` returns the mean-squared-error value, the
+packed network gradient, and the analytic derivative with respect to the
+scalar L2 hyperparameter. This scalar product is the first outer
+hyperparameter-search seam for neural training.
+
+### `fortml_tree`
+
+`decision_stump_t%fit(x,y,status[,min_samples_leaf])` exhaustively selects the
+lowest squared-error one-feature split using deterministic sorted thresholds.
+`predict` has vector and one-column matrix forms. `jvp` returns zero away from
+the split and refuses a query exactly on the discontinuity.
+
+`gradient_boosting_regressor_t%fit(x,y,status[,n_estimators,learning_rate,
+min_samples_leaf])` fits a squared-loss residual sequence of stumps. Its
+prediction and input-JVP products are deterministic. Split selection is a
+discrete fit operation, so differentiable split surrogates, histogram growth,
+missing-value routing, classification objectives, and XGBoost/LightGBM policy
+variants remain in the tree roadmap.
 
 ### `fortml_bnn`
 
@@ -312,6 +358,24 @@ predict_hvp(x, mean_bar, direction, parameter_hvp, status)
 The HVP covers a weighted predictive mean. The LML methods are
 `log_marginal_likelihood`, `log_marginal_likelihood_jvp`,
 `hyperparameter_gradient`, and `hyperparameter_hvp`.
+
+### `fortml_gp_training`
+
+`gp_optimize_hyperparameters(model,options,result,status)` minimizes the
+negative exact-GP log marginal likelihood with FortOpt L-BFGS-B. The model
+must already be fitted, and each objective evaluation refactorizes the model
+through `set_parameters`, so the optimizer uses the same analytic
+hyperparameter gradient as the public likelihood product. Parameters are the
+kernel log parameters followed by log observation-noise variance. Bounds are
+applied uniformly through `gp_hyperparameter_options_t`. The default interval
+is `[-20,20]`.
+
+`gp_hyperparameter_result_t` reports convergence, iteration count, final
+negative log marginal likelihood, and the final gradient norm. A nonconverged
+iteration limit or nonfinite objective returns a convergence status. The
+adapter currently targets exact fitted GPs. Derivative-observation,
+multi-output, and approximate GP training objectives remain separate roadmap
+adapters.
 
 ### `fortml_derivative_gaussian_process`
 
