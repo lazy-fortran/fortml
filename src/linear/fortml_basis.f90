@@ -25,6 +25,7 @@ module fortml_basis
         procedure, public :: initialize_radial => basis_initialize_radial
         procedure, public :: initialize_spline => basis_initialize_spline
         procedure, public :: initialize_callback => basis_initialize_callback
+        procedure, public :: input_count => basis_input_count
         procedure, public :: feature_count => basis_feature_count
         procedure, public :: parameter_count => basis_parameter_count
         procedure, public :: parameters => basis_parameters
@@ -32,6 +33,7 @@ module fortml_basis
         procedure, public :: evaluate => basis_evaluate
         procedure, public :: jvp => basis_jvp
         procedure, public :: vjp => basis_vjp
+        procedure, public :: valid => basis_valid
         procedure, public :: static_lowering_eligible => &
             basis_static_lowering_eligible
     end type basis_map_t
@@ -180,6 +182,14 @@ contains
         count = self%implementation%feature_count()
         if (self%include_intercept) count = count + 1
     end function basis_feature_count
+
+    integer function basis_input_count(self) result(count)
+        class(basis_map_t), intent(in) :: self
+
+        count = 0
+        if (.not. allocated(self%implementation)) return
+        count = self%implementation%input_count()
+    end function basis_input_count
 
     integer function basis_parameter_count(self) result(count)
         class(basis_map_t), intent(in) :: self
