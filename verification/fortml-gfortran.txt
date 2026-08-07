@@ -1,16 +1,16 @@
-Static: OK (280 modules, 280 changed, 280 affected)
-fo build [--------------------] 0/746 0%
-fo build [##################--] 685/746 91%
-fo build [####################] 746/746 100%
+Static: OK (285 modules, 285 changed, 285 affected)
+fo build [--------------------] 0/748 0%
+fo build [##################--] 686/748 91%
+fo build [####################] 748/748 100%
 fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_mlp_grouped_training.f90:36:17: Warning: Creating array temporary at (1) [-Warray-temporaries]
 fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_mlp_grouped_training.f90:36:17: Warning: Creating array temporary at (1) [-Warray-temporaries]
 fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_mlp_grouped_training.f90:36:17: Warning: Creating array temporary at (1) [-Warray-temporaries]
 Build: OK
-fo build [--------------------] 0/685 0%
-fo build [###################-] 684/685 99%
-fo build [####################] 685/685 100%
-fo test [--------------------] 0/124 0%
-fo test [####################] 124/124 100%
+fo build [--------------------] 0/687 0%
+fo build [###################-] 661/687 96%
+fo build [####################] 687/687 100%
+fo test [--------------------] 0/127 0%
+fo test [####################] 127/127 100%
 Tests: OK
 Lint: OK
 All stages passed (9.7s)
