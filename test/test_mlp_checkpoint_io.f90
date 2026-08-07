@@ -161,6 +161,14 @@ contains
             a%shuffle .eqv. b%shuffle .and. a%has_validation .eqv. b%has_validation .and. &
             a%converged .eqv. b%converged .and. a%early_stopped .eqv. b%early_stopped .and. &
             a%restore_best .eqv. b%restore_best .and. a%shuffle_state == b%shuffle_state .and. &
+            (a%has_typed_schedule .eqv. b%has_typed_schedule) .and. &
+            a%typed_schedule%kind == b%typed_schedule%kind .and. &
+            a%typed_schedule%warmup_updates == b%typed_schedule%warmup_updates .and. &
+            a%typed_schedule%total_updates == b%typed_schedule%total_updates .and. &
+            a%typed_schedule%min_rate_fraction == b%typed_schedule%min_rate_fraction .and. &
+            a%typed_schedule%decay_factor == b%typed_schedule%decay_factor .and. &
+            a%typed_schedule%peak_rate_fraction == b%typed_schedule%peak_rate_fraction .and. &
+            a%typed_schedule%final_rate_fraction == b%typed_schedule%final_rate_fraction .and. &
             a%learning_rate == b%learning_rate .and. a%beta1 == b%beta1 .and. &
             a%beta2 == b%beta2 .and. a%epsilon == b%epsilon .and. &
             a%rmsprop_decay == b%rmsprop_decay .and. &

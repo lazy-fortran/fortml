@@ -1482,10 +1482,14 @@ to a later call to resume. `options%max_epochs` is the total target epoch, not
 an additional count. The snapshot includes packed model parameters,
 Adam/AdamW first and second moments (or Adagrad accumulated squares, RMSprop
 running statistics, or SGD velocity) plus optimizer step and configuration,
-permutation/order and Park--Miller state, active epoch/microbatch cursor and accumulated gradient, learning-rate
-schedule position/history, validation and early-stopping counters, and the
-best-parameter state. Procedure pointers are not serializable: install the
-same deterministic schedule and callback on the resumed options. A checkpoint
+permutation/order and Park--Miller state, active epoch/microbatch cursor and
+accumulated gradient, learning-rate schedule position/history, validation and
+early-stopping counters, and the best-parameter state. A typed built-in
+schedule selected by `options%use_typed_schedule` is serialized with its kind,
+update counts, and fractions; the resumed options must provide the same
+schedule.
+Procedure pointers are not serializable: install the same deterministic
+callback on the resumed options. A checkpoint
 is rejected when dimensions, batch/accumulation policy, shuffle seed, optimizer
 configuration, Adam coefficients, L2, validation/early-stopping policy, or clipping/tolerance
 policy differ. A resumed call intentionally clears terminal convergence or
@@ -1517,7 +1521,8 @@ reads it into a temporary value, validates every scalar and array, and only
 then replaces the destination. The schema records all optimizer variants,
 including Adam/AdamW moments, Adagrad squares, RMSprop square/mean/momentum
 state, or SGD velocity, together with the exact iterator permutation and
-shuffle stream. Real values use 17 significant decimal digits, and array
+shuffle stream. Schema version 3 also records typed schedule fields. Real
+values use 17 significant decimal digits, and array
 lengths and record names are explicit, so files are independent of compiler
 endianness and unformatted-record conventions. Unknown schema versions,
 truncation, extra records, invalid values, and optimizer-state shape mismatches
@@ -1596,8 +1601,15 @@ the next epoch. Its explicit position, epoch, and copied RNG state make an
 in-memory batch boundary resumable. `mlp_learning_rate_schedule_proc` can be
 installed in `mlp_training_options_t%learning_rate_schedule`. It receives the
 epoch, one-based update number, and base rate and must return a finite positive
-rate. `gradient_clip_norm` applies global norm clipping before each selected
-optimizer step.
+rate. For a portable built-in schedule, pass
+`options%use_typed_schedule=.true.` and assign
+`options%typed_schedule=mlp_learning_rate_schedule_t(...)`. The typed schedule
+is validated once, evaluated analytically at every update, and cannot
+be combined with a callback. Its kind and continuous fields are retained in
+the in-memory and formatted-text checkpoint, so resumed runs reject a
+different schedule instead of silently changing the trajectory. The
+checkpoint schema is versioned for this state. `gradient_clip_norm` applies
+global norm clipping before each selected optimizer step.
 Zero disables clipping. `accumulation_steps` combines that many consecutive
 microbatches into one sample-weighted mean gradient before an Adam or SGD step. The
 last uneven group is flushed at the epoch boundary. L2 is added once per
@@ -1619,7 +1631,9 @@ The schedule receives an explicit update index rather than
 owning hidden mutable state, so a replayed training run uses the same rates.
 `device_supported(kind)` reports CPU-only support in this release: schedules
 have no resident CUDA optimizer lowering yet, so they must not be timed as GPU
-workloads or used to imply device-resident trajectory hypergradients.
+workloads or used to imply device-resident trajectory hypergradients. A CUDA
+typed schedule request therefore remains an explicit capability boundary in
+the trajectory APIs.
 See [`docs/MLP_SCHEDULES.md`](MLP_SCHEDULES.md) for constructors and a
 callback adapter.
 

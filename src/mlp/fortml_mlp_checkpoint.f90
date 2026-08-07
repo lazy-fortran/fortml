@@ -19,7 +19,7 @@ module fortml_mlp_checkpoint
 
     character(*), parameter, public :: MLP_CHECKPOINT_MAGIC = &
         "FORTML_MLP_CHECKPOINT_TEXT"
-    integer, parameter, public :: MLP_CHECKPOINT_SCHEMA_VERSION = 2
+    integer, parameter, public :: MLP_CHECKPOINT_SCHEMA_VERSION = 3
 
     public :: mlp_checkpoint_save
     public :: mlp_checkpoint_load
@@ -89,6 +89,22 @@ contains
         if (ios == 0) call write_l(unit, "converged", checkpoint%converged, ios)
         if (ios == 0) call write_l(unit, "early_stopped", checkpoint%early_stopped, ios)
         if (ios == 0) call write_l(unit, "restore_best", checkpoint%restore_best, ios)
+        if (ios == 0) call write_l(unit, "has_typed_schedule", &
+            checkpoint%has_typed_schedule, ios)
+        if (ios == 0) call write_i(unit, "typed_schedule_kind", &
+            checkpoint%typed_schedule%kind, ios)
+        if (ios == 0) call write_i(unit, "typed_schedule_warmup_updates", &
+            checkpoint%typed_schedule%warmup_updates, ios)
+        if (ios == 0) call write_i(unit, "typed_schedule_total_updates", &
+            checkpoint%typed_schedule%total_updates, ios)
+        if (ios == 0) call write_r(unit, "typed_schedule_min_rate_fraction", &
+            checkpoint%typed_schedule%min_rate_fraction, ios)
+        if (ios == 0) call write_r(unit, "typed_schedule_decay_factor", &
+            checkpoint%typed_schedule%decay_factor, ios)
+        if (ios == 0) call write_r(unit, "typed_schedule_peak_rate_fraction", &
+            checkpoint%typed_schedule%peak_rate_fraction, ios)
+        if (ios == 0) call write_r(unit, "typed_schedule_final_rate_fraction", &
+            checkpoint%typed_schedule%final_rate_fraction, ios)
         if (ios == 0) call write_i8(unit, "shuffle_state", checkpoint%shuffle_state, ios)
         if (ios == 0) call write_r(unit, "learning_rate", checkpoint%learning_rate, ios)
         if (ios == 0) call write_r(unit, "beta1", checkpoint%beta1, ios)
@@ -217,6 +233,22 @@ contains
         if (ios == 0) call read_l(unit, "converged", candidate%converged, ios)
         if (ios == 0) call read_l(unit, "early_stopped", candidate%early_stopped, ios)
         if (ios == 0) call read_l(unit, "restore_best", candidate%restore_best, ios)
+        if (ios == 0) call read_l(unit, "has_typed_schedule", &
+            candidate%has_typed_schedule, ios)
+        if (ios == 0) call read_i(unit, "typed_schedule_kind", &
+            candidate%typed_schedule%kind, ios)
+        if (ios == 0) call read_i(unit, "typed_schedule_warmup_updates", &
+            candidate%typed_schedule%warmup_updates, ios)
+        if (ios == 0) call read_i(unit, "typed_schedule_total_updates", &
+            candidate%typed_schedule%total_updates, ios)
+        if (ios == 0) call read_r(unit, "typed_schedule_min_rate_fraction", &
+            candidate%typed_schedule%min_rate_fraction, ios)
+        if (ios == 0) call read_r(unit, "typed_schedule_decay_factor", &
+            candidate%typed_schedule%decay_factor, ios)
+        if (ios == 0) call read_r(unit, "typed_schedule_peak_rate_fraction", &
+            candidate%typed_schedule%peak_rate_fraction, ios)
+        if (ios == 0) call read_r(unit, "typed_schedule_final_rate_fraction", &
+            candidate%typed_schedule%final_rate_fraction, ios)
         if (ios == 0) call read_i8(unit, "shuffle_state", candidate%shuffle_state, ios)
         if (ios == 0) call read_r(unit, "learning_rate", candidate%learning_rate, ios)
         if (ios == 0) call read_r(unit, "beta1", candidate%beta1, ios)
