@@ -7,6 +7,11 @@ and implementation limits in [`docs/DESIGN.md`](docs/DESIGN.md) and
 
 ## Verification
 
+The GitHub `v0.1.0` tag currently points to the earlier release-verification
+commit `a387cc5`; the trainer, calibration, variational-GP, transform, and CUDA
+VJP closure slices documented below are post-tag additions. The broad parity
+gate is still open, so this work does not move or recreate that tag.
+
 | Compiler | Command | Result |
 | --- | --- | --- |
 | GNU Fortran | `fo` | Static, build, test, and lint checks passed. The fresh 2026-08-07 run passed all 144 tests (316 modules; 763 build units). See [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
