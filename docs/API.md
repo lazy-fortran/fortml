@@ -162,6 +162,7 @@ repeated resident-batch evidence.
 | `rnn_t` | `forward`, squared-error `loss` | No | Loss gradient by BPTT | No |
 | `kernel_t` | Scalar value and matrix | Parameter JVP | Parameter VJP | Parameter HVP |
 | `xgboost_t` | Squared/squared-log (RMSLE)/logistic/Poisson/Huber/quantile/absolute/rank:pairwise margins, predictions, and additive tree contributions | Fixed-tree input JVP away from split boundaries | Fixed-tree input VJP away from split boundaries | No |
+| `xgboost_classifier_t` | Binary integer labels, logistic `(n,2)` probabilities, staged margins, and feature diagnostics | Fixed-tree probability/input JVP away from split boundaries | Fixed-tree probability/input VJP away from split boundaries | No |
 | `random_forest_classifier_t` | Bootstrap-ensemble probabilities and labels | Refused: split routing is discrete | Refused: split routing is discrete | No |
 | `extra_trees_classifier_t` | Randomized-threshold ensemble probabilities and labels | Refused: split routing is discrete | Refused: split routing is discrete | No |
 | `gp_regression_t` | Mean, variance, LML | Prediction and LML parameters | Prediction and LML parameters | Mean and LML parameters |
@@ -2206,6 +2207,32 @@ one-vs-rest probabilities and summed margins after each boosting stage.
 `feature_importance(kind,normalize)` aggregates the per-class binary gain,
 weight, or cover diagnostics. A final staged slice is identical to the
 corresponding ordinary prediction within floating-point rounding.
+
+### `fortml_xgboost_classifier`
+
+`xgboost_classifier_t` is the classifier-shaped binary facade over the
+logistic `xgboost_t` lane. `fit(x,labels,status[,options,sample_weight,
+validation_x,validation_labels,validation_weight])` accepts exactly two
+arbitrary integer labels, stores them in sorted order, and forwards positive
+sample/validation weights and the complete XGBoost options policy (exact or
+weighted histogram growth, NaN routing, monotone constraints, regularization,
+subsampling, and validation early stopping). `predict_proba` returns an
+`(n,2)` simplex in that class order; `predict` returns integer labels with the
+first class winning an exact tie. `decision_function` returns the positive
+class raw logit, while `predict_proba_staged` and
+`decision_function_staged` expose cumulative rounds. `classes`,
+`feature_count`, `estimator_count`, `feature_importance`, `missing_policy`,
+`accepts_missing`, `tree_method`, monotone metadata, and validation lifecycle
+queries expose fitted state without exposing tree storage.
+
+`predict_proba_jvp`/`predict_proba_vjp` are fixed-tree input products. They
+return zero away from finite split thresholds and preserve the underlying
+structured boundary refusal; argmax labels remain discrete. CPU device
+dispatch is equivalent to ordinary prediction. Selected CUDA devices return
+`FORTNUM_NOT_IMPLEMENTED` from `predict_device` and
+`predict_proba_device` until resident tree kernels are linked, with no hidden
+host fallback. See [XGBOOST_CLASSIFIER.md](XGBOOST_CLASSIFIER.md) and the
+independent `test_xgboost_classifier` oracle.
 
 ### `fortml_bnn`
 

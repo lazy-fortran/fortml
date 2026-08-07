@@ -1228,6 +1228,17 @@ hyperparameter block. A deliberate train/validation leakage fixture must fail.
   argmax prediction, decision margins, quotient-rule probability JVP/VJP
   products, and split-boundary refusals have independent behavioral,
   finite-difference, and adjoint tests.
+- [x] Add the classifier-shaped binary `xgboost_classifier_t` facade over the
+  logistic tree lane. It retains arbitrary sorted integer classes and exposes
+  weighted fit/validation, integer `predict`, `(n,2)` probabilities, raw
+  decision margins, staged probabilities/margins, gain/weight/cover feature
+  importance, monotone and missing-policy metadata, and fixed-tree probability
+  JVP/VJP products. CPU dispatch is ordinary execution and selected CUDA
+  dispatch is an explicit `FORTNUM_NOT_IMPLEMENTED` refusal. The independent
+  `test_xgboost_classifier` oracle covers class ordering, simplex/staged
+  invariants, weights, validation, NaN routing, derivatives, feature
+  diagnostics, and device behavior; `fortml_bench_xgboost_classifier` records
+  weighted CPU timing, accuracy/log loss, and the CUDA refusal.
 - [x] Add explicit XGBoost-compatible NaN handling to binary and one-vs-rest
   trees. `missing_policy="error"` is the default refusal; `"learn"` compares
   both default directions in every exact threshold and stores the strict-best
