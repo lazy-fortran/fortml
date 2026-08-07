@@ -25,7 +25,7 @@ program fortml_bench_rbf_svm
     call make_fixture(x, labels, sample_weight)
     call system_clock(clock_start, clock_rate)
     call model%fit(x, labels, status, c=2.0_dp, gamma=0.6_dp, &
-        max_iterations=1200, tolerance=1.0e-9_dp, sample_weight=sample_weight)
+        max_iterations=10000, tolerance=1.0e-9_dp, sample_weight=sample_weight)
     call system_clock(clock_end)
     if (.not. status_ok(status)) then
         write (*, '(a)') "RBF SVM benchmark fit status: "//trim(status%msg)
