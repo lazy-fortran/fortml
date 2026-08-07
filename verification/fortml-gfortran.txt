@@ -1,6 +1,6 @@
-Static: OK (311 modules, 311 changed, 311 affected)
-fo build [--------------------] 0/760 0%
-fo build [####################] 760/760 100%
+Static: OK (314 modules, 314 changed, 314 affected)
+fo build [--------------------] 0/761 0%
+fo build [####################] 761/761 100%
 fo: warning: Warning: Creating array temporary at (1) [-Warray-temporaries]
 fo: warning: Warning: Creating array temporary at (1) [-Warray-temporaries]
 fo: warning: Warning: Creating array temporary at (1) [-Warray-temporaries]
@@ -25,8 +25,8 @@ fo: warning: /mnt/storage/code/lazy-fortran/fortml/app/fortml_bench_gp_classific
 Build: OK
 fo build [--------------------] 0/695 0%
 fo build [####################] 695/695 100%
-fo test [--------------------] 0/141 0%
-fo test [####################] 141/141 100%
+fo test [--------------------] 0/143 0%
+fo test [####################] 143/143 100%
 Tests: OK
 Lint: OK
 All stages passed (11.5s)
