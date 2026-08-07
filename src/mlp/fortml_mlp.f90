@@ -1,5 +1,6 @@
 module fortml_mlp
     use fortnum_kinds, only: dp
+    use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
         FORTNUM_DOMAIN_ERROR
     implicit none
@@ -52,12 +53,14 @@ module fortml_mlp
         integer :: output_activation = MLP_LINEAR
     contains
         procedure, public :: initialize => mlp_initialize
+        procedure, public :: initialize_linear => mlp_initialize_linear
         procedure, public :: parameter_count => mlp_parameter_count
         procedure, public :: parameter_block_count => mlp_parameter_block_count
         procedure, public :: parameter_layout => mlp_parameter_layout
         procedure, public :: parameter_range => mlp_parameter_range
         procedure, public :: parameters => mlp_parameters
         procedure, public :: set_parameters => mlp_set_parameters
+        procedure, public :: set_linear_parameters => mlp_set_linear_parameters
         procedure, public :: predict => mlp_predict
         procedure, public :: jvp => mlp_jvp
         procedure, public :: vjp => mlp_vjp
@@ -115,6 +118,31 @@ contains
         self%output_activation = output_kind
         call status_set(status, FORTNUM_OK, "")
     end subroutine mlp_initialize
+
+    subroutine mlp_initialize_linear(self, weight1, bias1, weight2, bias2, status)
+        !! Initialize a two-layer MLP whose complete map is affine.
+        !!
+        !! The supplied arrays are copied into a topology with dimensions
+        !! ``[size(weight1,1), size(weight1,2), size(weight2,2)]``.  Both
+        !! layers use ``MLP_LINEAR``.  This is intentionally a finite,
+        !! deterministic state-loading seam for linear/PCA warm starts; it
+        !! does not claim an NNGP or GP-posterior equivalence.
+        class(mlp_t), intent(out) :: self
+        real(dp), intent(in) :: weight1(:, :), bias1(:)
+        real(dp), intent(in) :: weight2(:, :), bias2(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. valid_linear_state(weight1, bias1, weight2, bias2)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP initialize_linear: dimensions or values are invalid")
+            return
+        end if
+
+        call self%initialize([size(weight1, 1), size(weight1, 2), size(weight2, 2)], &
+            status, hidden_activation=MLP_LINEAR, output_activation=MLP_LINEAR)
+        if (status%code /= FORTNUM_OK) return
+        call self%set_linear_parameters(weight1, bias1, weight2, bias2, status)
+    end subroutine mlp_initialize_linear
 
     subroutine initialize_layer(weight, bias, scale, seed, layer_index)
         real(dp), intent(out) :: weight(:, :), bias(:)
@@ -270,6 +298,31 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine mlp_set_parameters
+
+    subroutine mlp_set_linear_parameters(self, weight1, bias1, weight2, bias2, status)
+        !! Replace the complete state of an initialized two-layer linear MLP.
+        !!
+        !! Validation is completed before any layer is modified.  In
+        !! particular, a nonlinear topology, a wrong shape, or a nonfinite
+        !! supplied value is rejected with ``FORTNUM_DOMAIN_ERROR``.
+        class(mlp_t), intent(inout) :: self
+        real(dp), intent(in) :: weight1(:, :), bias1(:)
+        real(dp), intent(in) :: weight2(:, :), bias2(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. valid_linear_state(weight1, bias1, weight2, bias2) .or. &
+            .not. linear_model_matches(self, weight1, bias1, weight2, bias2)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP set_linear_parameters: model, dimensions, or values are invalid")
+            return
+        end if
+
+        self%layer(1)%weight = weight1
+        self%layer(1)%bias = bias1
+        self%layer(2)%weight = weight2
+        self%layer(2)%bias = bias2
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine mlp_set_linear_parameters
 
     subroutine mlp_predict(self, x, y, status)
         class(mlp_t), intent(in) :: self
@@ -565,6 +618,38 @@ contains
         valid = size(self%layer_sizes) >= 2 .and. &
             size(self%layer) == size(self%layer_sizes) - 1
     end function model_allocated
+
+    logical function valid_linear_state(weight1, bias1, weight2, bias2) result(valid)
+        real(dp), intent(in) :: weight1(:, :), bias1(:)
+        real(dp), intent(in) :: weight2(:, :), bias2(:)
+
+        valid = size(weight1, 1) > 0 .and. size(weight1, 2) > 0 .and. &
+            size(weight2, 1) > 0 .and. size(weight2, 2) > 0 .and. &
+            size(bias1) == size(weight1, 2) .and. &
+            size(weight2, 1) == size(weight1, 2) .and. &
+            size(bias2) == size(weight2, 2)
+        if (.not. valid) return
+        valid = all(ieee_is_finite(weight1)) .and. all(ieee_is_finite(bias1)) .and. &
+            all(ieee_is_finite(weight2)) .and. all(ieee_is_finite(bias2))
+    end function valid_linear_state
+
+    logical function linear_model_matches(self, weight1, bias1, weight2, bias2) result(valid)
+        class(mlp_t), intent(in) :: self
+        real(dp), intent(in) :: weight1(:, :), bias1(:)
+        real(dp), intent(in) :: weight2(:, :), bias2(:)
+
+        valid = model_allocated(self)
+        if (.not. valid) return
+        valid = size(self%layer) == 2 .and. self%hidden_activation == MLP_LINEAR .and. &
+            self%output_activation == MLP_LINEAR
+        if (.not. valid) return
+        valid = size(self%layer(1)%weight, 1) == size(weight1, 1) .and. &
+            size(self%layer(1)%weight, 2) == size(weight1, 2) .and. &
+            size(self%layer(1)%bias) == size(bias1) .and. &
+            size(self%layer(2)%weight, 1) == size(weight2, 1) .and. &
+            size(self%layer(2)%weight, 2) == size(weight2, 2) .and. &
+            size(self%layer(2)%bias) == size(bias2)
+    end function linear_model_matches
 
     logical function valid_activation(kind) result(valid)
         integer, intent(in) :: kind

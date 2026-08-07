@@ -1358,6 +1358,17 @@ The parameter vector stores each layer's weight array
 the input layer to the output layer. Use `parameter_count`, `parameters`, and
 `set_parameters` to manage it.
 
+For a deterministic affine/PCA warm start, `initialize_linear(weight1,bias1,
+weight2,bias2,status)` constructs exactly the two-layer topology
+`[size(weight1,1),size(weight1,2),size(weight2,2)]`, sets both activations to
+`MLP_LINEAR`, and copies finite arrays after checking
+`size(bias1)==size(weight1,2)` and `size(weight2,1)==size(weight1,2)`.
+`set_linear_parameters(...)` applies the same checked replacement to an
+already initialized two-layer linear MLP. Both routines reject nonfinite
+values, zero-width arrays, nonlinear topologies, and shape mismatches before
+mutating the destination. This is a linear-state loading contract only; it
+does not assert an NNGP, NTK, or GP-posterior equivalence.
+
 `predict(x,y,status)` evaluates a batch. The product signatures are:
 
 ```text
