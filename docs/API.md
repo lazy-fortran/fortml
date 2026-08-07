@@ -55,7 +55,7 @@ not supplied through a hidden generic interface.
 | `rnn_t` | `forward`, squared-error `loss` | No | Loss gradient by BPTT | No |
 | `kernel_t` | Scalar value and matrix | Parameter JVP | Parameter VJP | Parameter HVP |
 | `gp_regression_t` | Mean, variance, LML | Prediction and LML parameters | Prediction and LML parameters | Mean and LML parameters |
-| `gp_derivative_regression_t` | Mean, variance, and LML | LML parameter JVP | Analytic kernel/noise hyperparameter gradient | Directional HVP (finite difference of the analytic gradient) |
+| `gp_derivative_regression_t` | Mean, variance, and LML | Prediction and LML parameter JVP | Prediction parameter VJP and analytic LML hyperparameter gradient | Directional HVP (finite difference of the analytic gradient) |
 | `gp_classification_t` | Latent and observed probabilities | Input JVP | No fitted-parameter product | No |
 | `gp_multiclass_classification_t` | Normalized observed probabilities | Input JVP | No fitted-parameter product | No |
 | `multi_output_gp_t` | Correlated mean and LML | No | No | No |
@@ -283,8 +283,9 @@ hvp(x, output_bar, dtheta, dx, theta_hvp, x_hvp, status)
 
 ### `fortml_mlp_training`
 
-`mlp_train(model,x,target,status,options,state)` trains an existing `mlp_t`
-with deterministic Adam. A zero `batch_size` selects full-batch updates.
+`mlp_train(model,x,target,status,options,state[,validation_x,validation_target])`
+trains an existing `mlp_t` with deterministic Adam. A zero `batch_size`
+selects full-batch updates.
 Mini-batch shuffling uses an explicit Park-Miller stream controlled by
 `shuffle_seed`, and does not mutate process-global random state. The options
 also provide learning-rate and Adam coefficients, L2 regularization,
@@ -293,7 +294,12 @@ gradient tolerance, patience, best-state restoration, and an epoch callback.
 `mlp_training_state_t` records epoch and update counts, the best epoch and
 loss, the final loss and gradient norm, convergence flags, a compact loss
 history, the effective learning rate per epoch, and the number of norm-clipped
-updates. `mlp_loss_value_gradient` returns the mean-squared-error value, the
+updates. Passing both optional validation arrays evaluates a held-out MSE at
+each `validation_interval`; patience and best-state restoration monitor that
+validation objective, and the state records initial/best/final validation
+losses, the best validation epoch, and its history. The pair must be supplied
+together and is finite, shape-checked, and never used for parameter updates.
+`mlp_loss_value_gradient` returns the mean-squared-error value, the
 packed network gradient, and the analytic derivative with respect to the
 scalar L2 hyperparameter. This scalar product is the first outer
 hyperparameter-search seam for neural training. `mlp_loss_hvp` adds the exact joint Hessian-vector
@@ -354,14 +360,18 @@ multilabel, ordinal, and GP likelihood classifier adapters remain roadmap work.
 `decision_stump_t%fit(x,y,status[,min_samples_leaf])` exhaustively selects the
 lowest squared-error one-feature split using deterministic sorted thresholds.
 `predict` has vector and one-column matrix forms. `jvp` returns zero away from
-the split and refuses a query exactly on the discontinuity.
+the split and refuses a query exactly on the discontinuity. The exact tree
+lane is dense and finite-only: NaN and infinite values in fit data, prediction
+inputs, or JVP inputs are rejected with a domain status. Missing-value routing
+is not inferred as a default branch.
 
 `gradient_boosting_regressor_t%fit(x,y,status[,n_estimators,learning_rate,
 min_samples_leaf])` fits a squared-loss residual sequence of stumps. Its
 prediction and input-JVP products are deterministic. Split selection is a
-discrete fit operation, so differentiable split surrogates, histogram growth,
-missing-value routing, classification objectives, and XGBoost/LightGBM policy
-variants remain in the tree roadmap.
+discrete fit operation, and it shares the finite-only/refusal policy. Thus
+differentiable split surrogates, histogram growth, missing-value routing,
+classification objectives, and XGBoost/LightGBM policy variants remain in the
+tree roadmap.
 
 ### `fortml_xgboost`
 
@@ -597,6 +607,11 @@ multiple columns.
 `observation_count()` returns the number of fitted rows. The packed parameter
 order is the kernel log parameters followed by log observation-noise variance.
 `parameter_count`, `parameters`, and `set_parameters` expose that state.
+`predict_jvp(x,components,direction,mean,mean_dot,variance,variance_dot,status)`
+returns the prediction and its parameter JVP. `predict_vjp(x,components,
+mean_bar,variance_bar,parameter_bar,status)` is the corresponding reverse
+product over packed kernel/noise parameters. Query inputs are held fixed by
+these products; input-query JVP/VJP and joint posterior covariance remain open.
 `log_marginal_likelihood`, `log_marginal_likelihood_jvp`,
 `hyperparameter_gradient`, and `hyperparameter_hvp` provide likelihood
 products. The gradient uses analytic parameter tangents of the supported RBF,

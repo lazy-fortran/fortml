@@ -16,6 +16,7 @@ program test_derivative_gp_products
     call test_likelihood_products(failures)
     call test_matern_parameter_products(failures)
     call test_product_parameter_products(failures)
+    call test_prediction_products(failures)
     call test_parameter_guards(failures)
     if (failures /= 0) then
         write (error_unit, '(i0,a)') failures, &
@@ -180,6 +181,67 @@ contains
         end if
     end subroutine test_product_parameter_products
 
+    subroutine test_prediction_products(failures)
+        integer, intent(inout) :: failures
+        type(gp_derivative_regression_t) :: model
+        type(kernel_t) :: kernel
+        type(fortnum_status_t) :: status
+        real(dp) :: x(3, 1), y(3, 1), x_test(2, 1), theta(3), direction(3)
+        integer :: components(3), test_components(2), i
+        real(dp) :: mean(2, 1), mean_dot(2, 1), variance(2), variance_dot(2)
+        real(dp) :: mean_plus(2, 1), mean_minus(2, 1), variance_plus(2), variance_minus(2)
+        real(dp) :: mean_bar(2, 1), variance_bar(2), parameter_bar(3), fd_bar(3)
+        real(dp) :: objective_plus, objective_minus, h
+
+        x(:, 1) = [0.0_dp, 0.45_dp, 1.05_dp]
+        y(:, 1) = [1.2_dp, -0.3_dp, 0.8_dp]
+        components = [0, 1, 0]
+        x_test(:, 1) = [0.25_dp, 0.8_dp]
+        test_components = [1, 0]
+        kernel = make_rbf_kernel(1, 1.4_dp, 0.75_dp, status)
+        call model%fit(x, components, y, kernel, 0.07_dp, status, jitter=1.0e-10_dp)
+        theta = model%parameters()
+        direction = [0.21_dp, -0.13_dp, 0.17_dp]
+        call model%predict_jvp(x_test, test_components, direction, mean, mean_dot, &
+            variance, variance_dot, status)
+        h = 2.0e-6_dp
+        call oracle_predict(theta + h*direction, x, components, y, x_test, &
+            test_components, 0.07_dp, 1.0e-10_dp, mean_plus, variance_plus)
+        call oracle_predict(theta - h*direction, x, components, y, x_test, &
+            test_components, 0.07_dp, 1.0e-10_dp, mean_minus, variance_minus)
+        if (.not. status_ok(status) .or. maxval(abs(mean_dot - (mean_plus - mean_minus)/ &
+            (2.0_dp*h))) > 4.0e-7_dp .or. maxval(abs(variance_dot - &
+            (variance_plus - variance_minus)/(2.0_dp*h))) > 4.0e-7_dp) then
+            write (error_unit, '(a,2es12.4)') &
+                "FAIL [derivative GP prediction_jvp] independent finite difference ", &
+                maxval(abs(mean_dot - (mean_plus - mean_minus)/(2.0_dp*h))), &
+                maxval(abs(variance_dot - (variance_plus - variance_minus)/(2.0_dp*h)))
+            write (error_unit, '(a,6es12.4)') "  variance/pm/jvp/fd=", variance(1), &
+                variance_plus(1), variance_minus(1), variance_dot(1), &
+                (variance_plus(1) - variance_minus(1))/(2.0_dp*h), &
+                variance_dot(1) - (variance_plus(1) - variance_minus(1))/(2.0_dp*h)
+            failures = failures + 1
+        end if
+
+        mean_bar(:, 1) = [0.35_dp, -0.2_dp]
+        variance_bar = [0.25_dp, -0.15_dp]
+        call model%predict_vjp(x_test, test_components, mean_bar, variance_bar, &
+            parameter_bar, status)
+        do i = 1, size(theta)
+            fd_bar(i) = (oracle_prediction_objective(theta + h*unit_vector(3, i), x, &
+                components, y, x_test, test_components, 0.07_dp, 1.0e-10_dp, &
+                mean_bar, variance_bar) - oracle_prediction_objective(theta - &
+                h*unit_vector(3, i), x, components, y, x_test, test_components, &
+                0.07_dp, 1.0e-10_dp, mean_bar, variance_bar))/(2.0_dp*h)
+        end do
+        if (.not. status_ok(status) .or. maxval(abs(parameter_bar - fd_bar)) > 6.0e-7_dp) then
+            write (error_unit, '(a,es12.4)') &
+                "FAIL [derivative GP prediction_vjp] independent finite difference ", &
+                maxval(abs(parameter_bar - fd_bar))
+            failures = failures + 1
+        end if
+    end subroutine test_prediction_products
+
     subroutine test_parameter_guards(failures)
         integer, intent(inout) :: failures
         type(gp_derivative_regression_t) :: model
@@ -253,6 +315,58 @@ contains
         value = -0.5_dp*sum(y*alpha) - 0.5_dp*logdet - &
             0.5_dp*real(size(x, 1), dp)*log(2.0_dp*acos(-1.0_dp))
     end function oracle_lml
+
+    subroutine oracle_predict(theta, x, components, y, x_test, test_components, noise, &
+            jitter, mean, variance)
+        real(dp), intent(in) :: theta(:), x(:, :), y(:, :), x_test(:, :), noise, jitter
+        integer, intent(in) :: components(:), test_components(:)
+        real(dp), intent(out) :: mean(:, :), variance(:)
+        type(cholesky_factorization_t) :: factor
+        type(fortnum_status_t) :: status
+        real(dp), allocatable :: covariance(:, :), cross(:, :), alpha(:, :), work(:, :)
+        integer :: i, j
+
+        allocate(covariance(size(x, 1), size(x, 1)))
+        allocate(cross(size(x, 1), size(x_test, 1)))
+        allocate(alpha, source=y)
+        do j = 1, size(x, 1)
+            do i = 1, size(x, 1)
+                covariance(i, j) = oracle_covariance(x(i, 1), components(i), x(j, 1), &
+                    components(j), exp(theta(1)), exp(theta(2)))
+            end do
+        end do
+        do i = 1, size(x, 1)
+            covariance(i, i) = covariance(i, i) + exp(theta(3)) + jitter
+        end do
+        call factor%factorize(covariance, status)
+        call factor%solve(alpha, status)
+        do j = 1, size(x_test, 1)
+            do i = 1, size(x, 1)
+                cross(i, j) = oracle_covariance(x(i, 1), components(i), x_test(j, 1), &
+                    test_components(j), exp(theta(1)), exp(theta(2)))
+            end do
+        end do
+        mean = matmul(transpose(cross), alpha)
+        allocate(work, source=cross)
+        call factor%solve(work, status)
+        do j = 1, size(x_test, 1)
+            variance(j) = oracle_covariance(x_test(j, 1), test_components(j), &
+                x_test(j, 1), test_components(j), exp(theta(1)), exp(theta(2))) - &
+                dot_product(cross(:, j), work(:, j))
+        end do
+    end subroutine oracle_predict
+
+    real(dp) function oracle_prediction_objective(theta, x, components, y, x_test, &
+            test_components, noise, jitter, mean_bar, variance_bar) result(value)
+        real(dp), intent(in) :: theta(:), x(:, :), y(:, :), x_test(:, :), noise, jitter
+        integer, intent(in) :: components(:), test_components(:)
+        real(dp), intent(in) :: mean_bar(:, :), variance_bar(:)
+        real(dp) :: mean(size(x_test, 1), size(y, 2)), variance(size(x_test, 1))
+
+        call oracle_predict(theta, x, components, y, x_test, test_components, noise, jitter, &
+            mean, variance)
+        value = sum(mean_bar*mean) + sum(variance_bar*variance)
+    end function oracle_prediction_objective
 
     real(dp) function oracle_lml_matern32(theta, x, components, y, noise, jitter) result(value)
         real(dp), intent(in) :: theta(:), x(:, :), y(:, :), noise, jitter

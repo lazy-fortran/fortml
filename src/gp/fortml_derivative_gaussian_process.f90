@@ -27,6 +27,8 @@ module fortml_derivative_gaussian_process
     contains
         procedure, public :: fit => gp_derivative_fit
         procedure, public :: predict => gp_derivative_predict
+        procedure, public :: predict_jvp => gp_derivative_predict_jvp
+        procedure, public :: predict_vjp => gp_derivative_predict_vjp
         procedure, public :: observation_count => gp_derivative_observation_count
         procedure, public :: parameter_count => gp_derivative_parameter_count
         procedure, public :: parameters => gp_derivative_parameters
@@ -42,6 +44,8 @@ module fortml_derivative_gaussian_process
 
     public :: gp_derivative_fit
     public :: gp_derivative_predict
+    public :: gp_derivative_predict_jvp
+    public :: gp_derivative_predict_vjp
     public :: gp_derivative_log_marginal_likelihood
     public :: gp_derivative_hyperparameter_gradient
     public :: gp_derivative_hyperparameter_hvp
@@ -150,6 +154,241 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine gp_derivative_predict
+
+    subroutine gp_derivative_predict_jvp(self, x, components, direction, mean, &
+            mean_dot, variance, variance_dot, status)
+        !! Parameter JVP of derivative-observation GP prediction.
+        !! Query inputs and derivative components are held fixed; `direction`
+        !! follows the packed kernel-log/noise-log parameter order.
+        class(gp_derivative_regression_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), direction(:)
+        integer, intent(in) :: components(:)
+        real(dp), intent(out) :: mean(:, :), mean_dot(:, :), variance(:), variance_dot(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: cross(:, :), cross_dot(:, :), prior(:), prior_dot(:)
+        real(dp), allocatable :: train_dot(:, :), alpha_dot(:, :), work(:, :), work_dot(:, :)
+        real(dp) :: noise_dot, covariance, covariance_dot
+        integer :: i, j, p, kernel_count
+
+        call check_derivative_prediction_shapes(self, x, components, mean, variance, status)
+        if (status%code /= FORTNUM_OK) return
+        if (any(shape(mean_dot) /= shape(mean)) .or. size(variance_dot) /= size(variance) .or. &
+            size(direction) /= self%parameter_count() .or. &
+            any(.not. ieee_is_finite(direction))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "derivative GP predict_jvp: tangent shape or value is invalid")
+            return
+        end if
+
+        kernel_count = self%kernel%parameter_count()
+        allocate(cross(self%n_observations, size(x, 1)))
+        allocate(cross_dot(self%n_observations, size(x, 1)))
+        allocate(prior(size(x, 1)))
+        allocate(prior_dot(size(x, 1)))
+        allocate(train_dot(self%n_observations, self%n_observations))
+        allocate(alpha_dot(size(self%alpha, 1), size(self%alpha, 2)))
+        allocate(work(self%n_observations, size(x, 1)))
+        allocate(work_dot(self%n_observations, size(x, 1)))
+        do j = 1, size(x, 1)
+            do i = 1, self%n_observations
+                call derivative_covariance_direction(self%kernel, self%x_train(i, :), &
+                    self%components(i), x(j, :), components(j), direction(:kernel_count), &
+                    cross(i, j), cross_dot(i, j), status)
+                if (status%code /= FORTNUM_OK) return
+            end do
+            call derivative_covariance_direction(self%kernel, x(j, :), components(j), &
+                x(j, :), components(j), direction(:kernel_count), prior(j), prior_dot(j), &
+                status)
+            if (status%code /= FORTNUM_OK) return
+        end do
+        do j = 1, self%n_observations
+            do i = 1, self%n_observations
+                call derivative_covariance_direction(self%kernel, self%x_train(i, :), &
+                    self%components(i), self%x_train(j, :), self%components(j), &
+                    direction(:kernel_count), covariance, train_dot(i, j), status)
+                if (status%code /= FORTNUM_OK) return
+            end do
+        end do
+        noise_dot = self%noise_variance*direction(kernel_count + 1)
+        do i = 1, self%n_observations
+            train_dot(i, i) = train_dot(i, i) + noise_dot
+        end do
+        alpha_dot = -matmul(train_dot, self%alpha)
+        call self%factorization%solve(alpha_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        mean = matmul(transpose(cross), self%alpha)
+        mean_dot = matmul(transpose(cross_dot), self%alpha) + &
+            matmul(transpose(cross), alpha_dot)
+        work = cross
+        call self%factorization%solve(work, status)
+        if (status%code /= FORTNUM_OK) return
+        work_dot = cross_dot - matmul(train_dot, work)
+        call self%factorization%solve(work_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        variance = prior - sum(cross*work, dim=1)
+        variance_dot = prior_dot - sum(cross_dot*work + cross*work_dot, dim=1)
+        call clamp_derivative_prediction_variance(variance, status)
+    end subroutine gp_derivative_predict_jvp
+
+    subroutine gp_derivative_predict_vjp(self, x, components, mean_bar, variance_bar, &
+            parameter_bar, status)
+        !! Reverse product of derivative-observation GP prediction with respect
+        !! to packed kernel-log/noise-log parameters. Query inputs are fixed.
+        class(gp_derivative_regression_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), mean_bar(:, :), variance_bar(:)
+        integer, intent(in) :: components(:)
+        real(dp), intent(out) :: parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: cross(:, :), work(:, :), cross_bar(:, :)
+        real(dp), allocatable :: train_bar(:, :), alpha_bar(:, :), lambda(:, :)
+        real(dp) :: covariance, covariance_dot, local_value
+        integer :: i, j, p, kernel_count
+
+        call check_derivative_prediction_shapes(self, x, components, mean_bar, variance_bar, status)
+        if (status%code /= FORTNUM_OK) return
+        if (size(parameter_bar) /= self%parameter_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "derivative GP predict_vjp: parameter output shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(mean_bar)) .or. &
+            any(.not. ieee_is_finite(variance_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "derivative GP predict_vjp: cotangents must be finite")
+            return
+        end if
+
+        kernel_count = self%kernel%parameter_count()
+        allocate(cross(self%n_observations, size(x, 1)))
+        allocate(work, mold=cross)
+        allocate(cross_bar, mold=cross)
+        allocate(train_bar(self%n_observations, self%n_observations))
+        allocate(alpha_bar, mold=self%alpha)
+        allocate(lambda, mold=self%alpha)
+        do j = 1, size(x, 1)
+            do i = 1, self%n_observations
+                call derivative_covariance(self%kernel, self%x_train(i, :), &
+                    self%components(i), x(j, :), components(j), cross(i, j), status)
+                if (status%code /= FORTNUM_OK) return
+            end do
+        end do
+        work = cross
+        call self%factorization%solve(work, status)
+        if (status%code /= FORTNUM_OK) return
+        cross_bar = matmul(self%alpha, transpose(mean_bar)) - &
+            2.0_dp*work*spread(variance_bar, dim=1, ncopies=self%n_observations)
+        alpha_bar = matmul(cross, mean_bar)
+        lambda = alpha_bar
+        call self%factorization%solve(lambda, status)
+        if (status%code /= FORTNUM_OK) return
+        train_bar = matmul(work*spread(variance_bar, dim=1, &
+            ncopies=self%n_observations), transpose(work)) - 0.5_dp*( &
+            matmul(lambda, transpose(self%alpha)) + matmul(self%alpha, transpose(lambda)))
+
+        parameter_bar = 0.0_dp
+        do p = 1, kernel_count
+            do j = 1, self%n_observations
+                do i = 1, self%n_observations
+                    call derivative_covariance_parameter(self%kernel, self%x_train(i, :), &
+                        self%components(i), self%x_train(j, :), self%components(j), p, &
+                        covariance, covariance_dot, status)
+                    if (status%code /= FORTNUM_OK) return
+                    parameter_bar(p) = parameter_bar(p) + train_bar(i, j)*covariance_dot
+                end do
+            end do
+            do j = 1, size(x, 1)
+                do i = 1, self%n_observations
+                    call derivative_covariance_parameter(self%kernel, self%x_train(i, :), &
+                        self%components(i), x(j, :), components(j), p, local_value, &
+                        covariance_dot, status)
+                    if (status%code /= FORTNUM_OK) return
+                    parameter_bar(p) = parameter_bar(p) + cross_bar(i, j)*covariance_dot
+                end do
+                call derivative_covariance_parameter(self%kernel, x(j, :), components(j), &
+                    x(j, :), components(j), p, local_value, covariance_dot, status)
+                if (status%code /= FORTNUM_OK) return
+                parameter_bar(p) = parameter_bar(p) + variance_bar(j)*covariance_dot
+            end do
+        end do
+        parameter_bar(kernel_count + 1) = self%noise_variance*sum(diagonal(train_bar))
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_derivative_predict_vjp
+
+    subroutine check_derivative_prediction_shapes(self, x, components, mean, variance, status)
+        class(gp_derivative_regression_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), mean(:, :), variance(:)
+        integer, intent(in) :: components(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. derivative_gp_fitted(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "derivative GP prediction: model is not fitted")
+            return
+        end if
+        if (size(x, 2) /= self%n_features .or. size(components) /= size(x, 1) .or. &
+            any(components < 0) .or. any(components > self%n_features) .or. &
+            any(.not. ieee_is_finite(x)) .or. &
+            any(shape(mean) /= [size(x, 1), self%n_outputs]) .or. &
+            size(variance) /= size(x, 1)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "derivative GP prediction: input or output shape is invalid")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine check_derivative_prediction_shapes
+
+    subroutine clamp_derivative_prediction_variance(variance, status)
+        real(dp), intent(inout) :: variance(:)
+        type(fortnum_status_t), intent(out) :: status
+        integer :: i
+
+        do i = 1, size(variance)
+            if (variance(i) < 0.0_dp) then
+                if (variance(i) < -1.0e-9_dp) then
+                    call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                        "derivative GP prediction: posterior variance is not positive")
+                    return
+                end if
+                variance(i) = 0.0_dp
+            end if
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine clamp_derivative_prediction_variance
+
+    subroutine derivative_covariance_direction(kernel, x1, component1, x2, component2, &
+            direction, covariance, covariance_dot, status)
+        type(kernel_t), intent(in) :: kernel
+        real(dp), intent(in) :: x1(:), x2(:), direction(:)
+        integer, intent(in) :: component1, component2
+        real(dp), intent(out) :: covariance, covariance_dot
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: local_value, local_dot
+        integer :: parameter
+
+        if (size(direction) /= kernel%parameter_count() .or. &
+            any(.not. ieee_is_finite(direction))) then
+            covariance = 0.0_dp
+            covariance_dot = 0.0_dp
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "derivative GP covariance JVP: parameter direction is invalid")
+            return
+        end if
+        call derivative_covariance(kernel, x1, component1, x2, component2, covariance, status)
+        if (status%code /= FORTNUM_OK) then
+            covariance_dot = 0.0_dp
+            return
+        end if
+        covariance_dot = 0.0_dp
+        do parameter = 1, kernel%parameter_count()
+            call derivative_covariance_parameter(kernel, x1, component1, x2, component2, &
+                parameter, local_value, local_dot, status)
+            if (status%code /= FORTNUM_OK) then
+                covariance_dot = 0.0_dp
+                return
+            end if
+            covariance_dot = covariance_dot + direction(parameter)*local_dot
+        end do
+    end subroutine derivative_covariance_direction
 
     integer function gp_derivative_parameter_count(self) result(count)
         class(gp_derivative_regression_t), intent(in) :: self
@@ -943,5 +1182,16 @@ contains
         fitted = self%n_observations > 0 .and. self%n_features > 0 .and. &
             self%n_outputs > 0 .and. size(self%components) == self%n_observations
     end function derivative_gp_fitted
+
+    function diagonal(matrix) result(values)
+        real(dp), intent(in) :: matrix(:, :)
+        real(dp), allocatable :: values(:)
+        integer :: i
+
+        allocate(values(min(size(matrix, 1), size(matrix, 2))))
+        do i = 1, size(values)
+            values(i) = matrix(i, i)
+        end do
+    end function diagonal
 
 end module fortml_derivative_gaussian_process

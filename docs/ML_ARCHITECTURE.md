@@ -106,8 +106,11 @@ and clipping count in `mlp_training_state_t`. `accumulation_steps` makes the
 optimizer boundary explicit: microbatch data gradients are weighted by sample
 count, averaged, regularized once, then clipped and stepped. The final uneven
 group is flushed rather than dropped, and the state exposes both microbatch and
-optimizer-update counts. This is an in-memory reproducible training boundary,
-not yet a serialized or validation-aware trainer state.
+optimizer-update counts. Optional held-out arrays add a validation stream:
+validation is evaluated at a configurable epoch interval, patience and
+best-state restoration monitor it, and the state records the validation
+history and best/final values. This remains an in-memory boundary; serialized
+optimizer/RNG checkpoint state is still open.
 
 The VAE is a composition of two MLPs and an explicit diagonal Gaussian
 reparameterization:

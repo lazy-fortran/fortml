@@ -99,7 +99,7 @@ documentation, refusal behavior, and benchmark evidence are all present.
 | Linear regression and generalized linear models | Linear regression is implemented. Logistic and softmax support sample and positive sorted-class weights | OLS, weighted/ridge/lasso/elastic-net, robust, quantile, Poisson/Gamma/Tweedie, multinomial, calibrated and regularized classifiers with shared solver and derivative contracts |
 | Feature transforms and basis maps | Polynomial, Fourier, radial, B-spline, callback bases, standard/min-max scalers, and horizontal/sequential basis pipelines are implemented | Sparse/categorical features, feature names, DAG pipelines, leakage-safe cross-validation, differentiable basis hyperparameters |
 | Nearest-neighbor and margin methods | Missing | kNN/KD-tree or ball-tree search, kernel/radius neighbors, linear/kernel SVM and SVR, calibrated probabilities, deterministic tie and missing-value policies |
-| Trees and ensembles | Partial | Deterministic exhaustive-split regression stumps, squared-loss stump boosting, and exact depth-one second-order squared/logistic boosting are implemented. CART, forests, histograms, deeper XGBoost/LightGBM growth, ranking, monotonic and interaction constraints remain planned |
+| Trees and ensembles | Partial | Deterministic finite-only exhaustive-split regression stumps, squared-loss stump boosting, and exact depth-one second-order squared/logistic boosting are implemented. CART, forests, histograms, deeper XGBoost/LightGBM growth, ranking, monotonic and interaction constraints remain planned |
 | Clustering and unsupervised learning | Missing | k-means/minibatch k-means, Gaussian mixtures/EM, density and graph clustering, manifold methods, outlier detection, decomposition, matrix factorization, and density metrics |
 | Neural networks | MLP/BNN/VAE/RNN primitives, selected products, and a deterministic MLP Adam trainer exist | A production module/parameter tree, all common activations and losses, convolution/attention/sequence/graph extensions, mixed precision, distributed training, compile/fusion, and resumable trainers |
 | Gaussian processes | Exact, derivative, sparse, structured and local variants are partial-to-implemented. Exact fitted GPs have a bounded FortOpt L-BFGS-B adapter, and binary plus one-vs-rest multiclass Laplace logistic/probit GP classification is implemented | GPyTorch/GPflow-style kernels, likelihoods, multitask/batch shapes, exact/variational/lazy inference, derivative operators, constraints, calibration, multiclass GP classification, and trainable hyperparameters |
@@ -404,6 +404,9 @@ hyperparameter block. A deliberate train/validation leakage fixture must fail.
 
 - [x] Implement a deterministic exhaustive-split regression stump with
   piecewise-constant prediction and an input-JVP refusal at split boundaries.
+- [x] Define the finite-input refusal contract for exact stumps and residual
+  boosting. NaN and infinite fit values, prediction inputs, and JVP tangents
+  return a domain status; no missing value is silently routed to a branch.
 - [x] Implement squared-loss gradient boosting over regression stumps with
   staged predictions and deterministic tree order. Weighted, missing-value,
   histogram, classifier, and second-order boosting remain open.
@@ -590,7 +593,8 @@ trials remain visible in the result schema.
 - [ ] Add a trainer that owns optimizer state, learning-rate schedules, gradient
   clipping, accumulation, validation intervals, early stopping, and callbacks.
   The current MLP trainer now covers deterministic accumulation, schedules,
-  clipping, patience, and callbacks. Validation streams, event typing, and
+  clipping, patience, callbacks, and a finite held-out validation stream with
+  interval-based monitoring and best-state restoration. Event typing and
   resumable optimizer state remain open.
 - [ ] Add production optimizers and schedules: SGD with momentum/Nesterov,
   Adam/AdamW, RMSprop, Adagrad, L-BFGS/L-BFGS-B, natural gradient, cosine,
@@ -694,6 +698,10 @@ state phases are reported separately.
   refusal for unsupported shapes and smoothness.
 - [ ] Add likelihood gradients and HVPs for derivative-observation GPs, including
   noise parameters for each observation type.
+- [x] Add parameter JVP and VJP products for derivative-observation GP
+  prediction means and variances, with independent dense finite-difference and
+  reverse-product oracles over value/first-derivative query components. Query
+  input products and joint posterior covariance remain open.
 - [ ] Add joint posterior covariance for value and derivative queries, plus
   cross-covariances between requested components.
 - [ ] Extend derivative observations to second derivatives only for kernels with
