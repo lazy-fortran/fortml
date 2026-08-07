@@ -19,6 +19,8 @@ module fortml_softmax_regression
     contains
         procedure, public :: fit => softmax_fit
         procedure, public :: decision_function => softmax_decision_function
+        procedure, public :: jvp => softmax_decision_jvp
+        procedure, public :: vjp => softmax_decision_vjp
         procedure, public :: decision_function_jvp => softmax_decision_jvp
         procedure, public :: decision_function_vjp => softmax_decision_vjp
         procedure, public :: predict_proba => softmax_predict_proba

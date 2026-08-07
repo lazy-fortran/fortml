@@ -106,10 +106,11 @@ shape mismatches return a domain or convergence status.
 
 `parameter_count()`, `parameters()`, and `set_parameters(values,status)` expose
 the packed coefficient-then-intercept vector (the intercept is omitted when
-`fit_intercept=.false.`). `decision_function_jvp(x,theta_dot,x_dot,scores,
-scores_dot,status)` and `decision_function_vjp(x,scores_bar,theta_bar,x_bar,
-status)` differentiate scores with respect to both packed parameters and row
-inputs. `predict_proba_jvp` and `predict_proba_vjp` provide the corresponding
+`fit_intercept=.false.`). `jvp(x,theta_dot,x_dot,scores,scores_dot,status)`
+and `vjp(x,scores_bar,theta_bar,x_bar,status)` (also available as the explicit
+`decision_function_jvp` and `decision_function_vjp` names) differentiate
+scores with respect to both packed parameters and row inputs. `predict_proba_jvp`
+and `predict_proba_vjp` provide the corresponding
 stable probability products. Tangent and cotangent arrays must be finite and
 shape-compatible. Unfitted models, malformed packs, and nonfinite inputs are
 refused. There is intentionally no HVP until a second-order classifier
@@ -160,7 +161,8 @@ targets and multilabel weighting remain roadmap work.
 
 `parameter_count()`, `parameters()`, and `set_parameters(values,status)` use
 column-major coefficient blocks followed by the intercept block when enabled.
-`decision_function_jvp`/`decision_function_vjp` differentiate logits with
+`jvp`/`vjp` (also available as `decision_function_jvp`/`decision_function_vjp`)
+differentiate logits with
 respect to packed parameters and inputs, while `predict_proba_jvp`/
 `predict_proba_vjp` compose the stable softmax products with those affine
 products. All derivative paths validate finite tangents/cotangents and exact

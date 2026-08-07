@@ -18,6 +18,8 @@ module fortml_logistic_regression
     contains
         procedure, public :: fit => logistic_fit
         procedure, public :: decision_function => logistic_decision_function
+        procedure, public :: jvp => logistic_decision_jvp
+        procedure, public :: vjp => logistic_decision_vjp
         procedure, public :: decision_function_jvp => logistic_decision_jvp
         procedure, public :: decision_function_vjp => logistic_decision_vjp
         procedure, public :: predict_proba => logistic_predict_proba
