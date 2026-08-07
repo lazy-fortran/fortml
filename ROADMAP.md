@@ -2668,6 +2668,10 @@ The maintained reports and their raw artifacts are in `../fortml-bench/results`:
 - [`PINN.md`](../fortml-bench/results/PINN.md), backed by `pinn.csv` for the
   manufactured four-slot PINN adapter, exact nonlinear HVP, bounded L-BFGS-B
   fit, and typed CUDA refusal.
+- [`HAMILTONIAN_GENERAL.md`](../fortml-bench/results/HAMILTONIAN_GENERAL.md),
+  backed by `hamiltonian_general.csv` for the independent nonseparable
+  canonical-field/Jacobian oracle, full-state HNN products, separable
+  symplectic checks, typed general-leapfrog refusal, and explicit GPU boundary.
 - [`GROUP_KFOLD.md`](../fortml-bench/results/GROUP_KFOLD.md), backed by
   `group_kfold.csv` for deterministic group isolation, balanced fold indices,
   and the CPU-only index-splitter contract.
