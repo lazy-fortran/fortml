@@ -17,6 +17,7 @@ module fortml_xgboost
     integer, parameter, public :: XGB_OBJECTIVE_QUANTILE = 5
     integer, parameter, public :: XGB_OBJECTIVE_SQUARED_LOG = 6
     integer, parameter, public :: XGB_OBJECTIVE_RANK_PAIRWISE = 7
+    integer, parameter, public :: XGB_OBJECTIVE_ABSOLUTE = 8
     integer, parameter, public :: XGB_MISSING_ERROR = 0
     integer, parameter, public :: XGB_MISSING_LEARN = 1
     integer, parameter, public :: XGB_MISSING_LEFT = 2
@@ -104,7 +105,7 @@ module fortml_xgboost
     end type xgb_tree_t
 
     !> Second-order boosting for squared, squared-log (RMSLE), binary
-    !> logistic, Poisson count, Huber, and quantile objectives.
+    !> logistic, Poisson count, Huber, quantile, and absolute objectives.
     !> Fit is discrete; predictions are deterministic and the objective's
     !> Hessians are aggregated exactly for every retained candidate split.
     type, public :: xgboost_t
@@ -145,6 +146,7 @@ module fortml_xgboost
         procedure, public :: fit_huber => xgb_fit_huber
         procedure, public :: fit_quantile => xgb_fit_quantile
         procedure, public :: fit_squared_log => xgb_fit_squared_log
+        procedure, public :: fit_absolute => xgb_fit_absolute
         procedure, public :: fit_ranking => xgb_fit_ranking
         procedure, public :: predict_matrix => xgb_predict_matrix
         procedure, public :: predict_vector => xgb_predict_vector
@@ -504,6 +506,8 @@ contains
         else if (objective_code == XGB_OBJECTIVE_QUANTILE) then
             self%base_score = weighted_quantile(y, observation_weight, &
                 settings%quantile_alpha)
+        else if (objective_code == XGB_OBJECTIVE_ABSOLUTE) then
+            self%base_score = weighted_quantile(y, observation_weight, 0.5_dp)
         else
             self%base_score = mean_target
         end if
@@ -808,6 +812,55 @@ contains
             call xgb_fit(self, x, y, status, settings)
         end if
     end subroutine xgb_fit_squared_log
+
+    subroutine xgb_fit_absolute(self, x, y, status, options, sample_weight, &
+            validation_x, validation_y, validation_weight)
+        !! Fit an absolute-deviation (L1) regression tree ensemble.
+        !!
+        !! The margin uses the identity link and the weighted-median constant
+        !! initializer.  The exact subgradient is `sign(margin-target)` with
+        !! zero at an exact match; a positive Hessian floor keeps the existing
+        !! second-order split and leaf machinery well-defined.  The fit and
+        !! split decisions are piecewise/discrete, so input products keep the
+        !! established split-boundary refusal contract.
+        class(xgboost_t), intent(out) :: self
+        real(dp), intent(in) :: x(:, :), y(:)
+        type(fortnum_status_t), intent(out) :: status
+        type(xgboost_options_t), intent(in), optional :: options
+        real(dp), intent(in), optional :: sample_weight(:)
+        real(dp), intent(in), optional :: validation_x(:, :), validation_y(:), &
+            validation_weight(:)
+        type(xgboost_options_t) :: settings
+
+        settings = xgboost_options_t()
+        if (present(options)) settings = options
+        settings%objective = "absolute"
+        if (present(validation_x) .or. present(validation_y)) then
+            if (present(sample_weight)) then
+                if (present(validation_weight)) then
+                    call xgb_fit(self, x, y, status, settings, sample_weight, &
+                        validation_x, validation_y, validation_weight)
+                else
+                    call xgb_fit(self, x, y, status, settings, sample_weight, &
+                        validation_x, validation_y)
+                end if
+            else if (present(validation_weight)) then
+                call xgb_fit(self, x, y, status, settings, &
+                    validation_x=validation_x, validation_y=validation_y, &
+                    validation_weight=validation_weight)
+            else
+                call xgb_fit(self, x, y, status, settings, &
+                    validation_x=validation_x, validation_y=validation_y)
+            end if
+        else if (present(validation_weight)) then
+            call xgb_fit(self, x, y, status, settings, &
+                validation_weight=validation_weight)
+        else if (present(sample_weight)) then
+            call xgb_fit(self, x, y, status, settings, sample_weight)
+        else
+            call xgb_fit(self, x, y, status, settings)
+        end if
+    end subroutine xgb_fit_absolute
 
     subroutine xgb_fit_huber(self, x, y, status, options, sample_weight, &
             validation_x, validation_y, validation_weight)
@@ -1524,6 +1577,8 @@ contains
             name = "squaredlog"
         case (XGB_OBJECTIVE_RANK_PAIRWISE)
             name = "rank:pairwise"
+        case (XGB_OBJECTIVE_ABSOLUTE)
+            name = "absolute"
         case default
             name = "unfitted"
         end select
@@ -1944,7 +1999,7 @@ contains
         valid = model%n_inputs >= 1 .and. model%n_estimators >= 1 .and. &
             model%requested_estimators >= model%n_estimators .and. &
             model%objective_code >= XGB_OBJECTIVE_SQUARED .and. &
-            model%objective_code <= XGB_OBJECTIVE_RANK_PAIRWISE .and. &
+            model%objective_code <= XGB_OBJECTIVE_ABSOLUTE .and. &
             (model%tree_method_code == XGB_TREE_EXACT .or. &
              model%tree_method_code == XGB_TREE_HIST) .and. &
             model%max_bin >= 2 .and. model%max_depth_value >= 1 .and. &
@@ -2367,6 +2422,8 @@ contains
                     term = term + weights(i)*(quantile_alpha - 1.0_dp)*residual
                 end if
             end do
+        case (XGB_OBJECTIVE_ABSOLUTE)
+            term = sum(weights*abs(margin - target))
         case default
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "xgboost validation objective: unsupported objective")
@@ -2455,6 +2512,18 @@ contains
                     gradient(i) = quantile_alpha
                 else
                     gradient(i) = quantile_alpha - 1.0_dp
+                end if
+                hessian(i) = minimum_hessian
+            end do
+        case (XGB_OBJECTIVE_ABSOLUTE)
+            do i = 1, size(margin)
+                residual = margin(i) - target(i)
+                if (residual > 0.0_dp) then
+                    gradient(i) = 1.0_dp
+                else if (residual < 0.0_dp) then
+                    gradient(i) = -1.0_dp
+                else
+                    gradient(i) = 0.0_dp
                 end if
                 hessian(i) = minimum_hessian
             end do
@@ -2974,6 +3043,9 @@ contains
             code = XGB_OBJECTIVE_SQUARED_LOG
         case ("rank:pairwise", "rank_pairwise", "pairwise", "ranking")
             code = XGB_OBJECTIVE_RANK_PAIRWISE
+        case ("absolute", "reg:absolute", "reg:absoluteerror", "mae", &
+                "l1")
+            code = XGB_OBJECTIVE_ABSOLUTE
         case default
             code = 0
         end select

@@ -157,7 +157,7 @@ repeated resident-batch evidence.
 | `vae_t` | `elbo`, `reconstruct` | No | ELBO gradient | No |
 | `rnn_t` | `forward`, squared-error `loss` | No | Loss gradient by BPTT | No |
 | `kernel_t` | Scalar value and matrix | Parameter JVP | Parameter VJP | Parameter HVP |
-| `xgboost_t` | Squared/squared-log (RMSLE)/logistic/Poisson/Huber/quantile/rank:pairwise margins, predictions, and additive tree contributions | Fixed-tree input JVP away from split boundaries | Fixed-tree input VJP away from split boundaries | No |
+| `xgboost_t` | Squared/squared-log (RMSLE)/logistic/Poisson/Huber/quantile/absolute/rank:pairwise margins, predictions, and additive tree contributions | Fixed-tree input JVP away from split boundaries | Fixed-tree input VJP away from split boundaries | No |
 | `random_forest_classifier_t` | Bootstrap-ensemble probabilities and labels | Refused: split routing is discrete | Refused: split routing is discrete | No |
 | `extra_trees_classifier_t` | Randomized-threshold ensemble probabilities and labels | Refused: split routing is discrete | Refused: split routing is discrete | No |
 | `gp_regression_t` | Mean, variance, LML | Prediction and LML parameters | Prediction and LML parameters | Mean and LML parameters |
