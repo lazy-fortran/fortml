@@ -8,7 +8,9 @@ module fortml_gp_multiclass_classification
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
-        FORTNUM_DOMAIN_ERROR
+        FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED
+    use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU, &
+        FORTML_DEVICE_CUDA
     use fortml_kernels, only: kernel_t
     use fortml_gp_classification, only: gp_classification_t, &
         gp_classification_options_t, gp_classification_state_t, &
@@ -42,6 +44,8 @@ module fortml_gp_multiclass_classification
         procedure, public :: fit => gp_multiclass_classification_fit
         procedure, public :: predict_proba => &
             gp_multiclass_classification_predict_proba
+        procedure, public :: predict_proba_device => &
+            gp_multiclass_classification_predict_proba_device
         procedure, public :: predict_proba_jvp => &
             gp_multiclass_classification_predict_proba_jvp
         procedure, public :: predict_proba_vjp => &
@@ -53,6 +57,8 @@ module fortml_gp_multiclass_classification
         procedure, public :: decision_function_vjp => &
             gp_multiclass_classification_decision_function_vjp
         procedure, public :: predict => gp_multiclass_classification_predict
+        procedure, public :: predict_device => &
+            gp_multiclass_classification_predict_device
         procedure, public :: classes => gp_multiclass_classification_classes
         procedure, public :: class_count => gp_multiclass_classification_class_count
         procedure, public :: feature_count => &
@@ -63,16 +69,20 @@ module fortml_gp_multiclass_classification
         procedure, public :: hyperparameter_gradient => &
             gp_multiclass_classification_hyperparameter_gradient
         procedure, public :: fitted => gp_multiclass_classification_fitted
+        procedure, public :: device_supported => &
+            gp_multiclass_classification_device_supported
     end type gp_multiclass_classification_t
 
     public :: gp_multiclass_classification_fit
     public :: gp_multiclass_classification_predict_proba
+    public :: gp_multiclass_classification_predict_proba_device
     public :: gp_multiclass_classification_predict_proba_jvp
     public :: gp_multiclass_classification_predict_proba_vjp
     public :: gp_multiclass_classification_decision_function
     public :: gp_multiclass_classification_decision_function_jvp
     public :: gp_multiclass_classification_decision_function_vjp
     public :: gp_multiclass_classification_predict
+    public :: gp_multiclass_classification_predict_device
 
 contains
 
@@ -186,6 +196,37 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine gp_multiclass_classification_predict_proba
+
+    subroutine gp_multiclass_classification_predict_proba_device(self, device, x, &
+            probabilities, status)
+        !! Predict through the explicit multiclass device contract.
+        !!
+        !! The one-vs-rest wrapper owns one covariance/Laplace state per class;
+        !! none of those states is resident on CUDA yet.  CPU dispatch is the
+        !! exact reference path.  CUDA therefore returns a typed refusal and
+        !! never stages an unaccounted host computation.
+        class(gp_multiclass_classification_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: probabilities(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP multiclass device prediction: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_proba(x, probabilities, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "GP multiclass device prediction: no resident CUDA Laplace kernel is linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP multiclass device prediction: device kind is invalid")
+        end select
+    end subroutine gp_multiclass_classification_predict_proba_device
 
     subroutine gp_multiclass_classification_predict_proba_jvp( &
             self, x, x_dot, probabilities, probabilities_dot, status)
@@ -403,6 +444,31 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine gp_multiclass_classification_predict
 
+    subroutine gp_multiclass_classification_predict_device(self, device, x, labels, status)
+        !! Predict labels through the explicit multiclass device contract.
+        class(gp_multiclass_classification_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :)
+        integer, intent(out) :: labels(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP multiclass device label prediction: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict(x, labels, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "GP multiclass device label prediction: no resident CUDA Laplace kernel is linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP multiclass device label prediction: device kind is invalid")
+        end select
+    end subroutine gp_multiclass_classification_predict_device
+
     function gp_multiclass_classification_classes(self) result(classes)
         class(gp_multiclass_classification_t), intent(in) :: self
         integer, allocatable :: classes(:)
@@ -500,6 +566,22 @@ contains
         fitted = self%is_fitted .and. allocated(self%models) .and. &
             allocated(self%class_label) .and. self%n_classes >= 2
     end function gp_multiclass_classification_fitted
+
+    logical function gp_multiclass_classification_device_supported(self, device_kind) &
+            result(supported)
+        !! Report capability without inferring a host fallback for CUDA.
+        class(gp_multiclass_classification_t), intent(in) :: self
+        integer, intent(in) :: device_kind
+
+        select case (device_kind)
+        case (FORTML_DEVICE_CPU)
+            supported = self%fitted()
+        case (FORTML_DEVICE_CUDA)
+            supported = .false.
+        case default
+            supported = .false.
+        end select
+    end function gp_multiclass_classification_device_supported
 
     logical function prediction_shapes(self, x, probabilities, status) result(valid)
         class(gp_multiclass_classification_t), intent(in) :: self
