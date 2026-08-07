@@ -46,6 +46,7 @@ contains
         integer :: code, i, j, n_observed
         real(dp), allocatable :: observed(:)
 
+        call invalidate_imputer(self)
         if (.not. valid_missing_matrix(x)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "simple imputer fit: input must be a nonempty matrix without infinities")
@@ -66,10 +67,10 @@ contains
             return
         end select
 
-        self%strategy_code = code
         self%fill_value = 0.0_dp
         if (present(fill_value)) self%fill_value = fill_value
         if (.not. ieee_is_finite(self%fill_value)) then
+            call invalidate_imputer(self)
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "simple imputer fit: fill_value must be finite")
             return
@@ -83,6 +84,7 @@ contains
                 if (.not. ieee_is_nan(x(i, j))) n_observed = n_observed + 1
             end do
             if (code /= SIMPLE_IMPUTER_CONSTANT .and. n_observed < 1) then
+                call invalidate_imputer(self)
                 call status_set(status, FORTNUM_DOMAIN_ERROR, &
                     "simple imputer fit: mean/median needs one observed value per feature")
                 return
@@ -112,7 +114,14 @@ contains
                 end if
                 deallocate(observed)
             end if
+            if (.not. ieee_is_finite(self%statistic_value(j))) then
+                call invalidate_imputer(self)
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "simple imputer fit: fitted statistic is not finite")
+                return
+            end if
         end do
+        self%strategy_code = code
         call status_set(status, FORTNUM_OK, "")
     end subroutine simple_imputer_fit
 
@@ -211,6 +220,14 @@ contains
         if (.not. value) return
         value = all(ieee_is_finite(x) .or. ieee_is_nan(x))
     end function valid_missing_matrix
+
+    subroutine invalidate_imputer(self)
+        class(simple_imputer_t), intent(inout) :: self
+
+        if (allocated(self%statistic_value)) deallocate(self%statistic_value)
+        self%fill_value = 0.0_dp
+        self%strategy_code = 0
+    end subroutine invalidate_imputer
 
     logical function simple_imputer_valid(self, x, transformed, status, context) &
             result(value)

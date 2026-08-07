@@ -118,7 +118,7 @@ contains
         integer, intent(inout) :: failures
         type(simple_imputer_t) :: imputer
         type(fortnum_status_t) :: status
-        real(dp) :: x(2, 2), output(2, 2), nan
+        real(dp) :: x(2, 2), output(2, 2), nan, overflow(2, 1)
 
         nan = ieee_value(0.0_dp, ieee_quiet_nan)
         x = 1.0_dp
@@ -127,12 +127,22 @@ contains
         call imputer%fit(reshape([nan, nan, 1.0_dp, 2.0_dp], [2, 2]), status, &
             strategy="mean")
         call check(.not. status_ok(status), "all-missing mean refusal", failures)
+        call check(.not. imputer%fitted(), "failed mean fit clears state", failures)
         call imputer%fit(x, status, strategy="unknown")
         call check(.not. status_ok(status), "unknown strategy refusal", failures)
+        call check(.not. imputer%fitted(), "failed strategy fit clears state", failures)
+        call imputer%fit(x, status, strategy="constant", fill_value=nan)
+        call check(.not. status_ok(status), "nonfinite fill refusal", failures)
+        call check(.not. imputer%fitted(), "failed fill fit clears state", failures)
         x(1, 1) = ieee_value(0.0_dp, ieee_quiet_nan)
         x(2, 1) = ieee_value(0.0_dp, ieee_quiet_nan)
         call imputer%fit(x, status, strategy="mean")
         call check(.not. status_ok(status), "all-missing feature refusal", failures)
+        call check(.not. imputer%fitted(), "failed feature fit clears state", failures)
+        overflow(:, 1) = huge(1.0_dp)
+        call imputer%fit(overflow, status, strategy="mean")
+        call check(.not. status_ok(status), "overflowed mean refusal", failures)
+        call check(.not. imputer%fitted(), "overflowed fit clears state", failures)
     end subroutine test_refusals
 
 end program test_simple_imputer
