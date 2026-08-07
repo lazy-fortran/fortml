@@ -89,6 +89,7 @@ eight-activation oracle, and repeated resident-batch evidence.
 | `logistic_regression_t` | Decision score and probabilities | Parameter/input JVP, probability JVP | Parameter/input VJP, probability VJP | No |
 | `linear_svm_classifier_t` | Signed decision score and labels | Parameter/input JVP away from fit-time boundaries | Parameter/input VJP; hinge objective value/gradient | No |
 | `softmax_regression_t` | Multiclass decision scores and probabilities | Parameter/input JVP, probability JVP | Parameter/input VJP, probability VJP | No |
+| `softmax_training_objective_t` | Weighted multiclass cross-entropy + feature L2 | Packed parameter/L2 products | Packed parameter/L2 gradient | Exact joint parameter/L2 HVP |
 | `gaussian_naive_bayes_t` | Log probabilities and probabilities | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
 | `bernoulli_naive_bayes_t` | Log probabilities and probabilities | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
 | `multinomial_naive_bayes_t` | Log probabilities and probabilities | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
@@ -789,6 +790,8 @@ targets and multilabel weighting remain roadmap work.
 
 `parameter_count()`, `parameters()`, and `set_parameters(values,status)` use
 column-major coefficient blocks followed by the intercept block when enabled.
+`regularization()` and `set_regularization(value,status)` expose the finite
+nonnegative feature-L2 coefficient for explicit training-state management.
 `jvp`/`vjp` (also available as `decision_function_jvp`/`decision_function_vjp`)
 differentiate logits with
 respect to packed parameters and inputs, while `predict_proba_jvp`/
@@ -796,6 +799,30 @@ respect to packed parameters and inputs, while `predict_proba_jvp`/
 products. All derivative paths validate finite tangents/cotangents and exact
 shapes, and return a domain status for unfitted or malformed calls. HVPs and
 parameter products for GP classifiers remain separate roadmap contracts.
+
+### `fortml_softmax_training`
+
+`softmax_training_objective_t` packages a fitted `softmax_regression_t` and a
+weighted multiclass data set as an exact FortOpt objective. Call
+`initialize(model,x,labels,l2,status[,optimize_l2,sample_weight,class_weight])`,
+then use `parameters`, `parameter_count`, `value_gradient`, and `hvp`.
+The packed vector contains column-major coefficient blocks followed by the
+intercept block and, with `optimize_l2=.true.`, one final non-negative L2
+coordinate. The objective is the weighted mean cross-entropy plus feature-only
+L2; class weights are in sorted-class order and multiply sample weights before
+the positive-mass reduction. The gradient and HVP include the exact mixed
+parameter/L2 block, so hyperparameter derivatives do not use finite
+differences.
+
+`fortopt(objective,status)` installs a context callback for
+`fortopt_objective`. `softmax_optimize_lbfgsb(model,x,labels,options,result,
+status[,sample_weight,class_weight])` owns a bounded FortOpt L-BFGS-B lifecycle.
+`softmax_lbfgsb_options_t` supplies explicit model and optional L2 bounds; the
+result reports convergence, iterations, line-search evaluations, objective,
+gradient norm, and final L2. The adapter requires a fitted model; use
+`softmax_regression_t%fit` first to obtain an initial state. The model also
+exposes `regularization()` and `set_regularization(value,status)` for explicit
+L2 state management.
 
 ### `fortml_ovr_logistic_classifier`
 

@@ -35,6 +35,8 @@ module fortml_softmax_regression
         procedure, public :: parameter_count => softmax_parameter_count
         procedure, public :: parameters => softmax_parameters
         procedure, public :: set_parameters => softmax_set_parameters
+        procedure, public :: regularization => softmax_regularization
+        procedure, public :: set_regularization => softmax_set_regularization
         procedure, public :: fitted => softmax_fitted
     end type softmax_regression_t
 
@@ -526,6 +528,26 @@ contains
         if (self%fit_intercept) self%intercept = values(offset + 1:)
         call status_set(status, FORTNUM_OK, "")
     end subroutine softmax_set_parameters
+
+    real(dp) function softmax_regularization(self) result(value)
+        class(softmax_regression_t), intent(in) :: self
+
+        value = self%l2
+    end function softmax_regularization
+
+    subroutine softmax_set_regularization(self, value, status)
+        class(softmax_regression_t), intent(inout) :: self
+        real(dp), intent(in) :: value
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. ieee_is_finite(value) .or. value < 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "softmax set_regularization: L2 coefficient is invalid")
+            return
+        end if
+        self%l2 = value
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine softmax_set_regularization
 
     function softmax_intercepts(self) result(values)
         class(softmax_regression_t), intent(in) :: self
