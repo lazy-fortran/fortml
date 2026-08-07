@@ -110,6 +110,33 @@ documentation, refusal behavior, and benchmark evidence are all present.
 | GPU and scale-out | Operator-specific OpenACC/CUDA paths | Complete resident CPU/CUDA/OpenACC training and inference for supported estimators, mixed precision, multi-GPU/MPI sharding, transfer accounting, and deterministic reductions |
 | Performance evidence | Several model/GP lanes exist | Matched correctness-gated comparisons with scikit-learn, XGBoost/LightGBM, PyTorch/JAX, GPyTorch/GPflow, and published hardware/toolchain provenance |
 
+### Parity inventory and release gates
+
+This inventory prevents a name-only implementation from being counted as
+parity. A family moves to **implemented** only when fit/predict (or
+transform), weighting, arbitrary labels/categories, packed state, declared
+derivatives, refusal behavior, and an independent benchmark oracle all exist.
+
+| Reference family | FortML coverage today | Remaining release gate |
+| --- | --- | --- |
+| scikit-learn linear/GLM | Dense linear regression, logistic/softmax, bounded logistic and MLP L-BFGS-B | Ridge/lasso/elastic-net/robust/quantile/Poisson/Gamma/Tweedie, SGD estimators, solver parity, calibration, multioutput and partial-fit contracts |
+| scikit-learn Naive Bayes | GaussianNB, BernoulliNB, MultinomialNB | ComplementNB, CategoricalNB, sparse counts, calibrated and incremental variants |
+| scikit-learn neighbors/margins | No public estimator | kNN/radius search, KD/ball trees, linear/kernel SVM/SVR, one-class SVM, deterministic ties and input/parameter products |
+| scikit-learn trees/ensembles | Stumps, weighted CART, squared boosting, XGBoost-style second-order binary/multiclass lanes | Random/extra forests, bagging, AdaBoost, histogram/leaf-wise growth, missing/categorical/ranking/monotonic/interaction constraints, staged and warm-start APIs |
+| scikit-learn unsupervised | Basis maps, validation splitters, variational primitives | PCA/ICA/NMF/TruncatedSVD, k-means/GMM/density/manifold/outlier methods, sparse/categorical preprocessing, model persistence |
+| PyTorch/JAX neural core | Dense MLP, classifier, BNN, VAE, RNN, Hamiltonian MLP; Adam and SGD momentum/Nesterov | AdamW/RMSprop/Adagrad, complete loss/activation/module tree, convolution/attention/sequence/graph models, AMP, compile/fusion, distributed and device-resident train state |
+| GPyTorch/GPflow | Exact, derivative-observation, sparse/local/SKI/structured GP primitives; Laplace binary/OVR GP classification | Kernel/likelihood/constraint/batch-shape parity, variational categorical/count likelihoods, multitask, operator-valued derivatives, implicit hypergradients, serialization and resident GPU training |
+| XGBoost/LightGBM | Exact depth-limited squared/logistic Newton trees and OVR multiclass probabilities | Histogram quantiles, missing/default directions, categorical/quantile/ranking objectives, DART, monotonic/interaction constraints, distributed training and staged prediction |
+| Differentiability and search | Capability-specific JVP/VJP/HVP products, FortOpt L-BFGS-B for selected objectives | Complete derivative matrix for every declared parameter/input/hyperparameter, optimizer/search hypergradients, implicit differentiation, and refusal rather than hidden finite differences |
+| Device and performance | OpenACC/native CUDA operator lanes plus explicit device control-plane contract | Resident model/optimizer/batch state for every supported estimator, CPU parity, transfer/memory accounting, mixed precision, and matched PyTorch/JAX/GPyTorch/XGBoost evidence |
+
+The inventory deliberately distinguishes an implemented algorithm from an
+implemented *workflow*. For example, an XGBoost-style Newton tree without
+histograms, missing-value routing, constraints, staged prediction, and a
+release benchmark is a useful exact baseline but not XGBoost parity. The same
+rule applies to a GP kernel without likelihood constraints, batch shapes,
+train-state serialization, and derivative/hyperparameter products.
+
 ## Current baseline
 
 ### Package and public contracts
