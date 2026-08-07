@@ -1,0 +1,495 @@
+module fortml_mlp_checkpoint
+    !! Portable, versioned persistence for MLP training checkpoints.
+    !!
+    !! The on-disk representation is deliberately formatted text rather than
+    !! compiler-dependent unformatted storage.  Every scalar has a named
+    !! record and every array has an explicit length followed by one value per
+    !! record.  Double precision values use 17 significant decimal digits,
+    !! which is sufficient to round-trip an IEEE binary64 value.  A reader
+    !! validates the complete snapshot before replacing its destination, so a
+    !! truncated or incompatible file cannot leave a usable checkpoint half
+    !! updated.
+    use, intrinsic :: iso_fortran_env, only: int64, iostat_end
+    use fortnum_kinds, only: dp
+    use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
+        FORTNUM_DOMAIN_ERROR
+    use fortml_mlp_training, only: mlp_training_checkpoint_t
+    implicit none
+    private
+
+    character(*), parameter, public :: MLP_CHECKPOINT_MAGIC = &
+        "FORTML_MLP_CHECKPOINT_TEXT"
+    integer, parameter, public :: MLP_CHECKPOINT_SCHEMA_VERSION = 1
+
+    public :: mlp_checkpoint_save
+    public :: mlp_checkpoint_load
+
+contains
+
+    subroutine mlp_checkpoint_save(checkpoint, path, status)
+        !! Write a valid checkpoint to a portable formatted-text file.
+        type(mlp_training_checkpoint_t), intent(in) :: checkpoint
+        character(*), intent(in) :: path
+        type(fortnum_status_t), intent(out) :: status
+        integer :: unit, ios, close_ios, i
+
+        if (.not. checkpoint%valid()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP checkpoint save: checkpoint is invalid")
+            return
+        end if
+
+        open(newunit=unit, file=path, status="replace", action="write", &
+            form="formatted", access="sequential", iostat=ios)
+        if (ios /= 0) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP checkpoint save: cannot open destination")
+            return
+        end if
+
+        write(unit, "(A)", iostat=ios) MLP_CHECKPOINT_MAGIC
+        if (ios == 0) call write_i(unit, "schema_version", &
+            MLP_CHECKPOINT_SCHEMA_VERSION, ios)
+        if (ios == 0) call write_i(unit, "format_version", &
+            checkpoint%format_version, ios)
+        if (ios == 0) call write_l(unit, "initialized", checkpoint%initialized, ios)
+        if (ios == 0) call write_l(unit, "resume_safe", checkpoint%resume_safe, ios)
+        if (ios == 0) call write_i(unit, "n_samples", checkpoint%n_samples, ios)
+        if (ios == 0) call write_i(unit, "n_features", checkpoint%n_features, ios)
+        if (ios == 0) call write_i(unit, "n_outputs", checkpoint%n_outputs, ios)
+        if (ios == 0) call write_i(unit, "n_parameters", checkpoint%n_parameters, ios)
+        if (ios == 0) call write_i(unit, "epoch", checkpoint%epoch, ios)
+        if (ios == 0) call write_i(unit, "updates", checkpoint%updates, ios)
+        if (ios == 0) call write_i(unit, "microbatches", checkpoint%microbatches, ios)
+        if (ios == 0) call write_i(unit, "microbatch_position", &
+            checkpoint%microbatch_position, ios)
+        if (ios == 0) call write_i(unit, "active_epoch", checkpoint%active_epoch, ios)
+        if (ios == 0) call write_i(unit, "active_microbatches", &
+            checkpoint%active_microbatches, ios)
+        if (ios == 0) call write_i(unit, "accumulated_samples", &
+            checkpoint%accumulated_samples, ios)
+        if (ios == 0) call write_i(unit, "iterator_epoch", checkpoint%iterator_epoch, ios)
+        if (ios == 0) call write_i(unit, "iterator_position", &
+            checkpoint%iterator_position, ios)
+        if (ios == 0) call write_i(unit, "batch_size", checkpoint%batch_size, ios)
+        if (ios == 0) call write_i(unit, "accumulation_steps", &
+            checkpoint%accumulation_steps, ios)
+        if (ios == 0) call write_i(unit, "shuffle_seed", checkpoint%shuffle_seed, ios)
+        if (ios == 0) call write_i(unit, "adam_step_count", &
+            checkpoint%adam_step_count, ios)
+        if (ios == 0) call write_i(unit, "optimizer", checkpoint%optimizer, ios)
+        if (ios == 0) call write_i(unit, "stale_epochs", checkpoint%stale_epochs, ios)
+        if (ios == 0) call write_i(unit, "gradient_clipped_updates", &
+            checkpoint%gradient_clipped_updates, ios)
+        if (ios == 0) call write_i(unit, "validation_interval", &
+            checkpoint%validation_interval, ios)
+        if (ios == 0) call write_i(unit, "patience", checkpoint%patience, ios)
+        if (ios == 0) call write_l(unit, "shuffle", checkpoint%shuffle, ios)
+        if (ios == 0) call write_l(unit, "has_validation", checkpoint%has_validation, ios)
+        if (ios == 0) call write_l(unit, "converged", checkpoint%converged, ios)
+        if (ios == 0) call write_l(unit, "early_stopped", checkpoint%early_stopped, ios)
+        if (ios == 0) call write_l(unit, "restore_best", checkpoint%restore_best, ios)
+        if (ios == 0) call write_i8(unit, "shuffle_state", checkpoint%shuffle_state, ios)
+        if (ios == 0) call write_r(unit, "learning_rate", checkpoint%learning_rate, ios)
+        if (ios == 0) call write_r(unit, "beta1", checkpoint%beta1, ios)
+        if (ios == 0) call write_r(unit, "beta2", checkpoint%beta2, ios)
+        if (ios == 0) call write_r(unit, "epsilon", checkpoint%epsilon, ios)
+        if (ios == 0) call write_r(unit, "rmsprop_decay", checkpoint%rmsprop_decay, ios)
+        if (ios == 0) call write_r(unit, "rmsprop_momentum", &
+            checkpoint%rmsprop_momentum, ios)
+        if (ios == 0) call write_l(unit, "rmsprop_centered", &
+            checkpoint%rmsprop_centered, ios)
+        if (ios == 0) call write_r(unit, "momentum", checkpoint%momentum, ios)
+        if (ios == 0) call write_l(unit, "nesterov", checkpoint%nesterov, ios)
+        if (ios == 0) call write_r(unit, "weight_decay", checkpoint%weight_decay, ios)
+        if (ios == 0) call write_r(unit, "l2", checkpoint%l2, ios)
+        if (ios == 0) call write_r(unit, "tolerance", checkpoint%tolerance, ios)
+        if (ios == 0) call write_r(unit, "min_delta", checkpoint%min_delta, ios)
+        if (ios == 0) call write_r(unit, "gradient_clip_norm", &
+            checkpoint%gradient_clip_norm, ios)
+        if (ios == 0) call write_r(unit, "last_learning_rate", &
+            checkpoint%last_learning_rate, ios)
+        if (ios == 0) call write_r(unit, "initial_loss", checkpoint%initial_loss, ios)
+        if (ios == 0) call write_r(unit, "final_loss", checkpoint%final_loss, ios)
+        if (ios == 0) call write_r(unit, "best_loss", checkpoint%best_loss, ios)
+        if (ios == 0) call write_r(unit, "initial_validation_loss", &
+            checkpoint%initial_validation_loss, ios)
+        if (ios == 0) call write_r(unit, "final_validation_loss", &
+            checkpoint%final_validation_loss, ios)
+        if (ios == 0) call write_r(unit, "best_validation_loss", &
+            checkpoint%best_validation_loss, ios)
+        if (ios == 0) call write_i(unit, "best_epoch", checkpoint%best_epoch, ios)
+        if (ios == 0) call write_i(unit, "best_validation_epoch", &
+            checkpoint%best_validation_epoch, ios)
+
+        if (ios == 0) call write_r_array(unit, "parameters", checkpoint%parameters, ios)
+        if (ios == 0) call write_r_array(unit, "first_moment", checkpoint%first_moment, ios)
+        if (ios == 0) call write_r_array(unit, "second_moment", checkpoint%second_moment, ios)
+        if (ios == 0) call write_optional_r_array(unit, "rmsprop_buffer", &
+            checkpoint%rmsprop_buffer, ios)
+        if (ios == 0) call write_r_array(unit, "best_parameters", &
+            checkpoint%best_parameters, ios)
+        if (ios == 0) call write_r_array(unit, "accumulated_gradient", &
+            checkpoint%accumulated_gradient, ios)
+        if (ios == 0) call write_i_array(unit, "iterator_order", checkpoint%iterator_order, ios)
+        if (ios == 0) call write_r_array(unit, "loss_history", checkpoint%loss_history, ios)
+        if (ios == 0) call write_r_array(unit, "learning_rate_history", &
+            checkpoint%learning_rate_history, ios)
+        if (ios == 0) call write_optional_r_array(unit, "validation_loss_history", &
+            checkpoint%validation_loss_history, ios)
+
+        close_ios = 0
+        close(unit, iostat=close_ios)
+        if (ios /= 0 .or. close_ios /= 0) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP checkpoint save: formatted write failed")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine mlp_checkpoint_save
+
+    subroutine mlp_checkpoint_load(checkpoint, path, status)
+        !! Read and validate a portable checkpoint without partial mutation.
+        type(mlp_training_checkpoint_t), intent(inout) :: checkpoint
+        character(*), intent(in) :: path
+        type(fortnum_status_t), intent(out) :: status
+        type(mlp_training_checkpoint_t) :: candidate
+        character(len=256) :: line
+        character(len=64) :: key
+        integer :: unit, ios, close_ios, schema
+
+        open(newunit=unit, file=path, status="old", action="read", &
+            form="formatted", access="sequential", iostat=ios)
+        if (ios /= 0) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP checkpoint load: cannot open source")
+            return
+        end if
+
+        read(unit, "(A)", iostat=ios) line
+        if (ios /= 0 .or. trim(line) /= MLP_CHECKPOINT_MAGIC) goto 900
+        call read_i(unit, "schema_version", schema, ios)
+        if (ios /= 0 .or. schema /= MLP_CHECKPOINT_SCHEMA_VERSION) then
+            close(unit)
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP checkpoint load: unsupported schema version")
+            return
+        end if
+
+        call read_i(unit, "format_version", candidate%format_version, ios)
+        if (ios == 0) call read_l(unit, "initialized", candidate%initialized, ios)
+        if (ios == 0) call read_l(unit, "resume_safe", candidate%resume_safe, ios)
+        if (ios == 0) call read_i(unit, "n_samples", candidate%n_samples, ios)
+        if (ios == 0) call read_i(unit, "n_features", candidate%n_features, ios)
+        if (ios == 0) call read_i(unit, "n_outputs", candidate%n_outputs, ios)
+        if (ios == 0) call read_i(unit, "n_parameters", candidate%n_parameters, ios)
+        if (ios == 0) call read_i(unit, "epoch", candidate%epoch, ios)
+        if (ios == 0) call read_i(unit, "updates", candidate%updates, ios)
+        if (ios == 0) call read_i(unit, "microbatches", candidate%microbatches, ios)
+        if (ios == 0) call read_i(unit, "microbatch_position", &
+            candidate%microbatch_position, ios)
+        if (ios == 0) call read_i(unit, "active_epoch", candidate%active_epoch, ios)
+        if (ios == 0) call read_i(unit, "active_microbatches", &
+            candidate%active_microbatches, ios)
+        if (ios == 0) call read_i(unit, "accumulated_samples", &
+            candidate%accumulated_samples, ios)
+        if (ios == 0) call read_i(unit, "iterator_epoch", candidate%iterator_epoch, ios)
+        if (ios == 0) call read_i(unit, "iterator_position", &
+            candidate%iterator_position, ios)
+        if (ios == 0) call read_i(unit, "batch_size", candidate%batch_size, ios)
+        if (ios == 0) call read_i(unit, "accumulation_steps", &
+            candidate%accumulation_steps, ios)
+        if (ios == 0) call read_i(unit, "shuffle_seed", candidate%shuffle_seed, ios)
+        if (ios == 0) call read_i(unit, "adam_step_count", &
+            candidate%adam_step_count, ios)
+        if (ios == 0) call read_i(unit, "optimizer", candidate%optimizer, ios)
+        if (ios == 0) call read_i(unit, "stale_epochs", candidate%stale_epochs, ios)
+        if (ios == 0) call read_i(unit, "gradient_clipped_updates", &
+            candidate%gradient_clipped_updates, ios)
+        if (ios == 0) call read_i(unit, "validation_interval", &
+            candidate%validation_interval, ios)
+        if (ios == 0) call read_i(unit, "patience", candidate%patience, ios)
+        if (ios == 0) call read_l(unit, "shuffle", candidate%shuffle, ios)
+        if (ios == 0) call read_l(unit, "has_validation", candidate%has_validation, ios)
+        if (ios == 0) call read_l(unit, "converged", candidate%converged, ios)
+        if (ios == 0) call read_l(unit, "early_stopped", candidate%early_stopped, ios)
+        if (ios == 0) call read_l(unit, "restore_best", candidate%restore_best, ios)
+        if (ios == 0) call read_i8(unit, "shuffle_state", candidate%shuffle_state, ios)
+        if (ios == 0) call read_r(unit, "learning_rate", candidate%learning_rate, ios)
+        if (ios == 0) call read_r(unit, "beta1", candidate%beta1, ios)
+        if (ios == 0) call read_r(unit, "beta2", candidate%beta2, ios)
+        if (ios == 0) call read_r(unit, "epsilon", candidate%epsilon, ios)
+        if (ios == 0) call read_r(unit, "rmsprop_decay", candidate%rmsprop_decay, ios)
+        if (ios == 0) call read_r(unit, "rmsprop_momentum", &
+            candidate%rmsprop_momentum, ios)
+        if (ios == 0) call read_l(unit, "rmsprop_centered", &
+            candidate%rmsprop_centered, ios)
+        if (ios == 0) call read_r(unit, "momentum", candidate%momentum, ios)
+        if (ios == 0) call read_l(unit, "nesterov", candidate%nesterov, ios)
+        if (ios == 0) call read_r(unit, "weight_decay", candidate%weight_decay, ios)
+        if (ios == 0) call read_r(unit, "l2", candidate%l2, ios)
+        if (ios == 0) call read_r(unit, "tolerance", candidate%tolerance, ios)
+        if (ios == 0) call read_r(unit, "min_delta", candidate%min_delta, ios)
+        if (ios == 0) call read_r(unit, "gradient_clip_norm", &
+            candidate%gradient_clip_norm, ios)
+        if (ios == 0) call read_r(unit, "last_learning_rate", &
+            candidate%last_learning_rate, ios)
+        if (ios == 0) call read_r(unit, "initial_loss", candidate%initial_loss, ios)
+        if (ios == 0) call read_r(unit, "final_loss", candidate%final_loss, ios)
+        if (ios == 0) call read_r(unit, "best_loss", candidate%best_loss, ios)
+        if (ios == 0) call read_r(unit, "initial_validation_loss", &
+            candidate%initial_validation_loss, ios)
+        if (ios == 0) call read_r(unit, "final_validation_loss", &
+            candidate%final_validation_loss, ios)
+        if (ios == 0) call read_r(unit, "best_validation_loss", &
+            candidate%best_validation_loss, ios)
+        if (ios == 0) call read_i(unit, "best_epoch", candidate%best_epoch, ios)
+        if (ios == 0) call read_i(unit, "best_validation_epoch", &
+            candidate%best_validation_epoch, ios)
+        if (ios /= 0) goto 900
+
+        call read_r_array(unit, "parameters_count", "parameters_item", &
+            candidate%n_parameters, candidate%parameters, ios)
+        if (ios == 0) call read_r_array(unit, "first_moment_count", &
+            "first_moment_item", candidate%n_parameters, candidate%first_moment, ios)
+        if (ios == 0) call read_r_array(unit, "second_moment_count", &
+            "second_moment_item", candidate%n_parameters, candidate%second_moment, ios)
+        if (ios == 0) call read_optional_r_array(unit, "rmsprop_buffer_present", &
+            "rmsprop_buffer_count", "rmsprop_buffer_item", &
+            candidate%n_parameters, candidate%rmsprop_buffer, ios)
+        if (ios == 0) call read_r_array(unit, "best_parameters_count", &
+            "best_parameters_item", candidate%n_parameters, candidate%best_parameters, ios)
+        if (ios == 0) call read_r_array(unit, "accumulated_gradient_count", &
+            "accumulated_gradient_item", candidate%n_parameters, &
+            candidate%accumulated_gradient, ios)
+        if (ios == 0) call read_i_array(unit, "iterator_order_count", &
+            "iterator_order_item", candidate%n_samples, candidate%iterator_order, ios)
+        if (ios == 0) call read_r_array(unit, "loss_history_count", "loss_history_item", &
+            candidate%epoch, candidate%loss_history, ios)
+        if (ios == 0) call read_r_array(unit, "learning_rate_history_count", &
+            "learning_rate_history_item", candidate%epoch, &
+            candidate%learning_rate_history, ios)
+        if (ios == 0) call read_optional_r_array(unit, &
+            "validation_loss_history_present", "validation_loss_history_count", &
+            "validation_loss_history_item", candidate%epoch, &
+            candidate%validation_loss_history, ios)
+        if (ios /= 0) goto 900
+
+        read(unit, "(A)", iostat=ios) line
+        if (ios == 0) goto 900
+        if (ios /= iostat_end) goto 900
+        close_ios = 0
+        close(unit, iostat=close_ios)
+        if (close_ios /= 0 .or. .not. candidate%valid()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP checkpoint load: malformed, truncated, or invalid snapshot")
+            return
+        end if
+
+        call checkpoint%clear()
+        checkpoint = candidate
+        call status_set(status, FORTNUM_OK, "")
+        return
+
+        900   continue
+        close_ios = 0
+        close(unit, iostat=close_ios)
+        call status_set(status, FORTNUM_DOMAIN_ERROR, &
+            "MLP checkpoint load: malformed, truncated, or invalid snapshot")
+    end subroutine mlp_checkpoint_load
+
+    subroutine write_i(unit, key, value, ios)
+        integer, intent(in) :: unit, value
+        character(*), intent(in) :: key
+        integer, intent(out) :: ios
+
+        write(unit, "(A,1X,I0)", iostat=ios) trim(key), value
+    end subroutine write_i
+
+    subroutine write_i8(unit, key, value, ios)
+        integer, intent(in) :: unit
+        integer(int64), intent(in) :: value
+        character(*), intent(in) :: key
+        integer, intent(out) :: ios
+
+        write(unit, "(A,1X,I0)", iostat=ios) trim(key), value
+    end subroutine write_i8
+
+    subroutine write_l(unit, key, value, ios)
+        integer, intent(in) :: unit
+        logical, intent(in) :: value
+        character(*), intent(in) :: key
+        integer, intent(out) :: ios
+
+        write(unit, "(A,1X,I0)", iostat=ios) trim(key), merge(1, 0, value)
+    end subroutine write_l
+
+    subroutine write_r(unit, key, value, ios)
+        integer, intent(in) :: unit
+        real(dp), intent(in) :: value
+        character(*), intent(in) :: key
+        integer, intent(out) :: ios
+
+        write(unit, "(A,1X,ES26.17E3)", iostat=ios) trim(key), value
+    end subroutine write_r
+
+    subroutine write_r_array(unit, key, values, ios)
+        integer, intent(in) :: unit
+        real(dp), intent(in) :: values(:)
+        character(*), intent(in) :: key
+        integer, intent(out) :: ios
+        integer :: i
+        character(len=80) :: count_key, item_key
+
+        write(count_key, '(A,"_count")') trim(key)
+        write(item_key, '(A,"_item")') trim(key)
+        call write_i(unit, trim(count_key), size(values), ios)
+        do i = 1, size(values)
+            if (ios /= 0) return
+            call write_r(unit, trim(item_key), values(i), ios)
+        end do
+    end subroutine write_r_array
+
+    subroutine write_i_array(unit, key, values, ios)
+        integer, intent(in) :: unit
+        integer, intent(in) :: values(:)
+        character(*), intent(in) :: key
+        integer, intent(out) :: ios
+        integer :: i
+        character(len=80) :: count_key, item_key
+
+        write(count_key, '(A,"_count")') trim(key)
+        write(item_key, '(A,"_item")') trim(key)
+        call write_i(unit, trim(count_key), size(values), ios)
+        do i = 1, size(values)
+            if (ios /= 0) return
+            call write_i(unit, trim(item_key), values(i), ios)
+        end do
+    end subroutine write_i_array
+
+    subroutine write_optional_r_array(unit, key, values, ios)
+        integer, intent(in) :: unit
+        real(dp), allocatable, intent(in) :: values(:)
+        character(*), intent(in) :: key
+        integer, intent(out) :: ios
+        integer :: i
+        character(len=80) :: present_key
+
+        write(present_key, '(A,"_present")') trim(key)
+        call write_l(unit, trim(present_key), allocated(values), ios)
+        if (ios /= 0 .or. .not. allocated(values)) return
+        call write_r_array(unit, key, values, ios)
+    end subroutine write_optional_r_array
+
+    subroutine read_i(unit, expected, value, ios)
+        integer, intent(in) :: unit
+        character(*), intent(in) :: expected
+        integer, intent(out) :: value
+        integer, intent(out) :: ios
+        character(len=80) :: key
+
+        read(unit, *, iostat=ios) key, value
+        if (ios == 0 .and. trim(key) /= trim(expected)) ios = 1
+    end subroutine read_i
+
+    subroutine read_i8(unit, expected, value, ios)
+        integer, intent(in) :: unit
+        character(*), intent(in) :: expected
+        integer(int64), intent(out) :: value
+        integer, intent(out) :: ios
+        character(len=80) :: key
+
+        read(unit, *, iostat=ios) key, value
+        if (ios == 0 .and. trim(key) /= trim(expected)) ios = 1
+    end subroutine read_i8
+
+    subroutine read_l(unit, expected, value, ios)
+        integer, intent(in) :: unit
+        character(*), intent(in) :: expected
+        logical, intent(out) :: value
+        integer, intent(out) :: ios
+        character(len=80) :: key
+        integer :: encoded
+
+        encoded = 0
+        read(unit, *, iostat=ios) key, encoded
+        if (ios == 0 .and. trim(key) /= trim(expected)) ios = 1
+        if (ios == 0 .and. encoded /= 0 .and. encoded /= 1) ios = 1
+        value = encoded == 1
+    end subroutine read_l
+
+    subroutine read_r(unit, expected, value, ios)
+        integer, intent(in) :: unit
+        character(*), intent(in) :: expected
+        real(dp), intent(out) :: value
+        integer, intent(out) :: ios
+        character(len=80) :: key
+
+        read(unit, *, iostat=ios) key, value
+        if (ios == 0 .and. trim(key) /= trim(expected)) ios = 1
+    end subroutine read_r
+
+    subroutine read_r_array(unit, count_key, item_key, expected_count, values, ios)
+        integer, intent(in) :: unit, expected_count
+        character(*), intent(in) :: count_key, item_key
+        real(dp), allocatable, intent(out) :: values(:)
+        integer, intent(out) :: ios
+        integer :: count, i, alloc_status
+
+        call read_i(unit, count_key, count, ios)
+        if (ios /= 0 .or. count < 0 .or. count /= expected_count) then
+            ios = 1
+            return
+        end if
+        allocate(values(count), stat=alloc_status)
+        if (alloc_status /= 0) then
+            ios = 1
+            return
+        end if
+        do i = 1, count
+            call read_r(unit, item_key, values(i), ios)
+            if (ios /= 0) return
+        end do
+    end subroutine read_r_array
+
+    subroutine read_i_array(unit, count_key, item_key, expected_count, values, ios)
+        integer, intent(in) :: unit, expected_count
+        character(*), intent(in) :: count_key, item_key
+        integer, allocatable, intent(out) :: values(:)
+        integer, intent(out) :: ios
+        integer :: count, i, alloc_status
+
+        call read_i(unit, count_key, count, ios)
+        if (ios /= 0 .or. count < 0 .or. count /= expected_count) then
+            ios = 1
+            return
+        end if
+        allocate(values(count), stat=alloc_status)
+        if (alloc_status /= 0) then
+            ios = 1
+            return
+        end if
+        do i = 1, count
+            call read_i(unit, item_key, values(i), ios)
+            if (ios /= 0) return
+        end do
+    end subroutine read_i_array
+
+    subroutine read_optional_r_array(unit, present_key, count_key, item_key, &
+            expected_count, values, ios)
+        integer, intent(in) :: unit, expected_count
+        character(*), intent(in) :: present_key, count_key, item_key
+        real(dp), allocatable, intent(out) :: values(:)
+        integer, intent(out) :: ios
+        logical :: present
+
+        call read_l(unit, present_key, present, ios)
+        if (ios /= 0) return
+        if (.not. present) then
+            if (allocated(values)) deallocate(values)
+            return
+        end if
+        call read_r_array(unit, count_key, item_key, expected_count, values, ios)
+    end subroutine read_optional_r_array
+
+end module fortml_mlp_checkpoint

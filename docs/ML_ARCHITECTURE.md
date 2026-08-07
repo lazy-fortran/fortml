@@ -113,7 +113,13 @@ group is flushed rather than dropped, and the state exposes both microbatch and
 optimizer-update counts. Optional held-out arrays add a validation stream:
 validation is evaluated at a configurable epoch interval, patience and
 best-state restoration monitor it, and the state records the validation
-history and best/final values. This remains an in-memory boundary. Serialized
+history and best/final values. The `fortml_mlp_checkpoint` module provides the
+file boundary with a compiler-independent, versioned formatted-text schema.
+`mlp_checkpoint_save` and `mlp_checkpoint_load` validate all scalar metadata
+and array lengths, refuse unknown versions, truncation, extra records, and
+invalid optimizer state, and load into a temporary value before replacing the
+destination. Real values are emitted with 17 significant decimal digits,
+while procedure pointers remain caller-owned. Serialized
 `mlp_training_checkpoint_t` now makes the in-memory boundary explicit: it
 snapshots packed parameters, Adam moments and step, iterator permutation/RNG,
 active microbatch accumulation, schedule position/history, validation
@@ -123,8 +129,8 @@ are stored in the same explicit checkpoint blocks. A
 resumed call validates the training
 contract before restoring the snapshot. Procedure pointers remain caller-owned
 and checkpoints whose best-state restoration changed parameters are marked
-non-resumable. File serialization and distributed checkpoint coordination
-remain separate contracts. The MSE objective has an explicit
+non-resumable. Distributed checkpoint coordination remains a separate
+contract. The MSE objective has an explicit
 reduction boundary: optional finite non-negative sample weights use positive
 weight mass for the mean reduction, while the sum reduction remains
 unnormalized. Named diagnostics expose data and regularization components and
