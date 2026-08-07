@@ -57,6 +57,7 @@ not supplied through a hidden generic interface.
 | Type | Value or prediction | JVP | VJP or gradient | HVP |
 | --- | --- | --- | --- | --- |
 | `linear_regression_t` | `predict` | Free `linear_predict_jvp` | Free `linear_predict_vjp` | No |
+| `pca_t` | Centered projection and reconstruction | Input JVP for a fixed fitted state | Input VJP for a fixed fitted state | Fit-time SVD derivatives are not exposed |
 | `logistic_regression_t` | Decision score and probabilities | Parameter/input JVP, probability JVP | Parameter/input VJP, probability VJP | No |
 | `softmax_regression_t` | Multiclass decision scores and probabilities | Parameter/input JVP, probability JVP | Parameter/input VJP, probability VJP | No |
 | `gaussian_naive_bayes_t` | Log probabilities and probabilities | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
@@ -99,6 +100,28 @@ The free procedures
 `linear_predict_vjp(coef,x,u,coef_bar,x_bar[,fit_intercept])` operate on an
 explicit coefficient array. They do not return a status object, so all arrays
 must have the model shapes described above.
+
+### `fortml_pca`
+
+`pca_t%fit(x,status[,n_components,whiten])` fits centered dense PCA by a thin
+LAPACK SVD. Inputs use `(n_samples,n_features)` row semantics and must be
+finite with at least two rows. `n_components` defaults to
+`min(n_samples,n_features)` and must be a positive integer no larger than that
+bound. Component rows are sign-flipped deterministically so their largest
+magnitude loading is positive. `components()`, `mean()`, `singular_values()`,
+`explained_variance()`, and `explained_variance_ratio()` return copies of the
+fitted state; `n_components()`, `feature_count()`, `sample_count()`,
+`whiten()`, and `fitted()` expose metadata.
+
+`transform(x,z,status)` centers and projects rows. With `whiten=.true.`, each
+coordinate is divided by the square root of its sample explained variance.
+`inverse_transform(z,x,status)` applies the matching unwhitening and adds the
+fitted mean. `fit_transform` combines fitting and projection. Fixed-state
+`transform_jvp(x_dot,z_dot,status)` and
+`transform_vjp(z_bar,x_bar,status)` are exact linear input products. The
+fit-time SVD, sign choices, and rank changes are discrete boundaries and are
+not differentiated; invalid shapes, nonfinite arrays, unfitted calls, and
+one-row fits return a domain status.
 
 ### `fortml_logistic_regression`
 
