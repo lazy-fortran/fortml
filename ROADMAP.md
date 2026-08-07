@@ -1189,6 +1189,11 @@ count as a production lazy implementation.
 - [x] Add the matching resident no-autodiff AdamW state plan with explicit
   device-resident gradients, bias-corrected moments, decoupled weight decay,
   lifecycle operations, and an independent multi-step recurrence oracle.
+- [x] Keep backend selection explicit: when OpenACC cannot preserve residency
+  or deterministic semantics and no autodiff product is required, use a native
+  CUDA kernel with a CPU oracle; autodiff-bearing trajectories remain on the
+  CPU until generated FortAD/FortSym device products and transfer contracts
+  are available.
 - [x] Record the resident micro-kernel device contracts in the sibling benchmark
   harness with
   machine-readable pass/skipped/failed rows, hardware and revision provenance,
