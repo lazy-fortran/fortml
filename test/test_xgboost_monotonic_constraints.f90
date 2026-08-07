@@ -55,7 +55,7 @@ contains
         type(xgboost_options_t) :: options
         type(fortnum_status_t) :: status
         real(dp) :: x(12, 2), y(12), query(57, 2), prediction(57)
-        integer :: i
+        integer :: i, j
 
         call make_fixture(x, y)
         call query_grid(query)
@@ -72,9 +72,13 @@ contains
         call check(model%monotone_constraint(1) == 1 .and. &
             model%monotone_constraint(2) == 0, &
             "exact monotone metadata", failures)
-        do i = 1, size(prediction) - 1
-            call check(prediction(i + 1) >= prediction(i) - 2.0e-13_dp, &
-                "exact +1 prediction monotonicity", failures)
+        do j = 0, 2
+            query(:, 2) = -0.75_dp + 0.75_dp*real(j, dp)
+            call model%predict(query, prediction, status)
+            do i = 1, size(prediction) - 1
+                call check(prediction(i + 1) >= prediction(i) - 2.0e-13_dp, &
+                    "exact +1 prediction monotonicity", failures)
+            end do
         end do
     end subroutine test_exact_monotone
 
@@ -85,7 +89,7 @@ contains
         type(fortnum_status_t) :: status
         real(dp) :: x(12, 2), y(12), query(57, 2), prediction(57)
         real(dp) :: weights(12)
-        integer :: i
+        integer :: i, j
 
         call make_fixture(x, y)
         call query_grid(query)
@@ -106,9 +110,13 @@ contains
         call check(trim(model%tree_method()) == "hist" .and. &
             model%monotone_constraint(1) == -1, &
             "histogram monotone metadata", failures)
-        do i = 1, size(prediction) - 1
-            call check(prediction(i + 1) <= prediction(i) + 2.0e-13_dp, &
-                "histogram -1 prediction monotonicity", failures)
+        do j = 0, 2
+            query(:, 2) = -0.75_dp + 0.75_dp*real(j, dp)
+            call model%predict(query, prediction, status)
+            do i = 1, size(prediction) - 1
+                call check(prediction(i + 1) <= prediction(i) + 2.0e-13_dp, &
+                    "histogram -1 prediction monotonicity", failures)
+            end do
         end do
     end subroutine test_histogram_monotone
 
