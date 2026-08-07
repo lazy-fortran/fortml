@@ -2,6 +2,7 @@ program test_kernel_catalog
     use, intrinsic :: iso_fortran_env, only: real64, error_unit
     use fortml_kernels, only: kernel_t, make_periodic_kernel, &
         make_rational_quadratic_kernel
+    use fortml_kernel_operator, only: kernel_operator_t
     use fortnum_status, only: fortnum_status_t, status_ok
     implicit none
 
@@ -37,6 +38,7 @@ contains
         real(real64) :: matrix_bar(3, 2), parameter_bar(3), parameter_bar_dot(3)
         real(real64) :: parameter_plus(3), parameter_minus(3), parameters(3)
         real(real64) :: h, lhs, rhs, r2
+        type(kernel_operator_t) :: operator
         integer :: i, j, k
 
         x1 = reshape([0.0_real64, 0.5_real64, -0.4_real64, 1.0_real64, 1.2_real64, -0.7_real64], &
@@ -63,6 +65,8 @@ contains
             call fail(label//" matrix value", failures)
         end if
         if (kernel%parameter_count() /= 3) call fail(label//" parameter count", failures)
+        call operator%initialize(x1, kernel, 0.01_real64, status)
+        if (status_ok(status)) call fail(label//" operator device refusal", failures)
 
         call kernel%input_derivatives(x1(1, :), x2(1, :), value, gradient_x1, &
             gradient_x2, hessian, status)
