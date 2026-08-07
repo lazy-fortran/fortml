@@ -1681,20 +1681,19 @@ and the typed CUDA refusal.
 ### `fortml_mlp_multilabel_classifier`
 
 `mlp_multilabel_classifier_t%fit(x,targets,status[,hidden_layer_sizes,options,
-state,sample_weight,class_weight])` composes one deterministic binary MLP head
-per target column. Targets are finite zero/one indicators with shape
-`(n_samples,n_labels)`. The options mirror the binary head's Adam, minibatch,
-shuffling, early-stopping, activation, and L2 controls. `class_weight`, when
-present, has shape `(2,n_labels)` in negative/positive order and
-`sample_weight` is shared across heads.
+state])` fits one shared MLP whose final layer emits one logit per indicator
+column. Targets are finite zero/one indicators with shape
+`(n_samples,n_labels)`. The options define deterministic full-batch Adam,
+activation, initialization seed, early stopping, and L2 controls; sample and
+class weights are intentionally not hidden in this shared-head contract.
 
 `decision_function` returns one logit column per label, `predict_proba` returns
-the independent positive sigmoid probabilities, and `predict` returns an
-integer indicator matrix using each head's nonnegative-logit tie rule.
-`label_count`, `feature_count`, `parameter_count`, `parameters`,
-`set_parameters`, and `fitted` expose the packed state. Head parameter blocks
-are concatenated in label order. `loss_gradient` and `loss_hvp` return the
-mean over labels of the per-head BCE+L2 value and exact packed products.
+independent sigmoid probabilities, and `predict` returns an integer indicator
+matrix using configurable per-label thresholds. `label_count`,
+`feature_count`, `parameter_count`, `parameters`, `set_parameters`,
+`thresholds`, `set_thresholds`, and `fitted` expose the packed state.
+`loss_gradient` and `loss_hvp` return the mean multilabel BCE+L2 value and exact
+shared-parameter products.
 
 `decision_function_jvp`/`decision_function_vjp` and
 `predict_proba_jvp`/`predict_proba_vjp` are exact products with respect to the

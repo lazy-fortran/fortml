@@ -124,14 +124,15 @@ only listed as gaps:
   remain open.
 - `mlp_binary_classifier_t` adds a one-logit sigmoid head with weighted BCE,
   deterministic Adam minibatches, early stopping, packed input/parameter
-  JVP/VJP products, exact loss HVPs, and an explicit CUDA refusal. The composed
-  `mlp_multilabel_classifier_t` now provides one such head per indicator column,
-  mean-reduced packed loss products, and the same typed CUDA refusal. Ordinal,
-  calibrated, and resident-GPU neural heads remain separate contracts.
+  JVP/VJP products, exact loss HVPs, and an explicit CUDA refusal. The shared
+  `mlp_multilabel_classifier_t` now emits all indicator logits from one MLP,
+  supports per-label thresholds, mean-reduced BCE products, exact parameter
+  HVPs, and the same typed CUDA refusal. Ordinal, calibrated, and resident-GPU
+  neural heads remain separate contracts.
   The release evidence is `results/MLP_BINARY_CLASSIFIER.md` in `fortml-bench`.
 - The multilabel MLP wrapper validates indicator targets, exposes concatenated
   parameter/input JVP/VJP products and exact mean-reduced loss HVPs, and keeps
-  head fitting deterministic. Its independent finite-difference/adjoint test
+  shared-head fitting deterministic. Its independent finite-difference/adjoint test
   is `test_mlp_multilabel_classifier`; release evidence is
   `results/MLP_MULTILABEL_CLASSIFIER.md` in `fortml-bench`.
 - Exact GP regression accepts zero, constant, and linear mean templates. Mean
@@ -880,10 +881,15 @@ CUDA refusal until private CART storage is safely bound to the C ABI.
   variational objectives, predictive probability products, and calibrated
   latent-to-observed uncertainty. All GP classifiers share the same label and
   metric machinery as linear and neural classifiers.
-- [ ] Extend neural classifier heads to binary, multilabel, ordinal, and
-  calibrated outputs. Heads expose loss, logits, probabilities, and derivative
-  products separately so a user can train on logits without losing a stable
-  deployment probability path.
+- [x] Add a shared-head multilabel neural classifier with indicator validation,
+  configurable per-label thresholds, deterministic full-batch Adam, exact
+  logits/probability input and parameter JVP/VJP products, BCE parameter HVPs,
+  and typed CUDA refusal. Binary and ordinal heads have separate contracts;
+  calibrated neural heads and resident GPU training remain open.
+- [ ] Complete the neural classifier-head matrix for binary, ordinal, calibrated,
+  and resident-GPU outputs. Heads must expose loss, logits, probabilities, and
+  derivative products separately so a user can train on logits without losing
+  a stable deployment probability path.
 - [x] Add accuracy, top-k accuracy, balanced accuracy, confusion matrix, log
   loss, Brier score, binary Matthews correlation, precision, recall, and F1
   with explicit class ordering, zero-support behavior, and weighted
