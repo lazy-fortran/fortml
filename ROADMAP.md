@@ -99,7 +99,7 @@ documentation, refusal behavior, and benchmark evidence are all present.
 | Linear regression and generalized linear models | Linear regression is implemented. Logistic and softmax are partial | OLS, weighted/ridge/lasso/elastic-net, robust, quantile, Poisson/Gamma/Tweedie, multinomial, calibrated and regularized classifiers with shared solver and derivative contracts |
 | Feature transforms and basis maps | Polynomial, Fourier, radial, B-spline, callback bases are implemented | Fitted preprocessing, sparse/categorical features, feature names, unions, DAG pipelines, leakage-safe cross-validation, differentiable basis hyperparameters |
 | Nearest-neighbor and margin methods | Missing | kNN/KD-tree or ball-tree search, kernel/radius neighbors, linear/kernel SVM and SVR, calibrated probabilities, deterministic tie and missing-value policies |
-| Trees and ensembles | Missing | CART, random/extra trees, random forests, histogram gradient boosting, XGBoost/LightGBM-style boosting, ranking, monotonic and interaction constraints |
+| Trees and ensembles | Partial | Deterministic exhaustive-split regression stumps and squared-loss stump boosting are implemented. CART, forests, histogram, XGBoost/LightGBM-style boosting, ranking, monotonic and interaction constraints remain planned |
 | Clustering and unsupervised learning | Missing | k-means/minibatch k-means, Gaussian mixtures/EM, density and graph clustering, manifold methods, outlier detection, decomposition, matrix factorization, and density metrics |
 | Neural networks | MLP/BNN/VAE/RNN primitives and selected products exist | A production module/parameter tree, all common activations and losses, convolution/attention/sequence/graph extensions, mixed precision, distributed training, compile/fusion, and resumable trainers |
 | Gaussian processes | Exact, derivative, sparse, structured and local variants are partial-to-implemented | GPyTorch/GPflow-style kernels, likelihoods, multitask/batch shapes, exact/variational/lazy inference, derivative operators, constraints, calibration, and trainable hyperparameters |
@@ -254,8 +254,8 @@ The source inventory is dated 2026-08-07.
 | Work package | State | Implemented baseline | Package exit |
 | --- | --- | --- | --- |
 | Classification | Partial | `fortml_logistic_regression` and `fortml_softmax_regression` provide binary and multinomial integer-label fitting, stable probabilities, deterministic class order, and FortOpt L-BFGS-B optimization. Shared metrics and weighting are open. | Binary and multiclass linear, neural, GP, and boosted-tree classifiers share label, probability, weighting, and metric conventions. |
-| Estimator contracts, pipelines, and bases | Partial | `basis_map_t`, row-oriented sample conventions, status objects, and the parameter registry are public. | Fitted transformers and estimators compose without data leakage, expose routed parameters, and run through cross-validation. |
-| Tree boosting | Missing | No tree, split finder, histogram builder, or ensemble module exists. | Regression and classification trees support deterministic histogram boosting, validation-based stopping, missing values, and model persistence. |
+| Estimator contracts, pipelines, and bases | Partial | `basis_map_t`, the horizontal `basis_pipeline_t`, row-oriented sample conventions, status objects, and the parameter registry are public. | Fitted transformers and estimators compose without data leakage, expose routed parameters, and run through cross-validation. |
+| Tree boosting | Partial | `decision_stump_t` and squared-loss `gradient_boosting_regressor_t` provide deterministic exhaustive split and staged prediction products. They have no weighted, missing-value, histogram, or classifier path yet. | Regression and classification trees support deterministic histogram boosting, validation-based stopping, missing values, and model persistence. |
 | Training infrastructure | Partial | Model-specific gradients, `fortopt_adam` integration, natural-gradient seams, and seeded variational draws exist. | One trainer owns batches, optimizer state, schedules, clipping, validation, early stopping, callbacks, and resumable state for every model with a completed trainer adapter. |
 | GP derivatives and hyperparameters | Partial | Exact GP likelihood and prediction products include parameter gradients and HVPs. Mixed value and first-derivative observations can be fitted and predicted. | Exact, derivative, multi-output, sparse, and matrix-free GP families expose documented trainable parameters, scalar objectives, parameter gradients, and train-state adapters. |
 | GPU and device execution | Partial | Kernel, structured, and sparse operator products have selected OpenACC or CUDA paths, including resident CG for kernel operators. | Supported training and prediction workflows keep model, optimizer, and batch state resident on a selected device and have CPU parity tests. |
@@ -318,6 +318,10 @@ return status errors.
 
 - [x] Provide polynomial, Fourier, radial, B-spline, and callback basis maps with
   value, JVP, and VJP products.
+- [x] Provide a horizontal `basis_pipeline_t` that concatenates fixed basis
+  stages, packs stage parameters, and routes value/JVP/VJP products with shape
+  and stage-initialization refusal tests. Sequential fitted transforms and
+  column-wise/DAG composition remain open.
 - [x] Provide row-oriented sample conventions, explicit status results, and a
   registry for packed model parameters.
 - [ ] Define fitted transformer, predictor, regressor, and classifier contracts.
@@ -363,6 +367,11 @@ hyperparameter block. A deliberate train/validation leakage fixture must fail.
 
 ### WP3: trees and histogram boosting
 
+- [x] Implement a deterministic exhaustive-split regression stump with
+  piecewise-constant prediction and an input-JVP refusal at split boundaries.
+- [x] Implement squared-loss gradient boosting over regression stumps with
+  staged predictions and deterministic tree order. Weighted, missing-value,
+  histogram, classifier, and second-order boosting remain open.
 - [ ] Add deterministic CART regression and classification trees with weighted
   squared-error, Gini, and entropy criteria, depth and leaf constraints, and a
   specified tie rule.
