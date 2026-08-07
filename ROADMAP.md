@@ -406,7 +406,7 @@ hyperparameter block. A deliberate train/validation leakage fixture must fail.
   piecewise-constant prediction and an input-JVP refusal at split boundaries.
 - [x] Define the finite-input refusal contract for exact stumps and residual
   boosting. NaN and infinite fit values, prediction inputs, and JVP tangents
-  return a domain status; no missing value is silently routed to a branch.
+  return a domain status. No missing value is silently routed to a branch.
 - [x] Implement squared-loss gradient boosting over regression stumps with
   staged predictions and deterministic tree order. Weighted, missing-value,
   histogram, classifier, and second-order boosting remain open.

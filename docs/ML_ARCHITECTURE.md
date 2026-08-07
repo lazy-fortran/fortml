@@ -109,7 +109,7 @@ group is flushed rather than dropped, and the state exposes both microbatch and
 optimizer-update counts. Optional held-out arrays add a validation stream:
 validation is evaluated at a configurable epoch interval, patience and
 best-state restoration monitor it, and the state records the validation
-history and best/final values. This remains an in-memory boundary; serialized
+history and best/final values. This remains an in-memory boundary. Serialized
 optimizer/RNG checkpoint state is still open.
 
 The VAE is a composition of two MLPs and an explicit diagonal Gaussian

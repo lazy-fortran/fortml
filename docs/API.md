@@ -295,7 +295,7 @@ gradient tolerance, patience, best-state restoration, and an epoch callback.
 loss, the final loss and gradient norm, convergence flags, a compact loss
 history, the effective learning rate per epoch, and the number of norm-clipped
 updates. Passing both optional validation arrays evaluates a held-out MSE at
-each `validation_interval`; patience and best-state restoration monitor that
+each `validation_interval`. Patience and best-state restoration monitor that
 validation objective, and the state records initial/best/final validation
 losses, the best validation epoch, and its history. The pair must be supplied
 together and is finite, shape-checked, and never used for parameter updates.
@@ -611,7 +611,7 @@ order is the kernel log parameters followed by log observation-noise variance.
 returns the prediction and its parameter JVP. `predict_vjp(x,components,
 mean_bar,variance_bar,parameter_bar,status)` is the corresponding reverse
 product over packed kernel/noise parameters. Query inputs are held fixed by
-these products; input-query JVP/VJP and joint posterior covariance remain open.
+these products. Input-query JVP/VJP and joint posterior covariance remain open.
 `log_marginal_likelihood`, `log_marginal_likelihood_jvp`,
 `hyperparameter_gradient`, and `hyperparameter_hvp` provide likelihood
 products. The gradient uses analytic parameter tangents of the supported RBF,

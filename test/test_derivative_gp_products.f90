@@ -190,6 +190,7 @@ contains
         integer :: components(3), test_components(2), i
         real(dp) :: mean(2, 1), mean_dot(2, 1), variance(2), variance_dot(2)
         real(dp) :: mean_plus(2, 1), mean_minus(2, 1), variance_plus(2), variance_minus(2)
+        real(dp) :: mean_base(2, 1), variance_base(2), zero_direction(3)
         real(dp) :: mean_bar(2, 1), variance_bar(2), parameter_bar(3), fd_bar(3)
         real(dp) :: objective_plus, objective_minus, h
 
@@ -201,6 +202,18 @@ contains
         kernel = make_rbf_kernel(1, 1.4_dp, 0.75_dp, status)
         call model%fit(x, components, y, kernel, 0.07_dp, status, jitter=1.0e-10_dp)
         theta = model%parameters()
+        zero_direction = 0.0_dp
+        call model%predict(x_test, test_components, mean_base, variance_base, status)
+        call model%predict_jvp(x_test, test_components, zero_direction, mean, mean_dot, &
+            variance, variance_dot, status)
+        if (.not. status_ok(status) .or. maxval(abs(mean - mean_base)) > 1.0e-12_dp .or. &
+            maxval(abs(variance - variance_base)) > 1.0e-12_dp .or. &
+            maxval(abs(mean_dot)) > 1.0e-12_dp .or. maxval(abs(variance_dot)) > 1.0e-12_dp) then
+            write (error_unit, '(a,2es12.4)') &
+                "FAIL [derivative GP prediction zero-direction] variance=", &
+                maxval(abs(variance - variance_base)), maxval(abs(variance_dot))
+            failures = failures + 1
+        end if
         direction = [0.21_dp, -0.13_dp, 0.17_dp]
         call model%predict_jvp(x_test, test_components, direction, mean, mean_dot, &
             variance, variance_dot, status)
