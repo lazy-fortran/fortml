@@ -125,6 +125,16 @@ eight-activation oracle, and repeated resident-batch evidence.
 | `multi_output_gp_t` | Correlated mean and LML | No | No | No |
 | Approximate GP types | Mean, variance, or ELBO as listed below | No | No | No |
 
+`xgboost_t%save_text(path,status)` and `load_text(path,status)` provide the
+portable persistence boundary for fitted tree ensembles. The versioned
+`FORTML_XGBOOST_TEXT` schema records objective and fit options, base margin,
+monotone constraints, learned missing-value routing, every live node array,
+and validation/early-stopping diagnostics. Values are named records with
+17-significant-digit real output; loaders validate schema order, finite
+values, child topology, and complete EOF before replacing the destination.
+Truncated, unknown, duplicate, or structurally unsafe records return
+`FORTNUM_DOMAIN_ERROR` and leave an existing destination model unchanged.
+
 `parameter_products_t` gives `mlp_t` and fitted `gp_regression_t` one common
 packed value/JVP/VJP/HVP interface. Inputs remain fixed in that interface.
 

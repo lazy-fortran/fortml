@@ -1,7 +1,7 @@
 !> A deterministic, exact-split second-order boosting foundation.
 module fortml_xgboost
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite, ieee_is_nan
-    use, intrinsic :: iso_fortran_env, only: int64
+    use, intrinsic :: iso_fortran_env, only: int64, iostat_end
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
         FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED
@@ -22,6 +22,10 @@ module fortml_xgboost
     integer, parameter, public :: XGB_MISSING_RIGHT = 3
     integer, parameter, public :: XGB_TREE_EXACT = 1
     integer, parameter, public :: XGB_TREE_HIST = 2
+    character(*), parameter, public :: XGB_MODEL_TEXT_MAGIC = &
+        "FORTML_XGBOOST_TEXT"
+    integer, parameter, public :: XGB_MODEL_TEXT_SCHEMA_VERSION = 1
+    integer, parameter :: XGB_MAX_SERIALIZED_NODES = 1000000
 
     !> Options for the deterministic exact- or histogram-split
     !> XGBoost-style estimator.
@@ -104,10 +108,23 @@ module fortml_xgboost
         private
         integer :: n_inputs = 0
         integer :: n_estimators = 0
+        integer :: requested_estimators = 0
         integer :: objective_code = 0
         integer :: tree_method_code = XGB_TREE_EXACT
         integer :: max_bin = 256
+        integer :: max_depth_value = 0
+        integer :: min_samples_leaf_value = 0
+        integer :: early_stopping_rounds_value = 0
         real(dp) :: learning_rate = 0.0_dp
+        real(dp) :: l1_value = 0.0_dp
+        real(dp) :: l2_value = 0.0_dp
+        real(dp) :: gamma_value = 0.0_dp
+        real(dp) :: min_child_weight_value = 0.0_dp
+        real(dp) :: early_stopping_min_delta_value = 0.0_dp
+        real(dp) :: subsample_value = 1.0_dp
+        real(dp) :: colsample_bytree_value = 1.0_dp
+        integer(int64) :: seed_value = 0_int64
+        logical :: restore_best_value = .true.
         real(dp) :: base_score = 0.0_dp
         real(dp) :: objective_parameter = 0.0_dp
         integer :: best_iteration_value = 0
@@ -163,6 +180,8 @@ module fortml_xgboost
         procedure, public :: best_iteration => xgb_best_iteration
         procedure, public :: best_validation_loss => xgb_best_validation_loss
         procedure, public :: early_stopped => xgb_early_stopped
+        procedure, public :: save_text => xgb_save_text
+        procedure, public :: load_text => xgb_load_text
     end type xgboost_t
 
 contains
@@ -511,10 +530,23 @@ contains
         self%n_inputs = n_features
         self%n_estimators = settings%n_estimators
         if (have_validation) self%n_estimators = completed_estimators
+        self%requested_estimators = settings%n_estimators
         self%objective_code = objective_code
         self%tree_method_code = tree_method_code
         self%max_bin = settings%max_bin
+        self%max_depth_value = settings%max_depth
+        self%min_samples_leaf_value = settings%min_samples_leaf
+        self%early_stopping_rounds_value = settings%early_stopping_rounds
         self%learning_rate = rate
+        self%l1_value = settings%l1
+        self%l2_value = settings%l2
+        self%gamma_value = settings%gamma
+        self%min_child_weight_value = settings%min_child_weight
+        self%early_stopping_min_delta_value = settings%early_stopping_min_delta
+        self%subsample_value = settings%subsample
+        self%colsample_bytree_value = settings%colsample_bytree
+        self%seed_value = settings%seed
+        self%restore_best_value = settings%restore_best
         if (objective_code == XGB_OBJECTIVE_HUBER) then
             self%objective_parameter = settings%huber_delta
         else if (objective_code == XGB_OBJECTIVE_QUANTILE) then
@@ -1451,6 +1483,527 @@ contains
 
         stopped = self%early_stopped_flag
     end function xgb_early_stopped
+
+    subroutine xgb_save_text(self, path, status)
+        !! Save a fitted ensemble as versioned, compiler-independent text.
+        !!
+        !! The schema uses named records and writes only the live prefix of
+        !! every tree node array.  It therefore preserves learned missing
+        !! routing, monotone-constrained node values, and validation
+        !! diagnostics without exposing private implementation storage.
+        class(xgboost_t), intent(in) :: self
+        character(*), intent(in) :: path
+        type(fortnum_status_t), intent(out) :: status
+        integer :: unit, ios, close_ios, i
+
+        if (.not. self%initialized) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost save_text: model is not a valid fitted ensemble")
+            return
+        end if
+        if (.not. allocated(self%estimators)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost save_text: model is not a valid fitted ensemble")
+            return
+        end if
+        if (self%n_estimators < 1 .or. size(self%estimators) /= self%n_estimators) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost save_text: model is not a valid fitted ensemble")
+            return
+        end if
+        if (.not. allocated(self%monotone_constraints)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost save_text: model is not a valid fitted ensemble")
+            return
+        end if
+        if (size(self%monotone_constraints) /= self%n_inputs) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost save_text: model is not a valid fitted ensemble")
+            return
+        end if
+        do i = 1, self%n_estimators
+            if (.not. valid_serialized_tree(self%estimators(i), self%n_inputs)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "xgboost save_text: model contains an invalid tree")
+                return
+            end if
+        end do
+
+        open(newunit=unit, file=path, status="replace", action="write", &
+            form="formatted", access="sequential", iostat=ios)
+        if (ios /= 0) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost save_text: cannot open destination")
+            return
+        end if
+        write(unit, "(A)", iostat=ios) XGB_MODEL_TEXT_MAGIC
+        if (ios == 0) call xgb_write_i(unit, "schema_version", &
+            XGB_MODEL_TEXT_SCHEMA_VERSION, ios)
+        if (ios == 0) call xgb_write_i(unit, "n_inputs", self%n_inputs, ios)
+        if (ios == 0) call xgb_write_i(unit, "n_estimators", self%n_estimators, ios)
+        if (ios == 0) call xgb_write_i(unit, "requested_estimators", &
+            self%requested_estimators, ios)
+        if (ios == 0) call xgb_write_i(unit, "objective_code", self%objective_code, ios)
+        if (ios == 0) call xgb_write_i(unit, "tree_method_code", &
+            self%tree_method_code, ios)
+        if (ios == 0) call xgb_write_i(unit, "max_bin", self%max_bin, ios)
+        if (ios == 0) call xgb_write_i(unit, "max_depth", self%max_depth_value, ios)
+        if (ios == 0) call xgb_write_i(unit, "min_samples_leaf", &
+            self%min_samples_leaf_value, ios)
+        if (ios == 0) call xgb_write_i(unit, "early_stopping_rounds", &
+            self%early_stopping_rounds_value, ios)
+        if (ios == 0) call xgb_write_r(unit, "learning_rate", self%learning_rate, ios)
+        if (ios == 0) call xgb_write_r(unit, "base_score", self%base_score, ios)
+        if (ios == 0) call xgb_write_r(unit, "objective_parameter", &
+            self%objective_parameter, ios)
+        if (ios == 0) call xgb_write_r(unit, "l1", self%l1_value, ios)
+        if (ios == 0) call xgb_write_r(unit, "l2", self%l2_value, ios)
+        if (ios == 0) call xgb_write_r(unit, "gamma", self%gamma_value, ios)
+        if (ios == 0) call xgb_write_r(unit, "min_child_weight", &
+            self%min_child_weight_value, ios)
+        if (ios == 0) call xgb_write_r(unit, "early_stopping_min_delta", &
+            self%early_stopping_min_delta_value, ios)
+        if (ios == 0) call xgb_write_r(unit, "subsample", self%subsample_value, ios)
+        if (ios == 0) call xgb_write_r(unit, "colsample_bytree", &
+            self%colsample_bytree_value, ios)
+        if (ios == 0) call xgb_write_i8(unit, "seed", self%seed_value, ios)
+        if (ios == 0) call xgb_write_l(unit, "restore_best", &
+            self%restore_best_value, ios)
+        if (ios == 0) call xgb_write_i(unit, "missing_code", self%missing_code, ios)
+        if (ios == 0) call xgb_write_i(unit, "best_iteration", &
+            self%best_iteration_value, ios)
+        if (ios == 0) call xgb_write_r(unit, "best_validation_loss", &
+            self%best_validation_loss_value, ios)
+        if (ios == 0) call xgb_write_l(unit, "early_stopped", &
+            self%early_stopped_flag, ios)
+        if (ios == 0) call xgb_write_i(unit, "monotone_count", &
+            size(self%monotone_constraints), ios)
+        do i = 1, self%n_inputs
+            if (ios /= 0) exit
+            call xgb_write_i(unit, "monotone_item", self%monotone_constraints(i), ios)
+        end do
+        if (ios == 0) call xgb_write_i(unit, "tree_count", self%n_estimators, ios)
+        do i = 1, self%n_estimators
+            if (ios /= 0) exit
+            call xgb_write_tree(unit, self%estimators(i), i, ios)
+        end do
+        if (ios == 0) write(unit, "(A)", iostat=ios) "end"
+        close_ios = 0
+        close(unit, iostat=close_ios)
+        if (ios /= 0 .or. close_ios /= 0) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost save_text: formatted write failed")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine xgb_save_text
+
+    subroutine xgb_load_text(self, path, status)
+        !! Load a complete text snapshot without partial mutation.
+        !!
+        !! Every record is checked in schema order.  Unknown, truncated,
+        !! duplicate, non-finite, or structurally unsafe records are refused
+        !! before the destination model is replaced.
+        class(xgboost_t), intent(inout) :: self
+        character(*), intent(in) :: path
+        type(fortnum_status_t), intent(out) :: status
+        type(xgboost_t) :: candidate
+        character(len=256) :: line
+        integer :: unit, ios, close_ios, schema, i, tree_count, monotone_count
+
+        open(newunit=unit, file=path, status="old", action="read", &
+            form="formatted", access="sequential", iostat=ios)
+        if (ios /= 0) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost load_text: cannot open source")
+            return
+        end if
+        read(unit, "(A)", iostat=ios) line
+        if (ios /= 0 .or. trim(line) /= XGB_MODEL_TEXT_MAGIC) goto 900
+        call xgb_read_i(unit, "schema_version", schema, ios)
+        if (ios /= 0 .or. schema /= XGB_MODEL_TEXT_SCHEMA_VERSION) goto 900
+        call xgb_read_i(unit, "n_inputs", candidate%n_inputs, ios)
+        if (ios == 0) call xgb_read_i(unit, "n_estimators", candidate%n_estimators, ios)
+        if (ios == 0) call xgb_read_i(unit, "requested_estimators", &
+            candidate%requested_estimators, ios)
+        if (ios == 0) call xgb_read_i(unit, "objective_code", candidate%objective_code, ios)
+        if (ios == 0) call xgb_read_i(unit, "tree_method_code", &
+            candidate%tree_method_code, ios)
+        if (ios == 0) call xgb_read_i(unit, "max_bin", candidate%max_bin, ios)
+        if (ios == 0) call xgb_read_i(unit, "max_depth", candidate%max_depth_value, ios)
+        if (ios == 0) call xgb_read_i(unit, "min_samples_leaf", &
+            candidate%min_samples_leaf_value, ios)
+        if (ios == 0) call xgb_read_i(unit, "early_stopping_rounds", &
+            candidate%early_stopping_rounds_value, ios)
+        if (ios == 0) call xgb_read_r(unit, "learning_rate", candidate%learning_rate, ios)
+        if (ios == 0) call xgb_read_r(unit, "base_score", candidate%base_score, ios)
+        if (ios == 0) call xgb_read_r(unit, "objective_parameter", &
+            candidate%objective_parameter, ios)
+        if (ios == 0) call xgb_read_r(unit, "l1", candidate%l1_value, ios)
+        if (ios == 0) call xgb_read_r(unit, "l2", candidate%l2_value, ios)
+        if (ios == 0) call xgb_read_r(unit, "gamma", candidate%gamma_value, ios)
+        if (ios == 0) call xgb_read_r(unit, "min_child_weight", &
+            candidate%min_child_weight_value, ios)
+        if (ios == 0) call xgb_read_r(unit, "early_stopping_min_delta", &
+            candidate%early_stopping_min_delta_value, ios)
+        if (ios == 0) call xgb_read_r(unit, "subsample", candidate%subsample_value, ios)
+        if (ios == 0) call xgb_read_r(unit, "colsample_bytree", &
+            candidate%colsample_bytree_value, ios)
+        if (ios == 0) call xgb_read_i8(unit, "seed", candidate%seed_value, ios)
+        if (ios == 0) call xgb_read_l(unit, "restore_best", &
+            candidate%restore_best_value, ios)
+        if (ios == 0) call xgb_read_i(unit, "missing_code", candidate%missing_code, ios)
+        if (ios == 0) call xgb_read_i(unit, "best_iteration", &
+            candidate%best_iteration_value, ios)
+        if (ios == 0) call xgb_read_r(unit, "best_validation_loss", &
+            candidate%best_validation_loss_value, ios)
+        if (ios == 0) call xgb_read_l(unit, "early_stopped", &
+            candidate%early_stopped_flag, ios)
+        if (ios /= 0) goto 900
+        if (.not. valid_serialized_scalars(candidate)) goto 900
+
+        call xgb_read_i(unit, "monotone_count", monotone_count, ios)
+        if (ios /= 0 .or. monotone_count /= candidate%n_inputs) goto 900
+        allocate(candidate%monotone_constraints(monotone_count), stat=ios)
+        if (ios /= 0) goto 900
+        do i = 1, monotone_count
+            call xgb_read_i(unit, "monotone_item", candidate%monotone_constraints(i), ios)
+            if (ios /= 0 .or. abs(candidate%monotone_constraints(i)) > 1) goto 900
+        end do
+        call xgb_read_i(unit, "tree_count", tree_count, ios)
+        if (ios /= 0 .or. tree_count /= candidate%n_estimators) goto 900
+        allocate(candidate%estimators(tree_count), stat=ios)
+        if (ios /= 0) goto 900
+        do i = 1, tree_count
+            call xgb_read_tree(unit, candidate%estimators(i), i, candidate%n_inputs, ios)
+            if (ios /= 0) goto 900
+        end do
+        read(unit, "(A)", iostat=ios) line
+        if (ios /= 0 .or. trim(line) /= "end") goto 900
+        read(unit, "(A)", iostat=ios) line
+        if (ios /= iostat_end) goto 900
+        close_ios = 0
+        close(unit, iostat=close_ios)
+        if (close_ios /= 0) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost load_text: malformed, truncated, or unsupported snapshot")
+            return
+        end if
+        candidate%initialized = .true.
+        select type(destination => self)
+        type is (xgboost_t)
+            destination = candidate
+        class default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost load_text: destination type is unsupported")
+            return
+        end select
+        call status_set(status, FORTNUM_OK, "")
+        return
+
+        900     continue
+        close_ios = 0
+        close(unit, iostat=close_ios)
+        call status_set(status, FORTNUM_DOMAIN_ERROR, &
+            "xgboost load_text: malformed, truncated, or unsupported snapshot")
+    end subroutine xgb_load_text
+
+    subroutine xgb_write_tree(unit, tree, index, ios)
+        integer, intent(in) :: unit, index
+        type(xgb_tree_t), intent(in) :: tree
+        integer, intent(out) :: ios
+        integer :: i
+
+        call xgb_write_i(unit, "tree_begin", index, ios)
+        if (ios == 0) call xgb_write_i(unit, "n_nodes", tree%n_nodes, ios)
+        if (ios == 0) call xgb_write_i(unit, "depth", tree%depth, ios)
+        if (ios == 0) call xgb_write_i(unit, "feature_index", tree%feature_index, ios)
+        if (ios == 0) call xgb_write_i(unit, "left_count", tree%left_count, ios)
+        if (ios == 0) call xgb_write_i(unit, "right_count", tree%right_count, ios)
+        if (ios == 0) call xgb_write_r(unit, "threshold", tree%threshold, ios)
+        if (ios == 0) call xgb_write_r(unit, "left_weight", tree%left_weight, ios)
+        if (ios == 0) call xgb_write_r(unit, "right_weight", tree%right_weight, ios)
+        if (ios == 0) call xgb_write_r(unit, "split_gain", tree%split_gain, ios)
+        if (ios == 0) call xgb_write_l(unit, "has_split", tree%has_split, ios)
+        if (ios == 0) call xgb_write_i(unit, "node_count", tree%n_nodes, ios)
+        do i = 1, tree%n_nodes
+            if (ios /= 0) exit
+            call xgb_write_i(unit, "node_index", i, ios)
+            if (ios == 0) call xgb_write_i(unit, "feature", tree%feature(i), ios)
+            if (ios == 0) call xgb_write_i(unit, "left_child", tree%left_child(i), ios)
+            if (ios == 0) call xgb_write_i(unit, "right_child", tree%right_child(i), ios)
+            if (ios == 0) call xgb_write_r(unit, "node_threshold", &
+                tree%node_threshold(i), ios)
+            if (ios == 0) call xgb_write_r(unit, "weight", tree%weight(i), ios)
+            if (ios == 0) call xgb_write_r(unit, "node_gain", tree%node_gain(i), ios)
+            if (ios == 0) call xgb_write_r(unit, "node_cover", tree%node_cover(i), ios)
+            if (ios == 0) call xgb_write_l(unit, "leaf", tree%leaf(i), ios)
+            if (ios == 0) call xgb_write_l(unit, "missing_left", tree%missing_left(i), ios)
+        end do
+        if (ios == 0) write(unit, "(A)", iostat=ios) "tree_end"
+    end subroutine xgb_write_tree
+
+    subroutine xgb_read_tree(unit, tree, index, n_inputs, ios)
+        integer, intent(in) :: unit, index, n_inputs
+        type(xgb_tree_t), intent(out) :: tree
+        integer, intent(out) :: ios
+        integer :: tree_index, node_count, i, alloc_ios
+        character(len=256) :: line_for_tree_record
+
+        call xgb_read_i(unit, "tree_begin", tree_index, ios)
+        if (ios /= 0 .or. tree_index /= index) return
+        call xgb_read_i(unit, "n_nodes", tree%n_nodes, ios)
+        if (ios == 0) call xgb_read_i(unit, "depth", tree%depth, ios)
+        if (ios == 0) call xgb_read_i(unit, "feature_index", tree%feature_index, ios)
+        if (ios == 0) call xgb_read_i(unit, "left_count", tree%left_count, ios)
+        if (ios == 0) call xgb_read_i(unit, "right_count", tree%right_count, ios)
+        if (ios == 0) call xgb_read_r(unit, "threshold", tree%threshold, ios)
+        if (ios == 0) call xgb_read_r(unit, "left_weight", tree%left_weight, ios)
+        if (ios == 0) call xgb_read_r(unit, "right_weight", tree%right_weight, ios)
+        if (ios == 0) call xgb_read_r(unit, "split_gain", tree%split_gain, ios)
+        if (ios == 0) call xgb_read_l(unit, "has_split", tree%has_split, ios)
+        call xgb_read_i(unit, "node_count", node_count, ios)
+        if (ios /= 0 .or. node_count /= tree%n_nodes .or. &
+            tree%n_nodes < 1 .or. tree%n_nodes > XGB_MAX_SERIALIZED_NODES) then
+            ios = 1
+            return
+        end if
+        allocate(tree%feature(tree%n_nodes), tree%left_child(tree%n_nodes), &
+            tree%right_child(tree%n_nodes), tree%node_threshold(tree%n_nodes), &
+            tree%weight(tree%n_nodes), tree%node_gain(tree%n_nodes), &
+            tree%node_cover(tree%n_nodes), tree%leaf(tree%n_nodes), &
+            tree%missing_left(tree%n_nodes), stat=alloc_ios)
+        if (alloc_ios /= 0) then
+            ios = 1
+            return
+        end if
+        do i = 1, tree%n_nodes
+            call xgb_read_i(unit, "node_index", node_count, ios)
+            if (ios /= 0 .or. node_count /= i) return
+            call xgb_read_i(unit, "feature", tree%feature(i), ios)
+            if (ios == 0) call xgb_read_i(unit, "left_child", tree%left_child(i), ios)
+            if (ios == 0) call xgb_read_i(unit, "right_child", tree%right_child(i), ios)
+            if (ios == 0) call xgb_read_r(unit, "node_threshold", &
+                tree%node_threshold(i), ios)
+            if (ios == 0) call xgb_read_r(unit, "weight", tree%weight(i), ios)
+            if (ios == 0) call xgb_read_r(unit, "node_gain", tree%node_gain(i), ios)
+            if (ios == 0) call xgb_read_r(unit, "node_cover", tree%node_cover(i), ios)
+            if (ios == 0) call xgb_read_l(unit, "leaf", tree%leaf(i), ios)
+            if (ios == 0) call xgb_read_l(unit, "missing_left", tree%missing_left(i), ios)
+            if (ios /= 0) return
+        end do
+        read(unit, "(A)", iostat=ios) line_for_tree_record
+        if (ios /= 0 .or. trim(line_for_tree_record) /= "tree_end") then
+            ios = 1
+            return
+        end if
+        if (.not. valid_serialized_tree(tree, n_inputs)) ios = 1
+    end subroutine xgb_read_tree
+
+    logical function valid_serialized_scalars(model) result(valid)
+        type(xgboost_t), intent(in) :: model
+
+        valid = model%n_inputs >= 1 .and. model%n_estimators >= 1 .and. &
+            model%requested_estimators >= model%n_estimators .and. &
+            model%objective_code >= XGB_OBJECTIVE_SQUARED .and. &
+            model%objective_code <= XGB_OBJECTIVE_SQUARED_LOG .and. &
+            (model%tree_method_code == XGB_TREE_EXACT .or. &
+             model%tree_method_code == XGB_TREE_HIST) .and. &
+            model%max_bin >= 2 .and. model%max_depth_value >= 1 .and. &
+            model%min_samples_leaf_value >= 1
+        if (.not. valid) return
+        valid = model%early_stopping_rounds_value >= 0 .and. &
+            model%early_stopping_rounds_value >= 0 .and. &
+            model%missing_code >= XGB_MISSING_ERROR .and. &
+            model%missing_code <= XGB_MISSING_RIGHT .and. &
+            model%best_iteration_value >= 0 .and. &
+            model%best_iteration_value <= model%requested_estimators .and. &
+            model%seed_value > 0_int64 .and. &
+            ieee_is_finite(model%learning_rate) .and. model%learning_rate > 0.0_dp .and. &
+            model%learning_rate <= 1.0_dp .and. ieee_is_finite(model%base_score) .and. &
+            ieee_is_finite(model%objective_parameter) .and. ieee_is_finite(model%l1_value) .and. &
+            model%l1_value >= 0.0_dp .and. ieee_is_finite(model%l2_value) .and. &
+            model%l2_value >= 0.0_dp .and. ieee_is_finite(model%gamma_value) .and. &
+            model%gamma_value >= 0.0_dp .and. ieee_is_finite(model%min_child_weight_value) .and. &
+            model%min_child_weight_value >= 0.0_dp .and. &
+            ieee_is_finite(model%early_stopping_min_delta_value) .and. &
+            model%early_stopping_min_delta_value >= 0.0_dp .and. &
+            ieee_is_finite(model%subsample_value) .and. model%subsample_value > 0.0_dp .and. &
+            model%subsample_value <= 1.0_dp .and. ieee_is_finite(model%colsample_bytree_value) .and. &
+            model%colsample_bytree_value > 0.0_dp .and. model%colsample_bytree_value <= 1.0_dp .and. &
+            ieee_is_finite(model%best_validation_loss_value)
+    end function valid_serialized_scalars
+
+    logical function valid_serialized_tree(tree, n_inputs) result(valid)
+        type(xgb_tree_t), intent(in) :: tree
+        integer, intent(in) :: n_inputs
+        logical, allocatable :: seen(:)
+        integer, allocatable :: stack(:)
+        integer :: i, node, top
+
+        valid = tree%n_nodes >= 1 .and. tree%n_nodes <= XGB_MAX_SERIALIZED_NODES .and. &
+            tree%depth >= 0 .and. tree%feature_index >= 0 .and. &
+            tree%feature_index <= n_inputs .and. tree%left_count >= 0 .and. &
+            tree%right_count >= 0 .and. ieee_is_finite(tree%threshold) .and. &
+            ieee_is_finite(tree%left_weight) .and. ieee_is_finite(tree%right_weight) .and. &
+            ieee_is_finite(tree%split_gain) .and. allocated(tree%feature) .and. &
+            allocated(tree%left_child) .and. allocated(tree%right_child) .and. &
+            allocated(tree%node_threshold) .and. allocated(tree%weight) .and. &
+            allocated(tree%node_gain) .and. allocated(tree%node_cover) .and. &
+            allocated(tree%leaf) .and. allocated(tree%missing_left)
+        if (.not. valid) return
+        valid = size(tree%feature) >= tree%n_nodes .and. &
+            size(tree%left_child) >= tree%n_nodes .and. &
+            size(tree%right_child) >= tree%n_nodes .and. &
+            size(tree%node_threshold) >= tree%n_nodes .and. &
+            size(tree%weight) >= tree%n_nodes .and. &
+            size(tree%node_gain) >= tree%n_nodes .and. &
+            size(tree%node_cover) >= tree%n_nodes .and. &
+            size(tree%leaf) >= tree%n_nodes .and. &
+            size(tree%missing_left) >= tree%n_nodes
+        if (.not. valid) return
+        if (any(.not. ieee_is_finite(tree%node_threshold)) .or. &
+            any(.not. ieee_is_finite(tree%weight)) .or. &
+            any(.not. ieee_is_finite(tree%node_gain)) .or. &
+            any(.not. ieee_is_finite(tree%node_cover))) then
+            valid = .false.
+            return
+        end if
+        do i = 1, tree%n_nodes
+            if (tree%leaf(i)) then
+                if (tree%feature(i) /= 0 .or. tree%left_child(i) /= 0 .or. &
+                    tree%right_child(i) /= 0) then
+                    valid = .false.
+                    return
+                end if
+            else
+                if (tree%feature(i) < 1 .or. tree%feature(i) > n_inputs) then
+                    valid = .false.
+                    return
+                end if
+                if (tree%left_child(i) <= i) then
+                    valid = .false.
+                    return
+                end if
+                if (tree%left_child(i) > tree%n_nodes) then
+                    valid = .false.
+                    return
+                end if
+                if (tree%right_child(i) <= i) then
+                    valid = .false.
+                    return
+                end if
+                if (tree%right_child(i) > tree%n_nodes) then
+                    valid = .false.
+                    return
+                end if
+            end if
+        end do
+        if (tree%has_split .neqv. .not. tree%leaf(1)) then
+            valid = .false.
+            return
+        end if
+        allocate(seen(tree%n_nodes), stack(tree%n_nodes))
+        seen = .false.
+        top = 1
+        stack(1) = 1
+        do while (top > 0)
+            node = stack(top)
+            top = top - 1
+            if (seen(node)) cycle
+            seen(node) = .true.
+            if (.not. tree%leaf(node)) then
+                top = top + 1
+                stack(top) = tree%left_child(node)
+                top = top + 1
+                stack(top) = tree%right_child(node)
+            end if
+        end do
+        valid = all(seen)
+    end function valid_serialized_tree
+
+    subroutine xgb_write_i(unit, key, value, ios)
+        integer, intent(in) :: unit, value
+        character(*), intent(in) :: key
+        integer, intent(out) :: ios
+
+        write(unit, "(A,1X,I0)", iostat=ios) trim(key), value
+    end subroutine xgb_write_i
+
+    subroutine xgb_write_i8(unit, key, value, ios)
+        integer, intent(in) :: unit
+        integer(int64), intent(in) :: value
+        character(*), intent(in) :: key
+        integer, intent(out) :: ios
+
+        write(unit, "(A,1X,I0)", iostat=ios) trim(key), value
+    end subroutine xgb_write_i8
+
+    subroutine xgb_write_l(unit, key, value, ios)
+        integer, intent(in) :: unit
+        logical, intent(in) :: value
+        character(*), intent(in) :: key
+        integer, intent(out) :: ios
+
+        write(unit, "(A,1X,I0)", iostat=ios) trim(key), merge(1, 0, value)
+    end subroutine xgb_write_l
+
+    subroutine xgb_write_r(unit, key, value, ios)
+        integer, intent(in) :: unit
+        real(dp), intent(in) :: value
+        character(*), intent(in) :: key
+        integer, intent(out) :: ios
+
+        write(unit, "(A,1X,ES26.17E3)", iostat=ios) trim(key), value
+    end subroutine xgb_write_r
+
+    subroutine xgb_read_i(unit, expected, value, ios)
+        integer, intent(in) :: unit
+        character(*), intent(in) :: expected
+        integer, intent(out) :: value
+        integer, intent(out) :: ios
+        character(len=80) :: key
+
+        read(unit, *, iostat=ios) key, value
+        if (ios == 0 .and. trim(key) /= trim(expected)) ios = 1
+    end subroutine xgb_read_i
+
+    subroutine xgb_read_i8(unit, expected, value, ios)
+        integer, intent(in) :: unit
+        character(*), intent(in) :: expected
+        integer(int64), intent(out) :: value
+        integer, intent(out) :: ios
+        character(len=80) :: key
+
+        read(unit, *, iostat=ios) key, value
+        if (ios == 0 .and. trim(key) /= trim(expected)) ios = 1
+    end subroutine xgb_read_i8
+
+    subroutine xgb_read_l(unit, expected, value, ios)
+        integer, intent(in) :: unit
+        character(*), intent(in) :: expected
+        logical, intent(out) :: value
+        integer, intent(out) :: ios
+        character(len=80) :: key
+        integer :: encoded
+
+        encoded = 0
+        read(unit, *, iostat=ios) key, encoded
+        if (ios == 0 .and. trim(key) /= trim(expected)) ios = 1
+        if (ios == 0 .and. encoded /= 0 .and. encoded /= 1) ios = 1
+        value = encoded == 1
+    end subroutine xgb_read_l
+
+    subroutine xgb_read_r(unit, expected, value, ios)
+        integer, intent(in) :: unit
+        character(*), intent(in) :: expected
+        real(dp), intent(out) :: value
+        integer, intent(out) :: ios
+        character(len=80) :: key
+
+        read(unit, *, iostat=ios) key, value
+        if (ios == 0 .and. trim(key) /= trim(expected)) ios = 1
+    end subroutine xgb_read_r
 
     subroutine retain_xgb_estimators(self, source)
         class(xgboost_t), intent(inout) :: self
