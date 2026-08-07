@@ -1931,6 +1931,8 @@ The factory functions validate positive variance and lengthscale arguments:
 
 ```text
 make_rbf_kernel(input_dim, variance, lengthscale, status)
+make_rbf_ard_kernel(input_dim, variance, lengthscales, status)
+make_ard_rbf_kernel(input_dim, variance, lengthscales, status)  ! alias
 make_matern12_kernel(input_dim, variance, lengthscale, status)
 make_matern32_kernel(input_dim, variance, lengthscale, status)
 make_matern52_kernel(input_dim, variance, lengthscale, status)
@@ -1944,7 +1946,7 @@ make_polynomial_kernel(input_dim, variance, scale, offset, degree, status)
 make_user_kernel(input_dim, variance, formula, status)
 ```
 
-The corresponding kind constants are `KERNEL_RBF`, `KERNEL_MATERN12`,
+The corresponding kind constants are `KERNEL_RBF`, `KERNEL_RBF_ARD`, `KERNEL_MATERN12`,
 `KERNEL_MATERN32`, `KERNEL_MATERN52`, `KERNEL_LINEAR`, `KERNEL_CONSTANT`,
 `KERNEL_WHITE_NOISE`, `KERNEL_PERIODIC`, `KERNEL_RATIONAL_QUADRATIC`,
 `KERNEL_COSINE`, `KERNEL_POLYNOMIAL`, `KERNEL_SUM`, `KERNEL_PRODUCT`, and
@@ -1956,8 +1958,20 @@ tree, including composite children. Use it for temporary optimizer or
 derivative probes instead of intrinsic assignment, which aliases pointer
 children.
 
-Leaf parameters are stored as logarithms. RBF and Matérn leaves have
-`[log_variance,log_lengthscale]`. Periodic leaves use
+Leaf parameters are stored as logarithms. Isotropic RBF and Matérn leaves have
+`[log_variance,log_lengthscale]`. `make_rbf_ard_kernel` stores
+`[log_variance,log_lengthscale_1,...,log_lengthscale_d]`, with one positive
+length scale per input feature. Its value is
+`variance*exp(-0.5*sum_j((x1_j-x2_j)/lengthscale_j)**2)`. ARD RBF leaves
+provide the same dense value, input derivative, parameter JVP/VJP, and
+parameter HVP contract as isotropic RBF leaves; the packed parameter order is
+stable under composite-kernel concatenation. Exact `gp_regression_t` fitting,
+prediction, log-marginal-likelihood, and their parameter products consume an
+ARD kernel without a special GP code path. The resident CUDA covariance path
+does not yet support ARD kernels and therefore reports the typed device
+refusal rather than falling back to host execution.
+
+Periodic leaves use
 `[log_variance,log_lengthscale,log_period]`; rational-quadratic leaves use
 `[log_variance,log_lengthscale,log_alpha]`. Linear, constant, white-noise, and
 user leaves have `[log_variance]`. Cosine leaves use

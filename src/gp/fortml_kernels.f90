@@ -46,6 +46,9 @@ module fortml_kernels
     integer, parameter, public :: KERNEL_RATIONAL_QUADRATIC = 12
     integer, parameter, public :: KERNEL_COSINE = 13
     integer, parameter, public :: KERNEL_POLYNOMIAL = 14
+    !! Squared-exponential kernel with one positive length scale per feature.
+    !! Parameters are packed as [log_variance, log_lengthscale(:)].
+    integer, parameter, public :: KERNEL_RBF_ARD = 15
 
     type, public :: kernel_t
         integer :: kind = 0
@@ -68,6 +71,8 @@ module fortml_kernels
     end type kernel_t
 
     public :: make_rbf_kernel
+    public :: make_rbf_ard_kernel
+    public :: make_ard_rbf_kernel
     public :: make_matern12_kernel
     public :: make_matern32_kernel
     public :: make_matern52_kernel
@@ -95,6 +100,44 @@ contains
 
         call make_leaf(kernel, KERNEL_RBF, input_dim, variance, lengthscale, status)
     end function make_rbf_kernel
+
+    function make_rbf_ard_kernel(input_dim, variance, lengthscales, status) result(kernel)
+        !! Construct an anisotropic squared-exponential (ARD RBF) kernel.
+        !!
+        !! The positive ``lengthscales`` vector is copied into the kernel and
+        !! represented internally by logarithms.  Keeping the logarithmic
+        !! parameterization makes the ordinary kernel parameter products and
+        !! GP hyperparameter optimization unconstrained, just as for the
+        !! isotropic ``make_rbf_kernel`` constructor.
+        integer, intent(in) :: input_dim
+        real(dp), intent(in) :: variance, lengthscales(:)
+        type(fortnum_status_t), intent(out) :: status
+        type(kernel_t) :: kernel
+
+        if (input_dim < 1 .or. variance <= 0.0_dp .or. &
+            size(lengthscales) /= input_dim .or. any(lengthscales <= 0.0_dp) .or. &
+            .not. ieee_is_finite(variance) .or. any(.not. ieee_is_finite(lengthscales))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ARD RBF constructor: dimensions and scales must be positive and finite")
+            return
+        end if
+        kernel%kind = KERNEL_RBF_ARD
+        kernel%input_dim = input_dim
+        allocate(kernel%log_parameters(input_dim + 1))
+        kernel%log_parameters(1) = log(variance)
+        kernel%log_parameters(2:) = log(lengthscales)
+        call status_set(status, FORTNUM_OK, "")
+    end function make_rbf_ard_kernel
+
+    function make_ard_rbf_kernel(input_dim, variance, lengthscales, status) result(kernel)
+        !! Alias with the conventional ``ARD_RBF`` word ordering.
+        integer, intent(in) :: input_dim
+        real(dp), intent(in) :: variance, lengthscales(:)
+        type(fortnum_status_t), intent(out) :: status
+        type(kernel_t) :: kernel
+
+        kernel = make_rbf_ard_kernel(input_dim, variance, lengthscales, status)
+    end function make_ard_rbf_kernel
 
     function make_matern12_kernel(input_dim, variance, lengthscale, status) result(kernel)
         integer, intent(in) :: input_dim
@@ -286,6 +329,8 @@ contains
 
         count = 0
         select case (self%kind)
+        case (KERNEL_RBF_ARD)
+            count = self%input_dim + 1
         case (KERNEL_RBF, KERNEL_MATERN12, KERNEL_MATERN32, KERNEL_MATERN52, &
                 KERNEL_COSINE)
             count = 2
@@ -373,6 +418,8 @@ contains
             value = self%left%value(x1, x2) + self%right%value(x1, x2)
         case (KERNEL_PRODUCT)
             value = self%left%value(x1, x2)*self%right%value(x1, x2)
+        case (KERNEL_RBF_ARD)
+            value = ard_rbf_value(self, x1, x2)
         case default
             variance = exp(self%log_parameters(1))
             if (self%kind == KERNEL_RBF .or. self%kind == KERNEL_MATERN12 .or. &
@@ -581,6 +628,10 @@ contains
                 self%right, x1, x2, matrix_bar*left_matrix_dot, parameter_bar_dot, &
                 offset + left_count)
             call status_set(status, FORTNUM_OK, "")
+            return
+        case (KERNEL_RBF_ARD)
+            call ard_rbf_parameter_hvp(self, x1, x2, matrix_bar, direction, &
+                parameter_bar, parameter_bar_dot, offset, status)
             return
         case default
             continue
@@ -1312,6 +1363,8 @@ contains
             else
                 matrix = matrix*other
             end if
+        case (KERNEL_RBF_ARD)
+            call ard_rbf_matrix(self, x1, x2, matrix)
         case default
             variance = exp(self%log_parameters(1))
             if (self%kind == KERNEL_RBF .or. self%kind == KERNEL_MATERN12 .or. &
@@ -1430,6 +1483,9 @@ contains
                     spread(left_gradient_x2, dim=1, ncopies=size(x1))
             end if
             call status_set(status, FORTNUM_OK, "")
+        case (KERNEL_RBF_ARD)
+            call ard_rbf_input_derivatives(self, x1, x2, value, gradient_x1, &
+                gradient_x2, mixed_hessian, status)
         case (KERNEL_RBF)
             variance = exp(self%log_parameters(1))
             lengthscale = exp(self%log_parameters(2))
@@ -1738,6 +1794,8 @@ contains
                 matrix_dot = matrix_dot*other + matrix*other_dot
                 matrix = matrix*other
             end if
+        case (KERNEL_RBF_ARD)
+            call ard_rbf_matrix_jvp(self, x1, x2, direction, matrix, matrix_dot)
         case default
             variance = exp(self%log_parameters(1))
             log_variance_dot = direction(1)
@@ -1926,6 +1984,8 @@ contains
                         sum(matrix_bar*leaf_matrix(self, x1, x2, variance, lengthscale, 2))
                 end if
             end if
+        case (KERNEL_RBF_ARD)
+            call ard_rbf_parameter_vjp(self, x1, x2, matrix_bar, parameter_bar, offset)
         end select
     end subroutine kernel_parameter_vjp_impl
 
@@ -1953,6 +2013,168 @@ contains
             end do
         end do
     end subroutine kernel_rbf_parameter_vjp
+
+    real(dp) function ard_rbf_value(self, x1, x2) result(value)
+        class(kernel_t), intent(in) :: self
+        real(dp), intent(in) :: x1(:), x2(:)
+        real(dp) :: weighted_squared_distance, difference
+        integer :: feature
+
+        weighted_squared_distance = 0.0_dp
+        do feature = 1, self%input_dim
+            difference = x1(feature) - x2(feature)
+            weighted_squared_distance = weighted_squared_distance + difference*difference* &
+                exp(-2.0_dp*self%log_parameters(feature + 1))
+        end do
+        value = exp(self%log_parameters(1) - 0.5_dp*weighted_squared_distance)
+    end function ard_rbf_value
+
+    subroutine ard_rbf_matrix(self, x1, x2, matrix)
+        class(kernel_t), intent(in) :: self
+        real(dp), intent(in) :: x1(:, :), x2(:, :)
+        real(dp), intent(out) :: matrix(:, :)
+        real(dp) :: weighted_squared_distance, difference
+        integer :: i, j, feature
+
+        do j = 1, size(x2, 1)
+            do i = 1, size(x1, 1)
+                weighted_squared_distance = 0.0_dp
+                do feature = 1, self%input_dim
+                    difference = x1(i, feature) - x2(j, feature)
+                    weighted_squared_distance = weighted_squared_distance + difference*difference* &
+                        exp(-2.0_dp*self%log_parameters(feature + 1))
+                end do
+                matrix(i, j) = exp(self%log_parameters(1) - 0.5_dp*weighted_squared_distance)
+            end do
+        end do
+    end subroutine ard_rbf_matrix
+
+    subroutine ard_rbf_matrix_jvp(self, x1, x2, direction, matrix, matrix_dot)
+        class(kernel_t), intent(in) :: self
+        real(dp), intent(in) :: x1(:, :), x2(:, :), direction(:)
+        real(dp), intent(out) :: matrix(:, :), matrix_dot(:, :)
+        real(dp) :: weighted_squared_distance, log_direction, q, difference
+        real(dp) :: value
+        integer :: i, j, feature
+
+        do j = 1, size(x2, 1)
+            do i = 1, size(x1, 1)
+                weighted_squared_distance = 0.0_dp
+                log_direction = direction(1)
+                do feature = 1, self%input_dim
+                    difference = x1(i, feature) - x2(j, feature)
+                    q = difference*difference*exp(-2.0_dp*self%log_parameters(feature + 1))
+                    weighted_squared_distance = weighted_squared_distance + q
+                    log_direction = log_direction + q*direction(feature + 1)
+                end do
+                value = exp(self%log_parameters(1) - 0.5_dp*weighted_squared_distance)
+                matrix(i, j) = value
+                matrix_dot(i, j) = value*log_direction
+            end do
+        end do
+    end subroutine ard_rbf_matrix_jvp
+
+    subroutine ard_rbf_input_derivatives(self, x1, x2, value, gradient_x1, &
+            gradient_x2, mixed_hessian, status)
+        class(kernel_t), intent(in) :: self
+        real(dp), intent(in) :: x1(:), x2(:)
+        real(dp), intent(out) :: value, gradient_x1(:), gradient_x2(:)
+        real(dp), intent(out) :: mixed_hessian(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: weighted_squared_distance, difference_i, difference_j
+        real(dp) :: inverse_length_i_squared, inverse_length_j_squared
+        integer :: i, j
+
+        weighted_squared_distance = 0.0_dp
+        do i = 1, self%input_dim
+            difference_i = x1(i) - x2(i)
+            weighted_squared_distance = weighted_squared_distance + difference_i*difference_i* &
+                exp(-2.0_dp*self%log_parameters(i + 1))
+        end do
+        value = exp(self%log_parameters(1) - 0.5_dp*weighted_squared_distance)
+        do i = 1, self%input_dim
+            difference_i = x1(i) - x2(i)
+            inverse_length_i_squared = exp(-2.0_dp*self%log_parameters(i + 1))
+            gradient_x1(i) = -value*difference_i*inverse_length_i_squared
+            gradient_x2(i) = -gradient_x1(i)
+            do j = 1, self%input_dim
+                difference_j = x1(j) - x2(j)
+                inverse_length_j_squared = exp(-2.0_dp*self%log_parameters(j + 1))
+                mixed_hessian(i, j) = value*( &
+                    inverse_length_i_squared*merge(1.0_dp, 0.0_dp, i == j) - &
+                    difference_i*difference_j*inverse_length_i_squared* &
+                    inverse_length_j_squared)
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine ard_rbf_input_derivatives
+
+    subroutine ard_rbf_parameter_vjp(self, x1, x2, matrix_bar, parameter_bar, offset)
+        class(kernel_t), intent(in) :: self
+        real(dp), intent(in) :: x1(:, :), x2(:, :), matrix_bar(:, :)
+        real(dp), intent(inout) :: parameter_bar(:)
+        integer, intent(in) :: offset
+        real(dp) :: weighted_squared_distance, difference, value, q
+        integer :: i, j, feature
+
+        do j = 1, size(x2, 1)
+            do i = 1, size(x1, 1)
+                weighted_squared_distance = 0.0_dp
+                do feature = 1, self%input_dim
+                    difference = x1(i, feature) - x2(j, feature)
+                    weighted_squared_distance = weighted_squared_distance + difference*difference* &
+                        exp(-2.0_dp*self%log_parameters(feature + 1))
+                end do
+                value = exp(self%log_parameters(1) - 0.5_dp*weighted_squared_distance)
+                parameter_bar(offset) = parameter_bar(offset) + matrix_bar(i, j)*value
+                do feature = 1, self%input_dim
+                    difference = x1(i, feature) - x2(j, feature)
+                    q = difference*difference*exp(-2.0_dp*self%log_parameters(feature + 1))
+                    parameter_bar(offset + feature) = parameter_bar(offset + feature) + &
+                        matrix_bar(i, j)*value*q
+                end do
+            end do
+        end do
+    end subroutine ard_rbf_parameter_vjp
+
+    subroutine ard_rbf_parameter_hvp(self, x1, x2, matrix_bar, direction, &
+            parameter_bar, parameter_bar_dot, offset, status)
+        class(kernel_t), intent(in) :: self
+        real(dp), intent(in) :: x1(:, :), x2(:, :), matrix_bar(:, :), direction(:)
+        real(dp), intent(inout) :: parameter_bar(:), parameter_bar_dot(:)
+        integer, intent(in) :: offset
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: weighted_squared_distance, direction_log, difference, value, q, q_dot
+        integer :: i, j, feature
+
+        do j = 1, size(x2, 1)
+            do i = 1, size(x1, 1)
+                weighted_squared_distance = 0.0_dp
+                direction_log = direction(1)
+                do feature = 1, self%input_dim
+                    difference = x1(i, feature) - x2(j, feature)
+                    q = difference*difference*exp(-2.0_dp*self%log_parameters(feature + 1))
+                    weighted_squared_distance = weighted_squared_distance + q
+                    direction_log = direction_log + q*direction(feature + 1)
+                end do
+                value = exp(self%log_parameters(1) - 0.5_dp*weighted_squared_distance)
+                parameter_bar(offset) = parameter_bar(offset) + matrix_bar(i, j)*value
+                parameter_bar_dot(offset) = parameter_bar_dot(offset) + &
+                    matrix_bar(i, j)*value*direction_log
+                do feature = 1, self%input_dim
+                    difference = x1(i, feature) - x2(j, feature)
+                    q = difference*difference*exp(-2.0_dp*self%log_parameters(feature + 1))
+                    q_dot = -2.0_dp*q*direction(feature + 1)
+                    parameter_bar(offset + feature) = parameter_bar(offset + feature) + &
+                        matrix_bar(i, j)*value*q
+                    parameter_bar_dot(offset + feature) = &
+                        parameter_bar_dot(offset + feature) + matrix_bar(i, j)*value*( &
+                        q*direction_log + q_dot)
+                end do
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine ard_rbf_parameter_hvp
 
     function leaf_matrix(self, x1, x2, variance, lengthscale, derivative_kind) &
             result(matrix)
@@ -2031,6 +2253,10 @@ contains
         valid = self%input_dim > 0
         if (.not. valid) return
         select case (self%kind)
+        case (KERNEL_RBF_ARD)
+            valid = allocated(self%log_parameters)
+            if (.not. valid) return
+            valid = size(self%log_parameters) == self%input_dim + 1
         case (KERNEL_RBF, KERNEL_MATERN12, KERNEL_MATERN32, KERNEL_MATERN52, &
                 KERNEL_COSINE)
             valid = allocated(self%log_parameters)
