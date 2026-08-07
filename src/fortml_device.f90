@@ -70,6 +70,7 @@ module fortml_device
     public :: fortml_cuda_knn_plan_create
     public :: fortml_cuda_knn_plan_destroy
     public :: fortml_cuda_knn_plan_predict
+    public :: fortml_cuda_mse_available
     public :: fortml_cuda_knn_predict
 
     interface
@@ -90,6 +91,12 @@ module fortml_device
             import :: c_int
             integer(c_int) :: available
         end function fortml_cuda_knn_available
+
+        function fortml_cuda_mse_available() bind(C, &
+                name="fortml_cuda_mse_available") result(available)
+            import :: c_int
+            integer(c_int) :: available
+        end function fortml_cuda_mse_available
 
         function fortml_cuda_knn_predict( &
                 train_x, train_class, sample_weight, query_x, class_label, &
@@ -377,7 +384,7 @@ contains
         type(fortml_device_capability_t), intent(out) :: capability
         type(fortnum_status_t), intent(out) :: status
 
-        integer(c_int) :: cuda_kernel, cuda_rbf, cuda_knn
+        integer(c_int) :: cuda_kernel, cuda_rbf, cuda_knn, cuda_mse
 
         capability = fortml_device_capability_t()
         select case (kind)
@@ -389,9 +396,10 @@ contains
             cuda_kernel = fortml_cuda_kernel_available()
             cuda_rbf = fortml_cuda_rbf_available()
             cuda_knn = fortml_cuda_knn_available()
+            cuda_mse = fortml_cuda_mse_available()
             capability%supports_cuda_kernels = &
                 cuda_kernel /= 0_c_int .or. cuda_rbf /= 0_c_int .or. &
-                cuda_knn /= 0_c_int
+                cuda_knn /= 0_c_int .or. cuda_mse /= 0_c_int
             capability%available = capability%supports_cuda_kernels
             capability%host_accessible = .false.
             capability%supports_residency = capability%available

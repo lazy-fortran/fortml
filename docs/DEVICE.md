@@ -118,6 +118,22 @@ Those paths must remain on the FortAD/FortSym graph until a complete resident
 device graph and an independent derivative oracle are available. A caller
 must therefore not report end-to-end GPU training from this state kernel alone.
 
+## Transfer-inclusive CUDA MSE reduction
+
+`fortml_cuda_metrics%cuda_mean_squared_error` is a small no-autodiff CUDA
+building block for the shared weighted regression metric. It accepts
+column-major host target and prediction matrices plus optional row weights,
+copies them explicitly to a temporary allocation on the selected device, and
+performs the squared-error and block reduction in
+`src/validation/fortml_cuda_metrics.cu`. Only the final scalar is copied back;
+there is no hidden CPU metric fallback. `fortml_cuda_mse_available()` and
+`fortml_device` capability probing report whether the native object is linked.
+The ordinary Fortran build therefore gives a typed `FORTNUM_NOT_IMPLEMENTED`
+refusal, while `test/run_cuda_metric.sh` builds the CUDA object with `nvcc`
+and checks the result against an independent weighted NumPy-equivalent oracle
+on the selected GPU. This is transfer-inclusive metric evidence, not a claim
+that a complete estimator or trainer is resident.
+
 ## New estimator contracts
 
 The weighted elastic-net regressor, OVO logistic classifier, Laplace GP
