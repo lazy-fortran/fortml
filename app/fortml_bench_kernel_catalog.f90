@@ -56,16 +56,18 @@ contains
         real(dp), intent(in) :: points(:, :), cotangent(:, :)
         type(fortnum_status_t), intent(out) :: final_status
         real(dp), allocatable :: direction(:), parameter_bar(:), parameter_bar_dot(:)
-        integer :: n_parameters, parameter
+        integer :: n_parameters
         integer :: repetition
         real(dp) :: seconds, checksum
 
         n_parameters = kernel%parameter_count()
         allocate(direction(n_parameters), parameter_bar(n_parameters), &
             parameter_bar_dot(n_parameters))
-        do parameter = 1, n_parameters
-            direction(parameter) = 0.03_dp*real(parameter, dp) - 0.08_dp
-        end do
+        direction = 0.0_dp
+        direction(1) = 0.11_dp
+        direction(2) = -0.07_dp
+        if (n_parameters >= 3) direction(3) = 0.03_dp
+        if (n_parameters >= 4) direction(4) = -0.02_dp
         call kernel%matrix(points, points, matrix, final_status)
         if (.not. status_ok(final_status)) return
         call system_clock(begin_clock, rate)
