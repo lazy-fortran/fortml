@@ -73,6 +73,10 @@ program test_gp_variational_classification
     call model%elbo_device(device, x, labels, plus, status)
     call check(status_ok(status) .and. abs(plus - value) < 1.0e-13_dp, &
         "CPU device dispatch", failures)
+    ! A minibatch may change its row count between objective calls; the fixed
+    ! seed must rebuild the table without changing the packed state.
+    call model%elbo(x(1:2, :), labels(1:2), plus, status, scale=2.0_dp)
+    call check(status_ok(status), "variable-size minibatch dispatch", failures)
     device%kind = FORTML_DEVICE_CUDA
     call model%elbo_device(device, x, labels, plus, status)
     call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
