@@ -22,6 +22,11 @@ stage order; `parameter_range("head",first,last,found)` provides stable offsets
 for parameter groups, diagnostics, and checkpoints. `set_parameters` updates
 the live children in the same order.
 
+`parameter_block_from_mlp_chain` and `parameter_products_from_mlp_chain` route
+the same live tree through FortML's shared registry/product facades. A
+pipeline or outer search can therefore name the whole network as one block
+while retaining stage offsets and exact product implementations.
+
 ## Products and optimization
 
 The chain forwards dense MLP products through each stage. `jvp` includes both
