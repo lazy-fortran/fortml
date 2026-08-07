@@ -3,11 +3,13 @@ program test_mlp_classifier
     use, intrinsic :: iso_fortran_env, only: dp => real64, error_unit
     use fortml_mlp_classifier, only: mlp_classifier_t, &
         mlp_classifier_options_t, mlp_classifier_state_t
-    use fortnum_status, only: fortnum_status_t, status_ok
+    use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_NOT_IMPLEMENTED
+    use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU, FORTML_DEVICE_CUDA
     implicit none
 
     type(mlp_classifier_t) :: first_model, second_model, weighted_model, &
         sample_weighted_model, combined_model, minibatch_model, unfitted
+    type(fortml_device_t) :: cpu, cuda
     type(mlp_classifier_options_t) :: options
     type(mlp_classifier_state_t) :: first_state, second_state
     type(fortnum_status_t) :: status
@@ -17,8 +19,13 @@ program test_mlp_classifier
     real(dp) :: combined_probabilities(6, 3)
     real(dp) :: sample_weights(6), combined_weights(6)
     real(dp), allocatable :: theta(:), gradient(:), plus_gradient(:)
+    real(dp), allocatable :: theta_dot(:), theta_plus(:), theta_minus(:), &
+        theta_bar(:), x_dot(:, :), x_bar(:, :), scores_dot(:, :), &
+        scores_plus(:, :), scores_minus(:, :), probabilities_dot(:, :), &
+        probabilities_plus(:, :), probabilities_minus(:, :), probabilities_bar(:, :)
     real(dp) :: value, plus, minus, h
-    integer :: labels(6), predicted(6), predicted_second(6), classes(3), failures
+    real(dp) :: tangent_left, tangent_right
+    integer :: labels(6), predicted(6), predicted_second(6), classes(3), failures, i
 
     x = reshape([ &
         2.0_dp, 0.0_dp, 0.0_dp, &
@@ -59,6 +66,74 @@ program test_mlp_classifier
     call check(any(abs(scores) > 1.0e-12_dp), "nonconstant logits", failures)
     call first_model%decision_function(x, wrong_scores, status)
     call check(.not. status_ok(status), "decision shape refusal", failures)
+
+    ! The classifier exposes the MLP's exact joint parameter/input products.
+    ! Compare the forward product to an independent central-difference oracle
+    ! and check the reverse product by the Euclidean duality identity.
+    theta = first_model%parameters()
+    allocate(theta_dot(size(theta)), theta_plus(size(theta)), theta_minus(size(theta)))
+    allocate(theta_bar(size(theta)), x_dot(size(x, 1), size(x, 2)), &
+        x_bar(size(x, 1), size(x, 2)))
+    allocate(scores_dot(size(scores, 1), size(scores, 2)), &
+        scores_plus(size(scores, 1), size(scores, 2)), &
+        scores_minus(size(scores, 1), size(scores, 2)))
+    allocate(probabilities_dot(size(probabilities, 1), size(probabilities, 2)), &
+        probabilities_plus(size(probabilities, 1), size(probabilities, 2)), &
+        probabilities_minus(size(probabilities, 1), size(probabilities, 2)), &
+        probabilities_bar(size(probabilities, 1), size(probabilities, 2)))
+    theta_dot = 0.03_dp
+    x_dot = reshape([(0.01_dp*real(i, dp), i=1, size(x))], shape(x))
+    h = 1.0e-6_dp
+    call first_model%decision_function_jvp(x, theta_dot, x_dot, scores, &
+        scores_dot, status)
+    theta_plus = theta + h*theta_dot
+    theta_minus = theta - h*theta_dot
+    call first_model%set_parameters(theta_plus, status)
+    call first_model%decision_function(x + h*x_dot, scores_plus, status)
+    call first_model%set_parameters(theta_minus, status)
+    call first_model%decision_function(x - h*x_dot, scores_minus, status)
+    call first_model%set_parameters(theta, status)
+    call check(status_ok(status) .and. maxval(abs(scores_dot - &
+        (scores_plus - scores_minus)/(2.0_dp*h))) < 5.0e-5_dp, &
+        "MLP classifier decision JVP oracle", failures)
+
+    probabilities_bar = reshape([(0.02_dp*real(i, dp), i=1, size(probabilities))], &
+        shape(probabilities))
+    call first_model%decision_function_vjp(x, probabilities_bar, theta_bar, &
+        x_bar, status)
+    tangent_left = sum(probabilities_bar*scores_dot)
+    tangent_right = dot_product(theta_bar, theta_dot) + sum(x_bar*x_dot)
+    call check(status_ok(status) .and. abs(tangent_left - tangent_right) < 2.0e-10_dp, &
+        "MLP classifier decision VJP duality", failures)
+
+    call first_model%predict_proba_jvp(x, theta_dot, x_dot, probabilities, &
+        probabilities_dot, status)
+    call first_model%set_parameters(theta_plus, status)
+    call first_model%predict_proba(x + h*x_dot, probabilities_plus, status)
+    call first_model%set_parameters(theta_minus, status)
+    call first_model%predict_proba(x - h*x_dot, probabilities_minus, status)
+    call first_model%set_parameters(theta, status)
+    call check(status_ok(status) .and. maxval(abs(probabilities_dot - &
+        (probabilities_plus - probabilities_minus)/(2.0_dp*h))) < 5.0e-5_dp, &
+        "MLP classifier probability JVP oracle", failures)
+    call first_model%predict_proba_vjp(x, probabilities_bar, theta_bar, x_bar, status)
+    tangent_left = sum(probabilities_bar*probabilities_dot)
+    tangent_right = dot_product(theta_bar, theta_dot) + sum(x_bar*x_dot)
+    call check(status_ok(status) .and. abs(tangent_left - tangent_right) < 2.0e-10_dp, &
+        "MLP classifier probability VJP duality", failures)
+
+    call cpu%select(FORTML_DEVICE_CPU, status)
+    call first_model%decision_function_device(cpu, x, scores, status)
+    call check(status_ok(status), "MLP classifier CPU device decision", failures)
+    cuda%kind = FORTML_DEVICE_CUDA
+    cuda%selected = .true.
+    cuda%available = .true.
+    call first_model%predict_proba_device(cuda, x, probabilities, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
+        "MLP classifier CUDA probability refusal", failures)
+    call check(first_model%device_supported(FORTML_DEVICE_CPU) .and. &
+        .not. first_model%device_supported(FORTML_DEVICE_CUDA), &
+        "MLP classifier device capability contract", failures)
 
     theta = first_model%parameters()
     allocate(gradient(size(theta)), plus_gradient(size(theta)))

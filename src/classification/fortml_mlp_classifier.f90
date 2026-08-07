@@ -9,9 +9,11 @@ module fortml_mlp_classifier
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, status_ok, &
-        FORTNUM_OK, FORTNUM_DOMAIN_ERROR
+        FORTNUM_OK, FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED
+    use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU, &
+        FORTML_DEVICE_CUDA
     use fortml_mlp, only: mlp_t, MLP_TANH
-    use fortml_losses, only: softmax_value
+    use fortml_losses, only: softmax_value, softmax_jvp, softmax_vjp
     use fortopt_adam, only: adam_t
     implicit none
     private
@@ -54,8 +56,17 @@ module fortml_mlp_classifier
     contains
         procedure, public :: fit => mlp_classifier_fit
         procedure, public :: decision_function => mlp_classifier_decision
+        procedure, public :: decision_function_device => &
+            mlp_classifier_decision_device
+        procedure, public :: decision_function_jvp => mlp_classifier_decision_jvp
+        procedure, public :: decision_function_vjp => mlp_classifier_decision_vjp
         procedure, public :: predict_proba => mlp_classifier_predict_proba
+        procedure, public :: predict_proba_device => &
+            mlp_classifier_predict_proba_device
+        procedure, public :: predict_proba_jvp => mlp_classifier_predict_proba_jvp
+        procedure, public :: predict_proba_vjp => mlp_classifier_predict_proba_vjp
         procedure, public :: predict => mlp_classifier_predict
+        procedure, public :: predict_device => mlp_classifier_predict_device
         procedure, public :: classes => mlp_classifier_classes
         procedure, public :: feature_count => mlp_classifier_feature_count
         procedure, public :: class_count => mlp_classifier_class_count
@@ -64,7 +75,16 @@ module fortml_mlp_classifier
         procedure, public :: set_parameters => mlp_classifier_set_parameters
         procedure, public :: loss_gradient => mlp_classifier_model_loss_gradient
         procedure, public :: fitted => mlp_classifier_fitted
+        procedure, public :: device_supported => mlp_classifier_device_supported
     end type mlp_classifier_t
+
+    public :: mlp_classifier_decision_device
+    public :: mlp_classifier_decision_jvp
+    public :: mlp_classifier_decision_vjp
+    public :: mlp_classifier_predict_proba_device
+    public :: mlp_classifier_predict_proba_jvp
+    public :: mlp_classifier_predict_proba_vjp
+    public :: mlp_classifier_predict_device
 
 contains
 
@@ -485,6 +505,102 @@ contains
         call self%logits%predict(x, scores, status)
     end subroutine mlp_classifier_decision
 
+    subroutine mlp_classifier_decision_device(self, device, x, scores, status)
+        !! Explicit device contract for MLP logits.
+        !!
+        !! The MLP classifier currently has no resident CUDA lowering.  CPU
+        !! dispatch is the ordinary host implementation; an accelerator
+        !! request returns `FORTNUM_NOT_IMPLEMENTED` instead of silently
+        !! copying the batch back to the host.
+        class(mlp_classifier_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: scores(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier device decision: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%decision_function(x, scores, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "MLP classifier device decision: no resident CUDA kernel is linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier device decision: device kind is invalid")
+        end select
+    end subroutine mlp_classifier_decision_device
+
+    subroutine mlp_classifier_decision_jvp(self, x, theta_dot, x_dot, scores, &
+            scores_dot, status)
+        !! Exact joint JVP of logits with respect to parameters and inputs.
+        class(mlp_classifier_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), theta_dot(:), x_dot(:, :)
+        real(dp), intent(out) :: scores(:, :), scores_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        scores = 0.0_dp
+        scores_dot = 0.0_dp
+        if (.not. mlp_classifier_fitted(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier decision JVP: model is not fitted")
+            return
+        end if
+        if (size(x, 1) < 1 .or. size(x, 2) /= self%feature_count() .or. &
+            any(shape(x_dot) /= shape(x)) .or. &
+            any(shape(scores) /= [size(x, 1), self%class_count()]) .or. &
+            any(shape(scores_dot) /= shape(scores)) .or. &
+            size(theta_dot) /= self%parameter_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier decision JVP: model, tangent, or output shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(x)) .or. &
+            any(.not. ieee_is_finite(x_dot)) .or. &
+            any(.not. ieee_is_finite(theta_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier decision JVP: inputs and tangents must be finite")
+            return
+        end if
+        call self%logits%jvp(x, theta_dot, x_dot, scores, scores_dot, status)
+    end subroutine mlp_classifier_decision_jvp
+
+    subroutine mlp_classifier_decision_vjp(self, x, scores_bar, theta_bar, &
+            x_bar, status)
+        !! Exact VJP of logits with respect to packed parameters and inputs.
+        class(mlp_classifier_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), scores_bar(:, :)
+        real(dp), intent(out) :: theta_bar(:), x_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        theta_bar = 0.0_dp
+        x_bar = 0.0_dp
+        if (.not. mlp_classifier_fitted(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier decision VJP: model is not fitted")
+            return
+        end if
+        if (size(x, 1) < 1 .or. size(x, 2) /= self%feature_count() .or. &
+            any(shape(scores_bar) /= [size(x, 1), self%class_count()]) .or. &
+            size(theta_bar) /= self%parameter_count() .or. &
+            any(shape(x_bar) /= shape(x))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier decision VJP: model, cotangent, or output shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(x)) .or. &
+            any(.not. ieee_is_finite(scores_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier decision VJP: inputs and cotangents must be finite")
+            return
+        end if
+        call self%logits%vjp(x, scores_bar, theta_bar, x_bar, status)
+    end subroutine mlp_classifier_decision_vjp
+
     subroutine mlp_classifier_predict_proba(self, x, probabilities, status)
         class(mlp_classifier_t), intent(in) :: self
         real(dp), intent(in) :: x(:, :)
@@ -507,6 +623,99 @@ contains
         if (.not. status_ok(status)) return
         call softmax_value(scores, probabilities, status)
     end subroutine mlp_classifier_predict_proba
+
+    subroutine mlp_classifier_predict_proba_device(self, device, x, probabilities, &
+            status)
+        class(mlp_classifier_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: probabilities(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier device probability: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_proba(x, probabilities, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "MLP classifier device probability: no resident CUDA kernel is linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier device probability: device kind is invalid")
+        end select
+    end subroutine mlp_classifier_predict_proba_device
+
+    subroutine mlp_classifier_predict_proba_jvp(self, x, theta_dot, x_dot, &
+            probabilities, probabilities_dot, status)
+        !! Exact joint JVP of softmax probabilities.
+        class(mlp_classifier_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), theta_dot(:), x_dot(:, :)
+        real(dp), intent(out) :: probabilities(:, :), probabilities_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: scores(:, :), scores_dot(:, :)
+
+        probabilities = 0.0_dp
+        probabilities_dot = 0.0_dp
+        if (.not. mlp_classifier_fitted(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier probability JVP: model is not fitted")
+            return
+        end if
+        if (any(shape(probabilities) /= [size(x, 1), self%class_count()]) .or. &
+            any(shape(probabilities_dot) /= shape(probabilities))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier probability JVP: output shape is invalid")
+            return
+        end if
+        allocate(scores(size(x, 1), self%class_count()))
+        allocate(scores_dot(size(x, 1), self%class_count()))
+        call self%decision_function_jvp(x, theta_dot, x_dot, scores, scores_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        call softmax_jvp(scores, scores_dot, probabilities, probabilities_dot, status)
+    end subroutine mlp_classifier_predict_proba_jvp
+
+    subroutine mlp_classifier_predict_proba_vjp(self, x, probabilities_bar, &
+            theta_bar, x_bar, status)
+        !! Exact VJP of softmax probabilities with respect to parameters/input.
+        class(mlp_classifier_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), probabilities_bar(:, :)
+        real(dp), intent(out) :: theta_bar(:), x_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: scores(:, :), logits_bar(:, :)
+
+        theta_bar = 0.0_dp
+        x_bar = 0.0_dp
+        if (.not. mlp_classifier_fitted(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier probability VJP: model is not fitted")
+            return
+        end if
+        if (size(x, 1) < 1 .or. size(x, 2) /= self%feature_count() .or. &
+            any(shape(probabilities_bar) /= [size(x, 1), self%class_count()]) .or. &
+            size(theta_bar) /= self%parameter_count() .or. &
+            any(shape(x_bar) /= shape(x))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier probability VJP: model, cotangent, or output shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(x)) .or. &
+            any(.not. ieee_is_finite(probabilities_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier probability VJP: inputs and cotangents must be finite")
+            return
+        end if
+        allocate(scores(size(x, 1), self%class_count()))
+        allocate(logits_bar(size(x, 1), self%class_count()))
+        call self%decision_function(x, scores, status)
+        if (status%code /= FORTNUM_OK) return
+        call softmax_vjp(scores, probabilities_bar, logits_bar, status)
+        if (status%code /= FORTNUM_OK) return
+        call self%decision_function_vjp(x, logits_bar, theta_bar, x_bar, status)
+    end subroutine mlp_classifier_predict_proba_vjp
 
     subroutine mlp_classifier_predict(self, x, labels, status)
         class(mlp_classifier_t), intent(in) :: self
@@ -535,6 +744,30 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine mlp_classifier_predict
+
+    subroutine mlp_classifier_predict_device(self, device, x, labels, status)
+        class(mlp_classifier_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :)
+        integer, intent(out) :: labels(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier device prediction: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict(x, labels, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "MLP classifier device prediction: no resident CUDA kernel is linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier device prediction: device kind is invalid")
+        end select
+    end subroutine mlp_classifier_predict_device
 
     function mlp_classifier_classes(self) result(classes)
         class(mlp_classifier_t), intent(in) :: self
@@ -600,6 +833,21 @@ contains
         if (size(self%class_label) < 2) return
         is_fitted = self%logits%parameter_count() > 0
     end function mlp_classifier_fitted
+
+    logical function mlp_classifier_device_supported(self, device_kind) &
+            result(supported)
+        class(mlp_classifier_t), intent(in) :: self
+        integer, intent(in) :: device_kind
+
+        select case (device_kind)
+        case (FORTML_DEVICE_CPU)
+            supported = self%fitted()
+        case (FORTML_DEVICE_CUDA)
+            supported = .false.
+        case default
+            supported = .false.
+        end select
+    end function mlp_classifier_device_supported
 
     logical function valid_options(options) result(valid)
         type(mlp_classifier_options_t), intent(in) :: options
