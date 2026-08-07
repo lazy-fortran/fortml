@@ -103,6 +103,7 @@ eight-activation oracle, and repeated resident-batch evidence.
 | `mlp_t` | `predict` | Parameters and inputs | Parameters and inputs | Weighted-output HVP |
 | `mlp_classifier_t` | Logits, probabilities, and labels | Parameter/input JVP, probability JVP | Parameter/input VJP, probability VJP | No |
 | `mlp_binary_classifier_t` | One-logit sigmoid probabilities and binary labels | Parameter/input JVP, probability JVP | Parameter/input VJP, probability VJP; weighted BCE gradient | Exact weighted BCE parameter HVP |
+| `mlp_multilabel_classifier_t` | Shared-MLP sigmoid probabilities for indicator columns | Parameter/input JVP, probability JVP | Parameter/input VJP, probability VJP; weighted BCE gradient | Exact weighted multilabel BCE parameter HVP |
 | `mlp_chain_t` | Sequential composition of named MLP stages | Packed all-stage parameters and inputs | Packed all-stage parameters and inputs | Differentiated reverse chain rule for parameters and inputs |
 | `mlp_training_objective_t` | MSE+L2 scalar objective | Packed network/L2 JVP | Packed network/L2 gradient and scalar VJP | Joint network/L2 HVP |
 | `mlp_grouped_training_objective_t` | MSE with one positive log-L2 coefficient per named parameter range | Packed network/log-L2 JVP | Packed network/log-L2 gradient and scalar VJP | Exact mixed network/log-L2 HVP |
@@ -1592,6 +1593,34 @@ selected CPU context; selected CUDA contexts return
 The independent `test_mlp_binary_classifier` oracle checks fit behavior,
 finite-difference JVP/gradient/HVP products, VJP duality, deterministic Adam,
 and the typed CUDA refusal.
+
+### `fortml_mlp_multilabel_classifier`
+
+`mlp_multilabel_classifier_t%fit(x,indicators,status[,hidden_layer_sizes,
+options,state,sample_weight,class_weight,thresholds])` builds one shared MLP
+with one linear logit per indicator column.  Integer `indicators` must have
+shape `(n_samples,n_labels)` and contain only zero and one.  The objective is
+the mean over labels of weighted binary cross-entropy-with-logits plus feature
+and bias L2 regularisation.  `sample_weight` is nonnegative and uses positive
+weight-mass normalisation; `class_weight(2,n_labels)` optionally scales each
+column's negative and positive examples.  The optimizer is deterministic
+full-batch Adam with seeded initialization and exact analytic gradients.
+
+`decision_function` returns the shared MLP logits and `predict_proba` applies a
+stable sigmoid independently to every column.  `predict` thresholds each
+column (default `0.5`); `thresholds` and `set_thresholds` expose the finite
+values in `(0,1)`.  `label_count`, `feature_count`, `parameter_count`,
+`parameters`, `set_parameters`, `loss_gradient`, `loss_hvp`, and `fitted`
+expose the packed model and exact weighted-BCE derivatives.
+
+`decision_function_jvp`/`decision_function_vjp` and
+`predict_proba_jvp`/`predict_proba_vjp` differentiate with respect to both
+packed parameters and continuous input rows.  Device methods dispatch to a
+selected CPU context; selected CUDA contexts return
+`FORTNUM_NOT_IMPLEMENTED` until a resident multilabel MLP kernel is linked.
+The independent `test_mlp_multilabel_classifier` oracle checks matrix shapes,
+thresholded predictions, parameter/input JVP and VJP duality, loss gradient and
+HVP finite differences, deterministic full-batch Adam, and the CUDA refusal.
 
 ### `fortml_tree`
 
