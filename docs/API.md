@@ -80,7 +80,7 @@ not supplied through a hidden generic interface.
 `cuda_dense_plan_t` is the typed Fortran wrapper for the resident, no-autodiff
 CUDA dense-affine inference primitive. `create(weights,bias,activation,
 device_index,status)` validates finite `weights(n_inputs,n_outputs)` and
-`bias(n_outputs)`, uploads one immutable layer, and records the selected device.
+`bias(n_outputs)`, uploads one resident layer, and records the selected device.
 `predict(query_x,outputs,status)` accepts `query_x(n_query,n_inputs)` and
 `outputs(n_query,n_outputs)`; only the query batch and result cross the host /
 device boundary. `jvp(query_x,query_x_dot,weights_dot,bias_dot,outputs,
@@ -106,10 +106,11 @@ multi-layer trainer.
 
 The ordinary GNU build links an unavailable stub and returns
 `FORTNUM_NOT_IMPLEMENTED`; it never executes a CPU fallback. The plan exposes
-no HVP or optimizer state. The JVP, VJP, and MSE-update graphs are resident and
-have independent CPU recurrence/oracle checks for all eight activations; HVP
-and full MLP training remain on the FortAD/FortSym reference path until their
-complete resident graphs are linked. See
+no HVP or optimizer state. The JVP and VJP graphs are resident with independent
+CPU recurrence/oracle checks for all eight activations. The MSE update has an
+independent tanh loss/gradient/parameter oracle. HVP and full MLP training
+remain on the FortAD/FortSym reference path until their complete resident
+graphs are linked. See
 [`docs/CUDA_DENSE_PLAN.md`](CUDA_DENSE_PLAN.md) and the independent
 `test/run_cuda_dense_plan.sh` gate for the ABI layout, finite-input refusal,
 eight-activation value/JVP/VJP oracle, MSE update, transfer counters, and

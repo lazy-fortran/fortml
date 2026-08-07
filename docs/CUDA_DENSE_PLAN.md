@@ -4,7 +4,7 @@
 for one dense neural layer. It includes inference products and a single-layer
 full-batch MSE update, not a claim that the complete MLP trainer or its
 FortAD/FortSym derivative graph is resident.
-The plan owns the immutable weights and bias on one selected device and
+The plan owns the resident weights and bias on one selected device and
 performs an affine map followed by one of the eight `fortml_mlp` activations:
 linear, `tanh`, ReLU, GELU, SiLU, ELU, softplus, or leaky-ReLU.
 
