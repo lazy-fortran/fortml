@@ -30,7 +30,7 @@ module fortml_logistic_regression
 contains
 
     subroutine logistic_fit(self, x, labels, status, l2, fit_intercept, &
-            max_iterations, tolerance)
+            max_iterations, tolerance, sample_weight)
         class(logistic_regression_t), intent(out) :: self
         real(dp), intent(in) :: x(:, :)
         integer, intent(in) :: labels(:)
@@ -38,12 +38,14 @@ contains
         real(dp), intent(in), optional :: l2, tolerance
         logical, intent(in), optional :: fit_intercept
         integer, intent(in), optional :: max_iterations
+        real(dp), intent(in), optional :: sample_weight(:)
         type(objective_t) :: objective
         type(lbfgsb_t) :: optimizer
         type(lbfgsb_options_t) :: options
         type(lbfgsb_result_t) :: result
         real(dp), allocatable :: theta(:), lower(:), upper(:), encoded(:)
-        real(dp) :: penalty, requested_tolerance
+        real(dp), allocatable :: weights(:)
+        real(dp) :: penalty, requested_tolerance, weight_sum
         integer :: i, iterations, n_features, n_parameters
         integer :: negative_label, positive_label
         logical :: include_intercept
@@ -56,6 +58,24 @@ contains
         if (size(labels) /= size(x, 1)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "logistic fit: label and sample counts differ")
+            return
+        end if
+        allocate(weights(size(labels)))
+        weights = 1.0_dp
+        if (present(sample_weight)) then
+            if (size(sample_weight) /= size(labels) .or. &
+                any(.not. ieee_is_finite(sample_weight)) .or. &
+                any(sample_weight < 0.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "logistic fit: sample weights must be finite and nonnegative")
+                return
+            end if
+            weights = sample_weight
+        end if
+        weight_sum = sum(weights)
+        if (.not. ieee_is_finite(weight_sum) .or. weight_sum <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "logistic fit: sample weights must have positive mass")
             return
         end if
         if (any(.not. ieee_is_finite(x))) then
@@ -98,7 +118,7 @@ contains
         requested_tolerance = 1.0e-8_dp
         if (present(tolerance)) requested_tolerance = tolerance
         if (.not. ieee_is_finite(requested_tolerance) .or. &
-                requested_tolerance <= 0.0_dp) then
+            requested_tolerance <= 0.0_dp) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "logistic fit: tolerance must be finite and positive")
             return
@@ -164,19 +184,20 @@ contains
                 probability = stable_sigmoid(score)
                 residual = probability - encoded(i)
                 if (encoded(i) > 0.5_dp) then
-                    value = value + stable_softplus(-score)
+                    value = value + weights(i)*stable_softplus(-score)
                 else
-                    value = value + stable_softplus(score)
+                    value = value + weights(i)*stable_softplus(score)
                 end if
                 do j = 1, n_features
-                    gradient(j) = gradient(j) + residual*x(i, j)
+                    gradient(j) = gradient(j) + weights(i)*residual*x(i, j)
                 end do
                 if (include_intercept) then
-                    gradient(n_parameters) = gradient(n_parameters) + residual
+                    gradient(n_parameters) = gradient(n_parameters) + &
+                        weights(i)*residual
                 end if
             end do
-            value = value/real(size(x, 1), dp)
-            gradient = gradient/real(size(x, 1), dp)
+            value = value/weight_sum
+            gradient = gradient/weight_sum
             value = value + 0.5_dp*penalty*sum(parameters(:n_features)**2)
             gradient(:n_features) = gradient(:n_features) + &
                 penalty*parameters(:n_features)
@@ -241,7 +262,7 @@ contains
         integer :: i
 
         if (size(probabilities, 1) /= size(x, 1) .or. &
-                size(probabilities, 2) /= 2) then
+            size(probabilities, 2) /= 2) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "logistic predict_proba: output shape must be (n_samples,2)")
             return

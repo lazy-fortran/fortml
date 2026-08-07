@@ -253,7 +253,7 @@ The source inventory is dated 2026-08-07.
 
 | Work package | State | Implemented baseline | Package exit |
 | --- | --- | --- | --- |
-| Classification | Partial | `fortml_logistic_regression` and `fortml_softmax_regression` provide binary and multinomial integer-label fitting, `fortml_mlp_classifier` adds deterministic multiclass logits training with Adam, `fortml_gp_classification` adds binary Laplace logistic/probit inference, and shared metrics now cover accuracy, balanced accuracy, confusion, precision/recall/F1, weighted accuracy, and log loss. | Binary and multiclass linear, neural, GP, and boosted-tree classifiers share label, probability, weighting, and metric conventions. |
+| Classification | Partial | `fortml_logistic_regression` and `fortml_softmax_regression` provide binary and multinomial integer-label fitting with sample-weighted reductions, `fortml_mlp_classifier` adds deterministic multiclass logits training with Adam, `fortml_gp_classification` adds binary Laplace logistic/probit inference, `fortml_gp_multiclass_classification` adds one-vs-rest multiclass GP probabilities, and shared metrics cover accuracy, balanced accuracy, confusion, precision/recall/F1, weighted accuracy, and log loss. | Binary and multiclass linear, neural, GP, and boosted-tree classifiers share label, probability, weighting, and metric conventions. |
 | Estimator contracts, pipelines, and bases | Partial | `basis_map_t`, the horizontal `basis_pipeline_t`, fitted standard/min-max scalers with input JVPs, row-oriented sample conventions, status objects, and the parameter registry are public. | Fitted transformers and estimators compose without data leakage, expose routed parameters, and run through cross-validation. |
 | Tree boosting | Partial | `decision_stump_t`, squared-loss `gradient_boosting_regressor_t`, and `xgboost_t` provide deterministic exhaustive split products. The XGBoost-style lane has exact depth-one squared/logistic gradients, Hessians, regularized gains, Newton leaves, diagnostics, and piecewise input JVP/refusal behavior. | Regression and classification trees support deterministic histogram boosting, validation-based stopping, missing values, deeper growth, and model persistence. |
 | Training infrastructure | Partial | Model-specific gradients, exact MSE+L2 neural HVPs including the L2 mixed hyperparameter block, `fortopt_adam` integration, natural-gradient seams, and seeded variational draws exist. | One trainer owns batches, optimizer state, schedules, clipping, validation, early stopping, callbacks, and resumable state for every model with a completed trainer adapter. |
@@ -269,11 +269,11 @@ The source inventory is dated 2026-08-07.
   one column per class.
 - [x] Add binary logistic regression with an intercept, L2 regularization,
   `fit`, `decision_function`, `predict_proba`, and `predict`.
-- [ ] Add sample weights and class weights to binary logistic regression while
-  preserving the documented reduction and class-label contract.
+- [x] Add nonnegative sample weights to binary logistic and multinomial softmax
+  fits while preserving the documented positive-weight-mass reduction and
+  class-label contract. Class-weight convenience APIs remain open.
 - [x] Add multinomial softmax regression with a numerically stable log-sum-exp
-  objective. Its class-label and weighting contract still needs the shared
-  metrics and sample/class-weight extension below.
+  objective, sorted integer labels, and the shared sample-weight reduction.
 - [x] Add a multiclass `mlp_classifier_t` adapter with a logits layer, stable
   softmax cross-entropy, deterministic Adam, sorted integer labels, probability
   normalization, and a packed parameter-gradient product. Binary, multilabel,
@@ -293,6 +293,9 @@ The source inventory is dated 2026-08-07.
 - [x] Add a binary Laplace GP classifier with Bernoulli logistic and probit
   likelihoods, Newton convergence state, predictive latent moments, observed
   probabilities, and input JVPs over the supported kernel derivative contract.
+- [x] Add a deterministic one-vs-rest multiclass GP wrapper with sorted integer
+  classes, independent binary Laplace fits, normalized probability simplex,
+  deterministic prediction ties, and refusal propagation.
 - [ ] Add robust and multiclass variational GP likelihoods, quadrature or
   variational objectives, predictive probability products, and calibrated
   latent-to-observed uncertainty. All GP classifiers share the same label and
@@ -644,6 +647,9 @@ state phases are reported separately.
   with damped Newton state, latent/probability prediction, and input JVPs over
   the kernel derivative contract. Kernel hyperparameter products and
   derivative-observation classifier paths remain open.
+- [x] Add one-vs-rest multiclass GP classification as a deterministic wrapper
+  over the binary Laplace contract, with sorted labels and normalized positive
+  probabilities. Variational categorical likelihoods remain open.
 - [ ] Add Bernoulli and multiclass variational GP classification after the shared
   classifier likelihood and metric contracts are complete.
 

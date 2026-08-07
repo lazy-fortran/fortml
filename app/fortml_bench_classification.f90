@@ -6,6 +6,9 @@ program fortml_bench_classification
     use fortml_gp_classification, only: gp_classification_t, &
         gp_classification_options_t, GP_LIKELIHOOD_LOGISTIC, &
         GP_LIKELIHOOD_PROBIT
+    use fortml_gp_multiclass_classification, only: &
+        gp_multiclass_classification_t, gp_multiclass_classification_options_t, &
+        gp_multiclass_classification_state_t
     use fortml_kernels, only: kernel_t, make_rbf_kernel
     use fortnum_status, only: fortnum_status_t, status_ok
     implicit none
@@ -130,12 +133,17 @@ contains
         integer, parameter :: n_query = 32, repetitions = 3
         real(dp) :: x(n_samples, n_features), query(n_query, n_features)
         real(dp) :: probabilities(n_query, 2), mean(n_query), variance(n_query)
+        real(dp) :: multiclass_probabilities(n_query, 3)
         real(dp) :: elapsed_fit, elapsed_predict, accuracy, checksum
-        integer :: labels(n_samples), predicted(n_samples), i, repetition
+        integer :: labels(n_samples), predicted(n_samples), multiclass_labels(n_samples)
+        integer :: multiclass_predicted(n_samples), i, repetition
         integer(int64) :: clock_start, clock_end, clock_rate
         type(kernel_t) :: kernel
         type(gp_classification_t) :: model
         type(gp_classification_options_t) :: options
+        type(gp_multiclass_classification_t) :: multiclass_model
+        type(gp_multiclass_classification_options_t) :: multiclass_options
+        type(gp_multiclass_classification_state_t) :: multiclass_state
         type(fortnum_status_t) :: status
 
         do i = 1, n_samples
@@ -177,6 +185,25 @@ contains
         if (.not. status_ok(status)) error stop "GP probit benchmark failed"
         write (*, '(a,i0,a,i0,a,es24.16)') "gp_classification_probit,", &
             n_samples, ",", n_features, ",", sum(probabilities(:, 2))
+
+        do i = 1, n_samples
+            multiclass_labels(i) = merge(-7, merge(3, 11, x(i, 1) < 0.5_dp), &
+                x(i, 1) < -0.5_dp)
+        end do
+        multiclass_options%max_iterations = 80
+        multiclass_options%tolerance = 1.0e-8_dp
+        multiclass_options%jitter = 1.0e-7_dp
+        call multiclass_model%fit(x, multiclass_labels, kernel, status, &
+            multiclass_options, multiclass_state)
+        call multiclass_model%predict(x, multiclass_predicted, status)
+        call multiclass_model%predict_proba(x, multiclass_probabilities, status)
+        accuracy = real(count(multiclass_predicted == multiclass_labels), dp) &
+            /real(n_samples, dp)
+        if (.not. status_ok(status)) error stop "GP multiclass benchmark failed"
+        write (*, '(a,i0,a,i0,a,es24.16,a,es24.16,a,es24.16)') &
+            "gp_classification_multiclass,", n_samples, ",", n_features, ",", &
+            accuracy, ",", sum(multiclass_probabilities), ",", &
+            real(multiclass_state%total_iterations, dp)
     end subroutine benchmark_gp_classification
 
 end program fortml_bench_classification

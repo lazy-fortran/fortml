@@ -6,7 +6,7 @@ program test_softmax_regression
 
     type(softmax_regression_t) :: model
     type(fortnum_status_t) :: status
-    real(dp) :: x(6, 2), probabilities(6, 3), scores(6, 3)
+    real(dp) :: x(6, 2), probabilities(6, 3), scores(6, 3), expected(6, 3)
     integer :: labels(6), predicted(6), classes(3)
     integer :: failures
 
@@ -30,6 +30,26 @@ program test_softmax_regression
         real(count(predicted == labels), dp)/real(size(labels), dp) < 0.99_dp .or. &
         any(shape(scores) /= [6, 3])) then
         write (error_unit, '(a)') "FAIL [softmax] independent probability/class oracle"
+        failures = failures + 1
+    end if
+
+    x(:, :) = 0.0_dp
+    expected(:, 1) = 0.25_dp
+    expected(:, 2) = 0.25_dp
+    expected(:, 3) = 0.5_dp
+    call model%fit(x, labels, status, l2=0.0_dp, sample_weight=[ &
+        1.0_dp, 1.0_dp, 1.0_dp, 1.0_dp, 1.0_dp, 3.0_dp], &
+        max_iterations=1000, tolerance=1.0e-8_dp)
+    call model%predict_proba(x, probabilities, status)
+    if (.not. status_ok(status) .or. maxval(abs(probabilities - expected)) > &
+        2.0e-7_dp) then
+        write (error_unit, '(a)') "FAIL [softmax] weighted probability oracle"
+        failures = failures + 1
+    end if
+    call model%fit(x, labels, status, sample_weight=[0.0_dp, 0.0_dp, 0.0_dp, &
+        0.0_dp, 0.0_dp, 0.0_dp])
+    if (status_ok(status)) then
+        write (error_unit, '(a)') "FAIL [softmax] zero sample-weight refusal"
         failures = failures + 1
     end if
 

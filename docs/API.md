@@ -84,11 +84,13 @@ must have the model shapes described above.
 ### `fortml_logistic_regression`
 
 `logistic_regression_t%fit(x,labels,status[,l2,fit_intercept,max_iterations,
-tolerance])` fits a binary logistic model with a stable mean
+tolerance,sample_weight])` fits a binary logistic model with a stable weighted
 cross-entropy objective and L2 penalty on the feature coefficients. The fit is
 delegated to `fortopt_lbfgsb`. Labels are arbitrary integers, but exactly two
 distinct values must occur. They are stored in ascending order and define the
-two probability columns.
+two probability columns. A nonnegative `sample_weight` vector changes the
+cross-entropy reduction to a positive-weight-mass average while leaving the
+feature penalty unchanged.
 
 `decision_function(x,scores,status)` returns one logit per row.
 `predict_proba(x,probabilities,status)` returns `(n_samples,2)` with columns
@@ -123,20 +125,23 @@ the shared objective layer for neural, multiclass, GP, and boosting adapters.
 ### `fortml_softmax_regression`
 
 `softmax_regression_t%fit(x,labels,status[,l2,fit_intercept,max_iterations,
-tolerance])` fits a multinomial softmax model with one column per sorted integer
+tolerance,sample_weight])` fits a multinomial softmax model with one column
+per sorted integer
 class label. The objective is mean softmax cross-entropy with L2 regularization
-on feature coefficients and is optimized by `fortopt_lbfgsb`.
+on feature coefficients and is optimized by `fortopt_lbfgsb`. A nonnegative
+`sample_weight` vector selects the corresponding positive-weight-mass
+cross-entropy reduction.
 `decision_function` returns one logit column per class, `predict_proba` applies
 the stable row-wise softmax, and `predict` maps the largest probability back to
 the stored class label with a first-column tie rule. `coefficients`,
 `intercept_values`, `classes`, `feature_count`, `class_count`, and `fitted`
-expose the model state. At least two distinct classes are required. Sample and
-class weighting remain a roadmap item shared with the binary classifier.
+expose the model state. At least two distinct classes are required. Class
+weights, sparse targets, and multilabel weighting remain roadmap work.
 
 ### `fortml_preprocessing`
 
 `standard_scaler_t%fit` stores column means and population standard deviations.
-zero-variance columns use unit scale. `transform`, `inverse_transform`, and
+Zero-variance columns use unit scale. `transform`, `inverse_transform`, and
 `transform_jvp` operate on row-oriented batches. `minmax_scaler_t%fit` stores
 column extrema and maps to an increasing caller-selected range (default
 `[0,1]`), with the same transform, inverse, and input-JVP operations. Fitted
@@ -450,6 +455,15 @@ supplies the existing matrix and input-derivative contracts is supported.
 This is currently a Laplace binary classifier: variational likelihoods,
 multiclass coupling, kernel hyperparameter products, and derivative
 observations remain explicit roadmap work.
+
+`gp_multiclass_classification_t` provides deterministic one-vs-rest multiclass
+GP classification over the same binary Laplace models. It fits one model per
+sorted integer class, normalizes their positive probabilities onto a simplex,
+and exposes `classes`, `class_count`, `feature_count`, `predict_proba`,
+`predict`, and `fitted`. The wrapper inherits the selected logistic or probit
+likelihood and kernel/refusal behavior. It is a coupling policy rather than a
+multinomial likelihood, so variational categorical likelihoods and shared
+multiclass hyperparameter training remain separate work.
 
 ### `fortml_derivative_gaussian_process`
 

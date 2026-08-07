@@ -5,8 +5,7 @@ module fortml_softmax_regression
         FORTNUM_DOMAIN_ERROR, FORTNUM_CONVERGENCE_ERROR
     use fortopt_objective, only: objective_t
     use fortopt_lbfgsb, only: lbfgsb_t, lbfgsb_options_t, lbfgsb_result_t
-    use fortml_losses, only: softmax_value, softmax_cross_entropy_value, &
-        softmax_cross_entropy_vjp
+    use fortml_losses, only: softmax_value
     implicit none
     private
 
@@ -33,7 +32,7 @@ module fortml_softmax_regression
 contains
 
     subroutine softmax_fit(self, x, labels, status, l2, fit_intercept, &
-            max_iterations, tolerance)
+            max_iterations, tolerance, sample_weight)
         class(softmax_regression_t), intent(out) :: self
         real(dp), intent(in) :: x(:, :)
         integer, intent(in) :: labels(:)
@@ -41,12 +40,14 @@ contains
         real(dp), intent(in), optional :: l2, tolerance
         logical, intent(in), optional :: fit_intercept
         integer, intent(in), optional :: max_iterations
+        real(dp), intent(in), optional :: sample_weight(:)
         type(objective_t) :: objective
         type(lbfgsb_t) :: optimizer
         type(lbfgsb_options_t) :: options
         type(lbfgsb_result_t) :: result
         real(dp), allocatable :: theta(:), lower(:), upper(:), encoded(:)
-        real(dp) :: penalty, requested_tolerance
+        real(dp), allocatable :: weights(:)
+        real(dp) :: penalty, requested_tolerance, weight_sum
         integer :: iterations, n_features, n_classes, n_parameters
         integer :: i, j, position
         logical :: include_intercept
@@ -54,6 +55,24 @@ contains
         if (size(x, 1) < 1 .or. size(x, 2) < 1 .or. size(labels) /= size(x, 1)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "softmax fit: input dimensions are invalid")
+            return
+        end if
+        allocate(weights(size(labels)))
+        weights = 1.0_dp
+        if (present(sample_weight)) then
+            if (size(sample_weight) /= size(labels) .or. &
+                any(.not. ieee_is_finite(sample_weight)) .or. &
+                any(sample_weight < 0.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "softmax fit: sample weights must be finite and nonnegative")
+                return
+            end if
+            weights = sample_weight
+        end if
+        weight_sum = sum(weights)
+        if (.not. ieee_is_finite(weight_sum) .or. weight_sum <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "softmax fit: sample weights must have positive mass")
             return
         end if
         if (any(.not. ieee_is_finite(x))) then
@@ -140,6 +159,7 @@ contains
             type(fortnum_status_t), intent(out) :: objective_status
             real(dp) :: logits(size(x, 1), n_classes)
             real(dp) :: logits_bar(size(x, 1), n_classes)
+            real(dp) :: maximum, normalizer
             integer :: row, column, offset
 
             offset = n_features*n_classes
@@ -151,11 +171,23 @@ contains
                         logits(row, column) + parameters(offset + column)
                 end do
             end do
-            call softmax_cross_entropy_value(logits, int(encoded), value, objective_status)
-            if (objective_status%code /= FORTNUM_OK) return
-            call softmax_cross_entropy_vjp(logits, int(encoded), 1.0_dp, logits_bar, &
-                objective_status)
-            if (objective_status%code /= FORTNUM_OK) return
+            value = 0.0_dp
+            logits_bar = 0.0_dp
+            do row = 1, size(x, 1)
+                maximum = maxval(logits(row, :))
+                normalizer = 0.0_dp
+                do column = 1, n_classes
+                    logits_bar(row, column) = exp(logits(row, column) - maximum)
+                    normalizer = normalizer + logits_bar(row, column)
+                end do
+                value = value + weights(row)*(maximum - &
+                    logits(row, int(encoded(row))) + log(normalizer))
+                logits_bar(row, :) = weights(row)*logits_bar(row, :)/normalizer
+                logits_bar(row, int(encoded(row))) = &
+                    logits_bar(row, int(encoded(row))) - weights(row)
+            end do
+            value = value/weight_sum
+            logits_bar = logits_bar/weight_sum
             gradient = 0.0_dp
             do column = 1, n_classes
                 do row = 1, n_features
@@ -169,7 +201,9 @@ contains
             if (.not. ieee_is_finite(value) .or. any(.not. ieee_is_finite(gradient))) then
                 call status_set(objective_status, FORTNUM_DOMAIN_ERROR, &
                     "softmax objective: result is not finite")
+                return
             end if
+            call status_set(objective_status, FORTNUM_OK, "")
         end subroutine softmax_objective
 
     end subroutine softmax_fit
