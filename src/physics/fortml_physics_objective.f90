@@ -98,6 +98,7 @@ module fortml_physics_objective
         procedure, public :: initialize => physics_objective_initialize
         procedure, public :: initialized => physics_objective_initialized
         procedure, public :: parameter_count => physics_objective_parameter_count
+        procedure, public :: term_values => physics_objective_term_values
         procedure, public :: value => physics_objective_value
         procedure, public :: gradient => physics_objective_gradient
         procedure, public :: value_gradient => physics_objective_value_gradient
@@ -383,6 +384,39 @@ contains
         count = self%n_parameters
     end function physics_objective_parameter_count
 
+    subroutine physics_objective_term_values(self, theta, values, status)
+        !! Return the four named constraint contributions in a fixed order.
+        !!
+        !! ``values = [data, residual, boundary, conservation]``.  An
+        !! inactive slot is reported as zero, so callers can use this method
+        !! as a stable residual-balancing diagnostic without inspecting the
+        !! private constraint components.  The entries sum to ``value(theta)``
+        !! for every initialized objective.
+        class(physics_objective_t), intent(in) :: self
+        real(dp), intent(in) :: theta(:)
+        real(dp), intent(out) :: values(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. self%initialized()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "physics objective: object is not initialized")
+            return
+        end if
+        if (size(theta) /= self%n_parameters .or. &
+            any(.not. ieee_is_finite(theta)) .or. size(values) /= 4) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "physics objective: diagnostic shape or values are invalid")
+            return
+        end if
+        call constraint_value_or_zero(self%data, theta, values(1), status)
+        if (status%code /= FORTNUM_OK) return
+        call constraint_value_or_zero(self%residual, theta, values(2), status)
+        if (status%code /= FORTNUM_OK) return
+        call constraint_value_or_zero(self%boundary, theta, values(3), status)
+        if (status%code /= FORTNUM_OK) return
+        call constraint_value_or_zero(self%conservation, theta, values(4), status)
+    end subroutine physics_objective_term_values
+
     subroutine physics_objective_value_gradient(self, theta, value, gradient, status)
         class(physics_objective_t), intent(in) :: self
         real(dp), intent(in) :: theta(:)
@@ -633,6 +667,20 @@ contains
         value = value + term_value
         gradient = gradient + term_gradient
     end subroutine accumulate_value_gradient
+
+    subroutine constraint_value_or_zero(term, theta, value, status)
+        type(physics_constraint_t), intent(in) :: term
+        real(dp), intent(in) :: theta(:)
+        real(dp), intent(out) :: value
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. term%initialized()) then
+            value = 0.0_dp
+            call status_set(status, FORTNUM_OK, "")
+            return
+        end if
+        call term%value(theta, value, status)
+    end subroutine constraint_value_or_zero
 
     subroutine accumulate_jvp(term, theta, theta_dot, value, value_dot, &
             term_value, term_dot, status)

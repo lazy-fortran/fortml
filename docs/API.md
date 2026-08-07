@@ -1406,8 +1406,11 @@ scalar `jvp`, and scalar `vjp`; `hvp` returns
 `FORTNUM_NOT_IMPLEMENTED` until a residual-HVP callback is part of the
 contract. `physics_objective_t` composes four named slots—`data`,
 `residual`, `boundary`, and `conservation`—and sums their value/gradient and
-first-order products. `as_objective` adapts the value/gradient path to
-FortOpt. Callbacks own coordinate/time layouts, units, and device residency;
+first-order products. `term_values(theta, values, status)` returns the four
+normalized weighted slot contributions in that order; inactive slots are zero,
+and their sum equals `value(theta)`. This is the stable residual/conservation
+balancing diagnostic. `as_objective` adapts the value/gradient path to FortOpt.
+Callbacks own coordinate/time layouts, units, and device residency;
 there is no hidden finite-difference or host/GPU fallback. See
 [`docs/PHYSICS_MODELS.md`](PHYSICS_MODELS.md) and the independent
 `test_physics_objective` affine-residual oracle.

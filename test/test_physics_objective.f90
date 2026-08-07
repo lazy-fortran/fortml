@@ -16,11 +16,12 @@ program test_physics_objective
     type(affine_term_t), target :: data_term, residual_term, boundary_term
     type(affine_term_t), target :: conservation_term
     type(physics_constraint_t) :: data, residual, boundary, conservation
-    type(physics_objective_t) :: objective, bad_objective
+    type(physics_objective_t) :: objective, bad_objective, partial_objective
     type(objective_t) :: fortopt_objective
     type(fortnum_status_t) :: status
     real(dp) :: theta(2), direction(2), gradient(2), adjoint(2), expected(2)
     real(dp) :: value, value_plus, value_minus, value_dot, h, scalar
+    real(dp) :: term_values(4), expected_terms(4)
     real(dp) :: hessian_direction(2)
     integer :: failures, i
 
@@ -59,6 +60,11 @@ program test_physics_objective
         "independent weighted residual value", failures)
     call check(maxval(abs(gradient - expected)) < 2.0e-14_dp, &
         "independent weighted residual gradient", failures)
+    call objective%term_values(theta, term_values, status)
+    call oracle_term_values(theta, expected_terms)
+    call check(status_ok(status) .and. maxval(abs(term_values - expected_terms)) < &
+        2.0e-14_dp .and. abs(sum(term_values) - value) < 2.0e-14_dp, &
+        "named residual contribution diagnostic", failures)
     call objective%value(theta, value_plus, status)
     call objective%gradient(theta, adjoint, status)
     call check(status_ok(status) .and. abs(value_plus - value) < 2.0e-14_dp .and. &
@@ -110,8 +116,20 @@ program test_physics_objective
     call bad_objective%initialize(2, status=status)
     call check(status%code == FORTNUM_DOMAIN_ERROR, &
         "empty objective refusal", failures)
+    call partial_objective%initialize(2, residual=residual, status=status)
+    call check(status_ok(status), "partial objective initialization", failures)
+    call partial_objective%term_values(theta, term_values, status)
+    call check(status_ok(status), "partial objective diagnostic", failures)
+    call residual%value(theta, expected_terms(2), status)
+    expected_terms = [0.0_dp, expected_terms(2), 0.0_dp, 0.0_dp]
+    call check(status_ok(status) .and. abs(term_values(1)) == 0.0_dp .and. &
+        abs(term_values(2) - expected_terms(2)) < 2.0e-14_dp .and. &
+        abs(term_values(3)) == 0.0_dp .and. abs(term_values(4)) == 0.0_dp, &
+        "inactive named contribution slots", failures)
     call objective%value_gradient([theta(1)], value, gradient, status)
     call check(status%code == FORTNUM_DOMAIN_ERROR, "shape refusal", failures)
+    call objective%term_values([theta(1)], term_values, status)
+    call check(status%code == FORTNUM_DOMAIN_ERROR, "diagnostic shape refusal", failures)
 
     if (failures /= 0) then
         write (error_unit, '(i0,a)') failures, " physics objective test(s) failed"
@@ -184,6 +202,26 @@ contains
         call oracle_term(boundary_term, 0.75_dp, theta, value, gradient)
         call oracle_term(conservation_term, 1.25_dp, theta, value, gradient)
     end subroutine oracle_value_gradient
+
+    subroutine oracle_term_values(theta, values)
+        real(dp), intent(in) :: theta(:)
+        real(dp), intent(out) :: values(:)
+
+        call oracle_term_value(data_term, 1.0_dp, theta, values(1))
+        call oracle_term_value(residual_term, 2.5_dp, theta, values(2))
+        call oracle_term_value(boundary_term, 0.75_dp, theta, values(3))
+        call oracle_term_value(conservation_term, 1.25_dp, theta, values(4))
+    end subroutine oracle_term_values
+
+    subroutine oracle_term_value(term, weight, theta, value)
+        type(affine_term_t), intent(in) :: term
+        real(dp), intent(in) :: weight, theta(:)
+        real(dp), intent(out) :: value
+        real(dp) :: residual(2)
+
+        residual = matmul(term%matrix, theta) - term%offset
+        value = weight*dot_product(residual, residual)/4.0_dp
+    end subroutine oracle_term_value
 
     subroutine oracle_term(term, weight, theta, value, gradient)
         type(affine_term_t), intent(in) :: term

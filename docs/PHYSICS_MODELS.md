@@ -33,11 +33,17 @@ autoencoder initializer.
 `physics_constraint_t` owns a positive reduction weight and caller-supplied
 residual/JVP/VJP callbacks, while `physics_objective_t` sums named data,
 residual, boundary, and conservation slots and adapts value/gradient to
-FortOpt. The affine independent oracle is
+FortOpt. `term_values(theta, values, status)` exposes the four normalized
+weighted contributions in the fixed order `[data, residual, boundary,
+conservation]`; inactive slots are zero and the entries sum to the objective
+value. This makes residual balancing and conservation monitoring observable
+without coupling callers to private constraint storage. The affine independent oracle is
 [`test_physics_objective.f90`](../test/test_physics_objective.f90). HVPs are a
 typed `FORTNUM_NOT_IMPLEMENTED` boundary until residual second products are
 declared; coordinate/time metadata, collocation samplers, PINN/GP adapters,
-and symplectic terms remain future work.
+and symplectic terms remain future work. The diagnostic itself is CPU/device
+agnostic and does not introduce a host fallback: a resident adapter remains
+responsible for its residual callback and products.
 
 ## Research contracts
 

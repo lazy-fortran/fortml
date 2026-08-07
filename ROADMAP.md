@@ -2270,9 +2270,13 @@ results as an external literature claim.
   `test_physics_objective`; callbacks retain ownership of state, coordinates,
   units, and device residency.
 - [ ] Extend the seam with symplectic-form terms, nondimensionalizing
-  transforms, coordinate/time layout metadata, and named diagnostics for every
-  term. Add dedicated PINN and physics-informed GP training adapters while
-  preserving separate data/residual/boundary/conservation weights.
+  transforms, coordinate/time layout metadata, and richer named diagnostics
+  for every term. The bounded `physics_objective_t%term_values` diagnostic now
+  exposes normalized data/residual/boundary/conservation contributions (zero
+  for inactive slots, summing to the objective value), with an independent
+  affine oracle in `test_physics_objective`; dedicated PINN and
+  physics-informed GP training adapters remain future work while preserving
+  separate data/residual/boundary/conservation weights.
 - [ ] Add a PINN and physics-informed GP training adapter over the shared
   objective. It must keep data, residual, initial/boundary, and conservation
   terms separately addressable for weighting, derivatives, and diagnostics.
