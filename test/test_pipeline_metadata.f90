@@ -56,7 +56,7 @@ contains
             pipeline%feature_name(0) /= "" .or. &
             pipeline%parameter_name(0) /= "" .or. &
             maxval(abs(phi(:, 1:2) - reshape([x(1, 1), x(2, 1), &
-                x(1, 1)**2, x(2, 1)**2], [2, 2]))) > 1.0e-14_dp) then
+            x(1, 1)**2, x(2, 1)**2], [2, 2]))) > 1.0e-14_dp) then
             write (error_unit, '(a)') "FAIL [horizontal pipeline] metadata oracle"
             failures = failures + 1
         end if
