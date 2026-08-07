@@ -1273,8 +1273,14 @@ state phases are reported separately.
 - [ ] Lower derivative-GP covariance assembly, solves, parameter products, and
   query JVP/VJP products to resident CUDA kernels; only then promote the CUDA
   capability flag and add timed GPU benchmark rows.
-- [ ] Add joint posterior covariance for value and derivative queries, plus
-  cross-covariances between requested components.
+- [x] Add dense joint latent posterior covariance for arbitrary value and
+  first-derivative query sets, including cross-covariances between requested
+  components. The CPU implementation reuses the exact derivative covariance
+  blocks and differentiated solve path, symmetrizes roundoff, clamps only tiny
+  negative diagonals, and exposes an explicit CUDA refusal until the resident
+  graph is linked. Independent dense covariance and device-dispatch oracles
+  cover the contract; observation noise remains excluded from latent posterior
+  covariance.
 - [ ] Extend derivative observations to second derivatives only for kernels with
   the required smoothness, with explicit refusal at singular coincident cases.
 - [ ] Add scalar objectives and parameter gradients for multi-output, sparse

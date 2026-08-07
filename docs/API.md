@@ -1661,7 +1661,13 @@ difference fallback is used. Matérn 1/2 remains restricted to noncoincident
 queries because its derivative covariance is singular at coincidence. User
 formula leaves and other nonsmooth/unsupported leaves return
 `FORTNUM_NOT_IMPLEMENTED` for query-input products. Joint posterior covariance
-remains open.
+is available through `joint_covariance(x,components,covariance,status)`. It
+returns the dense latent posterior covariance in the requested mixed-query
+order (observation noise is excluded) and applies the same smoothness and
+white-noise refusal rules as `predict`. `joint_covariance_device(device,x,
+components,covariance,status)` dispatches selected CPU contexts exactly and
+returns `FORTNUM_NOT_IMPLEMENTED` for CUDA until the resident derivative-GP
+covariance graph is linked. No hidden host fallback is used.
 `log_marginal_likelihood`, `log_marginal_likelihood_jvp`,
 `hyperparameter_gradient`, and `hyperparameter_hvp` provide likelihood
 products. The gradient uses analytic parameter tangents of the supported RBF,
