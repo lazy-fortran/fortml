@@ -294,7 +294,7 @@ contains
         class(knn_classifier_t), intent(in) :: self
         integer, intent(in) :: device_kind
 
-        supported = device_kind == FORTML_DEVICE_CPU
+        supported = self%is_fitted .and. device_kind == FORTML_DEVICE_CPU
     end function knn_classifier_device_supported
 
     subroutine knn_classifier_predict_proba_jvp(self, x, x_dot, probabilities, &
