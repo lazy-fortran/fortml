@@ -11,6 +11,7 @@ program test_mlp_grouped_training
     implicit none
 
     type(mlp_t), target :: model
+    type(mlp_t) :: bad_model
     type(mlp_parameter_group_t) :: groups(2)
     type(mlp_grouped_training_objective_t) :: objective
     type(objective_t) :: fortopt_objective
@@ -30,6 +31,8 @@ program test_mlp_grouped_training
     call check(status_ok(status), "weight group initialization", failures)
     call groups(2)%initialize("bias", 2, 2, -2.0_dp, status)
     call check(status_ok(status), "bias group initialization", failures)
+    call objective%initialize(bad_model, x, target, groups, status)
+    call check(.not. status_ok(status), "uninitialized model refusal", failures)
     call objective%initialize(model, x, target, groups, status)
     call check(status_ok(status) .and. objective%initialized(), &
         "grouped objective initialization", failures)
