@@ -758,6 +758,8 @@ products. The gradient uses analytic parameter tangents of the supported RBF,
 Matérn 1/2, 3/2, 5/2, linear, constant, validated user-formula, and
 sum/product kernels. Matérn 1/2 still refuses coincident derivative
 observations, as do user formulas containing `push_distance` at coincidence.
+Value-only covariances and their variance-parameter products remain defined at
+coincidence. The refusal applies only when an input derivative is requested.
 The HVP is a deterministic directional finite difference of that analytic
 gradient. It is intentionally listed as such until a generated second-order
 derivative product is added. Built-in radial leaves use the checked
