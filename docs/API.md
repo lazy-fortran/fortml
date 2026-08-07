@@ -144,6 +144,7 @@ repeated resident-batch evidence.
 | `one_hot_encoder_t` | Dense one-hot `transform` | Refused: integer categories have no canonical tangent space | Refused: integer categories have no canonical cotangent space | No |
 | `mlp_t` | `predict` | Parameters and inputs | Parameters and inputs | Weighted-output HVP |
 | `mlp_classifier_t` | Logits, probabilities, and labels | Parameter/input JVP, probability JVP | Parameter/input VJP, probability VJP | No |
+| `mlp_calibrated_classifier_t` | MLP logits with binary sigmoid/temperature/isotonic or multiclass temperature probabilities and labels | Exact joint network/input plus smooth calibration JVP; isotonic active-set refusal | Exact joint network/input plus smooth calibration VJP; isotonic active-set refusal | No |
 | `mlp_ordinal_classifier_t` | Ordered cumulative-logit neural score, probabilities, and labels | Packed network/threshold and input JVP | Packed network/threshold and input VJP | No |
 | `mlp_binary_classifier_t` | One-logit sigmoid probabilities and binary labels | Parameter/input JVP, probability JVP | Parameter/input VJP, probability VJP; weighted BCE gradient | Exact weighted BCE parameter HVP |
 | `mlp_multilabel_classifier_t` | Independent sigmoid probabilities and indicator labels | Packed parameter/input JVP, probability JVP | Packed parameter/input VJP, probability VJP; mean BCE gradient | Exact mean BCE parameter HVP |
@@ -1820,6 +1821,36 @@ softmax. The device methods `decision_function_device`,
 selected CUDA contexts return `FORTNUM_NOT_IMPLEMENTED` until a resident MLP
 classifier kernel is linked. The derivative tests cover central differences,
 the VJP/JVP duality identity, and the explicit device refusal.
+
+### `fortml_mlp_calibrated_classifier`
+
+`mlp_calibrated_classifier_t` composes the preceding MLP classifier with a
+deterministic calibration head.  Its `fit` signature mirrors
+`mlp_classifier_t%fit`, but `mlp_calibrated_classifier_options_t` contains a
+`classifier` options object and a `calibration` options object.  Binary
+models calibrate the oriented margin `logit(2)-logit(1)` with the shared
+`probability_calibrator_t`: sigmoid, positive temperature, and weighted
+isotonic methods are available.  Multiclass models currently support one
+positive softmax temperature; sigmoid and isotonic multiclass fits return a
+typed `FORTNUM_NOT_IMPLEMENTED` refusal rather than changing the probability
+policy to independent one-vs-rest maps.  Labels are sorted and probabilities
+retain that column order.
+
+`decision_function`, `predict_proba`, `predict`, `classes`,
+`feature_count`, `class_count`, `parameters`, `parameter_count`,
+`set_parameters`, `calibration_method`, and `temperature` expose deployment
+state.  The packed vector is `[network parameters, smooth calibration
+parameters]`; isotonic has no calibration parameter slice.  Temperature and
+sigmoid `predict_proba_jvp`/`predict_proba_vjp` products are exact through
+network parameters, continuous inputs, and calibration parameters.
+`decision_function_jvp/vjp` include the network slice and zero calibration
+coordinates because calibration does not alter logits.  Every product for a
+binary isotonic head returns `FORTNUM_NOT_IMPLEMENTED` to make its PAVA
+active-set boundary explicit.  Device methods dispatch selected CPU contexts
+and return the same typed refusal for CUDA until resident MLP/calibration
+kernels are linked.  See [`docs/MLP_CALIBRATED_CLASSIFIER.md`](MLP_CALIBRATED_CLASSIFIER.md)
+and `test_mlp_calibrated_classifier` for independent fit, finite-difference,
+adjoint, active-set, and device-oracle coverage.
 
 ### `fortml_mlp_ordinal_classifier`
 

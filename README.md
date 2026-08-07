@@ -167,6 +167,14 @@ end program exact_gp_example
 | Lazy inference | `fortml_linear_operator`, `fortml_kernel_operator`, `fortml_sparse_operator`, `fortml_structured_operator`, `fortml_toeplitz_operator`, `fortml_banded_precision` | Toeplitz products are host-resident |
 | Supporting contracts | `fortml_kernel_formula`, `fortml_lanczos`, `fortml_multilevel_grid`, `fortml_inference_policy`, `fortml_parameter_registry`, `fortml_parameter_products`, `fortml_hyperparameter_search`, `fortml_device`, `fortml_cuda_metrics` | Product availability depends on the wrapped model. `fortml_hyperparameter_search` provides deterministic grid/random enumeration, bounded single-start and seeded multistart FortOpt L-BFGS-B over shared analytic objectives. `fortml_device` records explicit CPU/CUDA capability, residency ownership, and transfer events. `fortml_cuda_metrics` adds a transfer-inclusive native-CUDA weighted MSE reduction with an unavailable stub and no host fallback. Neither module claims complete GPU execution. |
 
+`fortml_mlp_calibrated_classifier` adds the calibrated neural-head slice to
+this surface.  Binary models support deterministic sigmoid, positive
+temperature, and weighted isotonic calibration; multiclass models support a
+single positive softmax temperature.  Smooth temperature/sigmoid network,
+input, and calibration-parameter JVP/VJP products are exact, while isotonic
+active-set products and all CUDA requests return explicit typed refusals.  See
+[`docs/MLP_CALIBRATED_CLASSIFIER.md`](docs/MLP_CALIBRATED_CLASSIFIER.md).
+
 The newly added elastic-net, OVO, multilabel logistic, Laplace-GP
 classification, probability calibration, typed schedule, and derivative-GP
 APIs expose explicit CPU/CUDA capability/refusal methods. They are CPU-only
