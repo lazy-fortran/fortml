@@ -375,11 +375,10 @@ contains
             mean_dot, variance, variance_dot, status)
         !! Query-input JVP of a derivative-observation GP prediction.
         !!
-        !! The public kernel contract currently stops at mixed second input
-        !! derivatives.  A derivative-observation query product can require
-        !! third-order mixed terms, so this product uses a deterministic
-        !! central finite difference of the covariance contract.  Parameters,
-        !! training inputs, and derivative components are held fixed.
+        !! Smooth built-in leaves and sum/product trees propagate their exact
+        !! third-input covariance products. Parameters, training inputs, and
+        !! derivative components are held fixed; unsupported user formulas
+        !! return a typed capability refusal.
         class(gp_derivative_regression_t), intent(in) :: self
         real(dp), intent(in) :: x(:, :), direction(:, :)
         integer, intent(in) :: components(:)
