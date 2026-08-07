@@ -1081,16 +1081,17 @@ state phases are reported separately.
   variational, local, SKI, Lanczos, and matrix-free GP paths. Inducing-point and
   local-gate training remain separate parameter blocks.
 - [x] Add binary Laplace GP classification for logistic and probit likelihoods,
-  with damped Newton state, latent/probability prediction, input JVPs over the
-  kernel derivative contract, and an exact envelope gradient for the converged
-  mode log posterior (without evidence correction).
+  with damped Newton state, latent/probability prediction, input JVP/VJP
+  products over the kernel derivative contract, and an exact envelope gradient
+  for the converged mode log posterior (without evidence correction).
 - [x] Publish fitted-kernel parameter metadata and exact mode-envelope
   hyperparameter gradients for binary and one-vs-rest GP classifiers. The
   multiclass wrapper packs independent binary gradients; a shared categorical
   Laplace evidence gradient remains open.
 - [x] Add one-vs-rest multiclass GP classification as a deterministic wrapper
-  over the binary Laplace contract, with sorted labels and normalized positive
-  probabilities. Variational categorical likelihoods remain open.
+  over the binary Laplace contract, with sorted labels, latent margins,
+  normalized positive probabilities, and chained query-feature JVP/VJP
+  products. Variational categorical likelihoods remain open.
 - [x] Add bounded FortOpt L-BFGS-B adapters for binary and shared-kernel
   one-vs-rest GP classification. Each trial refits the Laplace mode and uses
   the analytic envelope gradient; invalid bounds, failed mode solves, and
