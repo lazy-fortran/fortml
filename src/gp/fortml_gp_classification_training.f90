@@ -13,7 +13,8 @@ module fortml_gp_classification_training
         FORTNUM_DOMAIN_ERROR, FORTNUM_CONVERGENCE_ERROR
     use fortml_kernels, only: kernel_t
     use fortml_gp_classification, only: gp_classification_t, &
-        gp_classification_options_t, gp_classification_state_t
+        gp_classification_options_t, gp_classification_state_t, &
+        GP_LIKELIHOOD_LOGISTIC, GP_LIKELIHOOD_PROBIT
     use fortml_gp_multiclass_classification, only: &
         gp_multiclass_classification_t, &
         gp_multiclass_classification_options_t, &
@@ -342,6 +343,8 @@ contains
         valid = valid_optimizer_options(options%memory, options%max_iterations, &
             options%max_line_search, options%gradient_tolerance, options%step_tolerance, &
             options%objective_tolerance, options%lower_bound, options%upper_bound) .and. &
+            (options%fit%likelihood == GP_LIKELIHOOD_LOGISTIC .or. &
+                options%fit%likelihood == GP_LIKELIHOOD_PROBIT) .and. &
             options%fit%max_iterations >= 1 .and. options%fit%tolerance > 0.0_dp .and. &
             options%fit%jitter >= 0.0_dp .and. options%fit%damping > 0.0_dp .and. &
             options%fit%damping <= 1.0_dp
@@ -353,6 +356,8 @@ contains
         valid = valid_optimizer_options(options%memory, options%max_iterations, &
             options%max_line_search, options%gradient_tolerance, options%step_tolerance, &
             options%objective_tolerance, options%lower_bound, options%upper_bound) .and. &
+            (options%fit%likelihood == GP_LIKELIHOOD_LOGISTIC .or. &
+                options%fit%likelihood == GP_LIKELIHOOD_PROBIT) .and. &
             options%fit%max_iterations >= 1 .and. options%fit%tolerance > 0.0_dp .and. &
             options%fit%jitter >= 0.0_dp .and. options%fit%damping > 0.0_dp .and. &
             options%fit%damping <= 1.0_dp
