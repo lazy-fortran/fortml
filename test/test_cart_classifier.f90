@@ -137,10 +137,11 @@ contains
         call learned%predict_proba(query, probabilities, status)
         call learned%predict(query, prediction, status)
         call check(status_ok(status) .and. learned%missing_policy() == "learn" .and. &
-            learned%accepts_missing() .and. any(prediction == 0) .and. &
+            learned%accepts_missing() .and. all(prediction == [0, 1, 0, 0]) .and. &
             maxval(abs(probabilities(1, :) - [0.75_dp, 0.25_dp])) < 1.0e-13_dp .and. &
             maxval(abs(probabilities(2, :) - [0.0_dp, 1.0_dp])) < 1.0e-13_dp .and. &
-            maxval(abs(probabilities(3, :) - [0.75_dp, 0.25_dp])) < 1.0e-13_dp, &
+            maxval(abs(probabilities(3, :) - [0.75_dp, 0.25_dp])) < 1.0e-13_dp .and. &
+            maxval(abs(probabilities(4, :) - [0.75_dp, 0.25_dp])) < 1.0e-13_dp, &
             "learned NaN branch fit and prediction", failures)
 
         finite_x(:, 1) = x(:4, 1)
