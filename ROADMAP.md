@@ -69,7 +69,7 @@ compiler coverage remains an
 explicit older-build result.
 
 The checked-in evidence is maintained on the clean FortML-bench revision
-`e841e82`; each CSV records the exact clean benchmark revision used to produce
+`dddf34e`; each CSV records the exact clean benchmark revision used to produce
 its rows,
 the trainer-checkpoint, unfactored-Adafactor, binary-objective,
 multiclass-calibration, variational-multiclass-GP, PINN/physics-objective,
@@ -258,7 +258,7 @@ optimizer-group execution, mixed precision, distributed state, and migration
 remain open. The source and benchmark pins for this earlier optimizer-group
 slice were FortML `05632ce8fa95268417c7a2d979fa1461a202abaa` and
 FortML-bench `0fb8ac7`; the current aggregate verification is the newer
-`9ef69b7`/`e841e82` pair recorded above.
+`d52ec44`/`dddf34e` pair recorded above.
 
 The variational-GP classification and OVR wrappers now expose fixed-state
 kernel-log-parameter JVP/VJP products for latent margins and normalized
