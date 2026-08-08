@@ -1703,14 +1703,14 @@ adapter is CPU-only in this slice: CUDA initialization and selection return
 ### `fortml_mlp_training`
 
 `mlp_train(model,x,target,status,options,state[,validation_x,validation_target,checkpoint])`
-trains an existing `mlp_t` with deterministic Adam, AdamW, Adagrad, RMSprop,
+trains an existing `mlp_t` with deterministic Adam, AMSGrad, AdamW, Adagrad, RMSprop,
 unfactored Adafactor, or FortOpt-backed SGD. A zero `batch_size`
 selects full-batch updates.
 Mini-batch shuffling uses an explicit Park-Miller stream controlled by
 `shuffle_seed`, and does not mutate process-global random state. The options
 also provide optimizer selection (`MLP_OPTIMIZER_ADAM`, `MLP_OPTIMIZER_SGD`,
 `MLP_OPTIMIZER_ADAMW`, `MLP_OPTIMIZER_ADAGRAD`, `MLP_OPTIMIZER_RMSPROP`, or
-`MLP_OPTIMIZER_ADAFACTOR`), learning-rate and Adam
+`MLP_OPTIMIZER_ADAFACTOR`, or `MLP_OPTIMIZER_AMSGRAD`), learning-rate and Adam
 coefficients, optional SGD
 momentum/Nesterov acceleration, L2 regularization, gradient tolerance,
 patience, best-state restoration, and an epoch callback.
@@ -1746,6 +1746,13 @@ as `FORTML_TRAIN_ADAFACTOR`, with `adafactor_decay`,
 second moment and step counter are checkpointed and compared on resume; true
 matrix-factorized state, optimizer-trajectory hypergradients, and CUDA-resident
 Adafactor remain explicit follow-up contracts.
+`MLP_OPTIMIZER_AMSGRAD` keeps the Adam first and second moments plus an
+elementwise maximum second moment. Bias correction is applied to both moments,
+and the maximum is checkpointed in `max_second_moment` (in-memory format 7,
+text schema 5). The independent `test_mlp_amsgrad` fixture checks the
+recurrence and formatted checkpoint continuation. AMSGrad remains CPU-only;
+there is no hidden CUDA fallback, and fixed-trajectory derivatives through the
+maximum active set remain an explicit follow-up contract.
 The separate `mlp_adagrad_hypergradient_objective_t` provides that fixed full-batch product
 over learning rate, L2, and epsilon; it is CPU-only and routes exact
 value/JVP/VJP products to FortOpt L-BFGS-B with explicit log bounds. Mini-batch,
