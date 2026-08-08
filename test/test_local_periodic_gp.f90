@@ -56,6 +56,14 @@ contains
             gradient_x2, hessian, status)
         call check(status_ok(status), "input derivative status", failures)
         mixed_reference = hessian
+        call kernel%input_derivatives(x1(1, :), x1(1, :), value, gradient_x1, &
+            gradient_x2, hessian, status)
+        call check(status_ok(status), "coincident input derivative status", failures)
+        call check(maxval(abs(gradient_x1)) < 2.0e-13_dp .and. &
+            maxval(abs(gradient_x2)) < 2.0e-13_dp .and. &
+            all(hessian == hessian), "coincident input derivative limit", failures)
+        call kernel%input_derivatives(x1(1, :), x2(1, :), value, gradient_x1, &
+            gradient_x2, hessian, status)
         h = 1.0e-6_dp
         do k = 1, 2
             x_plus = x1(1, :)
