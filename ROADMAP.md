@@ -20,13 +20,13 @@ behavior, and benchmark evidence land together.
 | Compiler | Command | Result |
 | --- | --- | --- |
 | GNU Fortran | `fo` | Static build, all 227 behavioral tests, and lint passed at the current FortML/FortAD-main revisions. The compiler still emits non-fatal array-temporary warnings; see [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
-| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded older compiler lane. The checked-in NVIDIA log predates the current 220-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
+| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded older compiler lane. The checked-in NVIDIA log predates the current 227-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
 The checked-in GNU compiler log is the fresh 2026-08-08 run against FortML code
-revision `cd1659b`, FortAD `origin/main` at
-`3046712912d1fe1d9f252fd4bbec29afe6174e26`, and FortNum at
-`38bc0e578ec5c6c0e636e8fdd3844f54f9e3e473`, run from the clean checkout
+revision `436664a`, FortAD `origin/main` at
+`a0066040ceb5ccc837fd34c799b12824c698048f`, and FortNum at
+`ba91a8ff3dcda38af821034f78cadd0f7f8278ab`, run from the clean checkout
 under `/mnt/storage/code/lazy-fortran/fortml`. The run includes the
   kernel-catalog, weighted LDA/QDA, robust/absolute XGBoost, neural NLL, random-forest,
 Extra-Trees, grouped MLP HVP and L-BFGS-B, basis/pipeline HVP, cosine
@@ -59,7 +59,7 @@ compiler coverage remains an
 explicit older-build result.
 
 The companion benchmark harness is clean at FortML-bench revision
-`aad85d1`,
+`e0efc4e`,
 the trainer-checkpoint, unfactored-Adafactor, binary-objective,
 multiclass-calibration, variational-multiclass-GP, PINN/physics-objective,
 physics HVP, grouped K-fold, spectral-mixture, XGBoost-ranking,
@@ -72,7 +72,12 @@ CSV rows record their FortML source revisions and independent NumPy or analytic
 behavioral oracles. The basis-pipeline lane now includes the optimized-ridge
 coordinate/mixed-HVP case, and the binary Laplace-GP parameter-product test has
 an independent fixed-state finite-difference oracle. The current closure slices
-also cover AMSGrad recurrence/MLP training, batched multi-output GP query
+also include the pinned exact-GP reference lane in
+`fortml-bench/results/GP_REFERENCE.md`, which checks FortML's predictive mean
+and variance against scikit-learn on a shared closed-form fixture and records
+optional GPyTorch as an explicit unavailable row when its environment is not
+installed. They also cover AMSGrad recurrence/MLP training, batched
+multi-output GP query
 products, typed column-pipeline CPU/CUDA dispatch, packed OVR Laplace-GP
 parameter products, weighted LightGBM validation
 early stopping, and scheduled-Adagrad trajectory hypergradients. The latter has
@@ -145,7 +150,7 @@ optimizer-group execution, mixed precision, distributed state, and migration
 remain open. The source and benchmark pins for this earlier optimizer-group
 slice were FortML `05632ce8fa95268417c7a2d979fa1461a202abaa` and
 FortML-bench `0fb8ac7`; the current aggregate verification is the newer
-`0d65af905ed614e104b2f5e64221e7c6f729d6d7`/`aad85d1` pair recorded above.
+`436664a`/`e0efc4e` pair recorded above.
 
 The variational-GP classification and OVR wrappers now expose fixed-state
 kernel-log-parameter JVP/VJP products for latent margins and normalized
@@ -710,10 +715,12 @@ the complete operation graph resident or return a typed refusal; OpenACC is the
 first choice when it preserves semantics, and native CUDA is reserved for
 fixed no-autodiff hot loops where OpenACC cannot.
 
-The dependency pins used by the current GNU verification are FortAD `3046712`,
-FortSym `873d33f`, and FortOpt `bfbf1fc`, all checked against their remote
-`main` branches on 2026-08-08. Generated derivatives record the exact FortSym
-revision and source hash; model-level autodiff uses the same FortAD `main` pin.
+The dependency pins used by the current GNU verification are FortAD `a006604`,
+FortFront `7139a94`, FortSym `26250ce`, FortOpt `883aa7e`
+(`release/context-objective`), and FortNum `ba91a8f`, all checked against
+their corresponding remote branches on 2026-08-08. Generated derivatives
+record the exact FortSym revision and source hash; model-level autodiff uses
+the same FortAD `main` pin.
 
 The companion implementation roadmaps are authoritative for their sampler and
 acquisition work packages:
