@@ -253,11 +253,20 @@ schedules, optimizer groups, EMA, validation, checkpointing, and text resume.
 The independent recurrence/resume lane records the CPU contract and an
 explicit CUDA-unavailable row.
 
+The model-agnostic `fortml_trainer` now also exposes a checkpointable Lion
+optimizer (`FORTML_TRAIN_LION`). Its beta1 sign/interpolation update, beta2
+momentum, decoupled weight decay, finite-state validation, and formatted-text
+resume are covered by an independent quadratic oracle in `test_trainer` and
+the generic `trainer_lion` rows in
+`fortml-bench/results/trainer_checkpoint.csv`. The generic state remains
+CPU-resident; CUDA requests remain typed refusals until model, objective, and
+optimizer state can stay resident together.
+
 ### 2026-08-07 objective-trainer and tree-contribution slice
 
 The model-agnostic `fortml_trainer` core is now a shared full-batch state
 machine for any FortOpt objective. It owns explicit SGD, Adam, AdamW,
-Adagrad, RMSprop, and bounded L-BFGS-B state, gradient clipping, optional
+Adagrad, RMSprop, Lion, and bounded L-BFGS-B state, gradient clipping, optional
 projection bounds, EMA parameters, convergence/history records, typed step
 callbacks, and cloneable in-memory checkpoints. The independent quadratic
 oracle is `test_trainer`; this closes the reusable objective-training seam but

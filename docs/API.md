@@ -240,7 +240,8 @@ value/gradient. `step(status)` performs one deterministic full-batch update;
 `fit(status)` runs to the declared limit or convergence. The available
 optimizers are `FORTML_TRAIN_SGD`, `FORTML_TRAIN_ADAM`, `FORTML_TRAIN_ADAMW`,
 `FORTML_TRAIN_ADAGRAD`, `FORTML_TRAIN_RMSPROP`, and
-`FORTML_TRAIN_ADAFACTOR`; `FORTML_TRAIN_LBFGSB` is a fit-level bounded solve.
+`FORTML_TRAIN_ADAFACTOR`, and `FORTML_TRAIN_LION`; `FORTML_TRAIN_LBFGSB` is a
+fit-level bounded solve.
 
 `FORTML_TRAIN_ADAFACTOR` uses a deterministic unfactored vector state: the
 exponentially averaged squared gradient is clipped by its update RMS and the
@@ -267,7 +268,7 @@ the owning objective/trainer adapter and are never silently emulated here.
 `trainer_t%save_checkpoint(path,status)` writes a versioned,
 compiler-independent formatted-text snapshot containing optimizer options,
 parameters, EMA values, objective/history state, bounds, and the complete
-SGD/Adam/AdamW/Adagrad/RMSprop/Adafactor recurrence. `load_checkpoint(path,status)` is
+SGD/Adam/AdamW/Adagrad/RMSprop/Adafactor/Lion recurrence. `load_checkpoint(path,status)` is
 transactional: it requires an initialized destination with the same packed
 dimension, validates schema/order/counts/finite values, and refuses truncated,
 unknown, extra, or incompatible records without changing the destination.
