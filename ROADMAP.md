@@ -25,7 +25,7 @@ behavior, and benchmark evidence land together.
 
 The checked-in GNU compiler log is the fresh 2026-08-08 run against FortML code
 revision `436664a`, FortAD `origin/main` at
-`a0066040ceb5ccc837fd34c799b12824c698048f`, and FortNum at
+`931dac5f39eb6ea5ab3854d5af49b346bea950af`, and FortNum at
 `ba91a8ff3dcda38af821034f78cadd0f7f8278ab`, run from the clean checkout
 under `/mnt/storage/code/lazy-fortran/fortml`. The run includes the
   kernel-catalog, weighted LDA/QDA, robust/absolute XGBoost, neural NLL, random-forest,
@@ -721,7 +721,7 @@ the complete operation graph resident or return a typed refusal; OpenACC is the
 first choice when it preserves semantics, and native CUDA is reserved for
 fixed no-autodiff hot loops where OpenACC cannot.
 
-The dependency pins used by the current GNU verification are FortAD `a006604`,
+The dependency pins used by the current GNU verification are FortAD `931dac5`,
 FortFront `7139a94`, FortSym `26250ce`, FortOpt `883aa7e`
 (`release/context-objective`), and FortNum `ba91a8f`, all checked against
 their corresponding remote branches on 2026-08-08. Generated derivatives
