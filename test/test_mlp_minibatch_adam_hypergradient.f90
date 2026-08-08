@@ -16,7 +16,9 @@ program test_mlp_minibatch_adam_hypergradient
     implicit none
 
     type(mlp_t), target :: model
+    type(mlp_t), target :: nonlinear_model
     type(mlp_minibatch_adam_hypergradient_objective_t) :: objective
+    type(mlp_minibatch_adam_hypergradient_objective_t) :: nonlinear_objective
     type(mlp_minibatch_adam_hypergradient_options_t) :: options, bad_options
     type(mlp_minibatch_adam_hypergradient_result_t) :: result
     type(mlp_minibatch_adam_hypergradient_metadata_t) :: metadata
@@ -90,6 +92,37 @@ program test_mlp_minibatch_adam_hypergradient
     call objective%value_gradient(parameters, value, gradient, status)
     call check(maxval(abs(vjp_gradient - 1.7_dp*gradient)) < 2.0e-12_dp, &
         "mini-batch Adam scalar VJP adjoint", failures)
+
+    ! Repeat the product checks on a nonlinear two-hidden-unit network.  The
+    ! linear fixture above catches batch/moment conventions; this fixture keeps
+    ! the behavioral oracle independent of a linear closed form.
+    call nonlinear_model%initialize([1, 2, 1], status, initialization_seed=47)
+    call nonlinear_model%set_parameters([0.14_dp, -0.09_dp, 0.07_dp, 0.12_dp, &
+        -0.05_dp, 0.11_dp], status)
+    bad_options = options
+    bad_options%epochs = 2
+    bad_options%batch_size = 4
+    bad_options%shuffle = .false.
+    bad_options%learning_rate = 0.035_dp
+    bad_options%l2 = 0.018_dp
+    bad_options%beta1 = 0.79_dp
+    bad_options%beta2 = 0.9_dp
+    bad_options%epsilon = 0.017_dp
+    call nonlinear_objective%initialize(nonlinear_model, train_x, train_target, &
+        validation_x, validation_target, bad_options, status)
+    call check(status_ok(status), "nonlinear mini-batch Adam initialization", failures)
+    parameters = nonlinear_objective%parameters()
+    call nonlinear_objective%value_gradient(parameters, value, gradient, status)
+    call check(status_ok(status), "nonlinear mini-batch Adam products", failures)
+    do i = 1, MLP_MINIBATCH_ADAM_HYPERPARAMETER_COUNT
+        parameters(i) = parameters(i) + h
+        call nonlinear_objective%value_gradient(parameters, value_plus, vjp_gradient, status)
+        parameters(i) = parameters(i) - 2.0_dp*h
+        call nonlinear_objective%value_gradient(parameters, value_minus, vjp_gradient, status)
+        parameters(i) = parameters(i) + h
+        call check(abs(gradient(i) - (value_plus-value_minus)/(2.0_dp*h)) < &
+            2.0e-5_dp, "nonlinear mini-batch Adam central difference", failures)
+    end do
 
     call objective%hvp(parameters, direction, gradient, status)
     call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
