@@ -1,6 +1,6 @@
 Verification date: 2026-08-08
 FortML revision: 05632ce8fa95268417c7a2d979fa1461a202abaa
-FortAD dependency: origin/main 928a375d2808ea902cbe4a8a89425c5f536a576d (remote main pin rechecked 2026-08-08)
+FortAD dependency: origin/main 19e8cda7ad71990339f9ed254cc40128fcbff364 (remote main pin rechecked 2026-08-08)
 FortNum dependency: clean origin/main 38bc0e578ec5c6c0e636e8fdd3844f54f9e3e473
 Command: fo clean; fo
 Worktree: /mnt/storage/code/lazy-fortran/fortml
