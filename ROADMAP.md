@@ -14,16 +14,15 @@ gate is still open, so this work does not move or recreate that tag.
 
 | Compiler | Command | Result |
 | --- | --- | --- |
-| GNU Fortran | `fo` | Static, clean first/second builds, and all 173 behavioral tests passed in a clean FortML/FortAD-main replay. `fo lint` reports compiler warnings and exits nonzero, but no unused imports remain after the checked cleanup; see [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
-| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded older compiler lane. The checked-in NVIDIA log predates the current 173-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
+| GNU Fortran | `fo` | Static, clean first/second builds, and all 176 behavioral tests passed at the current FortML/FortAD-main revisions. `fo lint` reports compiler warnings and exits nonzero, but no unused imports remain after the checked cleanup; see [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
+| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded older compiler lane. The checked-in NVIDIA log predates the current 176-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
 The checked-in GNU compiler log is the fresh 2026-08-08 run against FortML
-`f56cdcd5f286cad57740622e1f02af74dd88e95e`, FortAD `origin/main` at
-`3a3e94263a40f6a349f179f6ff5b982da7f1d930`, and FortNum at
-`38bc0e578ec5c6c0e636e8fdd3844f54f9e3e473`, replayed from clean worktrees
-under `/mnt/storage/code/lazy-fortran/fortml-clean-final` and
-`/mnt/storage/code/lazy-fortran/fortad-main-clean`. The run includes the
+`378d18604e2d49b4f0d9854c5fe55464782fb883`, FortAD `origin/main` at
+`ac8d04be7303bbd3b6bd9f865074401b5041b9af`, and FortNum at
+`38bc0e578ec5c6c0e636e8fdd3844f54f9e3e473`, run from the clean checkout
+under `/mnt/storage/code/lazy-fortran/fortml`. The run includes the
   kernel-catalog, weighted LDA/QDA, robust/absolute XGBoost, neural NLL, random-forest,
 Extra-Trees, grouped MLP HVP and L-BFGS-B, basis/pipeline HVP, cosine
 derivative-GP, multilabel/ROC-AUC/PR-AUC/F-beta ranking, derivative-GP
@@ -49,7 +48,7 @@ parameter snapshots and transfer counters. NVIDIA
 compiler coverage remains an
 explicit older-build result.
 
-The companion benchmark harness is clean at FortML-bench revision `410fc6e`;
+The companion benchmark harness is clean at FortML-bench revision `5cc6da2`;
 the trainer-checkpoint, unfactored-Adafactor, binary-objective,
 multiclass-calibration, variational-multiclass-GP, PINN/physics-objective,
 physics HVP, grouped K-fold, spectral-mixture, XGBoost-ranking,
@@ -330,7 +329,7 @@ only listed as gaps:
 
 The FortBO and FortMC companion pins were rechecked against their remote
 `main` branches on 2026-08-08: FortBO
-`1f3b97b6d04bc31c2099c8e2e5030ad07232d07e` and FortMC
+`95495344e109b52e8562ebe7c36329e30a754688` and FortMC
 `4dde0ccdc37b4c331126605406b08e1f3bda4f59`. Their roadmaps remain authoritative
 for acquisition and sampling algorithms; FortML owns the posterior/log-density
 protocols and does not embed sampler or acquisition state. FortBO additionally
@@ -340,7 +339,11 @@ candidate generation with deterministic Thompson selection, and a FortML
 adapter that chooses value-only versus derivative-observation GPs from the
 history contract. FortBO now also runs its gradient-based DTuRBO in-region
 acquisition search end to end with Sobol multistarts and FortOpt L-BFGS-B,
-beating random search on the Branin fixture at equal budget. Posterior-
+beating random search on the Branin fixture at equal budget. The current pin
+also supplies exact posterior mean Hessians from derivative predictions, an
+indefinite-curvature bound-constrained quadratic subproblem, multi-objective
+Pareto archives with exact hypervolume and scalarizations, and stopping rules
+that report a machine-readable reason. Posterior-
 derivative DTuRBO mode 2, full batch and knowledge/entropy/noisy acquisitions,
 device execution, and wider sparse, variational, and multi-output adapters
 remain open. Any future adapter must add
@@ -408,15 +411,22 @@ acquisition work packages:
 
 The companion repositories were checked on 2026-08-08 at FortMC
 `4dde0ccdc37b4c331126605406b08e1f3bda4f59` and FortBO
-`1f3b97b6d04bc31c2099c8e2e5030ad07232d07e`, both on their `main` branches. The
+`95495344e109b52e8562ebe7c36329e30a754688`, both on their `main` branches. The
 FortBO pin now includes a versioned capability-gated posterior contract,
 gradient-aware observation history/checkpointing, normalized continuous/integer/
 categorical/mixed/conditional search spaces, a differentiable-coordinate mask,
 analytic EI/PI/UCB/log-EI, and marginal Monte-Carlo EI/PI with CRN, antithetic
 draws and pathwise gradients, Sobol TuRBO candidates, Thompson selection,
-gradient-based DTuRBO in-region acquisition search, and FortML
+gradient-based DTuRBO in-region acquisition search, exact posterior mean
+Hessians, an indefinite-curvature quadratic subproblem, Pareto archives with
+exact hypervolume, scalarizations, machine-readable stopping reasons, and FortML
 value/derivative-GP adapters; refresh these pins when
 their protocol or device contracts change.
+
+The current FortBO checkout builds and runs all 14 registered tests with `fo
+test`. FortMC's current checkout builds cleanly and reports zero registered
+tests, so its sampler and diagnostics claims remain roadmap items rather than
+FortML verification evidence.
 
 Both pinned companion revisions also clarify that FortSym is a generation-time
 dependency: generated/proven kernels may be checked into or consumed by the

@@ -68,7 +68,7 @@ can reject an incompatible estimator before consuming a fold.
 The companion repositories are optional consumers of FortML model and
 probability objects; FortML does not import either package. At the pinned
 2026-08-08 revisions (FortBO
-`1f3b97b6d04bc31c2099c8e2e5030ad07232d07e`, FortMC
+`95495344e109b52e8562ebe7c36329e30a754688`, FortMC
 `4dde0ccdc37b4c331126605406b08e1f3bda4f59`), their public modules contain
 versioned contracts, selected acquisition/candidate-search foundations, and a
 FortML GP adapter, but not samplers or full candidate-search algorithms:
@@ -76,7 +76,7 @@ FortML GP adapter, but not samplers or full candidate-search algorithms:
 | Companion | Current public protocol | Not yet supplied by the companion boundary |
 | --- | --- | --- |
 | FortMC `fortmc` | `fortmc_log_density_t%value(position,status)` and `%gradient(position,gradient,status)`, plus version constants and a default divergence threshold | Samplers, chain state, transforms, packed parameter registries, HVPs, checkpoints, diagnostics, and device execution |
-| FortBO `fortbo` | Versioned `fortbo_posterior_t` with capability-gated moments, covariance, joint/reparameterized samples, predictive log density, moment gradients/Hessians; `fortbo_history_t` gradient-observation/checkpoint state; `fortbo_space_t` normalized continuous/integer/categorical/mixed/conditional spaces with differentiable masks; analytic EI/PI/UCB/log-EI; marginal Monte-Carlo EI/PI with CRN, antithetic draws, and pathwise gradients; Sobol TuRBO candidates and Thompson selection; gradient-based DTuRBO in-region acquisition search; `fortbo_fit_from_history` value-only/derivative-GP adapters | Batch/knowledge/entropy/noisy acquisitions, posterior-derivative DTuRBO mode 2, wider sparse/variational/multi-output adapters, and device execution |
+| FortBO `fortbo` | Versioned `fortbo_posterior_t` with capability-gated moments, covariance, joint/reparameterized samples, predictive log density, moment gradients/Hessians; `fortbo_history_t` gradient-observation/checkpoint state; `fortbo_space_t` normalized continuous/integer/categorical/mixed/conditional spaces with differentiable masks; analytic EI/PI/UCB/log-EI; marginal Monte-Carlo EI/PI with CRN, antithetic draws, and pathwise gradients; Sobol TuRBO candidates and Thompson selection; gradient-based DTuRBO in-region acquisition search; exact posterior mean Hessians from derivative predictions; an indefinite-curvature bound-constrained quadratic subproblem; Pareto archives with exact hypervolume and scalarizations; machine-readable stopping rules; `fortbo_fit_from_history` value-only/derivative-GP adapters | Batch/knowledge/entropy/noisy acquisitions, posterior-derivative DTuRBO mode 2, wider sparse/variational/multi-output adapters, and device execution |
 
 FortML does not yet ship FortMC samplers or a direct FortML-side BO policy; FortBO now ships the tested GP adapter described above. Do not claim HMC/NUTS, Bayesian-optimization,
 or GPU parity for a FortML model until the corresponding companion adapter has

@@ -1,15 +1,16 @@
 Verification date: 2026-08-08
-FortML revision: f56cdcd5f286cad57740622e1f02af74dd88e95e
-FortAD dependency: clean origin/main 3a3e94263a40f6a349f179f6ff5b982da7f1d930
+FortML revision: 378d18604e2d49b4f0d9854c5fe55464782fb883
+FortAD dependency: clean origin/main ac8d04be7303bbd3b6bd9f865074401b5041b9af
 FortNum dependency: clean origin/main 38bc0e578ec5c6c0e636e8fdd3844f54f9e3e473
-Command: fo (clean FortML/FortAD verification worktrees under /mnt/storage)
-Worktree: /mnt/storage/code/lazy-fortran/fortml-clean-final
-Static: OK (380 modules, 380 changed, 380 affected)
-First build: OK (798 units)
-Second build: OK (798 units)
-Tests: OK (173/173)
-Lint: WARN (0 unused imports; 1720 compiler warnings; fo exits nonzero)
+Command: fo clean; fo build --flag -O3 (twice); fo test; fo lint
+Worktree: /mnt/storage/code/lazy-fortran/fortml
+Static: OK (387 modules, 387 changed, 387 affected)
+First build: OK (802 units)
+Second build: OK (802 units)
+Tests: OK (176/176)
+Lint: WARN (0 unused imports; 1739 compiler warnings; fo lint exits nonzero)
 Result: Build and behavioral stages passed; lint warning gate remains open
-Warnings: existing non-fatal GNU -Warray-temporaries in FortML/FortAD,
-FortNum/FortFront dependencies, XGBoost benchmark applications, and generated
-Matérn/RBF product applications.
+Warnings: existing non-fatal GNU compiler warnings, primarily
+-Warray-temporaries in FortML/FortAD, FortNum/FortFront dependencies, XGBoost
+benchmark applications, generated Matérn/RBF product applications, and one
+legacy bounds diagnostic in fortml_bench_gp_features.f90.
