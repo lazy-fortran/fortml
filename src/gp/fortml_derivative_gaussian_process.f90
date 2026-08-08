@@ -3677,8 +3677,20 @@ contains
                 mixed_hessian(i, i) = -radial_scale
             end do
             value_dot = 0.0_dp
-            gradient_x1_dot = 0.0_dp
-            gradient_x2_dot = 0.0_dp
+            ! At coincidence the gradient vanishes but its *tangent* does not.
+            ! Away from the origin the tangent is
+            !   radial_scale*delta + radial_coefficient*(difference.delta)*difference,
+            ! and every term carrying `difference` drops out as r goes to zero,
+            ! leaving radial_scale*delta with radial_scale the limit phi''(0)
+            ! already assigned above. Zeroing these instead reported a
+            ! second-derivative product of zero at every training point, which
+            ! is the one place a trust-region or Newton step is most likely to
+            ! ask for it.
+            gradient_x1_dot = radial_scale*delta
+            gradient_x2_dot = -gradient_x1_dot
+            ! The third derivative is odd in `difference` and so does vanish
+            ! here; for Matern 3/2 it does not exist at all and the branch
+            ! above has already refused.
             mixed_hessian_dot = 0.0_dp
             call status_set(status, FORTNUM_OK, "")
             return
