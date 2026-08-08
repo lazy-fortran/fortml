@@ -113,6 +113,8 @@ The implemented basis families are:
   `make_polynomial_interaction_basis` additionally enumerates all nonconstant
   total-degree monomials in deterministic graded order.
 - Fourier sine/cosine features with explicit angular frequencies.
+- fixed-state random Fourier features with explicit frequency vectors and
+  phases (`sqrt(2/m) cos(w dot x + b)`).
 - radial basis features with centers and positive log-scales.
 - spline features backed by `fortnum` B-splines.
 - a user-supplied callback path with explicit value, JVP, and VJP
@@ -121,6 +123,8 @@ The implemented basis families are:
 The map returns a design matrix or its products without forcing a downstream
 linear model to know which family produced it. A map's differentiable
 parameters are explicit. Fourier frequencies are positive log parameters.
+Random Fourier frequencies and phases are fixed transform state with an
+explicit zero-parameter derivative block.
 Radial centers and log scales are parameters. Polynomial and spline maps have
 no active parameter vector. Spline breakpoints are configuration.
 
