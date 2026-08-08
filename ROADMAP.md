@@ -15,7 +15,7 @@ attribution, binary-GP log-probability, fixed-leaf-product, plateau-trainer,
 and CUDA VJP closure slices documented below are post-tag additions.
 The broad parity
 gate is still open, so this work does not move or recreate that tag.
-The checklist currently records 335 completed and 127 open items; open rows are
+The checklist currently records 337 completed and 127 open items; open rows are
 retained until their implementation, independent oracle, device/refusal
 behavior, and benchmark evidence land together.
 
@@ -1158,7 +1158,7 @@ remains open.
 | Neural networks | MLP/BNN/VAE/RNN primitives, a separable Hamiltonian MLP, a named sequential `mlp_chain_t` parameter tree, dense MLP linear/`tanh`/ReLU/GELU/SiLU/ELU/softplus/leaky-ReLU/sigmoid/Mish products, deterministic MLP Adam/AdamW/Adagrad/RMSprop/SGD/Adafactor training, exact fixed full-batch SGD momentum/Nesterov/AdamW/Adam/RMSprop/Adagrad/Adafactor trajectory hypergradients including scheduled RAdam/AdamW, Adafactor relative-step, and parameter-scaling smooth branches, weighted binary BCE, multiclass cross-entropy, and Poisson log-rate FortOpt/L-BFGS-B objectives with exact mixed HVPs, bounded full-batch MLP and composed-chain L-BFGS-B paths, named group-wise log-L2 hyperparameters with exact mixed HVPs, fixed-SGD optimizer-group multiplier hypergradients, portable trainer checkpoints, callback-driven validation diagnostics with patience and best-state restoration, resident dense-affine CUDA value/JVP/VJP plus single-layer MSE-update primitives, and a resident no-autodiff CUDA Adagrad state plan exist | Alias-aware module/buffer tree, the remaining activation/loss/module catalog, convolution/attention/sequence/graph extensions, mixed precision, distributed training, compile/fusion, serialized/distributed trainers, and resident multi-layer neural training |
 | Gaussian processes | Exact, derivative, sparse, structured and local variants are partial-to-implemented. Exact fitted GPs and binary/shared-kernel one-vs-rest Laplace classifiers have bounded FortOpt L-BFGS-B adapters; bounded Bernoulli variational classification has deterministic logistic/probit ELBO, packed gradients, a bounded FortOpt L-BFGS-B adapter, prediction JVPs/VJPs, minibatch scaling, and typed CUDA refusal. Sparse variational GPs now expose packed mean/log-Cholesky ELBO gradients/JVPs/VJPs with central-difference and adjoint oracles plus a separate transformed Gaussian-likelihood log-noise block with analytic fixed-state JVP/VJP/HVP products, transactional updates, and typed CPU/CUDA boundaries. Binary Laplace prediction additionally exposes fixed-state kernel-parameter JVP/VJP products for latent and observed probabilities | GPyTorch/GPflow-style kernels, likelihoods, multitask/batch shapes, exact/variational/lazy inference, derivative operators, kernel/inducing hyperparameter products, constraints, calibration, coupled multiclass GP classification, natural gradients, evidence-corrected and likelihood-parameter training |
 | Derivatives | Exact GP, analytic polynomial/Chebyshev/Fourier/radial/spline basis and pipeline HVPs, and selected neural/kernel products exist | Value/JVP/VJP/HVP and implicit/hypergradients for every declared parameter/input path, including preprocessing, likelihood, optimizer/search variables, and device kernels |
-| Model selection and metrics | Benchmark-specific checks exist; `fortml_validation` now accepts the shared `estimator_capability_t` contract for pre-flight validation | Shared metrics, splitters, cross-validation, calibration, grid/random/Bayesian/differentiable search, nested validation, and leakage/refusal checks |
+| Model selection and metrics | Benchmark-specific checks exist; `fortml_validation` now accepts the shared `estimator_capability_t` contract for pre-flight validation, chronological expanding/rolling time-series splits with gap controls, and explicit scorer/clone/reset metadata | Shared metrics, repeated/grouped/Monte Carlo cross-validation scoring, calibration, grid/random/Bayesian/differentiable search, nested validation, and leakage/refusal checks |
 | Persistence and serving | Partial | Fitted horizontal basis-pipeline unions now have a versioned compiler-independent host text dictionary with transactional metadata/parameter restore and typed CUDA refusal; estimator-wide state dictionaries, safe model/trainer serialization, streaming inference, batching, and reproducible deployment manifests remain open |
 | GPU and scale-out | Operator-specific OpenACC/CUDA paths; kNN has a resident native-CUDA plan, dense-affine value/JVP/VJP and single-layer MSE update have resident CUDA C plans, and direct RMSprop/AdamW/Adagrad state have resident CUDA C plans. Elastic-net, OVO, LDA/QDA, random forest, MLP-classifier prediction products, basis/pipeline HVPs, Laplace-GP (binary and OVR multiclass), probability calibration, neural losses, XGBoost (binary/OVR and robust objectives), and typed schedules expose explicit CPU/CUDA capability and typed CUDA refusals; complete RMSprop/Adagrad training, staged XGBoost, robust/discriminant/forest training, basis transforms, and GP-classification-training release rows remain CPU-only | Complete resident CPU/CUDA/OpenACC training and inference for supported estimators, mixed precision, multi-GPU/MPI sharding, transfer accounting, and deterministic reductions |
 | Performance evidence | Several model/GP lanes exist | Matched correctness-gated comparisons with scikit-learn, XGBoost/LightGBM, PyTorch/JAX, GPyTorch/GPflow, and published hardware/toolchain provenance |
@@ -2289,6 +2289,23 @@ return status errors.
   `test_group_kfold`. The iterator is deliberately index-only CPU behavior;
   derivative/device routing and cross-validation scoring remain separate
   contracts.
+- [x] Add a deterministic `time_series_splitter_t` with chronological
+  expanding or rolling training windows, fixed-size contiguous test windows,
+  an explicit gap that is never included in training, replayable reset state,
+  and typed invalid-window refusals. `test_validation` checks exact one-based
+  windows against a hand-computed fixture and verifies reset replay. The
+  release app and independent `fortml-bench` NumPy lane record all train/test
+  indices before timing; this is an index-only CPU contract, so CUDA requests
+  remain a declared capability boundary.
+- [x] Add `estimator_score_metadata_t` and
+  `estimator_validation_metadata_t`. Scorer metadata records input
+  representation, metric kind, maximize/minimize orientation, sample-weight
+  support, and differentiability. Validation metadata bundles an estimator
+  capability with explicit clone/reset declarations and parameter count, and
+  refuses malformed or name-mismatched records without mutating a candidate.
+  Independent tests cover scorer orientation and clone/reset guards. The
+  records describe a model-specific clone protocol; they do not silently
+  reuse fitted estimators.
 - [ ] Define fitted transformer, predictor, regressor, and classifier contracts.
   The contracts cover feature counts, fitted state, reset or clone behavior,
   parameter names, and status propagation.
@@ -2798,9 +2815,11 @@ mathematical objective.
   multilabel, PR/ROC-AUC, Jaccard, Hamming, and sample-weight behavior for
   every metric. Metrics return a
   value plus diagnostics rather than silently dropping invalid rows.
-- [ ] Add train/test, K-fold, repeated K-fold, stratified, grouped,
-  time-series/blocked, and Monte Carlo splitters. Index generation is seeded,
-  independent of estimator state, and safe for empty or uneven folds.
+- [ ] Add train/test, repeated K-fold, and Monte Carlo splitters plus shared
+  cross-validation scoring. Ordinary, stratified, grouped, and chronological
+  time-series/blocked splitters now exist as independent index-only contracts;
+  index generation remains independent of estimator state and safe for empty
+  or uneven folds.
 - [ ] Add cross-validation prediction, learning curves, validation curves,
   permutation tests, bootstrap confidence intervals, calibration curves, and
   statistical comparison reports. Every transform is fitted inside each fold.

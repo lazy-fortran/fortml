@@ -1654,18 +1654,35 @@ directional HVP finite differences, and the typed CUDA refusal.
 
 ### `fortml_validation`
 
-`kfold_splitter_t`, `stratified_kfold_splitter_t`, and
-`group_kfold_splitter_t` are index-only, seeded cross-validation iterators.
-Initialize with `n_samples` (or integer labels/groups) and `n_splits`, then
-call `next_split(train_indices,test_indices,has_split,status)` until
-`has_split` is false. `reset()` replays the same sequence. Shuffled iterators
-use a local positive seed and never touch process-global RNG state. Test folds
-are balanced; stratified folds distribute each class round-robin; grouped
-folds keep each group entirely in one fold and greedily balance uneven group
-sizes. Invalid fold counts, seeds, and pre-initialization calls return status
-errors. The splitters do not fit or store transformers, so callers must fit
-preprocessing on each training index set explicitly. Group splitting is a CPU
-index operation with no derivative or resident-device capability.
+`kfold_splitter_t`, `stratified_kfold_splitter_t`, `group_kfold_splitter_t`, and
+`time_series_splitter_t` are index-only cross-validation iterators. Initialize
+the first three with `n_samples` (or integer labels/groups) and `n_splits`, or
+initialize a time-series splitter with `n_samples`, `n_splits`, and optional
+`test_size`, `gap`, and `max_train_size`. Call
+`next_split(train_indices,test_indices,has_split,status)` until `has_split` is
+false. `reset()` replays the same sequence. Shuffled iterators use a local
+positive seed and never touch process-global RNG state. Test folds are
+balanced; stratified folds distribute each class round-robin; grouped folds
+keep each group entirely in one fold and greedily balance uneven group sizes.
+Time-series folds are chronological: each test window follows its training
+window, `gap` rows immediately before the test window are excluded from
+training, and a positive `max_train_size` selects a rolling rather than
+expanding training window. Invalid fold counts, seeds, windows, and
+pre-initialization calls return status errors. The splitters do not fit or
+store transformers, so callers must fit preprocessing on each training index
+set explicitly. All splitters are CPU index operations with no derivative or
+resident-device capability.
+
+`estimator_score_metadata_t` records a scorer name, input representation
+(labels, decision values, or probabilities), metric kind, maximize/minimize
+orientation, sample-weight support, and differentiability. Its
+`oriented_value` and `prefer` methods let a search retain the best candidate
+without embedding metric-specific sign conventions. `estimator_validation_metadata_t`
+bundles this scorer with an `estimator_capability_t`, parameter count, and
+explicit `cloneable`/`resettable` declarations. These declarations are
+validation guards only: model-specific strongly typed clone/reset methods
+remain responsible for copying fitted state, and a false flag must never be
+silently treated as permission to reuse a fitted estimator.
 
 ### `fortml_hyperparameter_search`
 
