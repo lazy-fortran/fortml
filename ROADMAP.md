@@ -22,7 +22,7 @@ gate is still open, so this work does not move or recreate that tag.
 
 The checked-in GNU compiler log is the fresh 2026-08-08 run against FortML code
 revision `176aac62f2e488b7ee96a93be16a1ae61dffa697`, FortAD `origin/main` at
-`19e8cda7ad71990339f9ed254cc40128fcbff364`, and FortNum at
+`5f879a6021eb1f0637a7cc7de7713756f7f09ae1`, and FortNum at
 `38bc0e578ec5c6c0e636e8fdd3844f54f9e3e473`, run from the clean checkout
 under `/mnt/storage/code/lazy-fortran/fortml`. The run includes the
   kernel-catalog, weighted LDA/QDA, robust/absolute XGBoost, neural NLL, random-forest,
