@@ -2,14 +2,19 @@
 !> logistic estimator.
 module fortml_xgboost_multiclass
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite, ieee_is_nan
+    use, intrinsic :: iso_fortran_env, only: iostat_end
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
         FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED
     use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU, &
         FORTML_DEVICE_CUDA
-    use fortml_xgboost, only: xgboost_t, xgboost_options_t
+    use fortml_xgboost, only: xgboost_t, xgboost_options_t, XGB_MODEL_TEXT_MAGIC
     implicit none
     private
+
+    character(*), parameter, public :: XGB_MULTICLASS_MODEL_TEXT_MAGIC = &
+        "FORTML_XGBOOST_MULTICLASS_TEXT"
+    integer, parameter, public :: XGB_MULTICLASS_MODEL_TEXT_SCHEMA_VERSION = 1
 
     !> Deterministic one-vs-rest multiclass XGBoost-style classifier.
     !>
@@ -26,6 +31,8 @@ module fortml_xgboost_multiclass
         logical :: initialized = .false.
     contains
         procedure, public :: fit => xgb_multiclass_fit
+        procedure, public :: save_text => xgb_multiclass_save_text
+        procedure, public :: load_text => xgb_multiclass_load_text
         procedure, public :: predict_proba => xgb_multiclass_predict_proba
         procedure, public :: predict_proba_device => &
             xgb_multiclass_predict_proba_device
@@ -111,6 +118,218 @@ contains
         self%initialized = .true.
         call status_set(status, FORTNUM_OK, "")
     end subroutine xgb_multiclass_fit
+
+    subroutine xgb_multiclass_save_text(self, path, status)
+        !! Save the complete OVR ensemble as one portable text snapshot.
+        !!
+        !! Each private binary ensemble is written with the established
+        !! XGBoost text serializer and copied into a child section.  The
+        !! resulting artifact has no sidecar files and can be moved between
+        !! compiler builds without exposing the child tree representation.
+        class(xgboost_multiclass_t), intent(in) :: self
+        character(*), intent(in) :: path
+        type(fortnum_status_t), intent(out) :: status
+        integer :: unit, child_unit, ios, child_ios, close_ios, i
+        logical :: child_open
+        character(len=1024) :: child_path
+        character(len=1024) :: line
+
+        if (.not. valid_multiclass_model(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "XGBoost multiclass save_text: model is not a valid fitted ensemble")
+            return
+        end if
+        if (len_trim(path) < 1 .or. len_trim(path) > 900) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "XGBoost multiclass save_text: destination path is invalid")
+            return
+        end if
+        open(newunit=unit, file=path, status="replace", action="write", &
+            form="formatted", access="sequential", iostat=ios)
+        if (ios /= 0) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "XGBoost multiclass save_text: cannot open destination")
+            return
+        end if
+        write(unit, "(A)", iostat=ios) XGB_MULTICLASS_MODEL_TEXT_MAGIC
+        if (ios == 0) call multi_write_i(unit, "schema_version", &
+            XGB_MULTICLASS_MODEL_TEXT_SCHEMA_VERSION, ios)
+        if (ios == 0) call multi_write_i(unit, "n_inputs", self%n_inputs, ios)
+        if (ios == 0) call multi_write_i(unit, "class_count", self%class_count(), ios)
+        do i = 1, self%class_count()
+            if (ios /= 0) exit
+            call multi_write_i(unit, "class_label", self%class_label(i), ios)
+        end do
+        child_open = .false.
+        do i = 1, self%class_count()
+            if (ios /= 0) exit
+            call multi_write_i(unit, "child_begin", i, ios)
+            call make_child_path(path, i, child_path, ios)
+            if (ios /= 0) exit
+            call self%one_vs_rest(i)%save_text(trim(child_path), status)
+            if (status%code /= FORTNUM_OK) then
+                ios = 1
+                exit
+            end if
+            open(newunit=child_unit, file=trim(child_path), status="old", &
+                action="read", form="formatted", access="sequential", &
+                iostat=child_ios)
+            if (child_ios /= 0) then
+                ios = 1
+                call delete_file(trim(child_path))
+                exit
+            end if
+            child_open = .true.
+            do
+                read(child_unit, "(A)", iostat=child_ios) line
+                if (child_ios == iostat_end) exit
+                if (child_ios /= 0) then
+                    ios = 1
+                    exit
+                end if
+                write(unit, "(A)", iostat=ios) trim(line)
+                if (ios /= 0) exit
+            end do
+            close_ios = 0
+            close(child_unit, iostat=close_ios)
+            child_open = .false.
+            call delete_file(trim(child_path))
+            if (ios == 0 .and. close_ios == 0) then
+                call multi_write_i(unit, "child_end", i, ios)
+            else
+                ios = 1
+            end if
+        end do
+        if (ios == 0) write(unit, "(A)", iostat=ios) "end"
+        if (child_open) close(child_unit, iostat=close_ios)
+        close_ios = 0
+        close(unit, iostat=close_ios)
+        if (ios /= 0 .or. close_ios /= 0) then
+            call delete_file(trim(child_path))
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "XGBoost multiclass save_text: formatted write failed")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine xgb_multiclass_save_text
+
+    subroutine xgb_multiclass_load_text(self, path, status)
+        !! Load a one-file OVR snapshot without mutating the destination on
+        !! malformed, truncated, or incompatible input.
+        class(xgboost_multiclass_t), intent(inout) :: self
+        character(*), intent(in) :: path
+        type(fortnum_status_t), intent(out) :: status
+        type(xgboost_multiclass_t) :: candidate
+        integer :: unit, child_unit, ios, close_ios, schema, n_inputs
+        integer :: class_count, i, child_index
+        logical :: child_open
+        character(len=1024) :: line, key
+        character(len=1024) :: child_path
+
+        child_open = .false.
+        child_path = ""
+        open(newunit=unit, file=path, status="old", action="read", &
+            form="formatted", access="sequential", iostat=ios)
+        if (ios /= 0) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "XGBoost multiclass load_text: cannot open source")
+            return
+        end if
+        read(unit, "(A)", iostat=ios) line
+        if (ios /= 0 .or. trim(line) /= XGB_MULTICLASS_MODEL_TEXT_MAGIC) goto 900
+        call multi_read_i(unit, "schema_version", schema, ios)
+        if (ios /= 0 .or. schema /= XGB_MULTICLASS_MODEL_TEXT_SCHEMA_VERSION) goto 900
+        call multi_read_i(unit, "n_inputs", n_inputs, ios)
+        if (ios /= 0 .or. n_inputs < 1) goto 900
+        call multi_read_i(unit, "class_count", class_count, ios)
+        if (ios /= 0 .or. class_count < 2) goto 900
+        allocate(candidate%class_label(class_count), candidate%one_vs_rest(class_count), &
+            stat=ios)
+        if (ios /= 0) goto 900
+        candidate%n_inputs = n_inputs
+        do i = 1, class_count
+            call multi_read_i(unit, "class_label", candidate%class_label(i), ios)
+            if (ios /= 0) goto 900
+            if (i > 1) then
+                if (candidate%class_label(i) <= candidate%class_label(i - 1)) goto 900
+            end if
+        end do
+        do i = 1, class_count
+            read(unit, "(A)", iostat=ios) line
+            if (ios /= 0) goto 900
+            read(line, *, iostat=ios) key, child_index
+            if (ios /= 0 .or. trim(key) /= "child_begin" .or. child_index /= i) goto 900
+            call make_child_path(path, i, child_path, ios)
+            if (ios /= 0) goto 900
+            open(newunit=child_unit, file=trim(child_path), status="replace", &
+                action="write", form="formatted", access="sequential", &
+                iostat=ios)
+            if (ios /= 0) goto 900
+            child_open = .true.
+            read(unit, "(A)", iostat=ios) line
+            if (ios /= 0 .or. trim(line) /= XGB_MODEL_TEXT_MAGIC) goto 900
+            write(child_unit, "(A)", iostat=ios) trim(line)
+            if (ios /= 0) goto 900
+            do
+                read(unit, "(A)", iostat=ios) line
+                if (ios /= 0) goto 900
+                write(child_unit, "(A)", iostat=ios) trim(line)
+                if (ios /= 0) goto 900
+                if (trim(line) == "end") exit
+            end do
+            close_ios = 0
+            close(child_unit, iostat=close_ios)
+            child_open = .false.
+            if (close_ios /= 0) goto 900
+            read(unit, "(A)", iostat=ios) line
+            if (ios /= 0) goto 900
+            read(line, *, iostat=ios) key, child_index
+            if (ios /= 0 .or. trim(key) /= "child_end" .or. child_index /= i) goto 900
+            call candidate%one_vs_rest(i)%load_text(trim(child_path), status)
+            call delete_file(trim(child_path))
+            if (status%code /= FORTNUM_OK) then
+                ios = 1
+                goto 900
+            end if
+            if (candidate%one_vs_rest(i)%feature_count() /= n_inputs) goto 900
+            if (trim(candidate%one_vs_rest(i)%objective_name()) /= "logistic") goto 900
+        end do
+        read(unit, "(A)", iostat=ios) line
+        if (ios /= 0 .or. trim(line) /= "end") goto 900
+        read(unit, "(A)", iostat=ios) line
+        if (ios /= iostat_end) goto 900
+        close_ios = 0
+        close(unit, iostat=close_ios)
+        if (close_ios /= 0) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "XGBoost multiclass load_text: malformed snapshot")
+            return
+        end if
+        candidate%initialized = .true.
+        if (.not. valid_multiclass_model(candidate)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "XGBoost multiclass load_text: child metadata is inconsistent")
+            return
+        end if
+        select type(destination => self)
+        type is (xgboost_multiclass_t)
+            destination = candidate
+        class default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "XGBoost multiclass load_text: destination type is unsupported")
+            return
+        end select
+        call status_set(status, FORTNUM_OK, "")
+        return
+
+900     continue
+        if (child_open) close(child_unit, iostat=close_ios)
+        call delete_file(trim(child_path))
+        close_ios = 0
+        close(unit, iostat=close_ios)
+        call status_set(status, FORTNUM_DOMAIN_ERROR, &
+            "XGBoost multiclass load_text: malformed, truncated, or unsupported snapshot")
+    end subroutine xgb_multiclass_load_text
 
     subroutine xgb_multiclass_predict_proba(self, x, probabilities, status)
         class(xgboost_multiclass_t), intent(in) :: self
@@ -531,6 +750,71 @@ contains
             valid = .false.
         end if
     end function valid_query
+
+    logical function valid_multiclass_model(self) result(valid)
+        class(xgboost_multiclass_t), intent(in) :: self
+        integer :: i, estimators
+
+        valid = self%initialized
+        if (.not. valid) return
+        if (.not. allocated(self%class_label)) return
+        if (.not. allocated(self%one_vs_rest)) return
+        if (self%n_inputs < 1 .or. size(self%class_label) < 2) return
+        if (size(self%one_vs_rest) /= size(self%class_label)) return
+        do i = 2, size(self%class_label)
+            if (self%class_label(i) <= self%class_label(i - 1)) return
+        end do
+        estimators = 0
+        do i = 1, size(self%one_vs_rest)
+            if (.not. self%one_vs_rest(i)%fitted()) return
+            if (self%one_vs_rest(i)%feature_count() /= self%n_inputs) return
+            if (trim(self%one_vs_rest(i)%objective_name()) /= "logistic") return
+            if (i == 1) then
+                estimators = self%one_vs_rest(i)%estimator_count()
+                if (estimators < 1) return
+            else if (self%one_vs_rest(i)%estimator_count() /= estimators) then
+                return
+            end if
+        end do
+        valid = .true.
+    end function valid_multiclass_model
+
+    subroutine multi_write_i(unit, key, value, ios)
+        integer, intent(in) :: unit, value
+        character(*), intent(in) :: key
+        integer, intent(out) :: ios
+
+        write(unit, "(A,1X,I0)", iostat=ios) trim(key), value
+    end subroutine multi_write_i
+
+    subroutine multi_read_i(unit, expected, value, ios)
+        integer, intent(in) :: unit
+        character(*), intent(in) :: expected
+        integer, intent(out) :: value
+        integer, intent(out) :: ios
+        character(len=80) :: key
+
+        read(unit, *, iostat=ios) key, value
+        if (ios == 0 .and. trim(key) /= trim(expected)) ios = 1
+    end subroutine multi_read_i
+
+    subroutine make_child_path(path, index, child_path, ios)
+        character(*), intent(in) :: path
+        integer, intent(in) :: index
+        character(*), intent(out) :: child_path
+        integer, intent(out) :: ios
+
+        child_path = ""
+        write(child_path, '(A,".xgb-child-",I0)', iostat=ios) trim(path), index
+    end subroutine make_child_path
+
+    subroutine delete_file(path)
+        character(*), intent(in) :: path
+        integer :: unit, ios
+
+        open(newunit=unit, file=path, status="old", action="read", iostat=ios)
+        if (ios == 0) close(unit, status="delete", iostat=ios)
+    end subroutine delete_file
 
     subroutine unique_sorted_labels(labels, classes)
         integer, intent(in) :: labels(:)

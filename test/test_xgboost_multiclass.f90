@@ -4,7 +4,7 @@ program test_xgboost_multiclass
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite, ieee_value, &
         ieee_quiet_nan
     use fortnum_kinds, only: dp
-    use fortnum_status, only: fortnum_status_t, status_ok
+    use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_DOMAIN_ERROR
     use fortml_xgboost, only: xgboost_options_t
     use fortml_xgboost_multiclass, only: xgboost_multiclass_t
     implicit none
@@ -16,6 +16,7 @@ program test_xgboost_multiclass
     call test_staged_and_importance(failures)
     call test_probability_jvp(failures)
     call test_probability_vjp(failures)
+    call test_text_persistence(failures)
     call test_missing_value_routing(failures)
     call test_refusals(failures)
     if (failures > 0) then
@@ -234,6 +235,65 @@ contains
         end do
         call check(refused, "multiclass split-boundary VJP refusal", failures)
     end subroutine test_probability_vjp
+
+    subroutine test_text_persistence(failures)
+        integer, intent(inout) :: failures
+        type(xgboost_multiclass_t) :: model, restored, destination
+        type(xgboost_options_t) :: options
+        type(fortnum_status_t) :: status
+        real(dp) :: x(9, 1), query(3, 1), before(3, 3), after(3, 3)
+        real(dp) :: margins(3, 3), expected(3, 3), totals(3)
+        integer :: labels(9), classes_before(3), classes_after(3), i, j, unit
+        character(*), parameter :: path = "test_xgboost_multiclass.txt"
+
+        x(:, 1) = [-4.0_dp, -3.0_dp, -2.0_dp, -1.0_dp, 0.0_dp, 1.0_dp, &
+            2.0_dp, 3.0_dp, 4.0_dp]
+        labels = [-8, -8, -8, 2, 2, 2, 11, 11, 11]
+        query(:, 1) = [-2.3_dp, 0.1_dp, 2.4_dp]
+        options%n_estimators = 3
+        options%max_depth = 1
+        options%learning_rate = 0.4_dp
+        options%l2 = 1.0_dp
+        options%min_child_weight = 0.0_dp
+        call model%fit(x, labels, status, options)
+        call model%predict_proba(query, before, status)
+        call model%decision_function(query, margins, status)
+        do i = 1, size(query, 1)
+            totals(i) = 0.0_dp
+            do j = 1, size(expected, 2)
+                expected(i, j) = stable_sigmoid(margins(i, j))
+                totals(i) = totals(i) + expected(i, j)
+            end do
+            expected(i, :) = expected(i, :)/totals(i)
+        end do
+        classes_before = model%classes()
+        call model%save_text(path, status)
+        call check(status_ok(status), "multiclass save text", failures)
+        call restored%load_text(path, status)
+        call restored%predict_proba(query, after, status)
+        classes_after = restored%classes()
+        call check(status_ok(status) .and. restored%fitted(), &
+            "multiclass load text", failures)
+        call check(maxval(abs(before - expected)) < 3.0e-14_dp, &
+            "multiclass independent probability oracle", failures)
+        call check(maxval(abs(after - expected)) < 3.0e-14_dp .and. &
+            maxval(abs(after - before)) < 3.0e-14_dp, &
+            "multiclass probability round trip", failures)
+        call check(all(classes_before == classes_after) .and. &
+            restored%feature_count() == model%feature_count() .and. &
+            restored%estimator_count() == model%estimator_count(), &
+            "multiclass metadata round trip", failures)
+
+        call destination%fit(x, labels, status, options)
+        open(newunit=unit, file=path//".truncated", status="replace", &
+            action="write", form="formatted")
+        write(unit, '(A)') "FORTML_XGBOOST_MULTICLASS_TEXT"
+        close(unit)
+        call destination%load_text(path//".truncated", status)
+        call check(status%code == FORTNUM_DOMAIN_ERROR .and. destination%fitted(), &
+            "multiclass truncated snapshot refusal", failures)
+        call execute_command_line("rm -f "//path//" "//path//".truncated")
+    end subroutine test_text_persistence
 
     subroutine test_refusals(failures)
         integer, intent(inout) :: failures
