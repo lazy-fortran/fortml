@@ -10,7 +10,7 @@ module fortml_derivative_gaussian_process
         KERNEL_MATERN32, KERNEL_MATERN52, KERNEL_LINEAR, KERNEL_CONSTANT, &
         KERNEL_WHITE_NOISE, KERNEL_SUM, KERNEL_PRODUCT, KERNEL_USER, &
         KERNEL_PERIODIC, KERNEL_RATIONAL_QUADRATIC, KERNEL_COSINE, KERNEL_POLYNOMIAL, &
-        KERNEL_RBF_ARD, KERNEL_SPECTRAL_MIXTURE
+        KERNEL_RBF_ARD, KERNEL_SPECTRAL_MIXTURE, KERNEL_LOCAL_PERIODIC
     implicit none
     private
 
@@ -2598,6 +2598,11 @@ contains
                 gradient_x1, gradient_x2, mixed_hessian, value_dot, gradient_x1_dot, &
                 gradient_x2_dot, mixed_hessian_dot, status)
             return
+        case (KERNEL_LOCAL_PERIODIC)
+            call local_periodic_input_parameter_jvp(kernel, x1, x2, parameter, value, &
+                gradient_x1, gradient_x2, mixed_hessian, value_dot, gradient_x1_dot, &
+                gradient_x2_dot, mixed_hessian_dot, status)
+            return
         case (KERNEL_RBF_ARD)
             !! ARD RBF uses one logarithmic length-scale coordinate per
             !! feature.  Let q_i = (x1_i-x2_i)^2/l_i^2 and
@@ -2941,6 +2946,123 @@ contains
                 "kernel leaf parameter JVP: input derivatives are unsupported")
         end select
     end subroutine leaf_input_parameter_jvp
+
+    subroutine local_periodic_input_parameter_jvp(kernel, x1, x2, parameter, value, &
+            gradient_x1, gradient_x2, mixed_hessian, value_dot, gradient_x1_dot, &
+            gradient_x2_dot, mixed_hessian_dot, status)
+        !! Exact logarithmic-parameter products for local-periodic input
+        !! derivatives.  Writing the covariance as k(s), s=||x1-x2||**2,
+        !! gives k_s=k*u_s and k_ss=k*(u_s**2+u_ss), where u=log(k).
+        !! Differentiating u_s and u_ss in parameter space supplies the
+        !! derivative-observation covariance JVP without finite differences.
+        type(kernel_t), intent(in) :: kernel
+        real(dp), intent(in) :: x1(:), x2(:)
+        integer, intent(in) :: parameter
+        real(dp), intent(out) :: value, gradient_x1(:), gradient_x2(:)
+        real(dp), intent(out) :: mixed_hessian(:, :), value_dot
+        real(dp), intent(out) :: gradient_x1_dot(:), gradient_x2_dot(:)
+        real(dp), intent(out) :: mixed_hessian_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: difference(size(x1)), squared_distance, distance
+        real(dp) :: variance, envelope_scale, periodic_scale, period, a, b, c
+        real(dp) :: argument, sine_value, cosine_value, sine_squared, cosine_twice
+        real(dp) :: w, w_dot, z_dot, g, g_dot, h, h_dot, numerator, numerator_dot
+        real(dp) :: log_value, log_value_dot, u_s, u_s_dot, u_ss, u_ss_dot
+        real(dp) :: first_t, first_t_dot, second_t, second_t_dot
+        real(dp) :: a_dot, b_dot, c_dot, pi
+        integer :: i, j
+
+        value = 0.0_dp
+        value_dot = 0.0_dp
+        gradient_x1 = 0.0_dp
+        gradient_x2 = 0.0_dp
+        mixed_hessian = 0.0_dp
+        gradient_x1_dot = 0.0_dp
+        gradient_x2_dot = 0.0_dp
+        mixed_hessian_dot = 0.0_dp
+        if (kernel%parameter_count() /= 4 .or. parameter < 1 .or. parameter > 4 .or. &
+            size(x1) /= size(x2)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "kernel local-periodic parameter JVP: parameter layout is invalid")
+            return
+        end if
+
+        difference = x1 - x2
+        squared_distance = sum(difference*difference)
+        distance = sqrt(max(squared_distance, 0.0_dp))
+        variance = exp(kernel%log_parameters(1))
+        envelope_scale = exp(kernel%log_parameters(2))
+        periodic_scale = exp(kernel%log_parameters(3))
+        period = exp(kernel%log_parameters(4))
+        pi = acos(-1.0_dp)
+        a = 0.5_dp/(envelope_scale*envelope_scale)
+        b = 2.0_dp/(periodic_scale*periodic_scale)
+        c = pi/period
+        a_dot = 0.0_dp
+        b_dot = 0.0_dp
+        c_dot = 0.0_dp
+        if (parameter == 2) a_dot = -2.0_dp*a
+        if (parameter == 3) b_dot = -2.0_dp*b
+        if (parameter == 4) c_dot = -c
+
+        if (distance == 0.0_dp) then
+            argument = 0.0_dp
+            sine_value = 0.0_dp
+            cosine_value = 1.0_dp
+            sine_squared = 0.0_dp
+            w = 0.0_dp
+            w_dot = 0.0_dp
+            z_dot = 0.0_dp
+            g = c*c
+            g_dot = 2.0_dp*c*c_dot
+            h = -2.0_dp*c**4/3.0_dp
+            h_dot = -8.0_dp*c**3*c_dot/3.0_dp
+            log_value = log(variance)
+        else
+            argument = c*distance
+            sine_value = sin(argument)
+            cosine_value = cos(argument)
+            sine_squared = sine_value*sine_value
+            w = sine_value*cosine_value
+            cosine_twice = cos(2.0_dp*argument)
+            z_dot = c_dot*distance
+            w_dot = cosine_twice*z_dot
+            g = c*w/distance
+            g_dot = (c_dot*w + c*w_dot)/distance
+            numerator = c*(c*distance*cosine_twice - w)
+            numerator_dot = 2.0_dp*c*c_dot*distance*cosine_twice - &
+                2.0_dp*c*c*distance*sin(2.0_dp*argument)*z_dot - c_dot*w - c*w_dot
+            h = numerator/(2.0_dp*distance**3)
+            h_dot = numerator_dot/(2.0_dp*distance**3)
+            log_value = log(variance) - a*squared_distance - b*sine_squared
+        end if
+
+        log_value_dot = merge(1.0_dp, 0.0_dp, parameter == 1) - a_dot*squared_distance - &
+            b_dot*sine_squared - 2.0_dp*b*w*z_dot
+        value = exp(log_value)
+        value_dot = value*log_value_dot
+        u_s = -a - b*g
+        u_s_dot = -a_dot - b_dot*g - b*g_dot
+        u_ss = -b*h
+        u_ss_dot = -b_dot*h - b*h_dot
+        first_t = value*u_s
+        first_t_dot = value_dot*u_s + value*u_s_dot
+        second_t = value*(u_s*u_s + u_ss)
+        second_t_dot = value_dot*(u_s*u_s + u_ss) + value*(2.0_dp*u_s*u_s_dot + u_ss_dot)
+        gradient_x1 = 2.0_dp*first_t*difference
+        gradient_x2 = -gradient_x1
+        gradient_x1_dot = 2.0_dp*first_t_dot*difference
+        gradient_x2_dot = -gradient_x1_dot
+        do i = 1, size(x1)
+            do j = 1, size(x2)
+                mixed_hessian(i, j) = -2.0_dp*first_t*merge(1.0_dp, 0.0_dp, i == j) - &
+                    4.0_dp*second_t*difference(i)*difference(j)
+                mixed_hessian_dot(i, j) = -2.0_dp*first_t_dot*merge(1.0_dp, 0.0_dp, i == j) - &
+                    4.0_dp*second_t_dot*difference(i)*difference(j)
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine local_periodic_input_parameter_jvp
 
     real(dp) function ard_rbf_input_hessian_parameter_dot(kernel, x1, x2, i, j, &
             parameter, value) result(hessian_dot)
