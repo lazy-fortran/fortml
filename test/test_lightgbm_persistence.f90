@@ -10,10 +10,10 @@ program test_lightgbm_persistence
     implicit none
 
     character(*), parameter :: path = "test_lightgbm_persistence.txt"
-    type(lightgbm_t) :: source, restored, destination
+    type(lightgbm_t) :: source, restored, destination, binary, binary_restored
     type(lightgbm_options_t) :: options
     type(fortnum_status_t) :: status
-    real(real64) :: x(8, 2), target(8), before(8), after(8), before_margin(8), after_margin(8)
+    real(real64) :: x(8, 2), target(8), labels(8), before(8), after(8), before_margin(8), after_margin(8)
     real(real64) :: before_staged(8, 4), after_staged(8, 4)
     real(real64) :: before_contrib(8, 5), after_contrib(8, 5), destination_before(8), destination_after(8)
     integer :: failures, i, unit
@@ -65,6 +65,19 @@ program test_lightgbm_persistence
         restored%num_leaves() == source%num_leaves() .and. &
         restored%best_iteration() == source%best_iteration(), &
         "metadata round trip", failures)
+
+    labels = merge(1.0_real64, 0.0_real64, target > sum(target)/real(size(target), real64))
+    call binary%fit_binary(x, labels, status, options)
+    call check(status_ok(status), "binary source fit", failures)
+    call binary%predict_staged(x, before_staged, status)
+    call check(status_ok(status), "binary source staged", failures)
+    call binary%save_text(path, status)
+    call check(status_ok(status), "binary save text", failures)
+    call binary_restored%load_text(path, status)
+    call check(status_ok(status), "binary load text", failures)
+    call binary_restored%predict_staged(x, after_staged, status)
+    call check(status_ok(status) .and. maxval(abs(after_staged-before_staged)) < &
+        2.0e-13_real64, "binary staged round trip", failures)
 
     call destination%fit_regression(x, target, status, options)
     call destination%predict(x, destination_before, status)
