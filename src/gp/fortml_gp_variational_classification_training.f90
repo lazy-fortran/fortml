@@ -68,7 +68,8 @@ contains
         type(lbfgsb_t) :: optimizer
         type(lbfgsb_options_t) :: optimizer_options
         type(lbfgsb_result_t) :: optimizer_result
-        real(dp), allocatable :: parameters(:), lower(:), upper(:), gradient(:)
+        type(fortnum_status_t) :: restore_status
+        real(dp), allocatable :: parameters(:), initial_parameters(:), lower(:), upper(:), gradient(:)
         integer :: n_parameters
 
         result = gp_variational_classification_lbfgsb_result_t()
@@ -112,6 +113,7 @@ contains
         allocate(context%x, source=x)
         allocate(context%labels, source=labels)
         parameters = model%parameters()
+        initial_parameters = parameters
         allocate(lower(n_parameters), upper(n_parameters), gradient(n_parameters))
         lower = options%lower_bound
         upper = options%upper_bound
@@ -121,10 +123,16 @@ contains
         call copy_lbfgsb_options(options, optimizer_options)
         call optimizer%minimize(objective, parameters, lower, upper, &
             optimizer_options, optimizer_result, status)
-        if (status%code /= FORTNUM_OK .and. status%code /= FORTNUM_CONVERGENCE_ERROR) return
+        if (status%code /= FORTNUM_OK .and. status%code /= FORTNUM_CONVERGENCE_ERROR) then
+            call model%set_parameters(initial_parameters, restore_status)
+            return
+        end if
 
         call negative_elbo_objective(context, parameters, result%elbo, gradient, status)
-        if (status%code /= FORTNUM_OK) return
+        if (status%code /= FORTNUM_OK) then
+            call model%set_parameters(initial_parameters, restore_status)
+            return
+        end if
         result%elbo = -result%elbo
         result%gradient_norm = sqrt(sum(gradient*gradient))
         result%converged = optimizer_result%state%converged
@@ -132,11 +140,13 @@ contains
         result%line_search_evaluations = optimizer_result%line_search_evaluations
         if (.not. ieee_is_finite(result%elbo) .or. &
                 .not. ieee_is_finite(result%gradient_norm)) then
+            call model%set_parameters(initial_parameters, restore_status)
             call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
                 "variational GP training: result is not finite")
             return
         end if
         if (.not. result%converged) then
+            call model%set_parameters(initial_parameters, restore_status)
             call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
                 "variational GP training: iteration limit reached")
             return
