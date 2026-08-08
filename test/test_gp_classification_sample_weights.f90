@@ -8,6 +8,10 @@ program test_gp_classification_sample_weights
     use fortml_gp_multiclass_classification, only: &
         gp_multiclass_classification_t, gp_multiclass_classification_options_t, &
         gp_multiclass_classification_state_t
+    use fortml_gp_classification_training, only: &
+        gp_classification_hyperparameter_options_t, &
+        gp_classification_hyperparameter_result_t, &
+        gp_classification_optimize_hyperparameters
     use fortml_kernels, only: kernel_t, make_rbf_kernel, clone_kernel
     use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU, FORTML_DEVICE_CUDA
     use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_NOT_IMPLEMENTED
@@ -21,6 +25,8 @@ program test_gp_classification_sample_weights
     type(gp_classification_state_t) :: state, unit_state, weighted_state
     type(gp_classification_state_t) :: plus_state, minus_state, binary_state
     type(gp_multiclass_classification_state_t) :: multiclass_state
+    type(gp_classification_hyperparameter_options_t) :: training_options
+    type(gp_classification_hyperparameter_result_t) :: training_result
     type(kernel_t) :: kernel, kernel_plus, kernel_minus
     type(fortnum_status_t) :: status
     type(fortml_device_t) :: device
@@ -124,6 +130,16 @@ program test_gp_classification_sample_weights
     call model%predict_proba_device(device, x_query, probabilities_cpu, status)
     call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
         "weighted CUDA prediction refusal", failures)
+
+    training_options%fit = options
+    training_options%max_iterations = 100
+    training_options%gradient_tolerance = 2.0e-3_dp
+    training_options%lower_bound = -5.0_dp
+    training_options%upper_bound = 5.0_dp
+    call gp_classification_optimize_hyperparameters(weighted_model, x, labels, kernel, &
+        training_options, training_result, status, sample_weight=weights)
+    call check(status_ok(status) .and. training_result%converged, &
+        "weighted FortOpt hyperparameter adapter", failures)
 
     ! Multiclass OVR fitting must use exactly the same weighted binary objective
     ! in sorted class order.

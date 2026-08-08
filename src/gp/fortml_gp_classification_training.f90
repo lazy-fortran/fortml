@@ -69,6 +69,7 @@ module fortml_gp_classification_training
         type(kernel_t), pointer :: kernel => null()
         real(dp), allocatable :: x(:, :)
         integer, allocatable :: labels(:)
+        real(dp), allocatable :: sample_weight(:)
         type(gp_classification_options_t) :: fit
     end type binary_context_t
 
@@ -77,6 +78,7 @@ module fortml_gp_classification_training
         type(kernel_t), pointer :: kernel => null()
         real(dp), allocatable :: x(:, :)
         integer, allocatable :: labels(:)
+        real(dp), allocatable :: sample_weight(:)
         type(gp_multiclass_classification_options_t) :: fit
     end type multiclass_context_t
 
@@ -86,7 +88,7 @@ module fortml_gp_classification_training
 contains
 
     subroutine gp_classification_optimize_hyperparameters( &
-            model, x, labels, kernel, options, result, status)
+            model, x, labels, kernel, options, result, status, sample_weight)
         type(gp_classification_t), target, intent(inout) :: model
         real(dp), intent(in) :: x(:, :)
         integer, intent(in) :: labels(:)
@@ -94,6 +96,7 @@ contains
         type(gp_classification_hyperparameter_options_t), intent(in) :: options
         type(gp_classification_hyperparameter_result_t), intent(out) :: result
         type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
         type(binary_context_t), target :: context
         type(objective_t) :: objective
         type(lbfgsb_t) :: optimizer
@@ -108,7 +111,7 @@ contains
                 "GP classification training: options are invalid")
             return
         end if
-        if (.not. valid_binary_data(x, labels, kernel)) then
+        if (.not. valid_binary_data(x, labels, kernel, sample_weight)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "GP classification training: model data or kernel is invalid")
             return
@@ -124,6 +127,9 @@ contains
         context%kernel => kernel
         allocate(context%x, source=x)
         allocate(context%labels, source=labels)
+        if (present(sample_weight)) then
+            allocate(context%sample_weight, source=sample_weight)
+        end if
         context%fit = options%fit
         parameters = kernel%parameters()
         allocate(lower(n_parameters), upper(n_parameters), gradient(n_parameters))
@@ -160,7 +166,7 @@ contains
     end subroutine gp_classification_optimize_hyperparameters
 
     subroutine gp_multiclass_optimize_hyperparameters( &
-            model, x, labels, kernel, options, result, status)
+            model, x, labels, kernel, options, result, status, sample_weight)
         type(gp_multiclass_classification_t), target, intent(inout) :: model
         real(dp), intent(in) :: x(:, :)
         integer, intent(in) :: labels(:)
@@ -168,6 +174,7 @@ contains
         type(gp_multiclass_hyperparameter_options_t), intent(in) :: options
         type(gp_multiclass_hyperparameter_result_t), intent(out) :: result
         type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
         type(multiclass_context_t), target :: context
         type(objective_t) :: objective
         type(lbfgsb_t) :: optimizer
@@ -182,7 +189,7 @@ contains
                 "GP multiclass training: options are invalid")
             return
         end if
-        if (.not. valid_multiclass_data(x, labels, kernel)) then
+        if (.not. valid_multiclass_data(x, labels, kernel, sample_weight)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "GP multiclass training: model data or kernel is invalid")
             return
@@ -198,6 +205,9 @@ contains
         context%kernel => kernel
         allocate(context%x, source=x)
         allocate(context%labels, source=labels)
+        if (present(sample_weight)) then
+            allocate(context%sample_weight, source=sample_weight)
+        end if
         context%fit = options%fit
         parameters = kernel%parameters()
         allocate(lower(n_parameters), upper(n_parameters), gradient(n_parameters))
@@ -253,8 +263,13 @@ contains
             end if
             call context%kernel%set_parameters(parameters, status)
             if (status%code /= FORTNUM_OK) return
-            call context%model%fit(context%x, context%labels, context%kernel, status, &
-                context%fit, state)
+            if (allocated(context%sample_weight)) then
+                call context%model%fit(context%x, context%labels, context%kernel, status, &
+                    context%fit, state, sample_weight=context%sample_weight)
+            else
+                call context%model%fit(context%x, context%labels, context%kernel, status, &
+                    context%fit, state)
+            end if
             if (status%code /= FORTNUM_OK) return
             call context%model%hyperparameter_gradient(gradient, status)
             if (status%code /= FORTNUM_OK) return
@@ -294,8 +309,13 @@ contains
             end if
             call context%kernel%set_parameters(parameters, status)
             if (status%code /= FORTNUM_OK) return
-            call context%model%fit(context%x, context%labels, context%kernel, status, &
-                context%fit, state)
+            if (allocated(context%sample_weight)) then
+                call context%model%fit(context%x, context%labels, context%kernel, status, &
+                    context%fit, state, sample_weight=context%sample_weight)
+            else
+                call context%model%fit(context%x, context%labels, context%kernel, status, &
+                    context%fit, state)
+            end if
             if (status%code /= FORTNUM_OK) return
             block_count = context%kernel%parameter_count()
             class_count = context%model%class_count()
@@ -378,26 +398,52 @@ contains
             lower_bound <= upper_bound
     end function valid_optimizer_options
 
-    logical function valid_binary_data(x, labels, kernel) result(valid)
+    logical function valid_binary_data(x, labels, kernel, sample_weight) result(valid)
         real(dp), intent(in) :: x(:, :)
         integer, intent(in) :: labels(:)
         type(kernel_t), intent(in) :: kernel
+        real(dp), intent(in), optional :: sample_weight(:)
+        real(dp) :: weight_mass
 
         valid = size(x, 1) >= 1 .and. size(x, 2) >= 1 .and. &
             size(labels) == size(x, 1) .and. all(ieee_is_finite(x)) .and. &
             kernel%input_dim == size(x, 2) .and. kernel%parameter_count() >= 1 .and. &
             count_unique(labels) == 2
+        if (.not. valid) return
+        if (present(sample_weight)) then
+            if (size(sample_weight) /= size(labels) .or. &
+                    any(.not. ieee_is_finite(sample_weight)) .or. &
+                    any(sample_weight < 0.0_dp)) then
+                valid = .false.
+                return
+            end if
+            weight_mass = sum(sample_weight)
+            valid = ieee_is_finite(weight_mass) .and. weight_mass > 0.0_dp
+        end if
     end function valid_binary_data
 
-    logical function valid_multiclass_data(x, labels, kernel) result(valid)
+    logical function valid_multiclass_data(x, labels, kernel, sample_weight) result(valid)
         real(dp), intent(in) :: x(:, :)
         integer, intent(in) :: labels(:)
         type(kernel_t), intent(in) :: kernel
+        real(dp), intent(in), optional :: sample_weight(:)
+        real(dp) :: weight_mass
 
         valid = size(x, 1) >= 1 .and. size(x, 2) >= 1 .and. &
             size(labels) == size(x, 1) .and. all(ieee_is_finite(x)) .and. &
             kernel%input_dim == size(x, 2) .and. kernel%parameter_count() >= 1 .and. &
             count_unique(labels) >= 2
+        if (.not. valid) return
+        if (present(sample_weight)) then
+            if (size(sample_weight) /= size(labels) .or. &
+                    any(.not. ieee_is_finite(sample_weight)) .or. &
+                    any(sample_weight < 0.0_dp)) then
+                valid = .false.
+                return
+            end if
+            weight_mass = sum(sample_weight)
+            valid = ieee_is_finite(weight_mass) .and. weight_mass > 0.0_dp
+        end if
     end function valid_multiclass_data
 
     integer function count_unique(values) result(count)
