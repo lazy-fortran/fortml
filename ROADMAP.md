@@ -54,7 +54,7 @@ compiler coverage remains an
 explicit older-build result.
 
 The companion benchmark harness is clean at FortML-bench revision
-`0b0d8012d74ddcd88c86e2dafbd202a6bc1b6aaa`;
+`be32f6bcadda29b4f97b6ffbd6b3a07ec5d576e2`;
 the trainer-checkpoint, unfactored-Adafactor, binary-objective,
 multiclass-calibration, variational-multiclass-GP, PINN/physics-objective,
 physics HVP, grouped K-fold, spectral-mixture, XGBoost-ranking,
@@ -111,8 +111,7 @@ optimizer-group execution, mixed precision, distributed state, and migration
 remain open. The source and benchmark pins for this earlier optimizer-group
 slice were FortML `05632ce8fa95268417c7a2d979fa1461a202abaa` and
 FortML-bench `0fb8ac7`; the current aggregate verification is the newer
-`d6c2c5376d1fa39801966826fd91c19efe232ec1`/`c3d5b2edd049e113ef6781573c07544c9369468`
-pair recorded above.
+`c617b68`/`be32f6b` pair recorded above.
 
 The variational-GP classification and OVR wrappers now expose fixed-state
 kernel-log-parameter JVP/VJP products for latent margins and normalized
@@ -144,6 +143,16 @@ the sign-margin branch is a named nonsmooth refusal and CUDA remains typed
 until resident trajectory state is linked. The independent fixture is
 `test_mlp_lion_hypergradient`, with the API contract in
 `docs/MLP_LION_HYPERGRADIENT.md`.
+
+The current estimator slice also records deterministic binary AdaBoost over
+weighted CART weak learners and dense multi-output closed-radius regression.
+`test_adaboost_classifier` and `test_radius_neighbors_multioutput_regression`
+provide independent hand-oracle fixtures, while the companion release rows in
+`fortml-bench/results/ADABOOST_CLASSIFIER.md` and
+`fortml-bench/results/RADIUS_NEIGHBORS_MULTIOUTPUT.md` retain complete CPU
+prediction checks, provenance, and typed CUDA refusals. These slices do not
+claim multiclass SAMME, tree-search backends, or resident radius/boosting
+kernels.
 
 ### 2026-08-07 objective-trainer and tree-contribution slice
 
