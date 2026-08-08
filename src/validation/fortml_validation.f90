@@ -6,12 +6,62 @@ module fortml_validation
     !! without leaking validation statistics. A split is returned as one-based
     !! indices in the original sample order, or in a seeded permutation when
     !! `shuffle` is enabled.
-    use, intrinsic :: iso_fortran_env, only: int64
+    use, intrinsic :: iso_fortran_env, only: int64, real64
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
         FORTNUM_DOMAIN_ERROR
     use fortml_estimator_capabilities, only: estimator_capability_t
     implicit none
     private
+
+    integer, parameter, public :: FORTML_SCORE_INPUT_LABELS = 1
+    integer, parameter, public :: FORTML_SCORE_INPUT_DECISION = 2
+    integer, parameter, public :: FORTML_SCORE_INPUT_PROBABILITY = 3
+
+    integer, parameter, public :: FORTML_SCORE_ACCURACY = 1
+    integer, parameter, public :: FORTML_SCORE_LOG_LOSS = 2
+    integer, parameter, public :: FORTML_SCORE_R2 = 3
+    integer, parameter, public :: FORTML_SCORE_CUSTOM = 4
+
+    !> Metadata needed to route an estimator output to a validation scorer.
+    !>
+    !> The record is deliberately independent of a model implementation.  It
+    !> describes which prediction representation a scorer consumes and whether
+    !> larger raw scores are preferable.  `oriented_value` maps every scorer
+    !> to a common maximize convention without changing the original metric.
+    type, public :: estimator_score_metadata_t
+        character(len=64) :: name = ""
+        integer :: kind = 0
+        integer :: input_kind = 0
+        logical :: higher_is_better = .true.
+        logical :: supports_sample_weight = .false.
+        logical :: differentiable = .false.
+    contains
+        procedure, public :: initialize => score_metadata_initialize
+        procedure, public :: valid => score_metadata_valid
+        procedure, public :: oriented_value => score_metadata_oriented_value
+        procedure, public :: prefer => score_metadata_prefer
+    end type estimator_score_metadata_t
+
+    !> Clone/reset and scoring metadata carried by a validation workflow.
+    !>
+    !> Fortran model types expose their own strongly typed clone/reset method;
+    !> this value object records whether a generic search may invoke that
+    !> protocol and the parameter topology expected by the scorer.  A false
+    !> `cloneable` or `resettable` flag is a hard leakage guard, not a request
+    !> to reuse a fitted model.
+    type, public :: estimator_validation_metadata_t
+        character(len=96) :: estimator_name = ""
+        type(estimator_capability_t) :: capability
+        type(estimator_score_metadata_t) :: score
+        logical :: cloneable = .false.
+        logical :: resettable = .false.
+        integer :: parameter_count = 0
+    contains
+        procedure, public :: initialize => validation_metadata_initialize
+        procedure, public :: valid => validation_metadata_valid
+        procedure, public :: can_clone => validation_metadata_can_clone
+        procedure, public :: can_reset => validation_metadata_can_reset
+    end type estimator_validation_metadata_t
 
     type, public :: kfold_splitter_t
         private
@@ -70,10 +120,180 @@ module fortml_validation
         procedure, public :: shuffled => group_shuffled
     end type group_kfold_splitter_t
 
+    type, public :: time_series_splitter_t
+        !! Deterministic expanding or rolling-window time-series splitter.
+        !!
+        !! Test windows are contiguous and always occur strictly after the
+        !! training window.  `gap` rows immediately before each test window
+        !! are omitted from training.  A positive `max_train_size` turns the
+        !! expanding window into a rolling window.  The splitter owns only
+        !! integer bounds and is therefore an index-only CPU operation.
+        private
+        integer :: n_samples = 0
+        integer :: n_splits = 0
+        integer :: test_size = 0
+        integer :: gap = 0
+        integer :: max_train_size = 0
+        integer :: initial_train_size = 0
+        integer :: next_split_index = 1
+    contains
+        procedure, public :: initialize => time_series_initialize
+        procedure, public :: reset => time_series_reset
+        procedure, public :: next_split => time_series_next_split
+        procedure, public :: sample_count => time_series_sample_count
+        procedure, public :: fold_count => time_series_fold_count
+        procedure, public :: test_window => time_series_test_window
+        procedure, public :: gap_size => time_series_gap_size
+        procedure, public :: rolling => time_series_rolling
+    end type time_series_splitter_t
+
     public :: validate_estimator_capability
     public :: require_estimator_capability
 
 contains
+
+    subroutine score_metadata_initialize(self, name, input_kind, status, kind, &
+            higher_is_better, supports_sample_weight, differentiable)
+        class(estimator_score_metadata_t), intent(out) :: self
+        character(*), intent(in) :: name
+        integer, intent(in) :: input_kind
+        type(fortnum_status_t), intent(out) :: status
+        integer, intent(in), optional :: kind
+        logical, intent(in), optional :: higher_is_better
+        logical, intent(in), optional :: supports_sample_weight, differentiable
+
+        self%name = ""
+        self%kind = 0
+        self%input_kind = 0
+        self%higher_is_better = .true.
+        self%supports_sample_weight = .false.
+        self%differentiable = .false.
+        if (len_trim(name) < 1 .or. len_trim(name) > len(self%name)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "score metadata: name is empty or too long")
+            return
+        end if
+        if (input_kind < FORTML_SCORE_INPUT_LABELS .or. &
+                input_kind > FORTML_SCORE_INPUT_PROBABILITY) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "score metadata: input kind is invalid")
+            return
+        end if
+        self%name = trim(name)
+        self%input_kind = input_kind
+        if (present(kind)) self%kind = kind
+        if (present(higher_is_better)) self%higher_is_better = higher_is_better
+        if (present(supports_sample_weight)) then
+            self%supports_sample_weight = supports_sample_weight
+        end if
+        if (present(differentiable)) self%differentiable = differentiable
+        if (self%kind < FORTML_SCORE_ACCURACY .or. &
+                self%kind > FORTML_SCORE_CUSTOM) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "score metadata: scorer kind is invalid")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine score_metadata_initialize
+
+    logical function score_metadata_valid(self) result(valid)
+        class(estimator_score_metadata_t), intent(in) :: self
+
+        valid = len_trim(self%name) > 0 .and. len_trim(self%name) <= len(self%name) &
+            .and. self%kind >= FORTML_SCORE_ACCURACY .and. &
+            self%kind <= FORTML_SCORE_CUSTOM .and. &
+            self%input_kind >= FORTML_SCORE_INPUT_LABELS .and. &
+            self%input_kind <= FORTML_SCORE_INPUT_PROBABILITY
+    end function score_metadata_valid
+
+    real(real64) function score_metadata_oriented_value(self, raw_value) result(value)
+        class(estimator_score_metadata_t), intent(in) :: self
+        real(real64), intent(in) :: raw_value
+
+        if (self%higher_is_better) then
+            value = raw_value
+        else
+            value = -raw_value
+        end if
+    end function score_metadata_oriented_value
+
+    logical function score_metadata_prefer(self, candidate, incumbent) result(value)
+        class(estimator_score_metadata_t), intent(in) :: self
+        real(real64), intent(in) :: candidate, incumbent
+
+        if (candidate /= candidate .or. incumbent /= incumbent) then
+            value = .false.
+            return
+        end if
+        value = self%oriented_value(candidate) > self%oriented_value(incumbent)
+    end function score_metadata_prefer
+
+    subroutine validation_metadata_initialize(self, estimator_name, capability, &
+            score, status, cloneable, resettable, parameter_count)
+        class(estimator_validation_metadata_t), intent(out) :: self
+        character(*), intent(in) :: estimator_name
+        type(estimator_capability_t), intent(in) :: capability
+        type(estimator_score_metadata_t), intent(in) :: score
+        type(fortnum_status_t), intent(out) :: status
+        logical, intent(in), optional :: cloneable, resettable
+        integer, intent(in), optional :: parameter_count
+
+        self%estimator_name = ""
+        self%capability = capability
+        self%score = score
+        self%cloneable = .false.
+        self%resettable = .false.
+        self%parameter_count = 0
+        if (len_trim(estimator_name) < 1 .or. &
+                len_trim(estimator_name) > len(self%estimator_name)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "validation metadata: estimator name is empty or too long")
+            return
+        end if
+        if (.not. capability%valid()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "validation metadata: capability is invalid")
+            return
+        end if
+        if (.not. score%valid()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "validation metadata: scorer is invalid")
+            return
+        end if
+        if (present(cloneable)) self%cloneable = cloneable
+        if (present(resettable)) self%resettable = resettable
+        if (present(parameter_count)) self%parameter_count = parameter_count
+        if (self%parameter_count < 0) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "validation metadata: parameter count must be nonnegative")
+            return
+        end if
+        self%estimator_name = trim(estimator_name)
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine validation_metadata_initialize
+
+    logical function validation_metadata_valid(self) result(valid)
+        class(estimator_validation_metadata_t), intent(in) :: self
+
+        valid = len_trim(self%estimator_name) > 0 .and. &
+            len_trim(self%estimator_name) <= len(self%estimator_name) .and. &
+            self%capability%valid() .and. self%score%valid() .and. &
+            self%parameter_count >= 0
+        if (.not. valid) return
+        valid = trim(self%estimator_name) == trim(self%capability%name)
+    end function validation_metadata_valid
+
+    logical function validation_metadata_can_clone(self) result(value)
+        class(estimator_validation_metadata_t), intent(in) :: self
+
+        value = self%valid() .and. self%cloneable
+    end function validation_metadata_can_clone
+
+    logical function validation_metadata_can_reset(self) result(value)
+        class(estimator_validation_metadata_t), intent(in) :: self
+
+        value = self%valid() .and. self%resettable
+    end function validation_metadata_can_reset
 
     !> Validate a model capability record in the same status style as splits.
     subroutine validate_estimator_capability(capability, status)
@@ -90,6 +310,144 @@ contains
 
         call capability%require(requirement, status)
     end subroutine require_estimator_capability
+
+    subroutine time_series_initialize(self, n_samples, n_splits, status, &
+            test_size, gap, max_train_size)
+        class(time_series_splitter_t), intent(out) :: self
+        integer, intent(in) :: n_samples, n_splits
+        type(fortnum_status_t), intent(out) :: status
+        integer, intent(in), optional :: test_size, gap, max_train_size
+        integer :: requested_test_size, requested_gap, requested_max_train
+
+        self%n_samples = 0
+        self%n_splits = 0
+        self%test_size = 0
+        self%gap = 0
+        self%max_train_size = 0
+        self%initial_train_size = 0
+        self%next_split_index = 1
+        if (n_samples < 2 .or. n_splits < 2) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "time-series split: sample and split counts are incompatible")
+            return
+        end if
+        requested_test_size = n_samples/(n_splits + 1)
+        if (present(test_size)) requested_test_size = test_size
+        requested_gap = 0
+        if (present(gap)) requested_gap = gap
+        requested_max_train = 0
+        if (present(max_train_size)) requested_max_train = max_train_size
+        if (requested_test_size < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "time-series split: test_size must be positive")
+            return
+        end if
+        if (requested_gap < 0) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "time-series split: gap must be nonnegative")
+            return
+        end if
+        if (requested_max_train < 0) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "time-series split: max_train_size must be nonnegative")
+            return
+        end if
+        self%initial_train_size = n_samples - n_splits*requested_test_size - &
+            requested_gap
+        if (self%initial_train_size < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "time-series split: not enough samples for requested windows")
+            return
+        end if
+        self%n_samples = n_samples
+        self%n_splits = n_splits
+        self%test_size = requested_test_size
+        self%gap = requested_gap
+        self%max_train_size = requested_max_train
+        self%next_split_index = 1
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine time_series_initialize
+
+    subroutine time_series_reset(self)
+        class(time_series_splitter_t), intent(inout) :: self
+
+        self%next_split_index = 1
+    end subroutine time_series_reset
+
+    subroutine time_series_next_split(self, train_indices, test_indices, has_split, &
+            status)
+        class(time_series_splitter_t), intent(inout) :: self
+        integer, allocatable, intent(out) :: train_indices(:), test_indices(:)
+        logical, intent(out) :: has_split
+        type(fortnum_status_t), intent(out) :: status
+        integer :: test_start, test_end, train_start, train_end
+        integer :: train_count, test_count, i
+
+        has_split = .false.
+        allocate(train_indices(0), test_indices(0))
+        if (self%n_samples < 2 .or. self%n_splits < 2 .or. &
+                self%test_size < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "time-series split: splitter is not initialized")
+            return
+        end if
+        if (self%next_split_index > self%n_splits) then
+            call status_set(status, FORTNUM_OK, "")
+            return
+        end if
+        test_start = self%initial_train_size + self%gap + &
+            (self%next_split_index - 1)*self%test_size + 1
+        test_end = test_start + self%test_size - 1
+        train_end = test_start - self%gap - 1
+        train_start = 1
+        if (self%max_train_size > 0) then
+            train_start = max(1, train_end - self%max_train_size + 1)
+        end if
+        train_count = train_end - train_start + 1
+        test_count = test_end - test_start + 1
+        if (train_count < 1 .or. test_count < 1 .or. test_end > self%n_samples) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "time-series split: generated window is out of bounds")
+            return
+        end if
+        deallocate(train_indices, test_indices)
+        allocate(train_indices(train_count), test_indices(test_count))
+        train_indices = [(i, i=train_start, train_end)]
+        test_indices = [(i, i=test_start, test_end)]
+        self%next_split_index = self%next_split_index + 1
+        has_split = .true.
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine time_series_next_split
+
+    integer function time_series_sample_count(self) result(count)
+        class(time_series_splitter_t), intent(in) :: self
+
+        count = self%n_samples
+    end function time_series_sample_count
+
+    integer function time_series_fold_count(self) result(count)
+        class(time_series_splitter_t), intent(in) :: self
+
+        count = self%n_splits
+    end function time_series_fold_count
+
+    integer function time_series_test_window(self) result(count)
+        class(time_series_splitter_t), intent(in) :: self
+
+        count = self%test_size
+    end function time_series_test_window
+
+    integer function time_series_gap_size(self) result(count)
+        class(time_series_splitter_t), intent(in) :: self
+
+        count = self%gap
+    end function time_series_gap_size
+
+    logical function time_series_rolling(self) result(value)
+        class(time_series_splitter_t), intent(in) :: self
+
+        value = self%max_train_size > 0
+    end function time_series_rolling
 
     subroutine kfold_initialize(self, n_samples, n_splits, status, shuffle, seed)
         class(kfold_splitter_t), intent(out) :: self

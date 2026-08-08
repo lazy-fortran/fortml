@@ -1,5 +1,11 @@
 program test_validation
-    use fortml_validation, only: kfold_splitter_t, stratified_kfold_splitter_t
+    use, intrinsic :: iso_fortran_env, only: real64
+    use fortml_validation, only: kfold_splitter_t, stratified_kfold_splitter_t, &
+        time_series_splitter_t, estimator_score_metadata_t, &
+        estimator_validation_metadata_t, FORTML_SCORE_INPUT_PROBABILITY, &
+        FORTML_SCORE_LOG_LOSS
+    use fortml_estimator_capabilities, only: estimator_capability_t, &
+        make_regressor_capabilities
     use fortnum_status, only: fortnum_status_t, status_ok
     implicit none
 
@@ -8,6 +14,8 @@ program test_validation
     failures = 0
     call test_kfold(failures)
     call test_stratified(failures)
+    call test_time_series(failures)
+    call test_metadata(failures)
     call test_refusals(failures)
     if (failures > 0) error stop "validation tests failed"
     write (*, '(a)') "PASS validation independent behavioral oracles"
@@ -84,6 +92,78 @@ contains
                 "stratified partition size", failures)
         end do
     end subroutine test_stratified
+
+    subroutine test_time_series(failures)
+        integer, intent(inout) :: failures
+        type(time_series_splitter_t) :: splitter, replay
+        type(fortnum_status_t) :: status
+        integer, allocatable :: train(:), test(:), train_again(:), test_again(:)
+        logical :: has_split, replay_has_split
+        integer :: fold
+
+        call splitter%initialize(11, 3, status, test_size=2, gap=1, &
+            max_train_size=4)
+        call check(status_ok(status), "time-series initialization", failures)
+        call check(splitter%sample_count() == 11 .and. &
+            splitter%fold_count() == 3 .and. splitter%test_window() == 2 .and. &
+            splitter%gap_size() == 1 .and. splitter%rolling(), &
+            "time-series metadata", failures)
+        do fold = 1, 3
+            call splitter%next_split(train, test, has_split, status)
+            call check(status_ok(status) .and. has_split, &
+                "time-series next split", failures)
+            select case (fold)
+            case (1)
+                call check(all(train == [1, 2, 3, 4]) .and. &
+                    all(test == [6, 7]), "time-series first rolling window", failures)
+            case (2)
+                call check(all(train == [3, 4, 5, 6]) .and. &
+                    all(test == [8, 9]), "time-series second rolling window", failures)
+            case (3)
+                call check(all(train == [5, 6, 7, 8]) .and. &
+                    all(test == [10, 11]), "time-series third rolling window", failures)
+            end select
+            call check(maxval(train) < minval(test) - 1, &
+                "time-series gap is excluded", failures)
+        end do
+        call splitter%next_split(train, test, has_split, status)
+        call check(status_ok(status) .and. .not. has_split, &
+            "time-series exhaustion", failures)
+        call splitter%reset()
+        call replay%initialize(11, 3, status, test_size=2, gap=1, &
+            max_train_size=4)
+        call splitter%next_split(train, test, has_split, status)
+        call replay%next_split(train_again, test_again, replay_has_split, status)
+        call check(has_split .and. replay_has_split .and. all(train == train_again) &
+            .and. all(test == test_again), "time-series reset replay", failures)
+    end subroutine test_time_series
+
+    subroutine test_metadata(failures)
+        integer, intent(inout) :: failures
+        type(estimator_capability_t) :: capability
+        type(estimator_score_metadata_t) :: score
+        type(estimator_validation_metadata_t) :: metadata
+        type(fortnum_status_t) :: status
+
+        capability = make_regressor_capabilities("oracle", 2, 1, status)
+        call check(status_ok(status), "regressor capability oracle", failures)
+        call score%initialize("log-loss", FORTML_SCORE_INPUT_PROBABILITY, status, &
+            kind=FORTML_SCORE_LOG_LOSS, higher_is_better=.false., &
+            supports_sample_weight=.true., differentiable=.true.)
+        call check(status_ok(status) .and. score%valid(), &
+            "score metadata initialization", failures)
+        call metadata%initialize("oracle", capability, score, status, &
+            cloneable=.true., resettable=.true., parameter_count=3)
+        call check(status_ok(status) .and. metadata%valid(), &
+            "validation metadata initialization", failures)
+        call check(metadata%can_clone() .and. metadata%can_reset(), &
+            "clone/reset metadata", failures)
+        call check(score%oriented_value(0.2_real64) > &
+            score%oriented_value(0.4_real64), &
+            "loss scorer maximize orientation", failures)
+        call check(score%prefer(0.2_real64, 0.4_real64), &
+            "loss scorer preference", failures)
+    end subroutine test_metadata
 
     subroutine test_refusals(failures)
         integer, intent(inout) :: failures
