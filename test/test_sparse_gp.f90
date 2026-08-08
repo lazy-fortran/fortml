@@ -27,6 +27,7 @@ program test_sparse_gp
     call test_bound_is_a_lower_bound(failures)
     call test_predictions_match_the_exact_posterior(failures)
     call test_variational_products(failures)
+    call test_kernel_products(failures)
     call test_refusals(failures)
     if (failures /= 0) then
         write (error_unit, '(i0,a)') failures, " sparse GP test(s) failed"
@@ -344,6 +345,107 @@ contains
             failures = failures + 1
         end if
     end subroutine test_variational_products
+
+    subroutine test_kernel_products(failures)
+        !! Independent finite differences and scalar adjoint oracle for the
+        !! fixed-state kernel hyperparameter products.
+        integer, intent(inout) :: failures
+        type(sparse_gp_t) :: model
+        type(kernel_t) :: kernel
+        type(fortnum_status_t) :: status
+        type(fortml_device_t) :: device
+        real(dp) :: inducing(3, d), mean(3), factor(3, 3)
+        real(dp), allocatable :: parameters(:), shifted(:), gradient(:), &
+            parameter_bar(:), finite_difference(:)
+        real(dp) :: value, tangent, plus, minus, value_bar, h
+        real(dp) :: direction(2), fd_tangent
+        integer :: i
+
+        do i = 1, 3
+            inducing(i, 1) = -0.75_dp + 0.65_dp*real(i - 1, dp)
+        end do
+        kernel = make_rbf_kernel(d, variance, lengthscale, status)
+        call model%initialize(inducing, kernel, noise, status)
+        mean = [0.2_dp, -0.15_dp, 0.1_dp]
+        factor = 0.0_dp
+        factor(1, 1) = 0.8_dp
+        factor(2, 1) = -0.08_dp
+        factor(2, 2) = 0.65_dp
+        factor(3, 1) = 0.05_dp
+        factor(3, 2) = 0.04_dp
+        factor(3, 3) = 0.9_dp
+        call model%set_variational(mean, factor, status)
+        parameters = model%kernel%parameters()
+        allocate(shifted(size(parameters)), gradient(size(parameters)), &
+            parameter_bar(size(parameters)), finite_difference(size(parameters)))
+        h = 2.0e-6_dp
+        call model%elbo_kernel_parameter_vjp(x, y, 1.0_dp, gradient, status)
+        do i = 1, size(parameters)
+            shifted = parameters
+            shifted(i) = shifted(i) + h
+            call model%kernel%set_parameters(shifted, status)
+            call model%elbo(x, y, plus, status)
+            shifted(i) = shifted(i) - 2.0_dp*h
+            call model%kernel%set_parameters(shifted, status)
+            call model%elbo(x, y, minus, status)
+            finite_difference(i) = (plus - minus)/(2.0_dp*h)
+        end do
+        call model%kernel%set_parameters(parameters, status)
+        if (.not. status_ok(status) .or. maxval(abs(gradient - finite_difference)) > &
+            3.0e-5_dp) then
+            write (error_unit, '(a,es12.4)') &
+                "FAIL [kernel products] VJP finite difference ", &
+                maxval(abs(gradient - finite_difference))
+            failures = failures + 1
+        end if
+
+        direction = [0.07_dp, -0.11_dp]
+        call model%elbo_kernel_parameter_jvp(x, y, direction, value, tangent, status)
+        shifted = parameters + h*direction
+        call model%kernel%set_parameters(shifted, status)
+        call model%elbo(x, y, plus, status)
+        shifted = parameters - h*direction
+        call model%kernel%set_parameters(shifted, status)
+        call model%elbo(x, y, minus, status)
+        call model%kernel%set_parameters(parameters, status)
+        fd_tangent = (plus - minus)/(2.0_dp*h)
+        if (.not. status_ok(status) .or. abs(tangent - fd_tangent) > 3.0e-5_dp) then
+            write (error_unit, '(a,es12.4)') &
+                "FAIL [kernel products] JVP finite difference ", abs(tangent - fd_tangent)
+            failures = failures + 1
+        end if
+        value_bar = -1.7_dp
+        call model%elbo_kernel_parameter_vjp(x, y, value_bar, parameter_bar, status)
+        if (.not. status_ok(status) .or. maxval(abs(parameter_bar - value_bar*gradient)) > &
+            3.0e-10_dp .or. abs(dot_product(parameter_bar, direction) - &
+            value_bar*tangent) > 3.0e-10_dp) then
+            write (error_unit, '(a)') "FAIL [kernel products] VJP duality"
+            failures = failures + 1
+        end if
+
+        device%kind = FORTML_DEVICE_CPU
+        device%selected = .true.
+        device%available = .true.
+        call model%elbo_kernel_parameter_jvp_device(device, x, y, direction, &
+            plus, tangent, status)
+        if (.not. status_ok(status)) then
+            write (error_unit, '(a)') "FAIL [kernel products] CPU JVP dispatch"
+            failures = failures + 1
+        end if
+        device%kind = FORTML_DEVICE_CUDA
+        call model%elbo_kernel_parameter_jvp_device(device, x, y, direction, &
+            plus, tangent, status)
+        if (status%code /= FORTNUM_NOT_IMPLEMENTED) then
+            write (error_unit, '(a)') "FAIL [kernel products] CUDA JVP refusal"
+            failures = failures + 1
+        end if
+        call model%elbo_kernel_parameter_vjp_device(device, x, y, value_bar, &
+            parameter_bar, status)
+        if (status%code /= FORTNUM_NOT_IMPLEMENTED) then
+            write (error_unit, '(a)') "FAIL [kernel products] CUDA VJP refusal"
+            failures = failures + 1
+        end if
+    end subroutine test_kernel_products
 
     subroutine test_refusals(failures)
         integer, intent(inout) :: failures

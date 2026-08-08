@@ -47,9 +47,17 @@ module fortml_sparse_gp
         procedure, public :: elbo_gradient => sparse_gp_elbo_gradient
         procedure, public :: elbo_jvp => sparse_gp_elbo_jvp
         procedure, public :: elbo_vjp => sparse_gp_elbo_vjp
+        procedure, public :: elbo_kernel_parameter_jvp => &
+            sparse_gp_elbo_kernel_parameter_jvp
+        procedure, public :: elbo_kernel_parameter_vjp => &
+            sparse_gp_elbo_kernel_parameter_vjp
         procedure, public :: elbo_device => sparse_gp_elbo_device
         procedure, public :: elbo_gradient_device => sparse_gp_elbo_gradient_device
         procedure, public :: elbo_jvp_device => sparse_gp_elbo_jvp_device
+        procedure, public :: elbo_kernel_parameter_jvp_device => &
+            sparse_gp_elbo_kernel_parameter_jvp_device
+        procedure, public :: elbo_kernel_parameter_vjp_device => &
+            sparse_gp_elbo_kernel_parameter_vjp_device
         procedure, public :: device_supported => sparse_gp_device_supported
         procedure, public :: predict => sparse_gp_predict
     end type sparse_gp_t
@@ -359,6 +367,207 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine sparse_gp_elbo_vjp
 
+    subroutine sparse_gp_elbo_kernel_parameter_jvp(self, x, y, direction, &
+            value, tangent, status)
+        !! Forward product of the scalar ELBO with respect to kernel log
+        !! parameters. The variational state, inducing inputs, and noise
+        !! variance are held fixed; no inducing solve is differentiated
+        !! implicitly beyond its explicit linear-algebra sensitivity.
+        class(sparse_gp_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), y(:), direction(:)
+        real(dp), intent(out) :: value, tangent
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: a(:, :), mean(:), variance(:), b(:, :)
+        real(dp), allocatable :: k_uu(:, :), k_uf(:, :), k_xx(:, :)
+        real(dp), allocatable :: k_uu_dot(:, :), k_uf_dot(:, :), k_xx_dot(:, :)
+        real(dp), allocatable :: a_dot(:, :), b_dot(:, :)
+        real(dp), allocatable :: r(:, :), r_dot(:, :), u(:), u_dot(:)
+        real(dp), allocatable :: ksolve(:, :)
+        type(cholesky_factorization_t) :: factorization
+        real(dp) :: likelihood, divergence, likelihood_dot, divergence_dot
+        real(dp) :: residual, mean_dot, variance_dot, inverse_noise
+        real(dp) :: trace_dot, quadratic_dot, log_det_dot
+        integer :: i
+
+        value = 0.0_dp
+        tangent = 0.0_dp
+        if (size(direction) /= self%kernel%parameter_count() .or. &
+            any(.not. ieee_is_finite(direction))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "sparse GP kernel JVP: direction shape or values are invalid")
+            return
+        end if
+        call sparse_gp_elbo_terms(self, x, y, a, mean, variance, b, factorization, &
+            likelihood, divergence, status)
+        if (status%code /= FORTNUM_OK) return
+
+        allocate(k_uu(self%n_inducing, self%n_inducing), &
+            k_uf(self%n_inducing, size(x, 1)), k_xx(size(x, 1), size(x, 1)), &
+            k_uu_dot(self%n_inducing, self%n_inducing), &
+            k_uf_dot(self%n_inducing, size(x, 1)), &
+            k_xx_dot(size(x, 1), size(x, 1)))
+        call self%kernel%matrix_jvp(self%inducing_points, self%inducing_points, &
+            direction, k_uu, k_uu_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        call self%kernel%matrix_jvp(self%inducing_points, x, direction, &
+            k_uf, k_uf_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        call self%kernel%matrix_jvp(x, x, direction, k_xx, k_xx_dot, status)
+        if (status%code /= FORTNUM_OK) return
+
+        allocate(a_dot(self%n_inducing, size(x, 1)), &
+            b_dot(self%n_inducing, size(x, 1)))
+        a_dot = k_uf_dot - matmul(k_uu_dot, a)
+        call factorization%solve(a_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        b_dot = matmul(transpose(self%variational_factor), a_dot)
+        inverse_noise = 1.0_dp/self%noise_variance
+        likelihood_dot = 0.0_dp
+        do i = 1, size(x, 1)
+            mean_dot = dot_product(a_dot(:, i), self%variational_mean)
+            variance_dot = k_xx_dot(i, i) - &
+                dot_product(a_dot(:, i), k_uf(:, i)) - &
+                dot_product(a(:, i), k_uf_dot(:, i)) + &
+                2.0_dp*dot_product(b(:, i), b_dot(:, i))
+            residual = y(i) - mean(i)
+            likelihood_dot = likelihood_dot + inverse_noise*residual*mean_dot - &
+                0.5_dp*inverse_noise*variance_dot
+        end do
+
+        allocate(r(self%n_inducing, self%n_inducing), &
+            r_dot(self%n_inducing, self%n_inducing), u(self%n_inducing), &
+            u_dot(self%n_inducing), ksolve(self%n_inducing, self%n_inducing))
+        r = self%variational_factor
+        call factorization%solve(r, status)
+        if (status%code /= FORTNUM_OK) return
+        r_dot = -matmul(k_uu_dot, r)
+        call factorization%solve(r_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        u = self%variational_mean
+        call factorization%solve(u, status)
+        if (status%code /= FORTNUM_OK) return
+        u_dot = -matmul(k_uu_dot, u)
+        call factorization%solve(u_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        ksolve = k_uu_dot
+        call factorization%solve(ksolve, status)
+        if (status%code /= FORTNUM_OK) return
+        trace_dot = sum(r_dot*self%variational_factor)
+        quadratic_dot = dot_product(self%variational_mean, u_dot)
+        log_det_dot = 0.0_dp
+        do i = 1, self%n_inducing
+            log_det_dot = log_det_dot + ksolve(i, i)
+        end do
+        divergence_dot = 0.5_dp*(trace_dot + quadratic_dot + log_det_dot)
+        value = likelihood - divergence
+        tangent = likelihood_dot - divergence_dot
+        if (.not. ieee_is_finite(value) .or. .not. ieee_is_finite(tangent)) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "sparse GP kernel JVP: result is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine sparse_gp_elbo_kernel_parameter_jvp
+
+    subroutine sparse_gp_elbo_kernel_parameter_vjp(self, x, y, value_bar, &
+            parameter_bar, status)
+        !! Reverse product of the scalar ELBO with respect to kernel log
+        !! parameters under the same fixed variational-state contract as the
+        !! kernel JVP.
+        class(sparse_gp_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), y(:), value_bar
+        real(dp), intent(out) :: parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: a(:, :), mean(:), variance(:), b(:, :)
+        real(dp), allocatable :: k_uf(:, :), matrix_bar(:, :)
+        real(dp), allocatable :: a_bar(:, :), b_bar(:, :), c_bar(:, :)
+        real(dp), allocatable :: d_bar(:), work(:, :), r(:, :), u(:), k_inv(:, :)
+        real(dp), allocatable :: local_bar(:), diag_bar(:, :)
+        type(cholesky_factorization_t) :: factorization
+        real(dp) :: likelihood, divergence, inverse_noise, residual, mean_bar
+        real(dp) :: variance_bar
+        integer :: i
+
+        parameter_bar = 0.0_dp
+        if (size(parameter_bar) /= self%kernel%parameter_count() .or. &
+            .not. ieee_is_finite(value_bar)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "sparse GP kernel VJP: cotangent or output shape is invalid")
+            return
+        end if
+        call sparse_gp_elbo_terms(self, x, y, a, mean, variance, b, factorization, &
+            likelihood, divergence, status)
+        if (status%code /= FORTNUM_OK) return
+        allocate(k_uf(self%n_inducing, size(x, 1)))
+        call self%kernel%matrix(self%inducing_points, x, k_uf, status)
+        if (status%code /= FORTNUM_OK) return
+        allocate(a_bar(self%n_inducing, size(x, 1)), &
+            b_bar(self%n_inducing, size(x, 1)), c_bar(self%n_inducing, size(x, 1)), &
+            d_bar(size(x, 1)))
+        a_bar = 0.0_dp
+        b_bar = 0.0_dp
+        c_bar = 0.0_dp
+        d_bar = 0.0_dp
+        inverse_noise = 1.0_dp/self%noise_variance
+        variance_bar = -0.5_dp*inverse_noise*value_bar
+        do i = 1, size(x, 1)
+            mean_bar = inverse_noise*(y(i) - mean(i))*value_bar
+            a_bar(:, i) = a_bar(:, i) + mean_bar*self%variational_mean
+            a_bar(:, i) = a_bar(:, i) - variance_bar*k_uf(:, i)
+            c_bar(:, i) = c_bar(:, i) - variance_bar*a(:, i)
+            b_bar(:, i) = 2.0_dp*variance_bar*b(:, i)
+            d_bar(i) = variance_bar
+        end do
+        a_bar = a_bar + matmul(self%variational_factor, b_bar)
+
+        allocate(work(self%n_inducing, size(x, 1)))
+        work = a_bar
+        call factorization%solve(work, status)
+        if (status%code /= FORTNUM_OK) return
+        c_bar = c_bar + work
+        allocate(matrix_bar(self%n_inducing, self%n_inducing))
+        matrix_bar = -matmul(work, transpose(a))
+
+        allocate(r(self%n_inducing, self%n_inducing), u(self%n_inducing), &
+            k_inv(self%n_inducing, self%n_inducing))
+        r = self%variational_factor
+        call factorization%solve(r, status)
+        if (status%code /= FORTNUM_OK) return
+        u = self%variational_mean
+        call factorization%solve(u, status)
+        if (status%code /= FORTNUM_OK) return
+        k_inv = 0.0_dp
+        do i = 1, self%n_inducing
+            k_inv(i, i) = 1.0_dp
+        end do
+        call factorization%solve(k_inv, status)
+        if (status%code /= FORTNUM_OK) return
+        matrix_bar = matrix_bar + value_bar*(0.5_dp*matmul(r, transpose(r)) + &
+            0.5_dp*outer_product(u, u) - 0.5_dp*k_inv )
+
+        call self%kernel%parameter_vjp(self%inducing_points, self%inducing_points, &
+            matrix_bar, parameter_bar, status)
+        if (status%code /= FORTNUM_OK) return
+        allocate(local_bar(size(parameter_bar)))
+        call self%kernel%parameter_vjp(self%inducing_points, x, c_bar, local_bar, status)
+        if (status%code /= FORTNUM_OK) return
+        parameter_bar = parameter_bar + local_bar
+        allocate(diag_bar(size(x, 1), size(x, 1)))
+        diag_bar = 0.0_dp
+        do i = 1, size(x, 1)
+            diag_bar(i, i) = d_bar(i)
+        end do
+        call self%kernel%parameter_vjp(x, x, diag_bar, local_bar, status)
+        if (status%code /= FORTNUM_OK) return
+        parameter_bar = parameter_bar + local_bar
+        if (any(.not. ieee_is_finite(parameter_bar))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "sparse GP kernel VJP: result is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine sparse_gp_elbo_kernel_parameter_vjp
+
     subroutine sparse_gp_elbo(self, x, y, value, status, &
             expected_log_likelihood, kl_value)
         class(sparse_gp_t), intent(in) :: self
@@ -553,6 +762,61 @@ contains
         end select
     end subroutine sparse_gp_elbo_jvp_device
 
+    subroutine sparse_gp_elbo_kernel_parameter_jvp_device(self, device, x, y, &
+            direction, value, tangent, status)
+        !! Device boundary for the fixed-state kernel-parameter JVP.
+        class(sparse_gp_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :), y(:), direction(:)
+        real(dp), intent(out) :: value, tangent
+        type(fortnum_status_t), intent(out) :: status
+
+        value = 0.0_dp
+        tangent = 0.0_dp
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "sparse GP kernel JVP device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%elbo_kernel_parameter_jvp(x, y, direction, value, tangent, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "sparse GP kernel JVP device: resident CUDA inducing graph is not linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "sparse GP kernel JVP device: device kind is invalid")
+        end select
+    end subroutine sparse_gp_elbo_kernel_parameter_jvp_device
+
+    subroutine sparse_gp_elbo_kernel_parameter_vjp_device(self, device, x, y, &
+            value_bar, parameter_bar, status)
+        !! Device boundary for the fixed-state kernel-parameter VJP.
+        class(sparse_gp_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :), y(:), value_bar
+        real(dp), intent(out) :: parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        parameter_bar = 0.0_dp
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "sparse GP kernel VJP device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%elbo_kernel_parameter_vjp(x, y, value_bar, parameter_bar, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "sparse GP kernel VJP device: resident CUDA inducing graph is not linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "sparse GP kernel VJP device: device kind is invalid")
+        end select
+    end subroutine sparse_gp_elbo_kernel_parameter_vjp_device
+
     logical function sparse_gp_device_supported(self, device_kind) result(supported)
         class(sparse_gp_t), intent(in) :: self
         integer, intent(in) :: device_kind
@@ -659,5 +923,15 @@ contains
         valid = size(x, 1) > 0 .and. size(x, 1) == size(y) .and. &
             size(x, 2) == self%kernel%input_dim
     end function valid_data
+
+    function outer_product(left, right) result(matrix)
+        real(dp), intent(in) :: left(:), right(:)
+        real(dp) :: matrix(size(left), size(right))
+        integer :: i
+
+        do i = 1, size(left)
+            matrix(i, :) = left(i)*right
+        end do
+    end function outer_product
 
 end module fortml_sparse_gp
