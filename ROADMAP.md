@@ -1644,6 +1644,12 @@ Adafactor. These slices are production evidence for
 their stated contracts. They do not close the broader GPU, stochastic,
 distributed, multitask, or architecture-family gates listed above.
 
+The physics ledger now also records `fortml_symplectic` canonical-form
+residuals and exact first-order products over map Jacobians. The independent
+Verlet oracle, release application, and typed CUDA boundary are pinned in the
+symplectic residual benchmark lane. Lagrangian, Poisson, implicit general-
+Hamiltonian, and resident GPU structure paths remain open.
+
 The benchmark matrix includes the weighted multiclass MLP objective and
 bounded L-BFGS-B gate in `fortml-bench/results/mlp_classifier_objective.csv`;
 its CUDA row is an explicit unavailable contract. The current classification
@@ -3361,14 +3367,16 @@ results as an external literature claim.
   FortOpt L-BFGS-B fitting, and returns a typed CUDA refusal without a host
   fallback. `test_pinn` is an independent manufactured-solution gate covering
   all products, a nonlinear HVP, fitting, and shape/device boundaries.
-- [ ] Extend the seam with symplectic-form terms, nondimensionalizing
-  transforms, coordinate/time layout metadata, and richer named diagnostics
-  for every term. The bounded `physics_objective_t%term_values` diagnostic now
-  exposes normalized data/residual/boundary/conservation contributions (zero
-  for inactive slots, summing to the objective value), with an independent
-  affine oracle in `test_physics_objective`; dedicated PINN and
-  physics-informed GP training adapters remain future work while preserving
-  separate data/residual/boundary/conservation weights.
+- [x] Add a reusable canonical symplectic-form term over map Jacobians.
+  `fortml_symplectic` forms `D = A^T Omega A - Omega` for canonical `[q,p]`
+  coordinates, exposes packed residual value/JVP/VJP and normalized weighted
+  value/JVP/VJP products, and checks a caller-supplied form-defect tolerance.
+  `symplectic_constraint_t` adapts exact map Jacobian callbacks into the
+  existing `physics_constraint_t` seam while preserving the configured weight.
+  The independent harmonic-oscillator velocity-Verlet oracle in
+  `test_symplectic` checks the form identity, residual adjoint, value products,
+  bridge, and typed CUDA refusal. Nondimensionalizing transforms,
+  coordinate/time metadata, and richer diagnostics remain future work.
 - [ ] Add a PINN and physics-informed GP training adapter over the shared
   objective. It must keep data, residual, initial/boundary, and conservation
   terms separately addressable for weighting, derivatives, and diagnostics.
@@ -3421,10 +3429,11 @@ checkouts before deciding that a product is unavailable.
   generating-function certificate is required only for an architecture that
   explicitly uses one.
 - [ ] Add differentiable symplectic Euler, Verlet, and higher-order splitting
-  integrators for separable or otherwise splittable Hamiltonians. General
-  Hamiltonians require an applicable implicit symplectic method or an explicit
-  refusal. Training can differentiate through the map, while inference reports
-  the integrator and step size used.
+  integrators for separable or otherwise splittable Hamiltonians. The current
+  `hamiltonian_mlp_t%leapfrog` remains the CPU map provider used by the
+  diagnostic, while general Hamiltonians require an applicable implicit
+  symplectic method or an explicit refusal. Training can differentiate through
+  the map, while inference reports the integrator and step size used.
 - [ ] Add gauge handling for additive constants in H and for the Lagrangian
   equivalence `L -> L + dF(q,t)/dt`, canonical versus noncanonical coordinates,
   and optional noisy derivative observations.

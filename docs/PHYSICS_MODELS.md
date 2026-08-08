@@ -58,10 +58,19 @@ does not form a Jacobian or Hessian and has no finite-difference fallback.
 Providers without the optional callback retain a typed
 `FORTNUM_NOT_IMPLEMENTED` HVP refusal. The independent affine and nonlinear
 oracles are in [`test_physics_objective.f90`](../test/test_physics_objective.f90).
-Coordinate/time metadata, collocation samplers, PINN/GP adapters, and
-symplectic terms remain future work. The diagnostic itself is CPU/device
-agnostic and does not introduce a host fallback: a resident adapter remains
-responsible for its residual callback and products.
+Coordinate/time metadata, collocation samplers, and PINN/GP adapters remain
+future work. The CPU `fortml_symplectic` utility now supplies the canonical
+map term. For a map Jacobian `A` in `[q,p]` coordinates it forms
+`D = transpose(A)*Omega*A - Omega`, with `Omega=[0,I;-I,0]`. The packed
+column-major defect has exact residual JVP and VJP products. Its normalized
+weighted square has value, JVP, and VJP products, and `is_symplectic` reports a
+caller-selected maximum-defect tolerance. `symplectic_constraint_t` accepts
+map Jacobian callbacks and adapts the term into `physics_constraint_t`, so a
+symplectic residual can occupy any named objective slot while retaining its
+weight. `test_symplectic` is an independent harmonic-oscillator velocity-
+Verlet oracle covering the form identity, products, adapter, and CUDA refusal.
+The utility does not introduce a host fallback: a resident adapter remains
+responsible for its callback and device residency.
 
 `fortml_pinn` adds `pinn_training_adapter_t` as the training-facing facade for
 that composition. `initialize(objective,status[,device_kind])` accepts an

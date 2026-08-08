@@ -1762,6 +1762,28 @@ The explicit leapfrog method refuses general mode with
 implicit symplectic integrator. Both modes refuse nonfinite states/directions
 and malformed layer or output shapes; no finite-difference fallback is used.
 
+### `fortml_symplectic`
+
+`symplectic_form_diagnostic_t` evaluates the canonical form defect for a map
+Jacobian `A` in `[q,p]` coordinates, `D = transpose(A) * Omega * A - Omega`,
+with `Omega = [0,I;-I,0]`. `residual` packs `D` in column-major order and
+`value` returns the positive weighted reduction
+`weight*dot_product(D,D)/(2*n_state**2)`. `residual_jvp` and `residual_vjp`
+are exact products of the form map. `value_jvp` and `value_vjp` contract the
+same products without forming a Jacobian of the residual. `is_symplectic`
+checks the maximum packed defect against a caller-supplied tolerance.
+
+`symplectic_constraint_t` accepts caller-owned map Jacobian, Jacobian-JVP, and
+Jacobian-VJP callbacks and exposes the same value and first-order products. Its
+`as_constraint` method adapts the raw form residual to
+`physics_constraint_t`, preserving the configured reduction weight for
+`physics_objective_t` composition. The callbacks own model parameters,
+coordinates, and any integrator state. A CPU diagnostic is the current
+implementation. CUDA initialization or selection returns
+`FORTNUM_NOT_IMPLEMENTED` and leaves the CPU object and output buffers
+unchanged. No finite-difference or host fallback is hidden behind a product.
+The independent harmonic-oscillator Verlet gate is `test_symplectic`.
+
 ### `fortml_physics_objective`
 
 `physics_constraint_t` is the explicit residual seam for PINN, physics-informed
