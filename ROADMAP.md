@@ -703,6 +703,13 @@ when a lower-level primitive already exists.
   oracle is `test_gp_variational_multiclass_classification`. Kernel/inducing
   hyperparameter products, natural gradients, coupled categorical likelihoods,
   and resident GPU inference stay open.
+- [x] Extend the Bernoulli variational-GP binary contract with exact query-input
+  JVP/VJP products for latent marginals and corrected probabilities. The
+  products differentiate the cross-kernel and Schur-complement variance with
+  analytic kernel input derivatives, and
+  `test_gp_variational_classification_input` checks central differences,
+  adjoints, logistic/probit branches, CPU dispatch, and typed CUDA refusal.
+  Hyperparameter products and resident GPU inference remain open.
 - [ ] Derivative observations for every supported smooth kernel, mixed orders,
   vector fields, Hessian observations, operator-valued outputs, analytic
   third-order query products, and covariance products over value/derivative

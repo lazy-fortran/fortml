@@ -2926,8 +2926,12 @@ logistic variance correction or analytic probit Gaussian integral and returns
 columns `[negative,positive]`. Their parameter-JVP and parameter-VJP variants
 differentiate the packed variational mean/log-Cholesky vector. The VJP accepts
 cotangents for both latent outputs or both probability columns and satisfies
-the JVP/VJP dot-product identity. CPU dispatch executes these products exactly;
-CUDA prediction and reverse-product paths return `FORTNUM_NOT_IMPLEMENTED`
+the JVP/VJP dot-product identity. `predict_latent_input_jvp`/
+`predict_latent_input_vjp` and their probability counterparts differentiate
+query coordinates with the inducing state fixed; an independent oracle checks
+central differences and the adjoint identity. CPU dispatch executes these
+products exactly; CUDA prediction and reverse-product paths return
+`FORTNUM_NOT_IMPLEMENTED`
 until the inducing solve, likelihood evaluation, and reduction are resident.
 No hidden host fallback is used. Kernel and inducing-point hyperparameter
 products, natural-gradient updates, and resident GPU inference remain separate

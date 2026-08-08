@@ -64,6 +64,16 @@ module fortml_gp_variational_classification
             gvc_predict_latent_parameter_vjp
         procedure, public :: predict_proba_parameter_vjp => &
             gvc_predict_proba_parameter_vjp
+        procedure, public :: predict_latent_input_jvp => &
+            gvc_predict_latent_input_jvp
+        procedure, public :: predict_proba_input_jvp => &
+            gvc_predict_proba_input_jvp
+        procedure, public :: predict_latent_input_vjp => &
+            gvc_predict_latent_input_vjp
+        procedure, public :: predict_proba_input_vjp => &
+            gvc_predict_proba_input_vjp
+        procedure, public :: predict_proba_input_vjp_device => &
+            gvc_predict_proba_input_vjp_device
         procedure, public :: predict_proba_parameter_vjp_device => &
             gvc_predict_proba_parameter_vjp_device
         procedure, public :: elbo_device => gvc_elbo_device
@@ -655,6 +665,233 @@ contains
         call self%predict_latent_parameter_vjp(x, mean_bar, variance_bar, parameter_bar, status)
     end subroutine gvc_predict_proba_parameter_vjp
 
+    !> Forward product of the variational latent prediction with respect to
+    !! query coordinates.  The inducing points, variational state, and kernel
+    !! hyperparameters remain fixed.  Kernel first input derivatives are used
+    !! directly; unsupported/nonsmooth kernel leaves return their typed status.
+    subroutine gvc_predict_latent_input_jvp(self, x, x_dot, mean, mean_dot, &
+            variance, variance_dot, status)
+        class(gp_variational_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), x_dot(:, :)
+        real(dp), intent(out) :: mean(:), mean_dot(:), variance(:), variance_dot(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: projection(:, :), local_mean(:), local_variance(:)
+        real(dp), allocatable :: k_ux(:, :), projection_dot(:, :), k_dot(:)
+        real(dp), allocatable :: noise_factor(:), noise_factor_dot(:)
+        real(dp), allocatable :: gradient_x1(:), gradient_x2(:), mixed_hessian(:, :)
+        real(dp) :: value, diagonal_dot
+        integer :: i, j
+
+        if (.not. prediction_valid(self, x, mean, variance, status)) return
+        if (any(shape(x_dot) /= shape(x)) .or. size(mean_dot) /= size(mean) .or. &
+                size(variance_dot) /= size(variance) .or. &
+                any(.not. ieee_is_finite(x_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP input JVP: input tangent or output shape is invalid")
+            return
+        end if
+        call build_projection(self, x, projection, local_mean, local_variance, status)
+        if (status%code /= FORTNUM_OK) return
+        allocate(k_ux(self%n_inducing, size(x, 1)), projection_dot(self%n_inducing, size(x, 1)), &
+            k_dot(self%n_inducing), noise_factor(self%n_inducing), &
+            noise_factor_dot(self%n_inducing), gradient_x1(self%kernel%input_dim), &
+            gradient_x2(self%kernel%input_dim), mixed_hessian(self%kernel%input_dim, &
+                self%kernel%input_dim))
+        call self%kernel%matrix(self%inducing_points, x, k_ux, status)
+        if (status%code /= FORTNUM_OK) return
+        mean = local_mean
+        variance = local_variance
+        do i = 1, size(x, 1)
+            do j = 1, self%n_inducing
+                call self%kernel%input_derivatives(self%inducing_points(j, :), x(i, :), &
+                    value, gradient_x1, gradient_x2, mixed_hessian, status)
+                if (status%code /= FORTNUM_OK) return
+                k_dot(j) = dot_product(gradient_x2, x_dot(i, :))
+            end do
+            projection_dot(:, i) = k_dot
+            call self%prior_factorization%solve(projection_dot(:, i), status)
+            if (status%code /= FORTNUM_OK) return
+            mean_dot(i) = dot_product(projection_dot(:, i), self%variational_mean)
+            noise_factor = matmul(transpose(self%variational_factor), projection(:, i))
+            noise_factor_dot = matmul(transpose(self%variational_factor), projection_dot(:, i))
+            variance_dot(i) = -dot_product(projection_dot(:, i), k_ux(:, i)) - &
+                dot_product(projection(:, i), k_dot) + 2.0_dp*dot_product(noise_factor, &
+                noise_factor_dot)
+            call self%kernel%input_derivatives(x(i, :), x(i, :), value, gradient_x1, &
+                gradient_x2, mixed_hessian, status)
+            if (status%code /= FORTNUM_OK) return
+            diagonal_dot = dot_product(gradient_x1 + gradient_x2, x_dot(i, :))
+            variance_dot(i) = variance_dot(i) + diagonal_dot
+        end do
+        if (any(.not. ieee_is_finite(mean_dot)) .or. any(.not. ieee_is_finite(variance_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP input JVP: nonfinite tangent")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gvc_predict_latent_input_jvp
+
+    !> Reverse product of the variational latent prediction with respect to
+    !! query coordinates.  This is the adjoint of
+    !! `predict_latent_input_jvp` and has no finite-difference fallback.
+    subroutine gvc_predict_latent_input_vjp(self, x, mean_bar, variance_bar, &
+            x_bar, status)
+        class(gp_variational_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), mean_bar(:), variance_bar(:)
+        real(dp), intent(out) :: x_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: projection(:, :), local_mean(:), local_variance(:)
+        real(dp), allocatable :: k_ux(:, :), projection_bar(:), k_bar(:), noise_factor(:)
+        real(dp), allocatable :: gradient_x1(:), gradient_x2(:), mixed_hessian(:, :)
+        real(dp) :: value
+        integer :: i, j
+
+        x_bar = 0.0_dp
+        if (.not. latent_input_vjp_valid(self, x, mean_bar, variance_bar, x_bar, status)) return
+        call build_projection(self, x, projection, local_mean, local_variance, status)
+        if (status%code /= FORTNUM_OK) return
+        allocate(k_ux(self%n_inducing, size(x, 1)), projection_bar(self%n_inducing), &
+            k_bar(self%n_inducing), noise_factor(self%n_inducing), &
+            gradient_x1(self%kernel%input_dim), gradient_x2(self%kernel%input_dim), &
+            mixed_hessian(self%kernel%input_dim, self%kernel%input_dim))
+        call self%kernel%matrix(self%inducing_points, x, k_ux, status)
+        if (status%code /= FORTNUM_OK) return
+        do i = 1, size(x, 1)
+            projection_bar = mean_bar(i)*self%variational_mean - variance_bar(i)*k_ux(:, i)
+            noise_factor = matmul(transpose(self%variational_factor), projection(:, i))
+            projection_bar = projection_bar + 2.0_dp*variance_bar(i)* &
+                matmul(self%variational_factor, noise_factor)
+            ! `k_ux` occurs directly in the Schur-complement term
+            ! `-P^T k_ux` as well as indirectly through
+            ! `P = K_uu^{-1} k_ux`; retain both reverse contributions.
+            k_bar = -variance_bar(i)*projection(:, i)
+            call self%prior_factorization%solve(projection_bar, status)
+            if (status%code /= FORTNUM_OK) return
+            do j = 1, self%n_inducing
+                call self%kernel%input_derivatives(self%inducing_points(j, :), x(i, :), &
+                    value, gradient_x1, gradient_x2, mixed_hessian, status)
+                if (status%code /= FORTNUM_OK) return
+                x_bar(i, :) = x_bar(i, :) + (k_bar(j) + projection_bar(j))*gradient_x2
+            end do
+            call self%kernel%input_derivatives(x(i, :), x(i, :), value, gradient_x1, &
+                gradient_x2, mixed_hessian, status)
+            if (status%code /= FORTNUM_OK) return
+            x_bar(i, :) = x_bar(i, :) + variance_bar(i)*(gradient_x1 + gradient_x2)
+        end do
+        if (any(.not. ieee_is_finite(x_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP input VJP: nonfinite input cotangent")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gvc_predict_latent_input_vjp
+
+    !> Probability wrapper for the query-input JVP.
+    subroutine gvc_predict_proba_input_jvp(self, x, x_dot, probabilities, &
+            probabilities_dot, status)
+        class(gp_variational_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), x_dot(:, :)
+        real(dp), intent(out) :: probabilities(:, :), probabilities_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: mean(:), mean_dot(:), variance(:), variance_dot(:)
+        real(dp) :: p, p_mu, p_variance, scale, z, density
+        integer :: i
+
+        if (.not. prediction_probability_valid(self, x, probabilities, status)) return
+        if (any(shape(x_dot) /= shape(x)) .or. any(shape(probabilities_dot) /= &
+                shape(probabilities)) .or. any(.not. ieee_is_finite(x_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP probability input JVP: input tangent or output shape is invalid")
+            return
+        end if
+        allocate(mean(size(x, 1)), mean_dot(size(x, 1)), variance(size(x, 1)), &
+            variance_dot(size(x, 1)))
+        call self%predict_latent_input_jvp(x, x_dot, mean, mean_dot, variance, variance_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        do i = 1, size(x, 1)
+            if (self%likelihood == GP_VARIATIONAL_PROBIT) then
+                scale = sqrt(1.0_dp + variance(i)); z = mean(i)/scale
+                density = exp(-0.5_dp*z*z)/SQRT_TWO_PI
+                p = 0.5_dp*erfc(-z/SQRT_TWO)
+                p_mu = density/scale
+                p_variance = density*(-mean(i)/(2.0_dp*scale**3))
+            else
+                scale = sqrt(1.0_dp + PI*variance(i)/8.0_dp)
+                p = 1.0_dp/(1.0_dp + exp(-mean(i)/scale))
+                p_mu = p*(1.0_dp-p)/scale
+                p_variance = p*(1.0_dp-p)*(-mean(i)*PI/(16.0_dp*scale**3))
+            end if
+            probabilities(i, 2) = p
+            probabilities(i, 1) = 1.0_dp - p
+            probabilities_dot(i, 2) = p_mu*mean_dot(i) + p_variance*variance_dot(i)
+            probabilities_dot(i, 1) = -probabilities_dot(i, 2)
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gvc_predict_proba_input_jvp
+
+    !> Probability wrapper for the query-input VJP.
+    subroutine gvc_predict_proba_input_vjp(self, x, probabilities_bar, x_bar, status)
+        class(gp_variational_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), probabilities_bar(:, :)
+        real(dp), intent(out) :: x_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: mean(:), variance(:), mean_bar(:), variance_bar(:)
+        real(dp) :: scale, z, density, p, p_mu, p_variance
+        integer :: i
+
+        x_bar = 0.0_dp
+        if (.not. prediction_probability_input_vjp_valid(self, x, probabilities_bar, &
+                x_bar, status)) return
+        allocate(mean(size(x, 1)), variance(size(x, 1)), mean_bar(size(x, 1)), &
+            variance_bar(size(x, 1)))
+        call self%predict_latent(x, mean, variance, status)
+        if (status%code /= FORTNUM_OK) return
+        do i = 1, size(x, 1)
+            if (self%likelihood == GP_VARIATIONAL_PROBIT) then
+                scale = sqrt(1.0_dp + variance(i)); z = mean(i)/scale
+                density = exp(-0.5_dp*z*z)/SQRT_TWO_PI
+                p = 0.5_dp*erfc(-z/SQRT_TWO)
+                p_mu = density/scale
+                p_variance = density*(-mean(i)/(2.0_dp*scale**3))
+            else
+                scale = sqrt(1.0_dp + PI*variance(i)/8.0_dp)
+                p = 1.0_dp/(1.0_dp + exp(-mean(i)/scale))
+                p_mu = p*(1.0_dp-p)/scale
+                p_variance = p*(1.0_dp-p)*(-mean(i)*PI/(16.0_dp*scale**3))
+            end if
+            mean_bar(i) = (probabilities_bar(i, 2) - probabilities_bar(i, 1))*p_mu
+            variance_bar(i) = (probabilities_bar(i, 2) - probabilities_bar(i, 1))*p_variance
+        end do
+        call self%predict_latent_input_vjp(x, mean_bar, variance_bar, x_bar, status)
+    end subroutine gvc_predict_proba_input_vjp
+
+    !> Device boundary for the query-input probability VJP.
+    subroutine gvc_predict_proba_input_vjp_device(self, device, x, probabilities_bar, &
+            x_bar, status)
+        class(gp_variational_classification_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :), probabilities_bar(:, :)
+        real(dp), intent(out) :: x_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        x_bar = 0.0_dp
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP input VJP device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_proba_input_vjp(x, probabilities_bar, x_bar, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "variational GP input VJP device: resident CUDA graph is not linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP input VJP device: device kind is invalid")
+        end select
+    end subroutine gvc_predict_proba_input_vjp_device
+
     !> Explicit backend boundary for the predictive reverse product.  CUDA is
     !! refused until a resident inducing solve and probability-reverse kernel
     !! are linked; no hidden host fallback is permitted.
@@ -1022,6 +1259,55 @@ contains
         valid = .true.
         call status_set(status, FORTNUM_OK, "")
     end function prediction_probability_cotangent_valid
+
+    logical function latent_input_vjp_valid(self, x, mean_bar, variance_bar, x_bar, status) &
+            result(valid)
+        class(gp_variational_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), mean_bar(:), variance_bar(:), x_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        valid = .false.
+        if (.not. allocated(self%variational_mean) .or. self%n_inducing < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP input VJP: model is not initialized")
+            return
+        end if
+        if (size(x, 1) < 1 .or. size(x, 2) /= self%kernel%input_dim .or. &
+                size(mean_bar) /= size(x, 1) .or. size(variance_bar) /= size(x, 1) .or. &
+                any(shape(x_bar) /= shape(x)) .or. any(.not. ieee_is_finite(x)) .or. &
+                any(.not. ieee_is_finite(mean_bar)) .or. &
+                any(.not. ieee_is_finite(variance_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP input VJP: input, cotangent, or output shape is invalid")
+            return
+        end if
+        valid = .true.
+        call status_set(status, FORTNUM_OK, "")
+    end function latent_input_vjp_valid
+
+    logical function prediction_probability_input_vjp_valid(self, x, probabilities_bar, &
+            x_bar, status) result(valid)
+        class(gp_variational_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), probabilities_bar(:, :), x_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        valid = .false.
+        if (.not. allocated(self%variational_mean) .or. self%n_inducing < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP probability input VJP: model is not initialized")
+            return
+        end if
+        if (size(x, 1) < 1 .or. size(x, 2) /= self%kernel%input_dim .or. &
+                any(shape(probabilities_bar) /= [size(x, 1), 2]) .or. &
+                any(shape(x_bar) /= shape(x)) .or. any(.not. ieee_is_finite(x)) .or. &
+                any(.not. ieee_is_finite(probabilities_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP probability input VJP: input, cotangent, or output shape is invalid")
+            return
+        end if
+        valid = .true.
+        call status_set(status, FORTNUM_OK, "")
+    end function prediction_probability_input_vjp_valid
 
     subroutine bernoulli_terms(label, latent, likelihood, value, gradient)
         integer, intent(in) :: label, likelihood
