@@ -54,7 +54,7 @@ compiler coverage remains an
 explicit older-build result.
 
 The companion benchmark harness is clean at FortML-bench revision
-`be32f6bcadda29b4f97b6ffbd6b3a07ec5d576e2`;
+`58fc29433c29d43c3f78dfe43a7f76c561b39c58`;
 the trainer-checkpoint, unfactored-Adafactor, binary-objective,
 multiclass-calibration, variational-multiclass-GP, PINN/physics-objective,
 physics HVP, grouped K-fold, spectral-mixture, XGBoost-ranking,
@@ -111,7 +111,7 @@ optimizer-group execution, mixed precision, distributed state, and migration
 remain open. The source and benchmark pins for this earlier optimizer-group
 slice were FortML `05632ce8fa95268417c7a2d979fa1461a202abaa` and
 FortML-bench `0fb8ac7`; the current aggregate verification is the newer
-`c617b68`/`be32f6b` pair recorded above.
+`bf3810d`/`58fc294` pair recorded above.
 
 The variational-GP classification and OVR wrappers now expose fixed-state
 kernel-log-parameter JVP/VJP products for latent margins and normalized
