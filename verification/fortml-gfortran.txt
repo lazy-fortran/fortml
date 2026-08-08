@@ -1,5 +1,5 @@
 Verification date: 2026-08-08
-FortML revision: 512d742
+FortML revision: 858d105
 FortAD dependency: clean origin/main 6a33d314c5b1a8adf8b9ed989741612fe09ab6b0
 FortNum dependency: clean origin/main 38bc0e578ec5c6c0e636e8fdd3844f54f9e3e473
 Command: fo clean; fo build --flag -O3 (twice); fo test; fo lint
