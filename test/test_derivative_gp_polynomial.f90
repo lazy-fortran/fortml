@@ -29,7 +29,8 @@ program test_derivative_gp_polynomial
     y(:, 1) = [0.8_dp, -0.3_dp, 1.1_dp]
     query = reshape([0.4_dp, 0.5_dp, 0.9_dp, 0.7_dp], shape(query))
     direction = reshape([0.03_dp, -0.02_dp, -0.01_dp, 0.04_dp], shape(direction))
-    kernel = make_polynomial_kernel(2, 1.3_dp, 0.4_dp, 1.5_dp, 2.2_dp, status)
+    ! Degree one exercises the regular limit of the curvature block.
+    kernel = make_polynomial_kernel(2, 1.3_dp, 0.4_dp, 1.5_dp, 1.0_dp, status)
     call check(status_ok(status), "polynomial kernel construction", failures)
     call model%fit(x, [0, 1, 2], y, kernel, 0.06_dp, status, jitter=1.0e-10_dp)
     call check(status_ok(status), "polynomial derivative-GP fit", failures)
