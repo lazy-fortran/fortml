@@ -27,6 +27,12 @@ module fortml_lightgbm
         real(dp) :: l2 = 1.0_dp
         real(dp) :: min_gain_to_split = 0.0_dp
         character(len=32) :: objective = "regression"
+        !! Evaluate an optional validation set after every boosting round.
+        !! A positive value stops after this many consecutive rounds without
+        !! an improvement larger than `early_stopping_min_delta`.
+        integer :: early_stopping_rounds = 0
+        real(dp) :: early_stopping_min_delta = 0.0_dp
+        logical :: restore_best = .true.
     end type lightgbm_options_t
 
     type :: lgbm_node_t
@@ -68,6 +74,7 @@ module fortml_lightgbm
         integer :: n_inputs = 0
         integer :: objective_code = 0
         integer :: n_estimators = 0
+        integer :: requested_estimators = 0
         integer :: num_leaves_value = 0
         integer :: max_bin_value = 0
         integer :: max_depth_value = 0
@@ -76,6 +83,12 @@ module fortml_lightgbm
         real(dp) :: l2_value = 0.0_dp
         real(dp) :: min_gain_value = 0.0_dp
         real(dp) :: base_score = 0.0_dp
+        integer :: early_stopping_rounds_value = 0
+        real(dp) :: early_stopping_min_delta_value = 0.0_dp
+        logical :: restore_best_value = .true.
+        integer :: best_iteration_value = 0
+        real(dp) :: best_validation_loss_value = huge(1.0_dp)
+        logical :: early_stopped_flag = .false.
         type(lgbm_tree_t), allocatable :: estimator(:)
         logical :: initialized = .false.
     contains
@@ -92,6 +105,9 @@ module fortml_lightgbm
         procedure, public :: fitted => lgbm_fitted
         procedure, public :: objective_name => lgbm_objective_name
         procedure, public :: estimator_count => lgbm_estimator_count
+        procedure, public :: best_iteration => lgbm_best_iteration
+        procedure, public :: best_validation_loss => lgbm_best_validation_loss
+        procedure, public :: early_stopped => lgbm_early_stopped
         procedure, public :: num_leaves => lgbm_num_leaves
         procedure, public :: tree_node_count => lgbm_tree_node_count
         procedure, public :: tree_depth => lgbm_tree_depth
@@ -101,48 +117,84 @@ module fortml_lightgbm
 
 contains
 
-    subroutine lgbm_fit_regression(self, x, y, status, options, sample_weight)
+    subroutine lgbm_fit_regression(self, x, y, status, options, sample_weight, &
+            validation_x, validation_y, validation_weight)
         class(lightgbm_t), intent(out) :: self
         real(dp), intent(in) :: x(:, :), y(:)
         type(fortnum_status_t), intent(out) :: status
         type(lightgbm_options_t), intent(in), optional :: options
         real(dp), intent(in), optional :: sample_weight(:)
+        real(dp), intent(in), optional :: validation_x(:, :), validation_y(:), &
+            validation_weight(:)
         type(lightgbm_options_t) :: settings
 
         settings = lightgbm_options_t()
         if (present(options)) settings = options
         settings%objective = "regression"
-        call lgbm_fit(self, x, y, status, settings, sample_weight)
+        call lgbm_fit(self, x, y, status, settings, sample_weight, validation_x, &
+            validation_y, validation_weight)
     end subroutine lgbm_fit_regression
 
-    subroutine lgbm_fit_binary(self, x, y, status, options, sample_weight)
+    subroutine lgbm_fit_binary(self, x, y, status, options, sample_weight, &
+            validation_x, validation_y, validation_weight)
         class(lightgbm_t), intent(out) :: self
         real(dp), intent(in) :: x(:, :), y(:)
         type(fortnum_status_t), intent(out) :: status
         type(lightgbm_options_t), intent(in), optional :: options
         real(dp), intent(in), optional :: sample_weight(:)
+        real(dp), intent(in), optional :: validation_x(:, :), validation_y(:), &
+            validation_weight(:)
         type(lightgbm_options_t) :: settings
 
         settings = lightgbm_options_t()
         if (present(options)) settings = options
         settings%objective = "binary"
-        call lgbm_fit(self, x, y, status, settings, sample_weight)
+        call lgbm_fit(self, x, y, status, settings, sample_weight, validation_x, &
+            validation_y, validation_weight)
     end subroutine lgbm_fit_binary
 
-    subroutine lgbm_fit(self, x, y, status, options, sample_weight)
+    subroutine lgbm_fit(self, x, y, status, options, sample_weight, validation_x, &
+            validation_y, validation_weight)
         class(lightgbm_t), intent(out) :: self
         real(dp), intent(in) :: x(:, :), y(:)
         type(fortnum_status_t), intent(out) :: status
         type(lightgbm_options_t), intent(in), optional :: options
         real(dp), intent(in), optional :: sample_weight(:)
+        real(dp), intent(in), optional :: validation_x(:, :), validation_y(:), &
+            validation_weight(:)
         type(lightgbm_options_t) :: settings
         real(dp), allocatable :: weights(:), margin(:), gradient(:), hessian(:), correction(:)
+        real(dp), allocatable :: validation_weights(:), validation_margin(:), &
+            validation_correction(:)
+        type(lgbm_tree_t), allocatable :: best_estimators(:), retained_estimators(:)
         integer, allocatable :: rows(:)
-        integer :: objective_code, i, n_samples, n_features
-        real(dp) :: weight_sum, mean_target
+        integer :: objective_code, i, n_samples, n_features, n_validation
+        integer :: completed_estimators, best_iteration, stale_rounds
+        real(dp) :: weight_sum, mean_target, validation_loss, best_validation_loss
+        logical :: have_validation, improved
 
         settings = lightgbm_options_t()
         if (present(options)) settings = options
+        have_validation = present(validation_x) .or. present(validation_y) .or. &
+            present(validation_weight)
+        if (present(validation_x) .neqv. present(validation_y)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm fit: validation_x and validation_y must be supplied together")
+            return
+        end if
+        if (present(validation_weight) .and. .not. present(validation_x)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm fit: validation_weight requires validation data")
+            return
+        end if
+        if (settings%early_stopping_rounds < 0 .or. &
+            .not. ieee_is_finite(settings%early_stopping_min_delta) .or. &
+            settings%early_stopping_min_delta < 0.0_dp .or. &
+            (settings%early_stopping_rounds > 0 .and. .not. have_validation)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm fit: invalid early-stopping configuration")
+            return
+        end if
         objective_code = parse_lgbm_objective(settings%objective)
         if (objective_code == 0) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -151,6 +203,17 @@ contains
         end if
         n_samples = size(x, 1)
         n_features = size(x, 2)
+        if (have_validation) then
+            n_validation = size(validation_x, 1)
+            if (n_validation < 1 .or. size(validation_x, 2) /= n_features .or. &
+                size(validation_y) /= n_validation) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "lightgbm fit: validation dimensions do not match training features")
+                return
+            end if
+        else
+            n_validation = 0
+        end if
         if (n_samples < 2 .or. n_features < 1 .or. size(y) /= n_samples .or. &
             settings%n_estimators < 1 .or. settings%num_leaves < 2 .or. &
             settings%num_leaves > n_samples .or. settings%max_depth < 0 .or. &
@@ -170,11 +233,26 @@ contains
                 "lightgbm fit: only finite numeric inputs are supported")
             return
         end if
+        if (have_validation) then
+            if (any(.not. ieee_is_finite(validation_x)) .or. &
+                any(.not. ieee_is_finite(validation_y))) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "lightgbm fit: validation inputs must be finite")
+                return
+            end if
+        end if
         if (objective_code == LIGHTGBM_OBJECTIVE_BINARY) then
             if (any(y < 0.0_dp) .or. any(y > 1.0_dp)) then
                 call status_set(status, FORTNUM_DOMAIN_ERROR, &
                     "lightgbm fit: binary targets must lie in [0,1]")
                 return
+            end if
+            if (have_validation) then
+                if (any(validation_y < 0.0_dp) .or. any(validation_y > 1.0_dp)) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "lightgbm fit: validation binary targets must lie in [0,1]")
+                    return
+                end if
             end if
         end if
         allocate(weights(n_samples))
@@ -189,6 +267,32 @@ contains
             weights = sample_weight
         end if
         weight_sum = sum(weights)
+        if (.not. ieee_is_finite(weight_sum) .or. weight_sum <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm fit: sample weights have no positive mass")
+            return
+        end if
+        if (have_validation) then
+            allocate(validation_weights(n_validation), validation_margin(n_validation), &
+                validation_correction(n_validation))
+            validation_weights = 1.0_dp
+            if (present(validation_weight)) then
+                if (size(validation_weight) /= n_validation .or. &
+                    any(.not. ieee_is_finite(validation_weight)) .or. &
+                    any(validation_weight <= 0.0_dp)) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "lightgbm fit: validation weights must be finite and positive")
+                    return
+                end if
+                validation_weights = validation_weight
+            end if
+            if (.not. ieee_is_finite(sum(validation_weights)) .or. &
+                sum(validation_weights) <= 0.0_dp) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "lightgbm fit: validation weights have no positive mass")
+                return
+            end if
+        end if
         mean_target = sum(weights*y)/weight_sum
         if (objective_code == LIGHTGBM_OBJECTIVE_BINARY) then
             self%base_score = stable_logit(mean_target)
@@ -199,6 +303,17 @@ contains
             gradient(n_samples), hessian(n_samples), correction(n_samples), rows(n_samples))
         rows = [(i, i=1,n_samples)]
         margin = self%base_score
+        if (have_validation) then
+            validation_margin = self%base_score
+            best_validation_loss = huge(1.0_dp)
+            best_iteration = 0
+            stale_rounds = 0
+        else
+            best_validation_loss = huge(1.0_dp)
+            best_iteration = settings%n_estimators
+            stale_rounds = 0
+        end if
+        completed_estimators = 0
         do i = 1, settings%n_estimators
             call lgbm_objective_derivatives(objective_code, margin, y, weights, gradient, &
                 hessian, status)
@@ -209,10 +324,60 @@ contains
             call lgbm_tree_predict(self%estimator(i), x, correction, status)
             if (status%code /= FORTNUM_OK) return
             margin = margin + settings%learning_rate*correction
+            completed_estimators = i
+            if (have_validation) then
+                call lgbm_tree_predict(self%estimator(i), validation_x, &
+                    validation_correction, status)
+                if (status%code /= FORTNUM_OK) return
+                validation_margin = validation_margin + settings%learning_rate* &
+                    validation_correction
+                call lgbm_objective_loss(objective_code, validation_margin, validation_y, &
+                    validation_weights, validation_loss, status)
+                if (status%code /= FORTNUM_OK) return
+                improved = validation_loss < best_validation_loss - &
+                    settings%early_stopping_min_delta
+                if (improved) then
+                    best_validation_loss = validation_loss
+                    best_iteration = i
+                    stale_rounds = 0
+                    if (settings%restore_best) best_estimators = self%estimator(:i)
+                else
+                    stale_rounds = stale_rounds + 1
+                end if
+                if (settings%early_stopping_rounds > 0 .and. &
+                    stale_rounds >= settings%early_stopping_rounds) then
+                    self%early_stopped_flag = .true.
+                    exit
+                end if
+            end if
         end do
+        if (have_validation) then
+            if (best_iteration < 1) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "lightgbm fit: validation objective did not produce a finite score")
+                return
+            end if
+            self%best_iteration_value = best_iteration
+            self%best_validation_loss_value = best_validation_loss
+            if (settings%restore_best .and. allocated(best_estimators)) then
+                if (allocated(retained_estimators)) deallocate(retained_estimators)
+                allocate(retained_estimators(best_iteration))
+                retained_estimators = best_estimators
+                call move_alloc(retained_estimators, self%estimator)
+                completed_estimators = best_iteration
+            else if (completed_estimators < settings%n_estimators) then
+                allocate(retained_estimators(completed_estimators))
+                retained_estimators = self%estimator(:completed_estimators)
+                call move_alloc(retained_estimators, self%estimator)
+            end if
+        else
+            self%best_iteration_value = settings%n_estimators
+            self%best_validation_loss_value = huge(1.0_dp)
+        end if
         self%n_inputs = n_features
         self%objective_code = objective_code
-        self%n_estimators = settings%n_estimators
+        self%n_estimators = completed_estimators
+        self%requested_estimators = settings%n_estimators
         self%num_leaves_value = settings%num_leaves
         self%max_bin_value = settings%max_bin
         self%max_depth_value = settings%max_depth
@@ -220,6 +385,9 @@ contains
         self%learning_rate = settings%learning_rate
         self%l2_value = settings%l2
         self%min_gain_value = settings%min_gain_to_split
+        self%early_stopping_rounds_value = settings%early_stopping_rounds
+        self%early_stopping_min_delta_value = settings%early_stopping_min_delta
+        self%restore_best_value = settings%restore_best
         self%initialized = .true.
         call status_set(status, FORTNUM_OK, "")
     end subroutine lgbm_fit
@@ -384,6 +552,21 @@ contains
         value = self%n_estimators
     end function lgbm_estimator_count
 
+    integer function lgbm_best_iteration(self) result(value)
+        class(lightgbm_t), intent(in) :: self
+        value = self%best_iteration_value
+    end function lgbm_best_iteration
+
+    real(dp) function lgbm_best_validation_loss(self) result(value)
+        class(lightgbm_t), intent(in) :: self
+        value = self%best_validation_loss_value
+    end function lgbm_best_validation_loss
+
+    logical function lgbm_early_stopped(self) result(value)
+        class(lightgbm_t), intent(in) :: self
+        value = self%early_stopped_flag
+    end function lgbm_early_stopped
+
     integer function lgbm_num_leaves(self) result(value)
         class(lightgbm_t), intent(in) :: self
         value = self%num_leaves_value
@@ -443,6 +626,55 @@ contains
         end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine lgbm_objective_derivatives
+
+    subroutine lgbm_objective_loss(code, margin, target, weights, loss, status)
+        integer, intent(in) :: code
+        real(dp), intent(in) :: margin(:), target(:), weights(:)
+        real(dp), intent(out) :: loss
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: total_weight, term
+        integer :: i
+
+        loss = 0.0_dp
+        if (size(margin) /= size(target) .or. size(weights) /= size(target) .or. &
+            size(target) < 1 .or. any(.not. ieee_is_finite(margin)) .or. &
+            any(.not. ieee_is_finite(target)) .or. any(.not. ieee_is_finite(weights)) .or. &
+            any(weights <= 0.0_dp)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm validation objective: shape or finite-value contract failed")
+            return
+        end if
+        total_weight = sum(weights)
+        if (.not. ieee_is_finite(total_weight) .or. total_weight <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm validation objective: weights have no positive mass")
+            return
+        end if
+        if (code == LIGHTGBM_OBJECTIVE_REGRESSION) then
+            loss = 0.5_dp*sum(weights*(margin-target)**2)/total_weight
+        else if (code == LIGHTGBM_OBJECTIVE_BINARY) then
+            do i = 1, size(target)
+                if (margin(i) >= 0.0_dp) then
+                    term = (1.0_dp-target(i))*margin(i) + &
+                        log(1.0_dp+exp(-margin(i)))
+                else
+                    term = -target(i)*margin(i) + log(1.0_dp+exp(margin(i)))
+                end if
+                loss = loss + weights(i)*term
+            end do
+            loss = loss/total_weight
+        else
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm validation objective: objective is unsupported")
+            return
+        end if
+        if (.not. ieee_is_finite(loss)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm validation objective: loss is nonfinite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine lgbm_objective_loss
 
     subroutine build_leafwise_tree(x, gradient, hessian, observation_weight, options, rows, tree, status)
         real(dp), intent(in) :: x(:, :), gradient(:), hessian(:), observation_weight(:)
