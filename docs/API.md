@@ -3730,8 +3730,19 @@ the inducing solve and reductions are resident. The complementary
 packed `kernel%parameters()` vector at fixed variational state, inducing
 locations, and noise variance, including the explicit inducing solve
 sensitivity. Their device dispatchers execute on CPU and return the same typed
-CUDA refusal. Kernel, inducing-location, and noise hyperparameter products
-outside this fixed-state slice remain separate work.
+CUDA refusal. The Gaussian likelihood has a separate one-coordinate packed
+block: `likelihood_parameter_count()` is one after initialization,
+`likelihood_parameters()`/`hyperparameters()` return
+`[log(noise_variance)]`, and `set_likelihood_parameters()`/
+`set_hyperparameters()` validate and commit it transactionally. The fixed-state
+`elbo_likelihood_parameter_jvp` (also named
+`elbo_hyperparameter_jvp`), scalar-cotangent VJP, and HVP provide analytic
+products through this coordinate while holding the variational state, kernel,
+and inducing locations fixed. CPU device wrappers are exact; CUDA wrappers
+return typed `FORTNUM_NOT_IMPLEMENTED` rather than copying data to the host.
+The independent `test_sparse_gp_likelihood_noise` fixture covers central
+differences, adjoint duality, HVP finite differences, malformed/overflowing
+state preservation, and device refusals.
 
 ### `fortml_gp_variational_classification`
 

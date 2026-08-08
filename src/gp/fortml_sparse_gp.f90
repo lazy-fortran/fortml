@@ -42,11 +42,34 @@ module fortml_sparse_gp
         procedure, public :: parameter_count => sparse_gp_parameter_count
         procedure, public :: parameters => sparse_gp_parameters
         procedure, public :: set_parameters => sparse_gp_set_parameters
+        procedure, public :: likelihood_parameter_count => &
+            sparse_gp_likelihood_parameter_count
+        procedure, public :: hyperparameter_count => &
+            sparse_gp_likelihood_parameter_count
+        procedure, public :: likelihood_parameters => &
+            sparse_gp_likelihood_parameters
+        procedure, public :: hyperparameters => sparse_gp_likelihood_parameters
+        procedure, public :: set_likelihood_parameters => &
+            sparse_gp_set_likelihood_parameters
+        procedure, public :: set_hyperparameters => &
+            sparse_gp_set_likelihood_parameters
         procedure, public :: set_variational => sparse_gp_set_variational
         procedure, public :: elbo => sparse_gp_elbo
         procedure, public :: elbo_gradient => sparse_gp_elbo_gradient
         procedure, public :: elbo_jvp => sparse_gp_elbo_jvp
         procedure, public :: elbo_vjp => sparse_gp_elbo_vjp
+        procedure, public :: elbo_likelihood_parameter_jvp => &
+            sparse_gp_elbo_likelihood_parameter_jvp
+        procedure, public :: elbo_hyperparameter_jvp => &
+            sparse_gp_elbo_likelihood_parameter_jvp
+        procedure, public :: elbo_likelihood_parameter_vjp => &
+            sparse_gp_elbo_likelihood_parameter_vjp
+        procedure, public :: elbo_hyperparameter_vjp => &
+            sparse_gp_elbo_likelihood_parameter_vjp
+        procedure, public :: elbo_likelihood_parameter_hvp => &
+            sparse_gp_elbo_likelihood_parameter_hvp
+        procedure, public :: elbo_hyperparameter_hvp => &
+            sparse_gp_elbo_likelihood_parameter_hvp
         procedure, public :: elbo_kernel_parameter_jvp => &
             sparse_gp_elbo_kernel_parameter_jvp
         procedure, public :: elbo_kernel_parameter_vjp => &
@@ -54,6 +77,18 @@ module fortml_sparse_gp
         procedure, public :: elbo_device => sparse_gp_elbo_device
         procedure, public :: elbo_gradient_device => sparse_gp_elbo_gradient_device
         procedure, public :: elbo_jvp_device => sparse_gp_elbo_jvp_device
+        procedure, public :: elbo_likelihood_parameter_jvp_device => &
+            sparse_gp_elbo_likelihood_parameter_jvp_device
+        procedure, public :: elbo_hyperparameter_jvp_device => &
+            sparse_gp_elbo_likelihood_parameter_jvp_device
+        procedure, public :: elbo_likelihood_parameter_vjp_device => &
+            sparse_gp_elbo_likelihood_parameter_vjp_device
+        procedure, public :: elbo_hyperparameter_vjp_device => &
+            sparse_gp_elbo_likelihood_parameter_vjp_device
+        procedure, public :: elbo_likelihood_parameter_hvp_device => &
+            sparse_gp_elbo_likelihood_parameter_hvp_device
+        procedure, public :: elbo_hyperparameter_hvp_device => &
+            sparse_gp_elbo_likelihood_parameter_hvp_device
         procedure, public :: elbo_kernel_parameter_jvp_device => &
             sparse_gp_elbo_kernel_parameter_jvp_device
         procedure, public :: elbo_kernel_parameter_vjp_device => &
@@ -125,6 +160,54 @@ contains
             end do
         end do
     end function sparse_gp_parameters
+
+    integer function sparse_gp_likelihood_parameter_count(self) result(count)
+        !! Number of transformed Gaussian-likelihood coordinates.
+        !!
+        !! The likelihood block is intentionally separate from `parameters()`:
+        !! the latter is the variational state, while this one-coordinate block
+        !! is the log of the positive observation-noise variance.
+        class(sparse_gp_t), intent(in) :: self
+
+        count = 0
+        if (self%n_inducing < 1) return
+        if (allocated(self%inducing_points)) count = 1
+    end function sparse_gp_likelihood_parameter_count
+
+    function sparse_gp_likelihood_parameters(self) result(parameters)
+        !! Packed Gaussian-likelihood coordinates: `[log(noise_variance)]`.
+        class(sparse_gp_t), intent(in) :: self
+        real(dp), allocatable :: parameters(:)
+
+        allocate(parameters(self%likelihood_parameter_count()))
+        if (size(parameters) < 1) return
+        parameters(1) = log(self%noise_variance)
+    end function sparse_gp_likelihood_parameters
+
+    subroutine sparse_gp_set_likelihood_parameters(self, parameters, status)
+        !! Transactionally set `[log(noise_variance)]`.
+        class(sparse_gp_t), intent(inout) :: self
+        real(dp), intent(in) :: parameters(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: candidate_noise
+
+        if (size(parameters) /= self%likelihood_parameter_count() .or. &
+            any(.not. ieee_is_finite(parameters))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "sparse GP likelihood: parameter shape or values are invalid")
+            return
+        end if
+        candidate_noise = exp(parameters(1))
+        if (.not. ieee_is_finite(candidate_noise) .or. candidate_noise <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "sparse GP likelihood: log noise does not encode a finite positive variance")
+            return
+        end if
+        ! Commit only after every validation succeeds.  ELBO state (including
+        ! the fixed variational mean/factor) is otherwise untouched.
+        self%noise_variance = candidate_noise
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine sparse_gp_set_likelihood_parameters
 
     subroutine sparse_gp_set_parameters(self, parameters, status)
         !! Set the packed variational vector without changing kernel state.
@@ -367,6 +450,104 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine sparse_gp_elbo_vjp
 
+    subroutine sparse_gp_elbo_likelihood_parameter_jvp(self, x, y, direction, &
+            value, tangent, status)
+        !! Fixed-state JVP through the Gaussian likelihood log-noise block.
+        !!
+        !! The variational mean/factor, inducing points, and kernel are held
+        !! fixed.  If `z = log(noise_variance)` and
+        !! `r_i = (y_i-mean_i)^2 + variance_i`, then
+        !! `d ELBO / d z = -n/2 + sum(r_i)/(2*exp(z))`.
+        class(sparse_gp_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), y(:), direction(:)
+        real(dp), intent(out) :: value, tangent
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: a(:, :), mean(:), variance(:), b(:, :)
+        type(cholesky_factorization_t) :: factorization
+        real(dp) :: likelihood, divergence, noise_gradient
+
+        value = 0.0_dp
+        tangent = 0.0_dp
+        if (size(direction) /= self%likelihood_parameter_count() .or. &
+            any(.not. ieee_is_finite(direction))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "sparse GP likelihood JVP: direction shape or values are invalid")
+            return
+        end if
+        call sparse_gp_elbo_noise_terms(self, x, y, a, mean, variance, b, &
+            factorization, likelihood, divergence, noise_gradient, status)
+        if (status%code /= FORTNUM_OK) return
+        value = likelihood - divergence
+        tangent = direction(1)*noise_gradient
+        if (.not. ieee_is_finite(value) .or. .not. ieee_is_finite(tangent)) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "sparse GP likelihood JVP: result is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine sparse_gp_elbo_likelihood_parameter_jvp
+
+    subroutine sparse_gp_elbo_likelihood_parameter_vjp(self, x, y, value_bar, &
+            parameter_bar, status)
+        !! Scalar-cotangent VJP through the fixed-state Gaussian likelihood.
+        class(sparse_gp_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), y(:), value_bar
+        real(dp), intent(out) :: parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: a(:, :), mean(:), variance(:), b(:, :)
+        type(cholesky_factorization_t) :: factorization
+        real(dp) :: likelihood, divergence, noise_gradient
+
+        parameter_bar = 0.0_dp
+        if (size(parameter_bar) /= self%likelihood_parameter_count() .or. &
+            .not. ieee_is_finite(value_bar)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "sparse GP likelihood VJP: cotangent or output shape is invalid")
+            return
+        end if
+        call sparse_gp_elbo_noise_terms(self, x, y, a, mean, variance, b, &
+            factorization, likelihood, divergence, noise_gradient, status)
+        if (status%code /= FORTNUM_OK) return
+        parameter_bar(1) = value_bar*noise_gradient
+        if (.not. ieee_is_finite(parameter_bar(1))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "sparse GP likelihood VJP: result is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine sparse_gp_elbo_likelihood_parameter_vjp
+
+    subroutine sparse_gp_elbo_likelihood_parameter_hvp(self, x, y, direction, &
+            parameter_hvp, status)
+        !! Fixed-state Hessian-vector product for log observation noise.
+        class(sparse_gp_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), y(:), direction(:)
+        real(dp), intent(out) :: parameter_hvp(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: a(:, :), mean(:), variance(:), b(:, :)
+        type(cholesky_factorization_t) :: factorization
+        real(dp) :: likelihood, divergence, noise_gradient, curvature
+
+        parameter_hvp = 0.0_dp
+        if (size(direction) /= self%likelihood_parameter_count() .or. &
+            size(parameter_hvp) /= self%likelihood_parameter_count() .or. &
+            any(.not. ieee_is_finite(direction))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "sparse GP likelihood HVP: direction or output shape is invalid")
+            return
+        end if
+        call sparse_gp_elbo_noise_terms(self, x, y, a, mean, variance, b, &
+            factorization, likelihood, divergence, noise_gradient, status, curvature)
+        if (status%code /= FORTNUM_OK) return
+        parameter_hvp(1) = direction(1)*curvature
+        if (.not. ieee_is_finite(parameter_hvp(1))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "sparse GP likelihood HVP: result is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine sparse_gp_elbo_likelihood_parameter_hvp
+
     subroutine sparse_gp_elbo_kernel_parameter_jvp(self, x, y, direction, &
             value, tangent, status)
         !! Forward product of the scalar ELBO with respect to kernel log
@@ -568,6 +749,48 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine sparse_gp_elbo_kernel_parameter_vjp
 
+    subroutine sparse_gp_elbo_noise_terms(self, x, y, a, mean, variance, b, &
+            factorization, likelihood, divergence, noise_gradient, status, curvature)
+        !! Shared fixed-state Gaussian-likelihood noise products.
+        class(sparse_gp_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), y(:)
+        real(dp), allocatable, intent(out) :: a(:, :), mean(:), variance(:), b(:, :)
+        type(cholesky_factorization_t), intent(out) :: factorization
+        real(dp), intent(out) :: likelihood, divergence, noise_gradient
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(out), optional :: curvature
+        real(dp) :: residual, sufficient_statistic
+        integer :: i
+
+        call sparse_gp_elbo_terms(self, x, y, a, mean, variance, b, factorization, &
+            likelihood, divergence, status)
+        noise_gradient = 0.0_dp
+        if (present(curvature)) curvature = 0.0_dp
+        if (status%code /= FORTNUM_OK) return
+        sufficient_statistic = 0.0_dp
+        do i = 1, size(y)
+            residual = y(i) - mean(i)
+            sufficient_statistic = sufficient_statistic + residual*residual + variance(i)
+        end do
+        noise_gradient = -0.5_dp*real(size(y), dp) + 0.5_dp* &
+            sufficient_statistic/self%noise_variance
+        if (present(curvature)) curvature = -0.5_dp*sufficient_statistic/ &
+            self%noise_variance
+        if (.not. ieee_is_finite(noise_gradient)) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "sparse GP likelihood: noise product is not finite")
+            return
+        end if
+        if (present(curvature)) then
+            if (.not. ieee_is_finite(curvature)) then
+                call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                    "sparse GP likelihood: noise HVP is not finite")
+                return
+            end if
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine sparse_gp_elbo_noise_terms
+
     subroutine sparse_gp_elbo(self, x, y, value, status, &
             expected_log_likelihood, kl_value)
         class(sparse_gp_t), intent(in) :: self
@@ -761,6 +984,88 @@ contains
                 "sparse GP JVP device: device kind is invalid")
         end select
     end subroutine sparse_gp_elbo_jvp_device
+
+    subroutine sparse_gp_elbo_likelihood_parameter_jvp_device(self, device, x, y, &
+            direction, value, tangent, status)
+        !! Device boundary for the fixed-state likelihood-noise JVP.
+        class(sparse_gp_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :), y(:), direction(:)
+        real(dp), intent(out) :: value, tangent
+        type(fortnum_status_t), intent(out) :: status
+
+        value = 0.0_dp
+        tangent = 0.0_dp
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "sparse GP likelihood JVP device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%elbo_likelihood_parameter_jvp(x, y, direction, value, tangent, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "sparse GP likelihood JVP device: resident CUDA inducing graph is not linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "sparse GP likelihood JVP device: device kind is invalid")
+        end select
+    end subroutine sparse_gp_elbo_likelihood_parameter_jvp_device
+
+    subroutine sparse_gp_elbo_likelihood_parameter_vjp_device(self, device, x, y, &
+            value_bar, parameter_bar, status)
+        !! Device boundary for the fixed-state likelihood-noise VJP.
+        class(sparse_gp_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :), y(:), value_bar
+        real(dp), intent(out) :: parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        parameter_bar = 0.0_dp
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "sparse GP likelihood VJP device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%elbo_likelihood_parameter_vjp(x, y, value_bar, parameter_bar, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "sparse GP likelihood VJP device: resident CUDA inducing graph is not linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "sparse GP likelihood VJP device: device kind is invalid")
+        end select
+    end subroutine sparse_gp_elbo_likelihood_parameter_vjp_device
+
+    subroutine sparse_gp_elbo_likelihood_parameter_hvp_device(self, device, x, y, &
+            direction, parameter_hvp, status)
+        !! Device boundary for the fixed-state likelihood-noise HVP.
+        class(sparse_gp_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :), y(:), direction(:)
+        real(dp), intent(out) :: parameter_hvp(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        parameter_hvp = 0.0_dp
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "sparse GP likelihood HVP device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%elbo_likelihood_parameter_hvp(x, y, direction, parameter_hvp, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "sparse GP likelihood HVP device: resident CUDA inducing graph is not linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "sparse GP likelihood HVP device: device kind is invalid")
+        end select
+    end subroutine sparse_gp_elbo_likelihood_parameter_hvp_device
 
     subroutine sparse_gp_elbo_kernel_parameter_jvp_device(self, device, x, y, &
             direction, value, tangent, status)
