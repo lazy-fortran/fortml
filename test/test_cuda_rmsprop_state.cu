@@ -13,7 +13,18 @@ extern "C" int fortml_cuda_rmsprop_plan_download(
 extern "C" int fortml_cuda_rmsprop_plan_destroy(void*);
 
 int main() {
-  if (fortml_cuda_rmsprop_available() == 0) {
+  int device_count = 0;
+  const cudaError_t device_error = cudaGetDeviceCount(&device_count);
+  const int expected_available =
+      device_error == cudaSuccess && device_count > 0 ? 1 : 0;
+  const int advertised_available = fortml_cuda_rmsprop_available();
+  if (advertised_available != expected_available) {
+    std::fprintf(stderr,
+                 "RMSprop availability mismatch: advertised %d, expected %d\n",
+                 advertised_available, expected_available);
+    return 1;
+  }
+  if (advertised_available == 0) {
     std::printf("CUDA RMSprop unavailable; test skipped\n");
     return 0;
   }

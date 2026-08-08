@@ -110,6 +110,7 @@ cudaError_t copy_or_zero(T* destination, const T* source, std::size_t count) {
 
 void destroy_plan(RmspropPlan* plan) {
   if (plan == nullptr) return;
+  cudaSetDevice(plan->device_index);
   cudaFree(plan->parameters);
   cudaFree(plan->square_average);
   cudaFree(plan->gradient_average);
@@ -120,7 +121,13 @@ void destroy_plan(RmspropPlan* plan) {
 
 }  // namespace
 
-extern "C" int fortml_cuda_rmsprop_available() { return 1; }
+extern "C" int fortml_cuda_rmsprop_available() {
+  int count = 0;
+  const cudaError_t error = cudaGetDeviceCount(&count);
+  if (error == cudaErrorNoDevice || error == cudaErrorInsufficientDriver)
+    return 0;
+  return error == cudaSuccess && count > 0 ? 1 : 0;
+}
 
 extern "C" int fortml_cuda_rmsprop_plan_create(
     const double* parameters, const double* square_average,
