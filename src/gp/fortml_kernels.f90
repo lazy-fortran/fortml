@@ -58,6 +58,10 @@ module fortml_kernels
     !! Parameters are packed as [log_variance, log_envelope_lengthscale,
     !! log_periodic_lengthscale, log_period].
     integer, parameter, public :: KERNEL_LOCAL_PERIODIC = 17
+    !! Smooth change-point covariance.  The two child kernels are blended by
+    !! logistic gates in one input feature; parameters are the child
+    !! parameters followed by [log_transition_width, transition_center].
+    integer, parameter, public :: KERNEL_CHANGE_POINT = 18
 
     type, public :: kernel_t
         integer :: kind = 0
@@ -65,6 +69,7 @@ module fortml_kernels
         real(dp), allocatable :: log_parameters(:)
         type(kernel_t), pointer :: left => null()
         type(kernel_t), pointer :: right => null()
+        integer :: change_feature = 1
         !! A validated user formula, present only for KERNEL_USER leaves.
         type(kernel_formula_t), allocatable :: formula
     contains
@@ -91,6 +96,7 @@ module fortml_kernels
     public :: make_white_noise_kernel
     public :: make_periodic_kernel
     public :: make_local_periodic_kernel
+    public :: make_change_point_kernel
     public :: make_rational_quadratic_kernel
     public :: make_cosine_kernel
     public :: make_polynomial_kernel
@@ -289,6 +295,39 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end function make_local_periodic_kernel
 
+    function make_change_point_kernel(left, right, feature, center, width, status) &
+            result(kernel)
+        !! Construct a smooth change-point kernel from two valid child kernels.
+        !!
+        !! For feature ``d`` the gate is
+        !! ``s(x)=1/2(1+tanh((x_d-center)/width))`` and the covariance is
+        !! ``s(x)s(x') k_left + (1-s(x))(1-s(x')) k_right``.  This is a
+        !! positive-semidefinite sum of gated child covariances and remains a
+        !! first-class kernel expression for exact GP inference.
+        type(kernel_t), intent(in) :: left, right
+        integer, intent(in) :: feature
+        real(dp), intent(in) :: center, width
+        type(fortnum_status_t), intent(out) :: status
+        type(kernel_t) :: kernel
+
+        if (.not. kernel_valid(left) .or. .not. kernel_valid(right) .or. &
+            left%input_dim /= right%input_dim .or. feature < 1 .or. &
+            feature > left%input_dim .or. width <= 0.0_dp .or. &
+            .not. ieee_is_finite(center) .or. .not. ieee_is_finite(width)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "change-point constructor: children, feature, center, and width are invalid")
+            return
+        end if
+        kernel%kind = KERNEL_CHANGE_POINT
+        kernel%input_dim = left%input_dim
+        kernel%change_feature = feature
+        allocate(kernel%left, source=left)
+        allocate(kernel%right, source=right)
+        allocate(kernel%log_parameters(2))
+        kernel%log_parameters = [log(width), center]
+        call status_set(status, FORTNUM_OK, "")
+    end function make_change_point_kernel
+
     function make_rational_quadratic_kernel( &
             input_dim, variance, lengthscale, alpha, status) result(kernel)
         integer, intent(in) :: input_dim
@@ -393,6 +432,7 @@ contains
 
         copy%kind = source%kind
         copy%input_dim = source%input_dim
+        copy%change_feature = source%change_feature
         if (allocated(source%log_parameters)) then
             allocate(copy%log_parameters, source=source%log_parameters)
         end if
@@ -425,6 +465,10 @@ contains
             count = 3
         case (KERNEL_LOCAL_PERIODIC)
             count = 4
+        case (KERNEL_CHANGE_POINT)
+            if (associated(self%left)) count = count + self%left%parameter_count()
+            if (associated(self%right)) count = count + self%right%parameter_count()
+            count = count + 2
         case (KERNEL_POLYNOMIAL)
             count = 4
         case (KERNEL_LINEAR, KERNEL_CONSTANT, KERNEL_WHITE_NOISE, KERNEL_USER)
@@ -438,13 +482,18 @@ contains
     recursive function kernel_parameters(self) result(parameters)
         class(kernel_t), intent(in) :: self
         real(dp), allocatable :: parameters(:)
-        integer :: left_count
+        integer :: left_count, right_count
 
         allocate(parameters(self%parameter_count()))
-        if (self%kind == KERNEL_SUM .or. self%kind == KERNEL_PRODUCT) then
+        if (self%kind == KERNEL_SUM .or. self%kind == KERNEL_PRODUCT .or. &
+            self%kind == KERNEL_CHANGE_POINT) then
             left_count = self%left%parameter_count()
             parameters(1:left_count) = self%left%parameters()
-            parameters(left_count + 1:) = self%right%parameters()
+            right_count = self%right%parameter_count()
+            parameters(left_count + 1:left_count + right_count) = self%right%parameters()
+            if (self%kind == KERNEL_CHANGE_POINT) then
+                parameters(left_count + right_count + 1:) = self%log_parameters
+            end if
         else if (size(parameters) > 0) then
             parameters = self%log_parameters
         end if
@@ -454,7 +503,7 @@ contains
         class(kernel_t), intent(inout) :: self
         real(dp), intent(in) :: parameters(:)
         type(fortnum_status_t), intent(out) :: status
-        integer :: left_count
+        integer :: left_count, right_count
 
         if (.not. kernel_valid(self)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -472,6 +521,15 @@ contains
             call self%left%set_parameters(parameters(:left_count), status)
             if (status%code /= FORTNUM_OK) return
             call self%right%set_parameters(parameters(left_count + 1:), status)
+        else if (self%kind == KERNEL_CHANGE_POINT) then
+            left_count = self%left%parameter_count()
+            right_count = self%right%parameter_count()
+            call self%left%set_parameters(parameters(:left_count), status)
+            if (status%code /= FORTNUM_OK) return
+            call self%right%set_parameters(parameters(left_count + 1:left_count + right_count), &
+                status)
+            if (status%code /= FORTNUM_OK) return
+            self%log_parameters = parameters(left_count + right_count + 1:)
         else
             self%log_parameters = parameters
             call status_set(status, FORTNUM_OK, "")
@@ -513,6 +571,8 @@ contains
             value = spectral_value(self, x1, x2)
         case (KERNEL_LOCAL_PERIODIC)
             value = local_periodic_value(self, x1, x2)
+        case (KERNEL_CHANGE_POINT)
+            value = change_point_value(self, x1, x2)
         case default
             variance = exp(self%log_parameters(1))
             if (self%kind == KERNEL_RBF .or. self%kind == KERNEL_MATERN12 .or. &
@@ -567,6 +627,45 @@ contains
             end if
         end select
     end function kernel_value
+
+    subroutine change_point_gate(self, x1, x2, gate_left, gate_right, &
+            gate_left_dot, gate_right_dot, direction)
+        class(kernel_t), intent(in) :: self
+        real(dp), intent(in) :: x1(:), x2(:)
+        real(dp), intent(out) :: gate_left, gate_right
+        real(dp), intent(out), optional :: gate_left_dot, gate_right_dot
+        real(dp), intent(in), optional :: direction(:)
+        real(dp) :: width, center, z1, z2, s1, s2, zdot1, zdot2
+        integer :: feature
+
+        feature = self%change_feature
+        width = exp(self%log_parameters(1))
+        center = self%log_parameters(2)
+        z1 = (x1(feature) - center)/width
+        z2 = (x2(feature) - center)/width
+        s1 = 0.5_dp*(1.0_dp + tanh(z1))
+        s2 = 0.5_dp*(1.0_dp + tanh(z2))
+        gate_left = s1*s2
+        gate_right = (1.0_dp - s1)*(1.0_dp - s2)
+        if (present(gate_left_dot) .and. present(gate_right_dot) .and. &
+            present(direction)) then
+            zdot1 = -z1*direction(1) - direction(2)/width
+            zdot2 = -z2*direction(1) - direction(2)/width
+            gate_left_dot = 0.5_dp*(1.0_dp - tanh(z1)**2)*zdot1*s2 + &
+                s1*0.5_dp*(1.0_dp - tanh(z2)**2)*zdot2
+            gate_right_dot = -0.5_dp*(1.0_dp - tanh(z1)**2)*zdot1*(1.0_dp - s2) - &
+                (1.0_dp - s1)*0.5_dp*(1.0_dp - tanh(z2)**2)*zdot2
+        end if
+    end subroutine change_point_gate
+
+    real(dp) function change_point_value(self, x1, x2) result(value)
+        class(kernel_t), intent(in) :: self
+        real(dp), intent(in) :: x1(:), x2(:)
+        real(dp) :: gate_left, gate_right
+
+        call change_point_gate(self, x1, x2, gate_left, gate_right)
+        value = gate_left*self%left%value(x1, x2) + gate_right*self%right%value(x1, x2)
+    end function change_point_value
 
     recursive subroutine kernel_input_derivatives( &
             self, x1, x2, value, gradient_x1, gradient_x2, mixed_hessian, status)
@@ -734,6 +833,10 @@ contains
             call local_periodic_parameter_hvp(self, x1, x2, matrix_bar, direction, &
                 parameter_bar, parameter_bar_dot, offset, status)
             return
+        case (KERNEL_CHANGE_POINT)
+            call change_point_parameter_hvp(self, x1, x2, matrix_bar, direction, &
+                parameter_bar, parameter_bar_dot, offset, status)
+            return
         case default
             continue
         end select
@@ -898,6 +1001,133 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine kernel_parameter_hvp_impl
+
+    subroutine change_point_parameter_hvp(self, x1, x2, matrix_bar, direction, &
+            parameter_bar, parameter_bar_dot, offset, status)
+        class(kernel_t), intent(in) :: self
+        real(dp), intent(in) :: x1(:, :), x2(:, :), matrix_bar(:, :), direction(:)
+        real(dp), intent(inout) :: parameter_bar(:), parameter_bar_dot(:)
+        integer, intent(in) :: offset
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: left_matrix(:, :), right_matrix(:, :)
+        real(dp), allocatable :: left_matrix_dot(:, :), right_matrix_dot(:, :)
+        real(dp), allocatable :: gate_left_matrix(:, :), gate_right_matrix(:, :)
+        real(dp), allocatable :: gate_left_matrix_dot(:, :), gate_right_matrix_dot(:, :)
+        real(dp) :: gate_left, gate_right, gate_left_dot, gate_right_dot
+        real(dp) :: gate_gradient_left(2), gate_gradient_right(2)
+        real(dp) :: gate_gradient_left_dot(2), gate_gradient_right_dot(2)
+        real(dp) :: left_value, right_value, left_value_dot, right_value_dot
+        integer :: left_count, right_count, i, j
+
+        left_count = self%left%parameter_count()
+        right_count = self%right%parameter_count()
+        allocate(left_matrix(size(x1, 1), size(x2, 1)))
+        allocate(right_matrix, mold=left_matrix)
+        allocate(left_matrix_dot, mold=left_matrix)
+        allocate(right_matrix_dot, mold=left_matrix)
+        allocate(gate_left_matrix, mold=left_matrix)
+        allocate(gate_right_matrix, mold=left_matrix)
+        allocate(gate_left_matrix_dot, mold=left_matrix)
+        allocate(gate_right_matrix_dot, mold=left_matrix)
+        do j = 1, size(x2, 1)
+            do i = 1, size(x1, 1)
+                call change_point_gate(self, x1(i, :), x2(j, :), gate_left_matrix(i, j), &
+                    gate_right_matrix(i, j), gate_left_matrix_dot(i, j), &
+                    gate_right_matrix_dot(i, j), direction(left_count + right_count + 1: &
+                    left_count + right_count + 2))
+            end do
+        end do
+        call kernel_matrix_jvp_impl(self%left, x1, x2, direction(:left_count), &
+            left_matrix, left_matrix_dot)
+        call kernel_matrix_jvp_impl(self%right, x1, x2, &
+            direction(left_count + 1:left_count + right_count), right_matrix, right_matrix_dot)
+        call kernel_parameter_hvp_impl(self%left, x1, x2, matrix_bar*gate_left_matrix, &
+            direction(:left_count), parameter_bar, parameter_bar_dot, offset, status)
+        if (status%code /= FORTNUM_OK) return
+        call kernel_parameter_vjp_impl(self%left, x1, x2, matrix_bar*gate_left_matrix_dot, &
+            parameter_bar_dot, offset)
+        call kernel_parameter_hvp_impl(self%right, x1, x2, matrix_bar*gate_right_matrix, &
+            direction(left_count + 1:left_count + right_count), parameter_bar, &
+            parameter_bar_dot, offset + left_count, status)
+        if (status%code /= FORTNUM_OK) return
+        call kernel_parameter_vjp_impl(self%right, x1, x2, matrix_bar*gate_right_matrix_dot, &
+            parameter_bar_dot, offset + left_count)
+        do j = 1, size(x2, 1)
+            do i = 1, size(x1, 1)
+                left_value = left_matrix(i, j)
+                right_value = right_matrix(i, j)
+                left_value_dot = left_matrix_dot(i, j)
+                right_value_dot = right_matrix_dot(i, j)
+                call change_point_parameter_gate_hvp(self, x1(i, :), x2(j, :), &
+                    direction(left_count + right_count + 1:left_count + right_count + 2), &
+                    gate_left, gate_right, gate_left_dot, gate_right_dot, &
+                    gate_gradient_left, gate_gradient_right, gate_gradient_left_dot, &
+                    gate_gradient_right_dot)
+                parameter_bar(offset + left_count + right_count) = &
+                    parameter_bar(offset + left_count + right_count) + matrix_bar(i, j)* &
+                    (gate_gradient_left(1)*left_value + gate_gradient_right(1)*right_value)
+                parameter_bar(offset + left_count + right_count + 1) = &
+                    parameter_bar(offset + left_count + right_count + 1) + matrix_bar(i, j)* &
+                    (gate_gradient_left(2)*left_value + gate_gradient_right(2)*right_value)
+                parameter_bar_dot(offset + left_count + right_count) = &
+                    parameter_bar_dot(offset + left_count + right_count) + matrix_bar(i, j)* &
+                    (gate_gradient_left_dot(1)*left_value + gate_gradient_left(1)*left_value_dot + &
+                    gate_gradient_right_dot(1)*right_value + gate_gradient_right(1)*right_value_dot)
+                parameter_bar_dot(offset + left_count + right_count + 1) = &
+                    parameter_bar_dot(offset + left_count + right_count + 1) + matrix_bar(i, j)* &
+                    (gate_gradient_left_dot(2)*left_value + gate_gradient_left(2)*left_value_dot + &
+                    gate_gradient_right_dot(2)*right_value + gate_gradient_right(2)*right_value_dot)
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine change_point_parameter_hvp
+
+    subroutine change_point_parameter_gate_hvp(self, x1, x2, direction, gate_left, &
+            gate_right, gate_left_dot, gate_right_dot, gate_gradient_left, &
+            gate_gradient_right, gate_gradient_left_dot, gate_gradient_right_dot)
+        class(kernel_t), intent(in) :: self
+        real(dp), intent(in) :: x1(:), x2(:), direction(2)
+        real(dp), intent(out) :: gate_left, gate_right, gate_left_dot, gate_right_dot
+        real(dp), intent(out) :: gate_gradient_left(2), gate_gradient_right(2)
+        real(dp), intent(out) :: gate_gradient_left_dot(2), gate_gradient_right_dot(2)
+        real(dp) :: width, center, z1, z2, s1, s2, q1, q2, s1_dot, s2_dot
+        real(dp) :: z1_dot, z2_dot, q1_dot, q2_dot, inv_width
+        real(dp) :: gradient_1(2), gradient_2(2), gradient_1_dot(2), gradient_2_dot(2)
+        integer :: feature
+
+        width = exp(self%log_parameters(1))
+        inv_width = 1.0_dp/width
+        center = self%log_parameters(2)
+        feature = self%change_feature
+        z1 = (x1(feature) - center)*inv_width
+        z2 = (x2(feature) - center)*inv_width
+        s1 = 0.5_dp*(1.0_dp + tanh(z1))
+        s2 = 0.5_dp*(1.0_dp + tanh(z2))
+        q1 = 0.5_dp*(1.0_dp - tanh(z1)**2)
+        q2 = 0.5_dp*(1.0_dp - tanh(z2)**2)
+        z1_dot = -z1*direction(1) - inv_width*direction(2)
+        z2_dot = -z2*direction(1) - inv_width*direction(2)
+        s1_dot = q1*z1_dot
+        s2_dot = q2*z2_dot
+        q1_dot = -2.0_dp*tanh(z1)*q1*z1_dot
+        q2_dot = -2.0_dp*tanh(z2)*q2*z2_dot
+        gradient_1 = q1*[-z1, -inv_width]
+        gradient_2 = q2*[-z2, -inv_width]
+        gradient_1_dot = [q1_dot*(-z1) + q1*(-z1_dot), &
+            q1_dot*(-inv_width) + q1*inv_width*direction(1)]
+        gradient_2_dot = [q2_dot*(-z2) + q2*(-z2_dot), &
+            q2_dot*(-inv_width) + q2*inv_width*direction(1)]
+        gate_left = s1*s2
+        gate_right = (1.0_dp - s1)*(1.0_dp - s2)
+        gate_left_dot = s1_dot*s2 + s1*s2_dot
+        gate_right_dot = -s1_dot*(1.0_dp - s2) - (1.0_dp - s1)*s2_dot
+        gate_gradient_left = gradient_1*s2 + s1*gradient_2
+        gate_gradient_right = -gradient_1*(1.0_dp - s2) - (1.0_dp - s1)*gradient_2
+        gate_gradient_left_dot = gradient_1_dot*s2 + gradient_1*s2_dot + &
+            s1_dot*gradient_2 + s1*gradient_2_dot
+        gate_gradient_right_dot = -gradient_1_dot*(1.0_dp - s2) + gradient_1*s2_dot + &
+            s1_dot*gradient_2 - (1.0_dp - s1)*gradient_2_dot
+    end subroutine change_point_parameter_gate_hvp
 
     real(dp) function local_periodic_value(self, x1, x2) result(value)
         class(kernel_t), intent(in) :: self
@@ -1684,6 +1914,8 @@ contains
             call spectral_matrix(self, x1, x2, matrix)
         case (KERNEL_LOCAL_PERIODIC)
             call local_periodic_matrix(self, x1, x2, matrix)
+        case (KERNEL_CHANGE_POINT)
+            call change_point_matrix(self, x1, x2, matrix)
         case default
             variance = exp(self%log_parameters(1))
             if (self%kind == KERNEL_RBF .or. self%kind == KERNEL_MATERN12 .or. &
@@ -1743,6 +1975,22 @@ contains
             end do
         end select
     end subroutine kernel_matrix_impl
+
+    subroutine change_point_matrix(self, x1, x2, matrix)
+        class(kernel_t), intent(in) :: self
+        real(dp), intent(in) :: x1(:, :), x2(:, :)
+        real(dp), intent(out) :: matrix(:, :)
+        real(dp) :: gate_left, gate_right
+        integer :: i, j
+
+        do j = 1, size(x2, 1)
+            do i = 1, size(x1, 1)
+                call change_point_gate(self, x1(i, :), x2(j, :), gate_left, gate_right)
+                matrix(i, j) = gate_left*self%left%value(x1(i, :), x2(j, :)) + &
+                    gate_right*self%right%value(x1(i, :), x2(j, :))
+            end do
+        end do
+    end subroutine change_point_matrix
 
     recursive subroutine kernel_input_derivatives_impl( &
             self, x1, x2, value, gradient_x1, gradient_x2, mixed_hessian, status)
@@ -1811,6 +2059,9 @@ contains
         case (KERNEL_LOCAL_PERIODIC)
             call local_periodic_input_derivatives(self, x1, x2, value, gradient_x1, &
                 gradient_x2, mixed_hessian, status)
+        case (KERNEL_CHANGE_POINT)
+            call change_point_input_derivatives(self, x1, x2, value, gradient_x1, &
+                gradient_x2, mixed_hessian, status)
         case (KERNEL_RBF)
             variance = exp(self%log_parameters(1))
             lengthscale = exp(self%log_parameters(2))
@@ -1870,6 +2121,95 @@ contains
                 "kernel input_derivatives: this kernel has no smooth input rule")
         end select
     end subroutine kernel_input_derivatives_impl
+
+    subroutine change_point_input_derivatives(self, x1, x2, value, gradient_x1, &
+            gradient_x2, mixed_hessian, status)
+        class(kernel_t), intent(in) :: self
+        real(dp), intent(in) :: x1(:), x2(:)
+        real(dp), intent(out) :: value, gradient_x1(:), gradient_x2(:)
+        real(dp), intent(out) :: mixed_hessian(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: left_gradient_x1(:), right_gradient_x1(:)
+        real(dp), allocatable :: left_gradient_x2(:), right_gradient_x2(:)
+        real(dp), allocatable :: left_hessian(:, :), right_hessian(:, :)
+        real(dp) :: left_value, right_value, gate_left, gate_right
+        real(dp) :: gate_left_x1(size(x1)), gate_left_x2(size(x2))
+        real(dp) :: gate_right_x1(size(x1)), gate_right_x2(size(x2))
+        real(dp) :: gate_left_hessian(size(x1), size(x2))
+        real(dp) :: gate_right_hessian(size(x1), size(x2))
+        integer :: i, j
+
+        allocate(left_gradient_x1(size(x1)), right_gradient_x1(size(x1)))
+        allocate(left_gradient_x2(size(x2)), right_gradient_x2(size(x2)))
+        allocate(left_hessian(size(x1), size(x2)), right_hessian(size(x1), size(x2)))
+        call self%left%input_derivatives(x1, x2, left_value, left_gradient_x1, &
+            left_gradient_x2, left_hessian, status)
+        if (status%code /= FORTNUM_OK) return
+        call self%right%input_derivatives(x1, x2, right_value, right_gradient_x1, &
+            right_gradient_x2, right_hessian, status)
+        if (status%code /= FORTNUM_OK) return
+        call change_point_input_gates(self, x1, x2, gate_left, gate_right, &
+            gate_left_x1, gate_left_x2, gate_right_x1, gate_right_x2, &
+            gate_left_hessian, gate_right_hessian)
+        value = gate_left*left_value + gate_right*right_value
+        gradient_x1 = gate_left*left_gradient_x1 + gate_right*right_gradient_x1 + &
+            gate_left_x1*left_value + gate_right_x1*right_value
+        gradient_x2 = gate_left*left_gradient_x2 + gate_right*right_gradient_x2 + &
+            gate_left_x2*left_value + gate_right_x2*right_value
+        mixed_hessian = gate_left*left_hessian + gate_right*right_hessian
+        do j = 1, size(x2)
+            do i = 1, size(x1)
+                mixed_hessian(i, j) = mixed_hessian(i, j) + &
+                    gate_left_x1(i)*left_gradient_x2(j) + &
+                    left_gradient_x1(i)*gate_left_x2(j) + &
+                    gate_right_x1(i)*right_gradient_x2(j) + &
+                    right_gradient_x1(i)*gate_right_x2(j) + &
+                    gate_left_hessian(i, j)*left_value + &
+                    gate_right_hessian(i, j)*right_value
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine change_point_input_derivatives
+
+    subroutine change_point_input_gates(self, x1, x2, gate_left, gate_right, &
+            gate_left_x1, gate_left_x2, gate_right_x1, gate_right_x2, &
+            gate_left_hessian, gate_right_hessian)
+        class(kernel_t), intent(in) :: self
+        real(dp), intent(in) :: x1(:), x2(:)
+        real(dp), intent(out) :: gate_left, gate_right
+        real(dp), intent(out) :: gate_left_x1(:), gate_left_x2(:)
+        real(dp), intent(out) :: gate_right_x1(:), gate_right_x2(:)
+        real(dp), intent(out) :: gate_left_hessian(:, :), gate_right_hessian(:, :)
+        real(dp) :: width, center, z1, z2, s1, s2, q1, q2
+        real(dp) :: sx1, sx2
+        integer :: feature
+
+        width = exp(self%log_parameters(1))
+        center = self%log_parameters(2)
+        feature = self%change_feature
+        z1 = (x1(feature) - center)/width
+        z2 = (x2(feature) - center)/width
+        s1 = 0.5_dp*(1.0_dp + tanh(z1))
+        s2 = 0.5_dp*(1.0_dp + tanh(z2))
+        q1 = 0.5_dp*(1.0_dp - tanh(z1)**2)
+        q2 = 0.5_dp*(1.0_dp - tanh(z2)**2)
+        sx1 = q1/width
+        sx2 = q2/width
+        gate_left = s1*s2
+        gate_right = (1.0_dp - s1)*(1.0_dp - s2)
+        gate_left_x1 = 0.0_dp
+        gate_left_x2 = 0.0_dp
+        gate_right_x1 = 0.0_dp
+        gate_right_x2 = 0.0_dp
+        gate_left_hessian = 0.0_dp
+        gate_right_hessian = 0.0_dp
+        gate_left_x1(feature) = sx1*s2
+        gate_left_x2(feature) = s1*sx2
+        gate_right_x1(feature) = -sx1*(1.0_dp - s2)
+        gate_right_x2(feature) = -(1.0_dp - s1)*sx2
+        gate_left_hessian(feature, feature) = sx1*sx2
+        gate_right_hessian(feature, feature) = sx1*sx2
+    end subroutine change_point_input_gates
 
     subroutine user_input_derivatives(self, x1, x2, value, gradient_x1, &
             gradient_x2, mixed_hessian, status)
@@ -2125,6 +2465,8 @@ contains
             call spectral_matrix_jvp(self, x1, x2, direction, matrix, matrix_dot)
         case (KERNEL_LOCAL_PERIODIC)
             call local_periodic_matrix_jvp(self, x1, x2, direction, matrix, matrix_dot)
+        case (KERNEL_CHANGE_POINT)
+            call change_point_matrix_jvp(self, x1, x2, direction, matrix, matrix_dot)
         case default
             variance = exp(self%log_parameters(1))
             log_variance_dot = direction(1)
@@ -2199,6 +2541,39 @@ contains
         end select
     end subroutine kernel_matrix_jvp_impl
 
+    subroutine change_point_matrix_jvp(self, x1, x2, direction, matrix, matrix_dot)
+        class(kernel_t), intent(in) :: self
+        real(dp), intent(in) :: x1(:, :), x2(:, :), direction(:)
+        real(dp), intent(out) :: matrix(:, :), matrix_dot(:, :)
+        real(dp), allocatable :: left_matrix(:, :), right_matrix(:, :)
+        real(dp), allocatable :: left_matrix_dot(:, :), right_matrix_dot(:, :)
+        real(dp) :: gate_left, gate_right, gate_left_dot, gate_right_dot
+        real(dp) :: gate_direction(2)
+        integer :: left_count, right_count, i, j
+
+        left_count = self%left%parameter_count()
+        right_count = self%right%parameter_count()
+        allocate(left_matrix(size(x1, 1), size(x2, 1)))
+        allocate(right_matrix, mold=left_matrix)
+        allocate(left_matrix_dot, mold=left_matrix)
+        allocate(right_matrix_dot, mold=left_matrix)
+        call kernel_matrix_jvp_impl(self%left, x1, x2, direction(:left_count), &
+            left_matrix, left_matrix_dot)
+        call kernel_matrix_jvp_impl(self%right, x1, x2, &
+            direction(left_count + 1:left_count + right_count), right_matrix, right_matrix_dot)
+        gate_direction = direction(left_count + right_count + 1:left_count + right_count + 2)
+        do j = 1, size(x2, 1)
+            do i = 1, size(x1, 1)
+                call change_point_gate(self, x1(i, :), x2(j, :), gate_left, gate_right, &
+                    gate_left_dot, gate_right_dot, gate_direction)
+                matrix(i, j) = gate_left*left_matrix(i, j) + gate_right*right_matrix(i, j)
+                matrix_dot(i, j) = gate_left_dot*left_matrix(i, j) + &
+                    gate_left*left_matrix_dot(i, j) + gate_right_dot*right_matrix(i, j) + &
+                    gate_right*right_matrix_dot(i, j)
+            end do
+        end do
+    end subroutine change_point_matrix_jvp
+
     recursive subroutine kernel_parameter_vjp_impl(self, x1, x2, matrix_bar, &
             parameter_bar, offset)
         class(kernel_t), intent(in) :: self
@@ -2233,6 +2608,8 @@ contains
             call spectral_parameter_vjp(self, x1, x2, matrix_bar, parameter_bar, offset)
         case (KERNEL_LOCAL_PERIODIC)
             call local_periodic_parameter_vjp(self, x1, x2, matrix_bar, parameter_bar, offset)
+        case (KERNEL_CHANGE_POINT)
+            call change_point_parameter_vjp(self, x1, x2, matrix_bar, parameter_bar, offset)
         case default
             variance = exp(self%log_parameters(1))
             if (self%kind == KERNEL_RBF .or. self%kind == KERNEL_MATERN12 .or. &
@@ -2321,6 +2698,73 @@ contains
             call ard_rbf_parameter_vjp(self, x1, x2, matrix_bar, parameter_bar, offset)
         end select
     end subroutine kernel_parameter_vjp_impl
+
+    subroutine change_point_parameter_vjp(self, x1, x2, matrix_bar, parameter_bar, offset)
+        class(kernel_t), intent(in) :: self
+        real(dp), intent(in) :: x1(:, :), x2(:, :), matrix_bar(:, :)
+        real(dp), intent(inout) :: parameter_bar(:)
+        integer, intent(in) :: offset
+        real(dp), allocatable :: left_matrix(:, :), right_matrix(:, :)
+        real(dp), allocatable :: gate_left_matrix(:, :), gate_right_matrix(:, :)
+        real(dp) :: gate_left, gate_right, gate_gradient_left(2), gate_gradient_right(2)
+        integer :: left_count, right_count, i, j
+
+        left_count = self%left%parameter_count()
+        right_count = self%right%parameter_count()
+        allocate(left_matrix(size(x1, 1), size(x2, 1)))
+        allocate(right_matrix, mold=left_matrix)
+        allocate(gate_left_matrix, mold=left_matrix)
+        allocate(gate_right_matrix, mold=left_matrix)
+        call kernel_matrix_impl(self%left, x1, x2, left_matrix)
+        call kernel_matrix_impl(self%right, x1, x2, right_matrix)
+        do j = 1, size(x2, 1)
+            do i = 1, size(x1, 1)
+                call change_point_parameter_gates(self, x1(i, :), x2(j, :), gate_left, &
+                    gate_right, gate_gradient_left, gate_gradient_right)
+                gate_left_matrix(i, j) = gate_left
+                gate_right_matrix(i, j) = gate_right
+                parameter_bar(offset + left_count + right_count) = &
+                    parameter_bar(offset + left_count + right_count) + matrix_bar(i, j)* &
+                    (gate_gradient_left(1)*left_matrix(i, j) + &
+                    gate_gradient_right(1)*right_matrix(i, j))
+                parameter_bar(offset + left_count + right_count + 1) = &
+                    parameter_bar(offset + left_count + right_count + 1) + matrix_bar(i, j)* &
+                    (gate_gradient_left(2)*left_matrix(i, j) + &
+                    gate_gradient_right(2)*right_matrix(i, j))
+            end do
+        end do
+        call kernel_parameter_vjp_impl(self%left, x1, x2, matrix_bar*gate_left_matrix, &
+            parameter_bar, offset)
+        call kernel_parameter_vjp_impl(self%right, x1, x2, matrix_bar*gate_right_matrix, &
+            parameter_bar, offset + left_count)
+    end subroutine change_point_parameter_vjp
+
+    subroutine change_point_parameter_gates(self, x1, x2, gate_left, gate_right, &
+            gate_gradient_left, gate_gradient_right)
+        class(kernel_t), intent(in) :: self
+        real(dp), intent(in) :: x1(:), x2(:)
+        real(dp), intent(out) :: gate_left, gate_right
+        real(dp), intent(out) :: gate_gradient_left(2), gate_gradient_right(2)
+        real(dp) :: width, center, z1, z2, s1, s2, q1, q2
+        real(dp) :: gradient_1(2), gradient_2(2)
+        integer :: feature
+
+        width = exp(self%log_parameters(1))
+        center = self%log_parameters(2)
+        feature = self%change_feature
+        z1 = (x1(feature) - center)/width
+        z2 = (x2(feature) - center)/width
+        s1 = 0.5_dp*(1.0_dp + tanh(z1))
+        s2 = 0.5_dp*(1.0_dp + tanh(z2))
+        q1 = 0.5_dp*(1.0_dp - tanh(z1)**2)
+        q2 = 0.5_dp*(1.0_dp - tanh(z2)**2)
+        gradient_1 = q1*[-z1, -1.0_dp/width]
+        gradient_2 = q2*[-z2, -1.0_dp/width]
+        gate_left = s1*s2
+        gate_right = (1.0_dp - s1)*(1.0_dp - s2)
+        gate_gradient_left = gradient_1*s2 + s1*gradient_2
+        gate_gradient_right = -gradient_1*(1.0_dp - s2) - (1.0_dp - s1)*gradient_2
+    end subroutine change_point_parameter_gates
 
     subroutine kernel_rbf_parameter_vjp(self, x1, x2, matrix_bar, parameter_bar, offset)
         class(kernel_t), intent(in) :: self
@@ -2609,6 +3053,19 @@ contains
             valid = allocated(self%log_parameters)
             if (.not. valid) return
             valid = size(self%log_parameters) == 4
+        case (KERNEL_CHANGE_POINT)
+            valid = allocated(self%log_parameters)
+            if (.not. valid) return
+            valid = size(self%log_parameters) == 2
+            if (.not. valid) return
+            valid = associated(self%left) .and. associated(self%right)
+            if (.not. valid) return
+            valid = self%change_feature >= 1 .and. self%change_feature <= self%input_dim
+            if (.not. valid) return
+            valid = kernel_valid(self%left) .and. kernel_valid(self%right)
+            if (.not. valid) return
+            valid = self%left%input_dim == self%input_dim .and. &
+                self%right%input_dim == self%input_dim
         case (KERNEL_POLYNOMIAL)
             valid = allocated(self%log_parameters)
             if (.not. valid) return
