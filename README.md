@@ -19,14 +19,17 @@ and staged diagnostics,
 neural and variational model primitives, Gaussian processes, and structured
 linear algebra. Full estimator-family parity, histogram tree growth, model
 serialization, and distributed execution remain parity work packages. The MLP
-trainer now has an in-memory resumable checkpoint API, AdamW, Adagrad, RMSprop, and
+trainer now has an in-memory resumable checkpoint API, AdamW, Adagrad, RMSprop,
+AMSGrad, and
 FortOpt-backed SGD, and binary logistic objectives have a bounded FortOpt
 L-BFGS-B adapter for logistic objectives and binary/shared-kernel Laplace GP
 classification. Adagrad's accumulated-square state is checkpointed and
 resumed exactly. The multiclass MLP classifier also exposes weighted softmax
 cross-entropy value/JVP/VJP/HVP products and a bounded FortOpt L-BFGS-B
 objective. Fixed full-batch MLP trajectories expose exact learning-rate/L2
-hypergradients for SGD, Adam, AdamW, RMSprop, Adagrad, and unfactored Adafactor.
+hypergradients for SGD, Adam, AdamW, RMSprop, Adagrad, and unfactored Adafactor;
+AMSGrad has validated CPU recurrence/checkpoint state but its max-active-set
+trajectory derivatives remain open.
 Adafactor's relative-step and parameter-scale branches carry exact smooth-state
 products as well; clip, rate, and scale active-set boundaries return typed
 refusals. See
@@ -107,7 +110,7 @@ current surface is:
 | --- | --- | --- |
 | Linear regression, ridge/elastic-net estimators, scalers, basis maps, and basis pipelines | Value, input/parameter JVPs and VJPs; analytic HVPs for polynomial/Fourier/radial/spline maps and horizontal/column/sequential pipelines | General DAG transforms, callback HVPs, and fit-time derivatives remain open |
 | Poisson/Gamma GLM regression | Analytic weighted log-link objective/gradient, alpha/dispersion hypergradients, prediction, input/parameter JVPs and VJPs | Fit-time optimizer differentiation remains an explicit boundary; resident CUDA kernels remain planned |
-| Dense MLP and MSE training objective | Parameter/input JVPs, VJPs, exact MSE+L2 HVPs, L2 hyperparameter derivative, Adam/AdamW/Adagrad/RMSprop/SGD momentum/Nesterov training, typed constant/warmup/cosine/exponential schedules with analytic rate products, exact fixed-trajectory learning-rate/L2, AdamW (including beta logits), and RMSprop hypergradients, and exact in-memory optimizer checkpoints | Mini-batch/schedule optimizer-trajectory hypergradients and neural module families are partial |
+| Dense MLP and MSE training objective | Parameter/input JVPs, VJPs, exact MSE+L2 HVPs, L2 hyperparameter derivative, Adam/AdamW/Adagrad/RMSprop/AMSGrad/SGD momentum/Nesterov training, typed constant/warmup/cosine/exponential schedules with analytic rate products, exact fixed-trajectory learning-rate/L2, AdamW (including beta logits), RMSprop hypergradients, AMSGrad recurrence/checkpoints, and exact in-memory optimizer checkpoints | Mini-batch/schedule optimizer-trajectory hypergradients and neural module families are partial |
 | Exact GP regression | Kernel-parameter products, input derivatives, prediction products, and differentiated-solve HVPs; RBF, Matérn 1/2 and 3/2, periodic, and rational-quadratic products use analytic leaves, with the RBF and Matérn products cross-checked against FortSym-generated forms | Approximate and matrix-free training products are partial; Matérn 5/2 HVPs retain the FortAD product |
 | Derivative-observation GP | Mixed value/first-derivative observations, dense joint latent covariance, analytic parameter JVP/VJP products, exact query-input JVP/VJP products for RBF, Matérn 3/2 and 5/2, periodic, rational-quadratic, cosine, linear, constant, and supported sum/product leaves; validated user formulas carry analytic value/gradient/Hessian products | The likelihood hyperparameter HVP is a documented deterministic central difference. Matérn 1/2 coincident derivative blocks, user-formula third-input products, polynomial derivative-GP parameter/query products, second-derivative observations, and resident CUDA covariance/solve kernels remain typed refusals |
 | Trees, boosting, and classifiers | Piecewise JVPs where declared, with split-boundary refusals; weighted LDA/QDA exposes smooth Gaussian probability products | Classifier HVPs, smooth split derivatives, and resident classifier GPU kernels remain open |

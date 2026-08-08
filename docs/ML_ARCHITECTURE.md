@@ -179,9 +179,10 @@ while procedure pointers remain caller-owned. Serialized
 `mlp_training_checkpoint_t` now makes the in-memory boundary explicit: it
 snapshots packed parameters, Adam moments and step, iterator permutation/RNG,
 active microbatch accumulation, schedule position/history, validation
-counters, and best-state metadata. Adam/AdamW moments, Adagrad accumulated
-squares, RMSprop running-square/centered-mean/momentum state, or SGD velocity
-are stored in the same explicit checkpoint blocks. A
+counters, and best-state metadata. Adam/AdamW moments, AMSGrad moments and its
+max-second-moment envelope, Adagrad accumulated squares, RMSprop
+running-square/centered-mean/momentum state, or SGD velocity are stored in the
+same explicit checkpoint blocks. A
 resumed call validates the training
 contract before restoring the snapshot. Procedure pointers remain caller-owned
 and checkpoints whose best-state restoration changed parameters are marked
