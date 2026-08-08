@@ -2994,8 +2994,9 @@ provides a bounded FortOpt L-BFGS-B adapter over the packed ELBO state, with
 `gp_variational_classification_lbfgsb_options_t` bounds/tolerances and a
 `gp_variational_classification_lbfgsb_result_t` convergence/ELBO/gradient
 diagnostic. The adapter maximizes the deterministic ELBO through its negative
-objective, commits the packed state only on convergence, and returns a typed
-CUDA refusal. Kernel and inducing-point hyperparameter products,
+objective, commits the packed state only on convergence, and restores the
+initial packed state on optimizer refusal, nonfinite results, or an iteration
+limit. It returns a typed CUDA refusal. Kernel and inducing-point hyperparameter products,
 natural-gradient updates, and resident GPU inference remain separate roadmap
 work.
 
