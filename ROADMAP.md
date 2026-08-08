@@ -20,7 +20,7 @@ gate is still open, so this work does not move or recreate that tag.
 
 The checked-in GNU compiler log is the fresh 2026-08-08 run against FortML
 `a7fea2b2e58dbf27e87043a7bb6ab70a44cf5c1f`, FortAD `origin/main` at
-`ac8d04be7303bbd3b6bd9f865074401b5041b9af`, and FortNum at
+`10f47795924e189a273143681353daaa4b0591fe`, and FortNum at
 `38bc0e578ec5c6c0e636e8fdd3844f54f9e3e473`, run from the clean checkout
 under `/mnt/storage/code/lazy-fortran/fortml`. The run includes the
   kernel-catalog, weighted LDA/QDA, robust/absolute XGBoost, neural NLL, random-forest,
@@ -48,7 +48,7 @@ parameter snapshots and transfer counters. NVIDIA
 compiler coverage remains an
 explicit older-build result.
 
-The companion benchmark harness is clean at FortML-bench revision `280bc57`;
+The companion benchmark harness is clean at FortML-bench revision `07dd703`;
 the trainer-checkpoint, unfactored-Adafactor, binary-objective,
 multiclass-calibration, variational-multiclass-GP, PINN/physics-objective,
 physics HVP, grouped K-fold, spectral-mixture, XGBoost-ranking,
@@ -532,12 +532,12 @@ reliability diagrams, and calibration-aware cross-validation remain open.
 | Area | Current state | Production target |
 | --- | --- | --- |
 | Linear regression and generalized linear models | Linear regression, weighted ridge and weighted elastic-net/lasso coordinate descent, weighted Poisson/Gamma log-link GLMs with bounded FortOpt L-BFGS-B, and logistic/softmax sample and positive sorted-class weights are implemented | Robust, quantile/Tweedie, multinomial, calibrated and regularized classifiers with shared solver and derivative contracts; resident GLM GPU kernels |
-| Feature transforms and basis maps | Polynomial, Fourier, radial, B-spline, callback bases, standard/min-max scalers, sparse-safe CSC standard scaling, integer categorical one-hot encoding, horizontal/sequential/column pipelines, analytic basis/pipeline HVPs, a fitted basis-to-linear estimator, and a joint differentiable basis-pipeline training objective are implemented | CSR/CSC categorical and indicator views, DAG pipelines, leakage-safe cross-validation, callback second derivatives, and resident GPU transforms |
+| Feature transforms and basis maps | Polynomial, Fourier, radial, B-spline, callback bases, standard/min-max/median-IQR scalers, sparse-safe CSC standard scaling, integer categorical one-hot encoding, horizontal/sequential/column pipelines, analytic basis/pipeline HVPs, a fitted basis-to-linear estimator, and a joint differentiable basis-pipeline training objective are implemented | CSR/CSC categorical and indicator views, DAG pipelines, leakage-safe cross-validation, callback second derivatives, and resident GPU transforms |
 | Nearest-neighbor and margin methods | Dense exact kNN and closed-radius classification plus scalar regression, weighted linear SVM/SVR, and dense RBF one-class SVM | Multi-output regression, KD-tree or ball-tree search, sparse inputs, kernel SVM/SVR, calibrated probabilities, resident GPU kernels, and differentiable soft-neighbor policies |
 | Trees and ensembles | Partial | Deterministic finite-only regression stumps, weighted depth-limited CART regression and classification, seeded bootstrap random-forest classification, seeded randomized-threshold Extra-Trees classification, squared-loss stump boosting, exact/histogram depth-limited second-order squared/logistic/Poisson/squared-log/Huber/quantile boosting, and bounded `rank:pairwise` boosting are implemented. XGBoost-style trees support weighted quantile cuts, bounded histograms, explicit NaN rejection, learned default directions, forced-left/right routing, per-feature monotonic constraints with recursive leaf bounds, staged predictions, contributions, serialization, and transactional fitted-prefix slicing; bagging, categorical, and interaction constraints remain planned |
-| Clustering and unsupervised learning | Centered dense `pca_t` is implemented with deterministic SVD signs, rank selection, whitening, reconstruction, variance metadata, and fixed-state input products; `linear_autoencoder_t` reuses fitted PCA as the tied linear optimum with exact encode/reconstruction JVPs | Incremental/randomized/sparse/kernel PCA, ICA, NMF, k-means/minibatch k-means, Gaussian mixtures/EM, density and graph clustering, manifold methods, outlier detection, matrix factorization, and density metrics |
+| Clustering and unsupervised learning | Centered dense `pca_t` is implemented with deterministic SVD signs, rank selection, whitening, reconstruction, variance metadata, and fixed-state input products; `linear_autoencoder_t` reuses fitted PCA as the tied linear optimum with exact encode/reconstruction JVPs; deterministic dense seeded `kmeans_t` provides fit/predict/transform, inertia, and fixed-center input products with explicit empty-cluster and device refusals | Incremental/randomized/sparse/kernel PCA, ICA, NMF, minibatch k-means, Gaussian mixtures/EM, density and graph clustering, manifold methods, outlier detection, matrix factorization, and density metrics |
 | Neural networks | MLP/BNN/VAE/RNN primitives, a separable Hamiltonian MLP, a named sequential `mlp_chain_t` parameter tree, dense MLP linear/`tanh`/ReLU/GELU/SiLU/ELU/softplus/leaky-ReLU/sigmoid/Mish products, deterministic MLP Adam/AdamW/Adagrad/RMSprop/SGD/Adafactor training, exact fixed full-batch SGD momentum/Nesterov/AdamW/Adam/RMSprop/Adagrad/Adafactor trajectory hypergradients, weighted binary BCE FortOpt/L-BFGS-B with exact mixed HVPs, bounded full-batch MLP and composed-chain L-BFGS-B paths, named group-wise log-L2 hyperparameters with exact mixed HVPs, portable trainer checkpoints, and resident dense-affine CUDA value/JVP/VJP plus single-layer MSE-update primitives exist | Alias-aware module/buffer tree, the remaining activation/loss/module catalog, convolution/attention/sequence/graph extensions, mixed precision, distributed training, compile/fusion, serialized/distributed trainers, and resident multi-layer neural training |
-| Gaussian processes | Exact, derivative, sparse, structured and local variants are partial-to-implemented. Exact fitted GPs and binary/shared-kernel one-vs-rest Laplace classifiers have bounded FortOpt L-BFGS-B adapters; bounded Bernoulli variational classification has deterministic logistic/probit ELBO, packed gradients, prediction JVPs/VJPs, minibatch scaling, and typed CUDA refusal | GPyTorch/GPflow-style kernels, likelihoods, multitask/batch shapes, exact/variational/lazy inference, derivative operators, constraints, calibration, coupled multiclass GP classification, natural gradients, evidence-corrected and likelihood-parameter training |
+| Gaussian processes | Exact, derivative, sparse, structured and local variants are partial-to-implemented. Exact fitted GPs and binary/shared-kernel one-vs-rest Laplace classifiers have bounded FortOpt L-BFGS-B adapters; bounded Bernoulli variational classification has deterministic logistic/probit ELBO, packed gradients, a bounded FortOpt L-BFGS-B adapter, prediction JVPs/VJPs, minibatch scaling, and typed CUDA refusal | GPyTorch/GPflow-style kernels, likelihoods, multitask/batch shapes, exact/variational/lazy inference, derivative operators, constraints, calibration, coupled multiclass GP classification, natural gradients, evidence-corrected and likelihood-parameter training |
 | Derivatives | Exact GP, analytic polynomial/Fourier/radial/spline basis and pipeline HVPs, and selected neural/kernel products exist | Value/JVP/VJP/HVP and implicit/hypergradients for every declared parameter/input path, including preprocessing, likelihood, optimizer/search variables, and device kernels |
 | Model selection and metrics | Benchmark-specific checks exist; `fortml_validation` now accepts the shared `estimator_capability_t` contract for pre-flight validation | Shared metrics, splitters, cross-validation, calibration, grid/random/Bayesian/differentiable search, nested validation, and leakage/refusal checks |
 | Persistence and serving | Missing public contract | Versioned state dictionaries, safe model/trainer serialization, compiler-independent metadata, streaming inference, batching, and reproducible deployment manifests |
@@ -575,8 +575,8 @@ derivatives, refusal behavior, and an independent benchmark oracle all exist.
 | scikit-learn linear/GLM | Dense linear regression, weighted ridge/lasso/elastic-net, logistic/softmax, bounded logistic and MLP L-BFGS-B | Robust/quantile/Gamma/Tweedie, SGD estimators, solver parity, calibration, complete multioutput and partial-fit contracts |
 | scikit-learn Naive Bayes | GaussianNB, BernoulliNB, MultinomialNB, ComplementNB, CategoricalNB with weighted sorted categories and unknown-category policy | sparse counts, calibrated and incremental variants |
 | scikit-learn neighbors/margins | Dense exact `fortml_knn_classifier`, closed-radius `fortml_radius_neighbors_classifier`, scalar `fortml_radius_neighbors_regression`, weighted linear `linear_svm_classifier_t`, weighted dense `linear_svr_regression_t`, and dense RBF `one_class_svm_t` with deterministic boundaries and explicit derivative/device refusals | Multi-output neighbors, KD/ball trees, sparse inputs, kernel SVM/SVR, calibrated support-vector workflows, resident GPU kernels, and smooth fit/hyperparameter products |
-| scikit-learn trees/ensembles | Stumps, weighted CART, squared boosting, exact and histogram XGBoost-style second-order squared/binary-logistic/Poisson/squared-log/absolute lanes, bounded `rank:pairwise`, per-feature monotonic constraints, and bounded LightGBM-style weighted leaf-wise regression/binary growth | Random/extra forests, bagging, AdaBoost, categorical/interaction constraints, staged and warm-start APIs |
-| scikit-learn unsupervised | Basis maps, centered dense PCA, validation splitters, variational primitives | Incremental/randomized/sparse/kernel PCA, ICA/NMF/TruncatedSVD, k-means/GMM/density/manifold/outlier methods, sparse/categorical preprocessing, model persistence |
+| scikit-learn trees/ensembles | Stumps, weighted CART with deterministic NaN routing, squared boosting, exact and histogram XGBoost-style second-order squared/binary-logistic/Poisson/squared-log/absolute lanes, bounded `rank:pairwise`, per-feature monotonic constraints, and bounded LightGBM-style weighted leaf-wise regression/binary growth | Random/extra forests, bagging, AdaBoost, categorical/interaction constraints, staged and warm-start APIs |
+| scikit-learn unsupervised | Basis maps, centered dense PCA, deterministic seeded dense k-means, validation splitters, variational primitives | Incremental/randomized/sparse/kernel PCA, ICA/NMF/TruncatedSVD, minibatch k-means/GMM/density/manifold/outlier methods, sparse/categorical preprocessing, model persistence |
 | PyTorch/JAX neural core | Dense MLP, classifier, named sequential MLP chain, BNN, VAE, RNN, Hamiltonian MLP; Adam, AdamW, Adagrad, RMSprop, Adafactor, and SGD momentum/Nesterov; exact fixed full-batch SGD learning-rate/L2/momentum including classical and Nesterov velocity state, Adam/AdamW beta and decay products, RMSprop, Adagrad, unfactored Adafactor, and typed schedule trajectory hypergradients | Stochastic/device optimizer hypergradients, complete loss/activation/module tree, convolution/attention/sequence/graph models, AMP, compile/fusion, distributed and device-resident train state |
 | GPyTorch/GPflow | Exact, derivative-observation, sparse/local/SKI/structured GP primitives; Laplace binary/OVR and bounded Bernoulli variational GP classification with sorted-label OVR multiclass prediction JVPs/VJPs | Kernel/likelihood/constraint/batch-shape parity, variational categorical/count likelihoods, multitask, operator-valued derivatives, implicit hypergradients, serialization and resident GPU training |
 | XGBoost/LightGBM | Exact and bounded-histogram depth-limited XGBoost-style squared/logistic/Poisson/squared-log (RMSLE)/Huber/quantile/absolute Newton trees, weighted binary/OVR multiclass staged predictions, bounded `rank:pairwise`, margins, gain/weight/cover diagnostics, per-feature monotonic constraints, serialization, and fitted-prefix slicing, plus a separately named `lightgbm_t` weighted regression/binary-logistic path with shared weighted-quantile cuts and deterministic globally best-leaf growth up to `num_leaves` | Tweedie, categorical splits, DART, GOSS/EFB, interaction constraints, distributed training, warm-start LightGBM state, and resident GPU histograms |
@@ -1161,6 +1161,11 @@ CUDA refusal until private CART storage is safely bound to the C ABI.
 - [x] Add the deterministic finite-only `cart_classifier_t` adapter with
   sorted integer classes, weighted Gini/entropy probabilities, and explicit
   depth, leaf-size, tie, and nonfinite-input contracts.
+- [x] Extend `cart_classifier_t` with explicit NaN routing. The default
+  `missing_policy="error"` preserves finite behavior; `"learn"` compares both
+  default branches per split with deterministic left-on-tie selection, and
+  `"left"`/`"right"` force a branch. Independent fit/predict, finite-baseline,
+  unsupported-policy, and shape-refusal oracles cover the public contract.
 - [ ] Add shared tree and boosted-tree classifier adapters for missing-value,
   monotonic-constraint, and probability-policy variants.
 - [x] Add a binary Laplace GP classifier with Bernoulli logistic and probit
@@ -1312,7 +1317,12 @@ return status errors.
   against an independent dense expansion oracle and checks the typed centering
   refusal. CSR conversion, sparse one-hot/indicator views, and resident
   device kernels remain separate follow-up work.
-- [ ] Add robust scaling, quantile and power transforms, normalization,
+- [x] Add `robust_scaler_t` with median centers, configurable finite quantile
+  ranges (default IQR), constant-feature unit scales, inverse transforms, and
+  exact input JVPs. `test_preprocessing` checks an independent percentile
+  interpolation oracle, reconstruction, constant-column behavior, and the
+  unfitted/nonfinite refusal boundary. Sparse and device variants remain open.
+- [ ] Add quantile and power transforms, normalization,
   ordinal encoding, target encoding with leakage guards, polynomial
   interactions, hashing, and sparse CSR/CSC feature views.
   Every fitted transform records statistics, feature names, dtypes, and the
@@ -1581,7 +1591,10 @@ state, scoring, and refusal rules.
   packed mean/covariance/prior products, input and parameter JVP/VJP tests,
   an independent NumPy benchmark, and an explicit CUDA refusal until resident
   discriminant kernels are linked.
-- [ ] Add k-means/minibatch k-means, Gaussian mixtures, Bayesian mixtures,
+- [x] Add deterministic dense seeded k-means with fit/predict/transform,
+  inertia, fixed-center input JVP/VJP products, an independent oracle, and
+  explicit empty-cluster, nonfinite-input, and CUDA refusal contracts.
+- [ ] Add minibatch k-means, Gaussian mixtures, Bayesian mixtures,
   spectral and agglomerative clustering, DBSCAN/OPTICS, affinity propagation,
   BIRCH, and graph-connected components where dependencies and memory limits
   are explicit.
@@ -2585,8 +2598,8 @@ results as an external literature claim.
   count, and fallback reason in generated-kernel provenance.
 
 The repository snapshot used for this roadmap resolves `fortad` `main` at
-`fdc23780a59c56bcbcba5d77118213eeec6efcc6` and `fortsym` `main` at
-`77b031204c76fa88872ddface3af6ac3a25fbb00`. The checked-in RBF HVP/product
+`10f47795924e189a273143681353daaa4b0591fe` and `fortsym` `main` at
+`1477a6d1d9fc659e0a0b537af8a292bb971d4992`. The checked-in RBF HVP/product
 module was generated by FortAD `5e1bfe0`; the RBF primal and first-order leaf
 was generated by FortSym `f71a1aa` (the earlier primal-only leaf remains
 generator revision `16fc3a8`). The RBF log-length tangent used

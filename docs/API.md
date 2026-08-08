@@ -151,6 +151,7 @@ repeated resident-batch evidence.
 | `glm_regression_t` | Weighted positive-response Poisson/Gamma log-link `predict` | Packed-parameter and continuous-input JVP | Packed-parameter and continuous-input VJP; value/gradient objective | No |
 | `pca_t` | Centered projection and reconstruction | Input JVP for a fixed fitted state | Input VJP for a fixed fitted state | Fit-time SVD derivatives are not exposed |
 | `linear_autoencoder_t` | Tied centered linear encode/decode/reconstruct, initialized from PCA | Input JVP for encode and reconstruction | No parameter VJP (weights are fixed PCA state) | No |
+| `kmeans_t` | Deterministic dense seeded k-means labels, centers, Euclidean distances, and inertia | Fixed-center input JVP away from zero distances | Fixed-center input VJP away from zero distances | Fit/assignment is discrete; zero-distance derivatives and CUDA are typed refusals |
 | `logistic_regression_t` | Decision score and probabilities | Parameter/input JVP, probability JVP | Parameter/input VJP, probability VJP | No |
 | `linear_svm_classifier_t` | Signed decision score and labels | Parameter/input JVP away from fit-time boundaries | Parameter/input VJP; hinge objective value/gradient | No |
 | `one_class_svm_t` | RBF nu-SVM signed anomaly score and ±1 labels | Fixed-state continuous-input JVP | Fixed-state continuous-input VJP | No |
@@ -425,6 +426,31 @@ fitted mean. `fit_transform` combines fitting and projection. Fixed-state
 fit-time SVD, sign choices, and rank changes are discrete boundaries and are
 not differentiated; invalid shapes, nonfinite arrays, unfitted calls, and
 one-row fits return a domain status.
+
+### `fortml_kmeans`
+
+`kmeans_t%fit(x,status[,n_clusters,max_iter,tolerance,initialization_seed,
+device_kind])` fits dense row-oriented samples with deterministic Lloyd
+iterations. The defaults are eight clusters, 300 iterations, tolerance
+`1e-4`, and seed `1`. Initialization takes a cyclic seeded sample of distinct
+rows (seed `s` starts at row `modulo(s-1,n_samples)+1`); assignment ties use
+the lowest cluster index. This is an explicit reproducible baseline, not a
+claim of scikit-learn's k-means++ initialization. Empty clusters are reported
+as `FORTNUM_CONVERGENCE_ERROR` and are never silently reseeded. Hitting the
+iteration limit before the requested tolerance also returns that status while
+retaining the last finite fit.
+
+`predict` returns integer labels, `transform` returns Euclidean distances to
+each fitted center, and `cluster_centers`, `labels`, `inertia`, `n_iter`, and
+the remaining metadata accessors return copies or scalar fit state.
+`fit_transform` combines fitting and distance transformation. Fixed-center
+`transform_jvp` and `transform_vjp` provide exact input products when every
+distance is nonzero; a zero distance is a typed domain refusal because the
+Euclidean norm is nonsmooth there. Labels and fit-time assignment are discrete
+and have no derivative contract. Inputs must be finite nonempty dense arrays,
+and CUDA/device-resident fit, prediction, and transformation return
+`FORTNUM_NOT_IMPLEMENTED` until a resident kernel is linked; no host fallback
+is hidden behind the device argument.
 
 ### `fortml_logistic_regression`
 
@@ -1212,10 +1238,13 @@ resident radius-search reduction is linked; no hidden host fallback is used.
 Zero-variance columns use unit scale. `transform`, `inverse_transform`, and
 `transform_jvp` operate on row-oriented batches. `minmax_scaler_t%fit` stores
 column extrema and maps to an increasing caller-selected range (default
-`[0,1]`), with the same transform, inverse, and input-JVP operations. Fitted
-statistics are state rather than differentiable parameters. The JVPs are with
-respect to the input batch. Unfitted models, nonfinite values, and shape
-mismatches are refused.
+`[0,1]`), with the same transform, inverse, and input-JVP operations.
+`robust_scaler_t%fit` stores the per-feature median and an interpolated finite
+quantile range (default 25th--75th percentile IQR), uses unit scale for
+constant features, and exposes the same transform, inverse, and input-JVP
+operations. Fitted statistics are state rather than differentiable parameters.
+The JVPs are with respect to the input batch. Unfitted models, nonfinite values,
+invalid quantile ranges, and shape mismatches are refused.
 
 ### `fortml_simple_imputer`
 
@@ -2170,16 +2199,20 @@ expose structural diagnostics. Missing-value routing, histogram growth, and
 differentiable split selection remain unsupported for this regression tree.
 
 `cart_classifier_t%fit(x,labels,status[,max_depth,min_samples_leaf,
-sample_weight,criterion])` builds a deterministic numeric classification tree.
+sample_weight,criterion,missing_policy])` builds a deterministic numeric classification tree.
 `criterion` is `CART_CRITERION_GINI` (the default) or
 `CART_CRITERION_ENTROPY`. Each node searches weighted impurity over ascending
 feature and threshold order, accepts only strict improvements, and stores
 weighted class frequencies. `predict_proba` returns the leaf probabilities and
 `predict` maps their first maximum back to sorted integer `classes`. The dense
-fit and query paths reject nonfinite values. Positive finite sample weights,
-depth up to 12, and count-based `min_samples_leaf` are supported. Missing-value
-routing, input derivatives, histogram growth, and differentiable split
-selection remain unsupported.
+fit and query paths reject infinities. Positive finite sample weights, depth up
+to 12, and count-based `min_samples_leaf` are supported. The default
+`missing_policy="error"` preserves the finite-only contract; `"learn"`
+evaluates both NaN default branches at every candidate split and stores the
+strictly best branch (left wins exact ties), while `"left"` and `"right"`
+force a branch. `missing_policy()` and `accepts_missing()` expose the fitted
+policy. Missing routing is piecewise and has no input derivative product;
+histogram growth and differentiable split selection remain unsupported.
 
 ### `fortml_random_forest_classifier`
 
