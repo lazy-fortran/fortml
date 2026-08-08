@@ -1,21 +1,23 @@
 module fortml_second_derivative_gaussian_process
-    !! Scalar RBF GP with value, first-, and second-derivative observations.
+    !! Scalar smooth-kernel GP with value, first-, and second-derivative observations.
     !!
     !! `gp_derivative_regression_t` deliberately stops at first derivatives in
     !! its component encoding.  This bounded companion uses an explicit order
-    !! vector (`0`, `1`, or `2`) for a one-dimensional RBF kernel.  Covariance
-    !! blocks are generated from the exact derivatives through order four, so
-    !! mixed value/gradient/Hessian observations and predictions share one
-    !! Cholesky state.  Query input JVP/VJP products use the fifth RBF
-    !! derivative; hyperparameter products and non-RBF leaves are explicit
-    !! boundaries rather than finite-difference fallbacks.
+    !! vector (`0`, `1`, or `2`) for a one-dimensional RBF or Matérn-5/2
+    !! kernel.  Covariance blocks are generated from exact derivatives through
+    !! order four, so mixed value/gradient/Hessian observations and predictions
+    !! share one Cholesky state.  Query input JVP/VJP products use the fifth
+    !! derivative.  The Matérn-5/2 fifth derivative is discontinuous at
+    !! coincident inputs, so that boundary is a typed refusal; hyperparameter
+    !! products and non-RBF/Matérn leaves remain explicit boundaries rather
+    !! than hidden finite-difference fallbacks.
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     use fortnum_kinds, only: dp
     use fortnum_cholesky, only: cholesky_factorization_t
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
         FORTNUM_DOMAIN_ERROR, FORTNUM_CONVERGENCE_ERROR, FORTNUM_NOT_IMPLEMENTED
     use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU, FORTML_DEVICE_CUDA
-    use fortml_kernels, only: kernel_t, KERNEL_RBF
+    use fortml_kernels, only: kernel_t, KERNEL_RBF, KERNEL_MATERN52
     implicit none
     private
 
@@ -79,10 +81,11 @@ contains
                 "second-derivative GP fit: values or derivative orders are invalid")
             return
         end if
-        if (kernel%kind /= KERNEL_RBF .or. kernel%input_dim /= 1 .or. &
+        if ((kernel%kind /= KERNEL_RBF .and. kernel%kind /= KERNEL_MATERN52) .or. &
+                kernel%input_dim /= 1 .or. &
                 kernel%parameter_count() /= 2) then
             call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
-                "second-derivative GP fit: only one-dimensional RBF is generated")
+                "second-derivative GP fit: only one-dimensional RBF or Matern-5/2 is generated")
             return
         end if
         if (present(jitter)) then
@@ -106,8 +109,9 @@ contains
         allocate(covariance(n, n))
         do j = 1, n
             do i = 1, n
-                covariance(i, j) = rbf_derivative_covariance(self%kernel_variance, &
-                    self%lengthscale, self%x_train(i), orders(i), self%x_train(j), orders(j))
+                covariance(i, j) = second_derivative_covariance(self%kernel%kind, &
+                    self%kernel_variance, self%lengthscale, self%x_train(i), orders(i), &
+                    self%x_train(j), orders(j))
             end do
             covariance(j, j) = covariance(j, j) + noise_variance + self%jitter
         end do
@@ -141,8 +145,9 @@ contains
         allocate(cross(self%n_observations, n), work(self%n_observations, n))
         do j = 1, n
             do i = 1, self%n_observations
-                cross(i, j) = rbf_derivative_covariance(self%kernel_variance, &
-                    self%lengthscale, self%x_train(i), self%orders(i), x(j, 1), orders(j))
+                cross(i, j) = second_derivative_covariance(self%kernel%kind, &
+                    self%kernel_variance, self%lengthscale, self%x_train(i), &
+                    self%orders(i), x(j, 1), orders(j))
             end do
         end do
         mean = matmul(transpose(cross), self%alpha)
@@ -150,8 +155,8 @@ contains
         call solve_factor_matrix(self, work, status)
         if (status%code /= FORTNUM_OK) return
         do j = 1, n
-            prior = rbf_derivative_covariance(self%kernel_variance, self%lengthscale, &
-                x(j, 1), orders(j), x(j, 1), orders(j))
+            prior = second_derivative_covariance(self%kernel%kind, self%kernel_variance, &
+                self%lengthscale, x(j, 1), orders(j), x(j, 1), orders(j))
             variance(j) = prior - dot_product(cross(:, j), work(:, j))
             if (variance(j) < MIN_VARIANCE) then
                 call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
@@ -177,12 +182,14 @@ contains
         allocate(cross(self%n_observations, n), prior(n, n), work(self%n_observations, n))
         do j = 1, n
             do i = 1, self%n_observations
-                cross(i, j) = rbf_derivative_covariance(self%kernel_variance, &
-                    self%lengthscale, self%x_train(i), self%orders(i), x(j, 1), orders(j))
+                cross(i, j) = second_derivative_covariance(self%kernel%kind, &
+                    self%kernel_variance, self%lengthscale, self%x_train(i), &
+                    self%orders(i), x(j, 1), orders(j))
             end do
             do i = 1, n
-                prior(i, j) = rbf_derivative_covariance(self%kernel_variance, self%lengthscale, &
-                    x(i, 1), orders(i), x(j, 1), orders(j))
+                prior(i, j) = second_derivative_covariance(self%kernel%kind, &
+                    self%kernel_variance, self%lengthscale, x(i, 1), orders(i), &
+                    x(j, 1), orders(j))
             end do
         end do
         work = cross
@@ -210,14 +217,21 @@ contains
                 "second-derivative GP input JVP: direction shape is invalid")
             return
         end if
+        if (.not. input_jvp_supported(self, x, orders)) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "second-derivative GP input JVP: Matern-5/2 fifth derivative is undefined at coincidence")
+            return
+        end if
         allocate(cross(self%n_observations, size(x, 1)), cross_dot(self%n_observations, size(x, 1)), &
             work(self%n_observations, size(x, 1)), work_dot(self%n_observations, size(x, 1)))
         do j = 1, size(x, 1)
             do i = 1, self%n_observations
-                cross(i, j) = rbf_derivative_covariance(self%kernel_variance, self%lengthscale, &
-                    self%x_train(i), self%orders(i), x(j, 1), orders(j))
-                cross_dot(i, j) = rbf_derivative_covariance_input_dot(self%kernel_variance, &
-                    self%lengthscale, self%x_train(i), self%orders(i), x(j, 1), orders(j), direction(j))
+                cross(i, j) = second_derivative_covariance(self%kernel%kind, &
+                    self%kernel_variance, self%lengthscale, self%x_train(i), &
+                    self%orders(i), x(j, 1), orders(j))
+                cross_dot(i, j) = second_derivative_covariance_input_dot(self%kernel%kind, &
+                    self%kernel_variance, self%lengthscale, self%x_train(i), self%orders(i), &
+                    x(j, 1), orders(j), direction(j))
             end do
         end do
         mean = matmul(transpose(cross), self%alpha)
@@ -229,8 +243,8 @@ contains
         call solve_factor_matrix(self, work_dot, status)
         if (status%code /= FORTNUM_OK) return
         do j = 1, size(x, 1)
-            prior = rbf_derivative_covariance(self%kernel_variance, self%lengthscale, &
-                x(j, 1), orders(j), x(j, 1), orders(j))
+            prior = second_derivative_covariance(self%kernel%kind, self%kernel_variance, &
+                self%lengthscale, x(j, 1), orders(j), x(j, 1), orders(j))
             variance(j) = prior - dot_product(cross(:, j), work(:, j))
             variance_dot(j) = -dot_product(cross_dot(:, j), work(:, j)) - &
                 dot_product(cross(:, j), work_dot(:, j))
@@ -263,11 +277,17 @@ contains
                 "second-derivative GP input VJP: cotangent shape is invalid")
             return
         end if
+        if (.not. input_jvp_supported(self, x, orders)) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "second-derivative GP input VJP: Matern-5/2 fifth derivative is undefined at coincidence")
+            return
+        end if
         allocate(cross(self%n_observations, size(x, 1)), work(self%n_observations, size(x, 1)))
         do j = 1, size(x, 1)
             do i = 1, self%n_observations
-                cross(i, j) = rbf_derivative_covariance(self%kernel_variance, self%lengthscale, &
-                    self%x_train(i), self%orders(i), x(j, 1), orders(j))
+                cross(i, j) = second_derivative_covariance(self%kernel%kind, &
+                    self%kernel_variance, self%lengthscale, self%x_train(i), &
+                    self%orders(i), x(j, 1), orders(j))
             end do
         end do
         work = cross
@@ -277,8 +297,9 @@ contains
             do i = 1, self%n_observations
                 cross_bar = self%alpha(i)*mean_bar(j) - &
                     2.0_dp*work(i, j)*variance_bar(j)
-                derivative = rbf_derivative_covariance_input_dot(self%kernel_variance, &
-                    self%lengthscale, self%x_train(i), self%orders(i), x(j, 1), orders(j), 1.0_dp)
+                derivative = second_derivative_covariance_input_dot(self%kernel%kind, &
+                    self%kernel_variance, self%lengthscale, self%x_train(i), self%orders(i), &
+                    x(j, 1), orders(j), 1.0_dp)
                 x_bar(j) = x_bar(j) + cross_bar*derivative
             end do
         end do
@@ -305,7 +326,7 @@ contains
                 variance_dot, status)
         case (FORTML_DEVICE_CUDA)
             call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
-                "second-derivative GP input JVP device: resident RBF order-two kernel is not linked")
+                "second-derivative GP input JVP device: resident RBF/Matern-5/2 order-two kernel is not linked")
         case default
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "second-derivative GP input JVP device: device kind is invalid")
@@ -331,7 +352,7 @@ contains
             call self%predict_input_vjp(x, orders, mean_bar, variance_bar, x_bar, status)
         case (FORTML_DEVICE_CUDA)
             call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
-                "second-derivative GP input VJP device: resident RBF order-two kernel is not linked")
+                "second-derivative GP input VJP device: resident RBF/Matern-5/2 order-two kernel is not linked")
         case default
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "second-derivative GP input VJP device: device kind is invalid")
@@ -356,7 +377,7 @@ contains
             call self%predict(x, orders, mean, variance, status)
         case (FORTML_DEVICE_CUDA)
             call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
-                "second-derivative GP device prediction: resident RBF order-two kernel is not linked")
+                "second-derivative GP device prediction: resident RBF/Matern-5/2 order-two kernel is not linked")
         case default
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "second-derivative GP device prediction: device kind is invalid")
@@ -381,7 +402,7 @@ contains
             call self%joint_covariance(x, orders, covariance, status)
         case (FORTML_DEVICE_CUDA)
             call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
-                "second-derivative GP covariance device: resident RBF order-two kernel is not linked")
+                "second-derivative GP covariance device: resident RBF/Matern-5/2 order-two kernel is not linked")
         case default
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "second-derivative GP covariance device: device kind is invalid")
@@ -502,6 +523,99 @@ contains
 
         call self%factorization%solve(matrix, status)
     end subroutine solve_factor_matrix
+
+    pure real(dp) function second_derivative_covariance(kind, variance, lengthscale, x1, &
+            order1, x2, order2) result(value)
+        integer, intent(in) :: kind, order1, order2
+        real(dp), intent(in) :: variance, lengthscale, x1, x2
+
+        select case (kind)
+        case (KERNEL_RBF)
+            value = rbf_derivative_covariance(variance, lengthscale, x1, order1, x2, order2)
+        case (KERNEL_MATERN52)
+            value = matern52_derivative_covariance(variance, lengthscale, x1, order1, x2, order2)
+        case default
+            value = 0.0_dp
+        end select
+    end function second_derivative_covariance
+
+    pure real(dp) function second_derivative_covariance_input_dot(kind, variance, lengthscale, &
+            x1, order1, x2, order2, direction) result(value)
+        integer, intent(in) :: kind, order1, order2
+        real(dp), intent(in) :: variance, lengthscale, x1, x2, direction
+
+        select case (kind)
+        case (KERNEL_RBF)
+            value = rbf_derivative_covariance_input_dot(variance, lengthscale, x1, order1, &
+                x2, order2, direction)
+        case (KERNEL_MATERN52)
+            value = direction*matern52_derivative_covariance(variance, lengthscale, x1, order1, &
+                x2, order2 + 1)
+        case default
+            value = 0.0_dp
+        end select
+    end function second_derivative_covariance_input_dot
+
+    logical function input_jvp_supported(self, x, orders) result(supported)
+        class(second_derivative_gp_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        integer, intent(in) :: orders(:)
+        integer :: i, j
+        real(dp) :: tolerance
+
+        supported = .true.
+        if (self%kernel%kind /= KERNEL_MATERN52) return
+        tolerance = 1.0e-12_dp*max(1.0_dp, self%lengthscale)
+        do j = 1, size(x, 1)
+            do i = 1, self%n_observations
+                if (self%orders(i) + orders(j) + 1 == 5 .and. &
+                        abs(self%x_train(i) - x(j, 1)) <= tolerance) then
+                    supported = .false.
+                    return
+                end if
+            end do
+        end do
+    end function input_jvp_supported
+
+    pure real(dp) function matern52_derivative_covariance(variance, lengthscale, x1, order1, &
+            x2, order2) result(value)
+        real(dp), intent(in) :: variance, lengthscale, x1, x2
+        integer, intent(in) :: order1, order2
+        real(dp), parameter :: root_five = 2.2360679774997896964_dp
+        real(dp) :: tau, radius, base, radial_derivative
+        integer :: total_order, sign_tau, sign_factor
+
+        tau = x1 - x2
+        radius = abs(tau)/lengthscale
+        base = variance*exp(-root_five*radius)
+        total_order = order1 + order2
+        select case (total_order)
+        case (0)
+            radial_derivative = 1.0_dp + root_five*radius + (5.0_dp/3.0_dp)*radius*radius
+        case (1)
+            radial_derivative = -(5.0_dp/3.0_dp)*radius*(1.0_dp + root_five*radius)
+        case (2)
+            radial_derivative = (5.0_dp/3.0_dp)*(5.0_dp*radius*radius - &
+                root_five*radius - 1.0_dp)
+        case (3)
+            radial_derivative = (25.0_dp/3.0_dp)*radius*(3.0_dp - root_five*radius)
+        case (4)
+            radial_derivative = (25.0_dp/3.0_dp)*(3.0_dp - 5.0_dp*root_five*radius + &
+                5.0_dp*radius*radius)
+        case (5)
+            radial_derivative = (root_five**5/3.0_dp)*(-8.0_dp + 7.0_dp*root_five*radius - &
+                5.0_dp*radius*radius)
+        case default
+            radial_derivative = 0.0_dp
+        end select
+        sign_tau = 1
+        if (tau < 0.0_dp) sign_tau = -1
+        sign_factor = 1
+        if (mod(total_order, 2) == 1) sign_factor = sign_tau
+        value = base*radial_derivative/lengthscale**total_order
+        value = sign_factor*value
+        if (mod(order2, 2) == 1) value = -value
+    end function matern52_derivative_covariance
 
     pure real(dp) function rbf_derivative_covariance(variance, lengthscale, x1, order1, &
             x2, order2) result(value)

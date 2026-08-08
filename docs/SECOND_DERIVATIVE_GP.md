@@ -1,7 +1,7 @@
-# RBF second-derivative Gaussian process
+# RBF/Matérn-5/2 second-derivative Gaussian process
 
 `second_derivative_gp_t` is a deliberately small exact-GP reference for scalar
-one-dimensional RBF processes. It accepts one observation row per value,
+one-dimensional RBF or Matérn-5/2 processes. It accepts one observation row per value,
 first derivative, or second derivative observation. The `orders` vector uses
 `0`, `1`, and `2` for those three operators. The same vector is used for
 prediction and dense latent `joint_covariance` queries. One Cholesky factor is
@@ -15,17 +15,19 @@ real(dp) :: x(4,1), y(4), query(3,1), mean(3), variance(3)
 integer :: orders(4), query_orders(3)
 type(fortnum_status_t) :: status
 
-kernel = make_rbf_kernel(1, 1.6_dp, 0.75_dp, status)
+kernel = make_matern52_kernel(1, 1.6_dp, 0.75_dp, status) ! RBF is also supported
 orders = [0, 1, 2, 0]
 call gp%fit(x, orders, y, kernel, 0.035_dp, status)
 query_orders = [0, 1, 2]
 call gp%predict(query, query_orders, mean, variance, status)
 ```
 
-The generated RBF covariance uses the exact distance derivatives through
-order four. Query-coordinate JVPs and VJPs use the fifth distance derivative.
-the VJP satisfies the ordinary cotangent identity for mean and latent
-variance. `joint_covariance` returns the posterior latent covariance and does
+The RBF and Matérn-5/2 covariance blocks use exact distance derivatives through
+order four. Query-coordinate JVPs and VJPs use the fifth distance derivative;
+for Matérn-5/2, a fifth derivative requested exactly at a training/query
+coincidence returns `FORTNUM_NOT_IMPLEMENTED` because that derivative is
+discontinuous. The VJP satisfies the ordinary cotangent identity for mean and
+latent variance. `joint_covariance` returns the posterior latent covariance and does
 not add observation noise. Parameters are the packed
 `[log(variance), log(lengthscale), log(noise_variance)]` state for metadata
 and interoperability. Hyperparameter products are not yet exposed by this
@@ -36,11 +38,12 @@ The implementation is a CPU reference. `predict_device`,
 `predict_input_vjp_device` dispatch selected CPU contexts and return the typed
 `FORTNUM_NOT_IMPLEMENTED` status for selected CUDA contexts until a resident
 derivative covariance/factorization kernel is linked. `device_supported` is
-therefore true only for a fitted CPU model. Non-RBF kernels, dimensions other
-than one, and order values outside `0:2` are explicit status errors.
+therefore true only for a fitted CPU model. Kernels other than RBF and
+Matérn-5/2, dimensions other than one, and order values outside `0:2` are
+explicit status errors.
 
-`test_second_derivative_gp` independently assembles the RBF derivative blocks,
-checks posterior means, variances, and joint covariance, compares input JVPs
-with central differences, checks VJP duality, and verifies the CUDA and
-non-RBF refusal boundaries. The release benchmark is
+`test_second_derivative_gp` independently assembles both RBF and Matérn-5/2
+derivative blocks, checks posterior means and variances, compares input JVPs
+with central differences, checks VJP duality, and verifies the CUDA,
+coincident-fifth-derivative, and non-RBF refusal boundaries. The release benchmark is
 `fortml-bench/results/SECOND_DERIVATIVE_GP.md`.

@@ -1097,14 +1097,15 @@ when a lower-level primitive already exists.
   class order, parameter/input finite differences, JVP/VJP duality, and typed
   CUDA refusals; see `docs/GP_ORDINAL_CLASSIFICATION.md`. Native cumulative
   likelihoods, optimized cut points, and resident GPU inference remain open.
-- [x] Add `second_derivative_gp_t` as a bounded exact scalar 1-D RBF reference
-  for mixed value/first/second-derivative observations and predictions. The
-  explicit order vector uses `0:2`; exact covariance blocks reach total
-  derivative order four, query input JVP/VJP products use the fifth derivative,
-  and dense latent joint covariance is available on CPU. The independent
-  `test_second_derivative_gp` oracle checks posterior moments, mixed covariance,
-  central-difference JVPs, adjoint duality, and typed CUDA/non-RBF/order refusal
-  boundaries; see `docs/SECOND_DERIVATIVE_GP.md` and the release benchmark
+- [x] Add `second_derivative_gp_t` as a bounded exact scalar 1-D RBF/Matérn-5/2
+  reference for mixed value/first/second-derivative observations and
+  predictions. The explicit order vector uses `0:2`; exact covariance blocks
+  reach total derivative order four, query input JVP/VJP products use the fifth
+  derivative, and dense latent joint covariance is available on CPU. The
+  independent `test_second_derivative_gp` oracle checks both kernels, posterior
+  moments, mixed covariance, central-difference JVPs, adjoint duality, and typed
+  CUDA/coincident-fifth-derivative/non-RBF/order refusal boundaries; see
+  `docs/SECOND_DERIVATIVE_GP.md` and the release benchmark
   `fortml-bench/results/SECOND_DERIVATIVE_GP.md`. Hyperparameter products,
   arbitrary kernels/dimensions, higher orders, operator-valued outputs, and
   resident derivative covariance/factorization remain open.
@@ -2611,13 +2612,13 @@ state phases are reported separately.
   posterior covariance, packed parameter gradients, and query adjoints;
   mixed parameter HVPs remain a typed `FORTNUM_NOT_IMPLEMENTED` refusal until
   fourth input/parameter products are generated.
-- [x] Add the bounded scalar 1-D RBF second-derivative observation reference
-  `second_derivative_gp_t`. Mixed orders `0:2`, exact order-four covariance
-  blocks, order-five query JVP/VJP products, dense latent covariance, and
-  explicit non-RBF/order/CUDA refusals are independently checked; see
-  `docs/SECOND_DERIVATIVE_GP.md` and the release benchmark lane. General
-  kernels, higher orders, operators, and resident derivative solves remain
-  open.
+- [x] Extend the bounded scalar 1-D `second_derivative_gp_t` reference from
+  RBF to Matérn-5/2. Mixed orders `0:2`, exact order-four covariance blocks,
+  order-five query JVP/VJP products away from Matérn coincidences, dense latent
+  covariance, and explicit CUDA/coincident-fifth-derivative/non-RBF/order
+  refusals are independently checked; see `docs/SECOND_DERIVATIVE_GP.md` and
+  the release benchmark lane. Hyperparameter products, higher orders,
+  operators, and resident derivative solves remain open.
 - [ ] Add scalar objectives and parameter gradients for multi-output, sparse
   variational, local, SKI, Lanczos, and matrix-free GP paths. Inducing-point and
   local-gate training remain separate parameter blocks.
