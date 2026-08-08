@@ -30,7 +30,9 @@ module fortml_xgboost
     integer, parameter, public :: XGB_CATEGORICAL_ORDERED = 1
     character(*), parameter, public :: XGB_MODEL_TEXT_MAGIC = &
         "FORTML_XGBOOST_TEXT"
-    integer, parameter, public :: XGB_MODEL_TEXT_SCHEMA_VERSION = 4
+    integer, parameter, public :: XGB_MODEL_TEXT_SCHEMA_VERSION = 5
+    integer, parameter, public :: XGB_BOOSTER_GBTREE = 1
+    integer, parameter, public :: XGB_BOOSTER_DART = 2
     integer, parameter :: XGB_MAX_SERIALIZED_NODES = 1000000
     integer, parameter :: XGB_MAX_CATEGORICAL_VALUES = 64
 
@@ -83,6 +85,12 @@ module fortml_xgboost
         real(dp) :: gamma_shape = 1.0_dp
         character(len=16) :: missing_policy = "error"
         character(len=16) :: tree_method = "exact"
+        !! `gbtree` is deterministic second-order boosting.  `dart` uses
+        !! the same CPU tree builder with seeded dropout of prior rounds.
+        character(len=16) :: booster = "gbtree"
+        real(dp) :: dart_drop_rate = 0.1_dp
+        real(dp) :: dart_skip_drop = 0.0_dp
+        integer :: dart_max_drop = 0
         integer :: max_bin = 256
         !! Integer-coded categorical feature indices (one-based, sorted).
         !! The bounded ordered-gradient policy is selected with
@@ -130,6 +138,8 @@ module fortml_xgboost
         logical, allocatable :: missing_left(:)
         logical, allocatable :: categorical(:)
         integer, allocatable :: category_count(:), category_values(:, :)
+        !! DART normalisation applied to this round's raw tree output.
+        real(dp) :: scale = 1.0_dp
     end type xgb_tree_t
 
     !> Second-order boosting for squared, squared-log (RMSLE), binary
@@ -144,6 +154,7 @@ module fortml_xgboost
         integer :: requested_estimators = 0
         integer :: objective_code = 0
         integer :: tree_method_code = XGB_TREE_EXACT
+        integer :: booster_code = XGB_BOOSTER_GBTREE
         integer :: max_bin = 256
         integer :: max_depth_value = 0
         integer :: min_samples_leaf_value = 0
@@ -156,6 +167,9 @@ module fortml_xgboost
         real(dp) :: early_stopping_min_delta_value = 0.0_dp
         real(dp) :: subsample_value = 1.0_dp
         real(dp) :: colsample_bytree_value = 1.0_dp
+        real(dp) :: dart_drop_rate_value = 0.1_dp
+        real(dp) :: dart_skip_drop_value = 0.0_dp
+        integer :: dart_max_drop_value = 0
         integer(int64) :: seed_value = 0_int64
         logical :: restore_best_value = .true.
         real(dp) :: base_score = 0.0_dp
@@ -212,6 +226,7 @@ module fortml_xgboost
         procedure, public :: feature_importance => xgb_feature_importance
         procedure, public :: tree_node_count => xgb_tree_node_count
         procedure, public :: tree_depth => xgb_tree_depth
+        procedure, public :: tree_scale => xgb_tree_scale
         procedure, public :: feature_count => xgb_feature_count
         procedure, public :: estimator_count => xgb_estimator_count
         procedure, public :: requested_estimator_count => xgb_requested_estimator_count
@@ -220,6 +235,10 @@ module fortml_xgboost
         procedure, public :: objective_parameter_value => xgb_objective_parameter
         procedure, public :: missing_policy => xgb_missing_policy
         procedure, public :: tree_method => xgb_tree_method
+        procedure, public :: booster => xgb_booster
+        procedure, public :: dart_drop_rate => xgb_dart_drop_rate
+        procedure, public :: dart_skip_drop => xgb_dart_skip_drop
+        procedure, public :: dart_max_drop => xgb_dart_max_drop
         procedure, public :: max_bin_count => xgb_max_bin_count
         procedure, public :: accepts_missing => xgb_accepts_missing
         procedure, public :: categorical_policy => xgb_categorical_policy
@@ -286,13 +305,16 @@ contains
         real(dp) :: mean_target, rate, weight_sum
         real(dp) :: validation_loss, best_validation_loss
         integer :: objective_code, missing_code, tree_method_code, categorical_policy_code
-        integer :: i, n_samples
+        integer :: booster_code
+        integer :: i, j, n_samples
         integer :: n_features, n_validation, completed_estimators
         integer :: best_iteration, stale_rounds
         integer(int64) :: sampling_state
-        integer, allocatable :: sample_index(:)
+        integer, allocatable :: sample_index(:), dropped_trees(:)
         logical, allocatable :: feature_mask(:)
         logical :: have_validation, improved, is_ranking
+        integer :: drop_count
+        real(dp) :: normalization
         !! Default-initialized instances, standing in for empty
         !! structure constructors: nvfortran rejects `T()` outright,
         !! and a declared local carries the same default init.
@@ -359,6 +381,12 @@ contains
                 "xgboost fit: tree_method must be exact or hist")
             return
         end if
+        booster_code = parse_booster(settings%booster)
+        if (booster_code == 0) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost fit: booster must be gbtree or dart")
+            return
+        end if
         categorical_policy_code = parse_categorical_policy(settings%categorical_policy)
         if (categorical_policy_code < 0) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -409,6 +437,12 @@ contains
             settings%colsample_bytree <= 0.0_dp .or. &
             settings%colsample_bytree > 1.0_dp .or. settings%seed <= 0_int64 .or. &
             (tree_method_code == XGB_TREE_HIST .and. settings%max_bin < 2) .or. &
+            (booster_code == XGB_BOOSTER_DART .and. &
+             (.not. ieee_is_finite(settings%dart_drop_rate) .or. &
+              settings%dart_drop_rate < 0.0_dp .or. settings%dart_drop_rate >= 1.0_dp .or. &
+              .not. ieee_is_finite(settings%dart_skip_drop) .or. &
+              settings%dart_skip_drop < 0.0_dp .or. settings%dart_skip_drop >= 1.0_dp .or. &
+              settings%dart_max_drop < 0)) .or. &
             (categorical_policy_code == XGB_CATEGORICAL_ORDERED .and. &
              (settings%categorical_max_categories < 2 .or. &
               settings%categorical_max_categories > XGB_MAX_CATEGORICAL_VALUES))) then
@@ -663,6 +697,24 @@ contains
         completed_estimators = 0
         sampling_state = settings%seed
         do i = 1, settings%n_estimators
+            if (booster_code == XGB_BOOSTER_DART) then
+                call select_xgb_dart_trees(i-1, settings, i, dropped_trees, drop_count, status)
+                if (status%code /= FORTNUM_OK) return
+                do j = 1, drop_count
+                    call tree_predict(self%estimators(dropped_trees(j)), x, correction, status)
+                    if (status%code /= FORTNUM_OK) return
+                    prediction = prediction - rate*self%estimators(dropped_trees(j))%scale*correction
+                    if (have_validation) then
+                        call tree_predict(self%estimators(dropped_trees(j)), validation_x, &
+                            validation_correction, status)
+                        if (status%code /= FORTNUM_OK) return
+                        validation_prediction = validation_prediction - rate* &
+                            self%estimators(dropped_trees(j))%scale*validation_correction
+                    end if
+                end do
+            else
+                drop_count = 0
+            end if
             call objective_derivatives(objective_code, prediction, y, gradient, &
                 hessian, settings%huber_delta, settings%quantile_alpha, &
                 merge(settings%gamma_shape, settings%tweedie_variance_power, &
@@ -681,15 +733,34 @@ contains
             call build_tree(x, gradient, hessian, observation_weight, settings, &
                 sample_index, feature_mask, self%estimators(i), status)
             if (status%code /= FORTNUM_OK) return
+            self%estimators(i)%scale = 1.0_dp
+            if (drop_count > 0) then
+                normalization = 1.0_dp/real(drop_count+1, dp)
+                do j = 1, drop_count
+                    self%estimators(dropped_trees(j))%scale = &
+                        self%estimators(dropped_trees(j))%scale*normalization
+                    call tree_predict(self%estimators(dropped_trees(j)), x, correction, status)
+                    if (status%code /= FORTNUM_OK) return
+                    prediction = prediction + rate*self%estimators(dropped_trees(j))%scale*correction
+                    if (have_validation) then
+                        call tree_predict(self%estimators(dropped_trees(j)), validation_x, &
+                            validation_correction, status)
+                        if (status%code /= FORTNUM_OK) return
+                        validation_prediction = validation_prediction + rate* &
+                            self%estimators(dropped_trees(j))%scale*validation_correction
+                    end if
+                end do
+                self%estimators(i)%scale = normalization
+            end if
             call tree_predict(self%estimators(i), x, correction, status)
             if (status%code /= FORTNUM_OK) return
-            prediction = prediction + rate*correction
+            prediction = prediction + rate*self%estimators(i)%scale*correction
             completed_estimators = i
             if (have_validation) then
                 call tree_predict(self%estimators(i), validation_x, &
                     validation_correction, status)
                 if (status%code /= FORTNUM_OK) return
-                validation_prediction = validation_prediction + rate*validation_correction
+                validation_prediction = validation_prediction + rate*self%estimators(i)%scale*validation_correction
                 call xgb_objective_loss(objective_code, validation_prediction, &
                     validation_y, validation_observation_weight, settings%huber_delta, &
                     settings%quantile_alpha, merge(settings%gamma_shape, &
@@ -741,6 +812,7 @@ contains
         self%requested_estimators = settings%n_estimators
         self%objective_code = objective_code
         self%tree_method_code = tree_method_code
+        self%booster_code = booster_code
         self%max_bin = settings%max_bin
         self%max_depth_value = settings%max_depth
         self%min_samples_leaf_value = settings%min_samples_leaf
@@ -753,6 +825,9 @@ contains
         self%early_stopping_min_delta_value = settings%early_stopping_min_delta
         self%subsample_value = settings%subsample
         self%colsample_bytree_value = settings%colsample_bytree
+        self%dart_drop_rate_value = settings%dart_drop_rate
+        self%dart_skip_drop_value = settings%dart_skip_drop
+        self%dart_max_drop_value = settings%dart_max_drop
         self%seed_value = settings%seed
         self%restore_best_value = settings%restore_best
         if (objective_code == XGB_OBJECTIVE_HUBER) then
@@ -814,13 +889,14 @@ contains
         real(dp), allocatable :: validation_prediction(:), validation_correction(:)
         real(dp), allocatable :: observation_weight(:), validation_observation_weight(:)
         type(xgb_tree_t), allocatable :: expanded_estimators(:), best_estimators(:)
-        integer, allocatable :: sample_index(:)
+        integer, allocatable :: sample_index(:), dropped_trees(:)
         logical, allocatable :: feature_mask(:)
         integer :: objective_code, tree_method_code, missing_code, categorical_policy_code
+        integer :: booster_code, drop_count, j
         integer :: n_samples, n_features, n_validation, start_estimators
         integer :: target_estimators, i, completed_estimators, best_iteration, stale_rounds
         integer(int64) :: sampling_state
-        real(dp) :: weight_sum, validation_loss, best_validation_loss
+        real(dp) :: weight_sum, validation_loss, best_validation_loss, normalization
         logical :: have_validation, improved, is_ranking, early_stop
 
         if (.not. self%initialized .or. .not. allocated(self%estimators) .or. &
@@ -849,6 +925,7 @@ contains
         objective_code = parse_objective(settings%objective)
         tree_method_code = parse_tree_method(settings%tree_method)
         missing_code = parse_missing_policy(settings%missing_policy)
+        booster_code = parse_booster(settings%booster)
         categorical_policy_code = parse_categorical_policy(settings%categorical_policy)
         if (categorical_policy_code < 0) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -857,6 +934,7 @@ contains
         end if
         is_ranking = self%objective_code == XGB_OBJECTIVE_RANK_PAIRWISE
         if (objective_code /= self%objective_code .or. tree_method_code /= self%tree_method_code .or. &
+            booster_code /= self%booster_code .or. &
             missing_code /= self%missing_code .or. settings%max_bin /= self%max_bin .or. &
             settings%max_depth /= self%max_depth_value .or. &
             settings%min_samples_leaf /= self%min_samples_leaf_value .or. &
@@ -884,7 +962,8 @@ contains
                 "xgboost warm start: categorical policy differs from the fitted model")
             return
         end if
-        if (objective_code == 0 .or. tree_method_code == 0 .or. missing_code < 0) then
+        if (objective_code == 0 .or. tree_method_code == 0 .or. missing_code < 0 .or. &
+            booster_code == 0) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "xgboost warm start: unsupported objective, tree method, or missing policy")
             return
@@ -950,6 +1029,16 @@ contains
              settings%gamma_shape <= 0.0_dp)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "xgboost warm start: gamma_shape differs from the fitted model or is invalid")
+            return
+        end if
+        if (booster_code == XGB_BOOSTER_DART .and. &
+            (.not. ieee_is_finite(settings%dart_drop_rate) .or. &
+             settings%dart_drop_rate < 0.0_dp .or. settings%dart_drop_rate >= 1.0_dp .or. &
+             .not. ieee_is_finite(settings%dart_skip_drop) .or. &
+             settings%dart_skip_drop < 0.0_dp .or. settings%dart_skip_drop >= 1.0_dp .or. &
+             settings%dart_max_drop < 0)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost warm start: invalid DART dropout controls")
             return
         end if
 
@@ -1124,7 +1213,7 @@ contains
         do i = 1, start_estimators
             call tree_predict(self%estimators(i), x, correction, status)
             if (status%code /= FORTNUM_OK) return
-            prediction = prediction + self%learning_rate*correction
+            prediction = prediction + self%learning_rate*self%estimators(i)%scale*correction
         end do
         if (have_validation) then
             allocate(validation_prediction(n_validation), validation_correction(n_validation))
@@ -1132,7 +1221,8 @@ contains
             do i = 1, start_estimators
                 call tree_predict(self%estimators(i), validation_x, validation_correction, status)
                 if (status%code /= FORTNUM_OK) return
-                validation_prediction = validation_prediction + self%learning_rate*validation_correction
+                validation_prediction = validation_prediction + self%learning_rate* &
+                    self%estimators(i)%scale*validation_correction
             end do
             call xgb_objective_loss(self%objective_code, validation_prediction, validation_y, &
                 validation_observation_weight, self%objective_parameter, &
@@ -1159,6 +1249,25 @@ contains
         completed_estimators = start_estimators
         early_stop = .false.
         do i = start_estimators + 1, target_estimators
+            if (booster_code == XGB_BOOSTER_DART) then
+                call select_xgb_dart_trees(i-1, settings, i, dropped_trees, drop_count, status)
+                if (status%code /= FORTNUM_OK) return
+                do j = 1, drop_count
+                    call tree_predict(expanded_estimators(dropped_trees(j)), x, correction, status)
+                    if (status%code /= FORTNUM_OK) return
+                    prediction = prediction - self%learning_rate* &
+                        expanded_estimators(dropped_trees(j))%scale*correction
+                    if (have_validation) then
+                        call tree_predict(expanded_estimators(dropped_trees(j)), validation_x, &
+                            validation_correction, status)
+                        if (status%code /= FORTNUM_OK) return
+                        validation_prediction = validation_prediction - self%learning_rate* &
+                            expanded_estimators(dropped_trees(j))%scale*validation_correction
+                    end if
+                end do
+            else
+                drop_count = 0
+            end if
             call objective_derivatives(self%objective_code, prediction, y, gradient, hessian, &
                 merge(self%objective_parameter, 1.0_dp, self%objective_code == XGB_OBJECTIVE_HUBER), &
                 merge(self%objective_parameter, 0.5_dp, self%objective_code == XGB_OBJECTIVE_QUANTILE), &
@@ -1175,14 +1284,35 @@ contains
             call build_tree(x, gradient, hessian, observation_weight, settings, sample_index, &
                 feature_mask, expanded_estimators(i), status)
             if (status%code /= FORTNUM_OK) return
+            expanded_estimators(i)%scale = 1.0_dp
+            if (drop_count > 0) then
+                normalization = 1.0_dp/real(drop_count+1, dp)
+                do j = 1, drop_count
+                    expanded_estimators(dropped_trees(j))%scale = &
+                        expanded_estimators(dropped_trees(j))%scale*normalization
+                    call tree_predict(expanded_estimators(dropped_trees(j)), x, correction, status)
+                    if (status%code /= FORTNUM_OK) return
+                    prediction = prediction + self%learning_rate* &
+                        expanded_estimators(dropped_trees(j))%scale*correction
+                    if (have_validation) then
+                        call tree_predict(expanded_estimators(dropped_trees(j)), validation_x, &
+                            validation_correction, status)
+                        if (status%code /= FORTNUM_OK) return
+                        validation_prediction = validation_prediction + self%learning_rate* &
+                            expanded_estimators(dropped_trees(j))%scale*validation_correction
+                    end if
+                end do
+                expanded_estimators(i)%scale = normalization
+            end if
             call tree_predict(expanded_estimators(i), x, correction, status)
             if (status%code /= FORTNUM_OK) return
-            prediction = prediction + self%learning_rate*correction
+            prediction = prediction + self%learning_rate*expanded_estimators(i)%scale*correction
             completed_estimators = i
             if (have_validation) then
                 call tree_predict(expanded_estimators(i), validation_x, validation_correction, status)
                 if (status%code /= FORTNUM_OK) return
-                validation_prediction = validation_prediction + self%learning_rate*validation_correction
+                validation_prediction = validation_prediction + self%learning_rate* &
+                    expanded_estimators(i)%scale*validation_correction
                 call xgb_objective_loss(self%objective_code, validation_prediction, validation_y, &
                     validation_observation_weight, self%objective_parameter, &
                     merge(self%objective_parameter, 0.5_dp, self%objective_code == XGB_OBJECTIVE_QUANTILE), &
@@ -1222,6 +1352,10 @@ contains
         self%requested_estimators = target_estimators
         self%early_stopping_rounds_value = settings%early_stopping_rounds
         self%early_stopping_min_delta_value = settings%early_stopping_min_delta
+        self%booster_code = booster_code
+        self%dart_drop_rate_value = settings%dart_drop_rate
+        self%dart_skip_drop_value = settings%dart_skip_drop
+        self%dart_max_drop_value = settings%dart_max_drop
         self%restore_best_value = settings%restore_best
         self%best_iteration_value = min(max(best_iteration, 1), completed_estimators)
         self%best_validation_loss_value = best_validation_loss
@@ -1840,7 +1974,7 @@ contains
         do i = 1, self%n_estimators
             call tree_predict(self%estimators(i), x, correction, status)
             if (status%code /= FORTNUM_OK) return
-            margin = margin + self%learning_rate*correction
+            margin = margin + self%learning_rate*self%estimators(i)%scale*correction
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine xgb_predict_margin_vector
@@ -1875,7 +2009,7 @@ contains
         do i = 1, self%n_estimators
             call tree_predict(self%estimators(i), x, correction, status)
             if (status%code /= FORTNUM_OK) return
-            margin = margin + self%learning_rate*correction
+            margin = margin + self%learning_rate*self%estimators(i)%scale*correction
             if (self%objective_code == XGB_OBJECTIVE_LOGISTIC) then
                 staged(:, i) = stable_sigmoid_array(margin)
             else if (self%objective_code == XGB_OBJECTIVE_POISSON) then
@@ -1921,9 +2055,9 @@ contains
             call tree_predict(self%estimators(i), x, correction, status)
             if (status%code /= FORTNUM_OK) return
             if (i == 1) then
-                staged(:, i) = self%base_score + self%learning_rate*correction
+                staged(:, i) = self%base_score + self%learning_rate*self%estimators(i)%scale*correction
             else
-                staged(:, i) = staged(:, i - 1) + self%learning_rate*correction
+                staged(:, i) = staged(:, i - 1) + self%learning_rate*self%estimators(i)%scale*correction
             end if
         end do
         call status_set(status, FORTNUM_OK, "")
@@ -1971,7 +2105,7 @@ contains
         do i = 1, self%n_estimators
             call tree_predict(self%estimators(i), x, correction, status)
             if (status%code /= FORTNUM_OK) return
-            contributions(:, i + 1) = self%learning_rate*correction
+            contributions(:, i + 1) = self%learning_rate*self%estimators(i)%scale*correction
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine xgb_predict_contributions
@@ -2220,6 +2354,7 @@ contains
         candidate%requested_estimators = max(self%requested_estimators, n_trees)
         candidate%objective_code = self%objective_code
         candidate%tree_method_code = self%tree_method_code
+        candidate%booster_code = self%booster_code
         candidate%max_bin = self%max_bin
         candidate%max_depth_value = self%max_depth_value
         candidate%min_samples_leaf_value = self%min_samples_leaf_value
@@ -2232,6 +2367,9 @@ contains
         candidate%early_stopping_min_delta_value = self%early_stopping_min_delta_value
         candidate%subsample_value = self%subsample_value
         candidate%colsample_bytree_value = self%colsample_bytree_value
+        candidate%dart_drop_rate_value = self%dart_drop_rate_value
+        candidate%dart_skip_drop_value = self%dart_skip_drop_value
+        candidate%dart_max_drop_value = self%dart_max_drop_value
         candidate%seed_value = self%seed_value
         candidate%restore_best_value = self%restore_best_value
         candidate%base_score = self%base_score
@@ -2386,6 +2524,16 @@ contains
         depth = self%estimators(tree_index)%depth
     end function xgb_tree_depth
 
+    real(dp) function xgb_tree_scale(self, tree_index) result(scale)
+        class(xgboost_t), intent(in) :: self
+        integer, intent(in) :: tree_index
+
+        scale = 0.0_dp
+        if (.not. self%initialized .or. .not. allocated(self%estimators)) return
+        if (tree_index < 1 .or. tree_index > self%n_estimators) return
+        scale = self%estimators(tree_index)%scale
+    end function xgb_tree_scale
+
     integer function xgb_feature_count(self) result(count)
         class(xgboost_t), intent(in) :: self
         count = self%n_inputs
@@ -2476,6 +2624,34 @@ contains
             name = "unfitted"
         end select
     end function xgb_tree_method
+
+    character(len=16) function xgb_booster(self) result(name)
+        class(xgboost_t), intent(in) :: self
+
+        select case (self%booster_code)
+        case (XGB_BOOSTER_GBTREE)
+            name = "gbtree"
+        case (XGB_BOOSTER_DART)
+            name = "dart"
+        case default
+            name = "unfitted"
+        end select
+    end function xgb_booster
+
+    real(dp) function xgb_dart_drop_rate(self) result(value)
+        class(xgboost_t), intent(in) :: self
+        value = self%dart_drop_rate_value
+    end function xgb_dart_drop_rate
+
+    real(dp) function xgb_dart_skip_drop(self) result(value)
+        class(xgboost_t), intent(in) :: self
+        value = self%dart_skip_drop_value
+    end function xgb_dart_skip_drop
+
+    integer function xgb_dart_max_drop(self) result(value)
+        class(xgboost_t), intent(in) :: self
+        value = self%dart_max_drop_value
+    end function xgb_dart_max_drop
 
     integer function xgb_max_bin_count(self) result(count)
         class(xgboost_t), intent(in) :: self
@@ -2664,6 +2840,7 @@ contains
         if (ios == 0) call xgb_write_i(unit, "objective_code", self%objective_code, ios)
         if (ios == 0) call xgb_write_i(unit, "tree_method_code", &
             self%tree_method_code, ios)
+        if (ios == 0) call xgb_write_i(unit, "booster_code", self%booster_code, ios)
         if (ios == 0) call xgb_write_i(unit, "max_bin", self%max_bin, ios)
         if (ios == 0) call xgb_write_i(unit, "max_depth", self%max_depth_value, ios)
         if (ios == 0) call xgb_write_i(unit, "min_samples_leaf", &
@@ -2684,6 +2861,9 @@ contains
         if (ios == 0) call xgb_write_r(unit, "subsample", self%subsample_value, ios)
         if (ios == 0) call xgb_write_r(unit, "colsample_bytree", &
             self%colsample_bytree_value, ios)
+        if (ios == 0) call xgb_write_r(unit, "dart_drop_rate", self%dart_drop_rate_value, ios)
+        if (ios == 0) call xgb_write_r(unit, "dart_skip_drop", self%dart_skip_drop_value, ios)
+        if (ios == 0) call xgb_write_i(unit, "dart_max_drop", self%dart_max_drop_value, ios)
         if (ios == 0) call xgb_write_i8(unit, "seed", self%seed_value, ios)
         if (ios == 0) call xgb_write_l(unit, "restore_best", &
             self%restore_best_value, ios)
@@ -2764,6 +2944,7 @@ contains
         if (ios == 0) call xgb_read_i(unit, "objective_code", candidate%objective_code, ios)
         if (ios == 0) call xgb_read_i(unit, "tree_method_code", &
             candidate%tree_method_code, ios)
+        if (ios == 0) call xgb_read_i(unit, "booster_code", candidate%booster_code, ios)
         if (ios == 0) call xgb_read_i(unit, "max_bin", candidate%max_bin, ios)
         if (ios == 0) call xgb_read_i(unit, "max_depth", candidate%max_depth_value, ios)
         if (ios == 0) call xgb_read_i(unit, "min_samples_leaf", &
@@ -2784,6 +2965,9 @@ contains
         if (ios == 0) call xgb_read_r(unit, "subsample", candidate%subsample_value, ios)
         if (ios == 0) call xgb_read_r(unit, "colsample_bytree", &
             candidate%colsample_bytree_value, ios)
+        if (ios == 0) call xgb_read_r(unit, "dart_drop_rate", candidate%dart_drop_rate_value, ios)
+        if (ios == 0) call xgb_read_r(unit, "dart_skip_drop", candidate%dart_skip_drop_value, ios)
+        if (ios == 0) call xgb_read_i(unit, "dart_max_drop", candidate%dart_max_drop_value, ios)
         if (ios == 0) call xgb_read_i8(unit, "seed", candidate%seed_value, ios)
         if (ios == 0) call xgb_read_l(unit, "restore_best", &
             candidate%restore_best_value, ios)
@@ -2889,6 +3073,7 @@ contains
         if (ios == 0) call xgb_write_r(unit, "right_weight", tree%right_weight, ios)
         if (ios == 0) call xgb_write_r(unit, "split_gain", tree%split_gain, ios)
         if (ios == 0) call xgb_write_l(unit, "has_split", tree%has_split, ios)
+        if (ios == 0) call xgb_write_r(unit, "scale", tree%scale, ios)
         if (ios == 0) call xgb_write_i(unit, "node_count", tree%n_nodes, ios)
         do i = 1, tree%n_nodes
             if (ios /= 0) exit
@@ -2934,6 +3119,7 @@ contains
         if (ios == 0) call xgb_read_r(unit, "right_weight", tree%right_weight, ios)
         if (ios == 0) call xgb_read_r(unit, "split_gain", tree%split_gain, ios)
         if (ios == 0) call xgb_read_l(unit, "has_split", tree%has_split, ios)
+        if (ios == 0) call xgb_read_r(unit, "scale", tree%scale, ios)
         call xgb_read_i(unit, "node_count", node_count, ios)
         if (ios /= 0 .or. node_count /= tree%n_nodes .or. &
             tree%n_nodes < 1 .or. tree%n_nodes > XGB_MAX_SERIALIZED_NODES) then
@@ -2998,6 +3184,8 @@ contains
             model%objective_code <= XGB_OBJECTIVE_GAMMA .and. &
             (model%tree_method_code == XGB_TREE_EXACT .or. &
              model%tree_method_code == XGB_TREE_HIST) .and. &
+            (model%booster_code == XGB_BOOSTER_GBTREE .or. &
+             model%booster_code == XGB_BOOSTER_DART) .and. &
             model%max_bin >= 2 .and. model%max_depth_value >= 1 .and. &
             model%min_samples_leaf_value >= 1
         if (.not. valid) return
@@ -3027,6 +3215,13 @@ contains
                 (model%categorical_policy_code == XGB_CATEGORICAL_ORDERED .and. &
                 model%categorical_max_categories_value >= 2)
         end if
+        if (valid .and. model%booster_code == XGB_BOOSTER_DART) then
+            valid = ieee_is_finite(model%dart_drop_rate_value) .and. &
+                model%dart_drop_rate_value >= 0.0_dp .and. model%dart_drop_rate_value < 1.0_dp .and. &
+                ieee_is_finite(model%dart_skip_drop_value) .and. &
+                model%dart_skip_drop_value >= 0.0_dp .and. model%dart_skip_drop_value < 1.0_dp .and. &
+                model%dart_max_drop_value >= 0
+        end if
         if (valid .and. model%objective_code == XGB_OBJECTIVE_TWEEDIE) then
             valid = model%objective_parameter > 1.0_dp .and. &
                 model%objective_parameter < 2.0_dp
@@ -3048,7 +3243,8 @@ contains
             tree%feature_index <= n_inputs .and. tree%left_count >= 0 .and. &
             tree%right_count >= 0 .and. ieee_is_finite(tree%threshold) .and. &
             ieee_is_finite(tree%left_weight) .and. ieee_is_finite(tree%right_weight) .and. &
-            ieee_is_finite(tree%split_gain) .and. allocated(tree%feature) .and. &
+            ieee_is_finite(tree%split_gain) .and. ieee_is_finite(tree%scale) .and. &
+            tree%scale > 0.0_dp .and. allocated(tree%feature) .and. &
             allocated(tree%left_child) .and. allocated(tree%right_child) .and. &
             allocated(tree%node_threshold) .and. allocated(tree%weight) .and. &
             allocated(tree%node_gain) .and. allocated(tree%node_cover) .and. &
@@ -4511,6 +4707,77 @@ contains
             code = 0
         end select
     end function parse_tree_method
+
+    integer function parse_booster(name) result(code)
+        character(len=*), intent(in) :: name
+        character(len=:), allocatable :: normalized
+
+        normalized = trim(adjustl(name))
+        select case (normalized)
+        case ("gbtree", "tree", "gbdt")
+            code = XGB_BOOSTER_GBTREE
+        case ("dart")
+            code = XGB_BOOSTER_DART
+        case default
+            code = 0
+        end select
+    end function parse_booster
+
+    !> Select prior trees for one deterministic XGBoost DART round.  The
+    !! hash stream is independent of the row/feature sampling stream, so
+    !! seeded dropout is reproducible across fit, warm-start and snapshots.
+    subroutine select_xgb_dart_trees(n_previous, options, round, trees, count, status)
+        integer, intent(in) :: n_previous, round
+        type(xgboost_options_t), intent(in) :: options
+        integer, allocatable, intent(out) :: trees(:)
+        integer, intent(out) :: count
+        type(fortnum_status_t), intent(out) :: status
+        integer :: i, limit
+
+        count = 0
+        if (n_previous < 0 .or. round < 1 .or. options%dart_drop_rate < 0.0_dp .or. &
+            options%dart_drop_rate >= 1.0_dp .or. options%dart_skip_drop < 0.0_dp .or. &
+            options%dart_skip_drop >= 1.0_dp .or. options%dart_max_drop < 0) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost DART: dropout controls are invalid")
+            return
+        end if
+        if (n_previous == 0 .or. xgb_dart_uniform(options%seed, round, 0) < &
+            options%dart_skip_drop) then
+            allocate(trees(0))
+            call status_set(status, FORTNUM_OK, "")
+            return
+        end if
+        limit = n_previous
+        if (options%dart_max_drop > 0) limit = min(limit, options%dart_max_drop)
+        allocate(trees(limit))
+        do i = 1, n_previous
+            if (xgb_dart_uniform(options%seed, round, i) < options%dart_drop_rate) then
+                count = count + 1
+                if (count <= limit) trees(count) = i
+            end if
+            if (count >= limit) exit
+        end do
+        if (count == 0) then
+            deallocate(trees)
+            allocate(trees(0))
+        else if (count < limit) then
+            trees = trees(:count)
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine select_xgb_dart_trees
+
+    pure real(dp) function xgb_dart_uniform(seed, round, index) result(value)
+        integer(int64), intent(in) :: seed
+        integer, intent(in) :: round, index
+        integer(int64), parameter :: modulus = 2147483629_int64
+        integer(int64) :: hash
+
+        hash = modulo(seed + 104729_int64*int(index, int64) + &
+            13007_int64*int(round, int64), modulus)
+        hash = modulo(hash*48271_int64 + 17_int64, modulus)
+        value = real(hash, dp)/real(modulus, dp)
+    end function xgb_dart_uniform
 
     integer function parse_categorical_policy(name) result(code)
         character(len=*), intent(in) :: name
