@@ -1,6 +1,6 @@
 program fortml_bench_symplectic_residual
     !! Release executable for the canonical symplectic-form diagnostic.
-    use, intrinsic :: iso_fortran_env, only: real64, output_unit
+    use, intrinsic :: iso_fortran_env, only: output_unit
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_ok
     use fortml_symplectic, only: symplectic_form_diagnostic_t

@@ -46,8 +46,8 @@ stores that vector and routes `evaluate`, `jvp`, `vjp`, `parameters`, and
 false for callback maps. This keeps arbitrary host procedure pointers outside
 accelerator regions until a generated static lowering exists.
 
-`basis_map_t` is a façade over an abstract `basis_impl_t`. Polynomial, Fourier,
-radial, spline, and callback maps implement the same deferred feature,
+`basis_map_t` is a façade over an abstract `basis_impl_t`. Polynomial,
+Chebyshev, Fourier, radial, spline, and callback maps implement the same deferred feature,
 parameter, value, JVP, and VJP operations. The façade owns intercept columns,
 shape checks, and the public parameter boundary. A new map implementation adds
 one type and its product methods, not a case to every façade operation. The

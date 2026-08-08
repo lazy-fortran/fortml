@@ -1448,6 +1448,7 @@ input derivative is required.  This boundary is covered by
 | --- | --- | --- |
 | `make_polynomial_basis(n_inputs,degree,status[,include_intercept])` | Separate powers 1 through `degree` for each input | Empty |
 | `make_polynomial_interaction_basis(n_inputs,degree,status[,include_intercept])` | All nonconstant monomials through total degree `degree`, in deterministic graded order | Empty |
+| `make_chebyshev_basis(n_inputs,degree,status[,include_intercept])` | Per-input Chebyshev first-kind features `T_1(x),...,T_degree(x)` in input-major order | Empty |
 | `make_fourier_basis(n_inputs,frequencies,status[,include_intercept])` | Sine/cosine pair for each positive frequency and input | Log frequencies, column-major |
 | `make_random_fourier_basis(n_inputs,frequencies,phases,status[,include_intercept])` | Fixed `sqrt(2/m) cos(w_k dot x + b_k)` random-feature map | Empty (frequencies and phases are fixed transform state) |
 | `make_radial_basis(n_inputs,centers,scales,status[,include_intercept])` | One anisotropic Gaussian feature per center | Centers followed by log scales |
@@ -1460,13 +1461,17 @@ The public operations are `feature_count`, `parameter_count`, `parameters`,
 `x_dot(:,:)`. For `vjp`, the output cotangent has the evaluated feature shape.
 `hvp(x,u,theta_dot,x_dot,theta_hvp,x_hvp,status)` differentiates the VJP of
 the scalar contraction `sum(u*evaluate(x))` in the joint parameter/input
-direction. Polynomial, Fourier, radial, and spline maps use analytic
+direction. Polynomial, Chebyshev, Fourier, radial, and spline maps use analytic
 second-order products (with the spline span held fixed); callback maps return
 `FORTNUM_NOT_IMPLEMENTED` because their first-order callback ABI does not
 declare second derivatives. The intercept column has no active parameter.
 
-`BASIS_POLYNOMIAL`, `BASIS_FOURIER`, `BASIS_RADIAL`, `BASIS_SPLINE`, and
-`BASIS_CALLBACK` are the public family codes used by extension and test code.
+`BASIS_POLYNOMIAL`, `BASIS_CHEBYSHEV`, `BASIS_FOURIER`, `BASIS_RADIAL`,
+`BASIS_SPLINE`, and `BASIS_CALLBACK` are the public family codes used by
+extension and test code. Chebyshev maps use the three-term recurrence
+`T_0=1`, `T_1=x`, `T_k=2*x*T_(k-1)-T_(k-2)`; `include_intercept` adds the shared
+`T_0` column. They are parameter-free and exact on CPU; resident-CUDA calls
+return a typed refusal until a static device lowering is available.
 
 `make_polynomial_interaction_basis` is the interaction-aware polynomial
 variant. For two inputs and degree two its optional-intercept feature order is
@@ -1476,7 +1481,7 @@ analytic and use no finite-difference fallback.
 Callback initialization takes explicit value, JVP, and VJP procedures matching
 `basis_value_callback`, `basis_jvp_callback`, and `basis_vjp_callback`. A
 callback map returns false from `static_lowering_eligible` and stays on the
-host. The `create_polynomial_impl`, `create_fourier_impl`,
+host. The `create_polynomial_impl`, `create_chebyshev_impl`, `create_fourier_impl`,
 `create_radial_impl`, `create_spline_impl`, and `create_callback_impl`
 constructors in `fortml_basis_impl` serve compiled basis families.
 An extension of `basis_impl_t` supplies input and feature counts, parameter

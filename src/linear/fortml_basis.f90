@@ -4,6 +4,7 @@ module fortml_basis
         FORTNUM_DOMAIN_ERROR
     use fortml_basis_impl, only: basis_impl_t, basis_value_callback, &
         basis_jvp_callback, basis_vjp_callback, create_polynomial_impl, &
+        create_chebyshev_impl, &
         create_fourier_impl, create_random_fourier_impl, create_radial_impl, &
         create_spline_impl, create_callback_impl
     implicit none
@@ -15,6 +16,7 @@ module fortml_basis
     integer, parameter, public :: BASIS_SPLINE = 4
     integer, parameter, public :: BASIS_CALLBACK = 5
     integer, parameter, public :: BASIS_RANDOM_FOURIER = 6
+    integer, parameter, public :: BASIS_CHEBYSHEV = 7
 
     type, public :: basis_map_t
         private
@@ -24,6 +26,7 @@ module fortml_basis
         procedure, public :: initialize_polynomial => basis_initialize_polynomial
         procedure, public :: initialize_polynomial_interactions => &
             basis_initialize_polynomial_interactions
+        procedure, public :: initialize_chebyshev => basis_initialize_chebyshev
         procedure, public :: initialize_fourier => basis_initialize_fourier
         procedure, public :: initialize_random_fourier => &
             basis_initialize_random_fourier
@@ -46,6 +49,7 @@ module fortml_basis
 
     public :: make_polynomial_basis
     public :: make_polynomial_interaction_basis
+    public :: make_chebyshev_basis
     public :: make_fourier_basis
     public :: make_random_fourier_basis
     public :: make_radial_basis
@@ -74,6 +78,16 @@ contains
         call map%initialize_polynomial_interactions(n_inputs, degree, status, &
             include_intercept)
     end function make_polynomial_interaction_basis
+
+    function make_chebyshev_basis(n_inputs, degree, status, include_intercept) &
+            result(map)
+        integer, intent(in) :: n_inputs, degree
+        type(fortnum_status_t), intent(out) :: status
+        logical, intent(in), optional :: include_intercept
+        type(basis_map_t) :: map
+
+        call map%initialize_chebyshev(n_inputs, degree, status, include_intercept)
+    end function make_chebyshev_basis
 
     function make_fourier_basis(n_inputs, frequencies, status, include_intercept) &
             result(map)
@@ -153,6 +167,21 @@ contains
         if (status%code /= FORTNUM_OK) return
         call move_alloc(implementation, self%implementation)
     end subroutine basis_initialize_polynomial_interactions
+
+    subroutine basis_initialize_chebyshev(self, n_inputs, degree, status, &
+            include_intercept)
+        class(basis_map_t), intent(out) :: self
+        integer, intent(in) :: n_inputs, degree
+        type(fortnum_status_t), intent(out) :: status
+        logical, intent(in), optional :: include_intercept
+        class(basis_impl_t), allocatable :: implementation
+
+        self%include_intercept = .false.
+        if (present(include_intercept)) self%include_intercept = include_intercept
+        call create_chebyshev_impl(n_inputs, degree, implementation, status)
+        if (status%code /= FORTNUM_OK) return
+        call move_alloc(implementation, self%implementation)
+    end subroutine basis_initialize_chebyshev
 
     subroutine basis_initialize_fourier(self, n_inputs, frequencies, status, &
             include_intercept)
