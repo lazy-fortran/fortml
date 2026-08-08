@@ -2010,6 +2010,21 @@ An outer hyper-HVP is not exposed: exact computation would require third
 derivatives of the nonlinear network, and no finite-difference substitute is
 hidden behind the API. See [`docs/MLP_SCHEDULE_HYPERGRADIENT.md`](MLP_SCHEDULE_HYPERGRADIENT.md).
 
+### `fortml_mlp_adagrad_schedule_hypergradient`
+
+`mlp_adagrad_schedule_hypergradient_objective_t` combines the typed schedule
+trajectory with the fixed full-batch Adagrad accumulator. Its packed outer
+vector is `[log(base_rate), log(l2), log(epsilon), logit(min_rate_fraction),
+logit(decay_factor)]`; schedule kind and integer update counts remain fixed.
+The value/gradient, JVP, scalar VJP, and FortOpt adapter differentiate the
+schedule rate, accumulated-square state, denominator, and parameter update
+analytically. CUDA requests return `FORTNUM_NOT_IMPLEMENTED` until resident
+MLP, schedule, and derivative state exists. The independent
+`test_mlp_adagrad_schedule_hypergradient` fixture checks central differences,
+directional products, adjointness, optimizer integration, malformed options,
+and the CUDA refusal. See
+[`docs/MLP_ADAGRAD_SCHEDULE_HYPERGRADIENT.md`](MLP_ADAGRAD_SCHEDULE_HYPERGRADIENT.md).
+
 ### `fortml_mlp_minibatch_hypergradient`
 
 `mlp_minibatch_hypergradient_objective_t` differentiates a fixed mini-batch
