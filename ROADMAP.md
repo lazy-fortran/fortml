@@ -19,6 +19,19 @@ The checklist currently records 326 completed and 127 open items; open rows are
 retained until their implementation, independent oracle, device/refusal
 behavior, and benchmark evidence land together.
 
+The 2026-08-08 multi-output boosting slice adds transactional
+`xgboost_multioutput_t` and `lightgbm_multioutput_t` adapters.  Each adapter
+fits one deterministic regression child per target, preserves row-oriented
+sample/output conventions, exposes staged margins and output/feature/stage
+metadata, and concatenates fixed-structure leaf coordinates for parameter
+JVP/VJP products.  Input JVP/VJP products route through all children and retain
+their split-boundary refusals.  The independent `test_xgboost_multioutput`
+oracle covers closed-form one-tree/two-output values, staged products,
+adjoint identities, malformed-fit transactionality, and selected-CUDA
+refusals.  `fortml-bench` records the CPU NumPy oracle and typed CUDA rows.
+Resident multi-output CUDA tree/histogram kernels, distributed output
+parallelism, and differentiable split topology remain open.
+
 | Compiler | Command | Result |
 | --- | --- | --- |
 | GNU Fortran | `fo` | Static build, all 250 behavioral tests, and lint passed at the current FortML/FortAD-main revisions. The compiler still emits non-fatal array-temporary warnings; see [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |

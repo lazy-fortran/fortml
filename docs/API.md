@@ -4232,3 +4232,33 @@ are `test_lightgbm`, `test_lightgbm_staged_slice`, `test_lightgbm_persistence`,
 `test_lightgbm_goss`, and `test_lightgbm_dart`; the release benchmarks are
 `lightgbm_leafwise.csv`, `lightgbm_goss.csv`, and `lightgbm_dart.csv` in
 `../fortml-bench`.
+
+### `fortml_xgboost_multioutput`
+
+`xgboost_multioutput_t` is a transactional row-oriented adapter around one
+`xgboost_t` regression child per target column.  `fit(x,targets,status,options,
+sample_weight,validation_x,validation_targets,validation_weight)` routes
+matching columns to the deterministic exact or histogram child policy and
+commits the ensemble only after every child succeeds.  `predict` and
+`predict_margin` return `(n_samples,n_outputs)` matrices.  `predict_staged_margin`
+returns `(n_samples,n_estimators,n_outputs)` and requires matching retained
+stage counts.  `feature_count`, `output_count`, `estimator_count`,
+`parameter_count`, `leaf_parameter_count`, `leaf_parameters`, and `fitted`
+expose shape and fixed-state metadata.
+
+`predict_jvp`/`predict_vjp` route input products per output and sum reverse
+products into the feature cotangent.  `predict_leaf_jvp`/`predict_leaf_vjp`
+use the concatenated child vectors `[base_score, leaf weights]` while holding
+tree topology fixed.  Malformed fit, prediction, stage, and product arguments
+are transactional and return `FORTNUM_DOMAIN_ERROR`.  CPU device dispatch is
+supported; selected CUDA calls return `FORTNUM_NOT_IMPLEMENTED` without a
+host fallback.  See [`MULTIOUTPUT_BOOSTING.md`](MULTIOUTPUT_BOOSTING.md).
+
+### `fortml_xgboost_multioutput` LightGBM companion
+
+`lightgbm_multioutput_t` exposes the same public shape, transactional,
+staged-margin, derivative, leaf-parameter, metadata, and device contracts,
+but routes each target through `lightgbm_t`'s weighted-quantile best-first
+leaf-wise growth.  Its children preserve LightGBM validation, GOSS, DART, and
+serialization semantics; resident CUDA histogram execution remains an
+explicit typed refusal.
