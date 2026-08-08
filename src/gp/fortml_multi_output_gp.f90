@@ -67,6 +67,7 @@ module fortml_multi_output_gp
             multi_output_predict_parameter_vjp_device
         procedure, public :: log_marginal_likelihood => multi_output_lml
         procedure, public :: joint_covariance => multi_output_joint_covariance
+        procedure, public :: predict_covariance => multi_output_predict_covariance
     end type multi_output_gp_t
 
 contains
@@ -108,6 +109,65 @@ contains
         self%fitted = .false.
         call status_set(status, FORTNUM_OK, "")
     end subroutine multi_output_initialize
+
+    !! Posterior joint covariance over the query stack.
+    !!
+    !! `joint_covariance` is the *prior* `B (x) K`; this is what remains after
+    !! conditioning on the training data. The distinction matters more than it
+    !! might sound: a caller that used the prior as a posterior would report
+    !! uncertainty that never shrinks with data, which looks entirely plausible
+    !! on a plot and is simply wrong.
+    !!
+    !! Layout matches the rest of the module — outputs vary slowest, so entry
+    !! `(a - 1) m + i` is output `a` at query `i`.
+    subroutine multi_output_predict_covariance(self, query, matrix, status)
+        class(multi_output_gp_t), intent(in) :: self
+        real(dp), intent(in) :: query(:, :)
+        real(dp), intent(out) :: matrix(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: cross(:, :), prior(:, :), block(:, :), work(:, :)
+        integer :: n, m, p, i, j, a, b
+
+        matrix = 0.0_dp
+        if (.not. self%fitted) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multi-output GP: predict_covariance before fit")
+            return
+        end if
+        n = self%n_samples
+        m = size(query, 1)
+        p = self%n_outputs
+        if (size(query, 2) /= self%kernel%input_dim .or. &
+            any(shape(matrix) /= [m*p, m*p])) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multi-output GP: posterior covariance shape is invalid")
+            return
+        end if
+
+        allocate(block(n, m), cross(n*p, m*p))
+        call self%kernel%matrix(self%inputs, query, block, status)
+        if (status%code /= FORTNUM_OK) return
+        do b = 1, p
+            do a = 1, p
+                do j = 1, m
+                    do i = 1, n
+                        cross((a - 1)*n + i, (b - 1)*m + j) = &
+                            self%coregionalization(a, b)*block(i, j)
+                    end do
+                end do
+            end do
+        end do
+
+        allocate(prior(m*p, m*p))
+        call multi_output_joint_covariance(self, query, prior, status)
+        if (status%code /= FORTNUM_OK) return
+
+        allocate(work, source=cross)
+        call self%factorization%solve(work, status)
+        if (status%code /= FORTNUM_OK) return
+        matrix = prior - matmul(transpose(cross), work)
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine multi_output_predict_covariance
 
     subroutine multi_output_joint_covariance(self, inputs, matrix, status)
         !! `B (x) K` on the given inputs, without observation noise.
