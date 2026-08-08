@@ -542,7 +542,7 @@ only listed as gaps:
 
 The FortBO and FortMC companion pins were rechecked against their remote
 `main` branches on 2026-08-08: FortBO
-`68a73258ac4d36f7655e054efb71b10c2803fe7c` and FortMC
+`9e705a8c54c4c64085551975f98a15f47b305f70` and FortMC
 `4dde0ccdc37b4c331126605406b08e1f3bda4f59`. Their roadmaps remain authoritative
 for acquisition and sampling algorithms; FortML owns the posterior/log-density
 protocols and does not embed sampler or acquisition state. FortBO additionally
@@ -561,6 +561,8 @@ design, max-value entropy search, mixed-integer/categorical candidate search,
 per-evaluation benchmark metrics, asynchronous worker bookkeeping with
 mean/incumbent/worst fantasies and bounded retries, a Bayesian-linear
 posterior provider, and high-dimensional gradient benchmark fixtures,
+paper-aligned predictive-entropy C3 conditioning with its variance safeguard,
+and constrained/noisy/multi-objective benchmark fixtures,
 FortSym-derived trust-region length rescaling, exact posterior mean and
 standard-deviation Hessians from derivative predictions, and tested TuRBO-1/
 TuRBO-m and DTuRBO mode-2 drivers with deterministic region updates,
@@ -641,7 +643,7 @@ acquisition work packages:
 
 The companion repositories were checked on 2026-08-08 at FortMC
 `4dde0ccdc37b4c331126605406b08e1f3bda4f59` and FortBO
-`68a73258ac4d36f7655e054efb71b10c2803fe7c`, both on their `main` branches. The
+`9e705a8c54c4c64085551975f98a15f47b305f70`, both on their `main` branches. The
 FortBO pin now includes a versioned capability-gated posterior contract,
 gradient-aware observation history/checkpointing, normalized continuous/integer/
 categorical/mixed/conditional search spaces, a differentiable-coordinate mask,
@@ -661,23 +663,26 @@ exact hypervolume, scalarizations, machine-readable stopping reasons,
 preference learning, noisy dominance, the FortML derivative-GP input-HVP
 adapter, FortML value/derivative-GP adapters, asynchronous worker bookkeeping
 with selectable fantasies and bounded retries, a Bayesian-linear posterior
-provider, and fixed-choice/constraint-penalty feasibility utilities;
+provider, fixed-choice/constraint-penalty feasibility utilities, constrained
+and multi-objective fixtures, and paper-aligned PES C3 conditioning;
 refresh these pins when
 their protocol or device contracts change.
 
 The preceding FortBO `4266ce6` pin built and ran 20/20 tests, including
 knowledge-gradient and qEI/qNEI/qUCB batch acquisitions, TuRBO/DTuRBO drivers,
 trust-region trace/rescaling, preference-learning, and noisy-dominance oracles.
-The current `68a7325` remote registers 31 tests; a clean `fo test` run passes
-31/31, including the feasibility, worker, high-dimensional benchmark,
-acquisition, trust-region, and preference fixtures. FortMC's current
+The current `9e705a8` remote registers 32 tests; a clean `fo test` run passes
+31 and reports one failure in the DTuRBO lambda-direction assertions. The
+remaining tests cover feasibility, worker, high-dimensional benchmark,
+constrained/multi-objective fixtures, acquisition, trust-region, and
+preference behavior. FortMC's current
 checkout builds cleanly and reports zero registered
 tests, so its sampler and diagnostics claims remain roadmap items rather than
 FortML verification evidence.
 
 This companion check was repeated from clean source trees on 2026-08-08:
 `origin/main` resolves exactly to the two pins above; FortBO's current clean
-run is the 31-pass result above, while FortMC has 0 registered
+run is the 31-pass/1-failure result above, while FortMC has 0 registered
 tests, and neither repository has a
 runtime dependency on the FortSym executable. These are boundary checks, not a
 claim that FortMC samplers or the remaining FortBO policy catalog are shipped.
