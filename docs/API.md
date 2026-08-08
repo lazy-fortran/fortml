@@ -3170,6 +3170,12 @@ product over packed kernel/noise parameters. `predict_input_jvp(x,components,
 direction,mean,mean_dot,variance,variance_dot,status)` and
 `predict_input_vjp(x,components,mean_bar,variance_bar,x_bar,status)` provide
 query-input products while holding model parameters and training inputs fixed.
+`predict_input_hvp(x,components,direction,mean,mean_dot,variance,variance_dot,
+status)` provides the value-query Hessian-vector product with respect to the
+query coordinates (the fitted parameters and training inputs remain fixed).
+The HVP is symmetric and linear in `direction`; derivative-observation query
+components are rejected with a typed `FORTNUM_NOT_IMPLEMENTED` boundary until
+the required fourth input derivatives are generated.
 The query products use exact third-input products for RBF, Matérn 3/2, Matérn
 5/2, periodic, rational-quadratic, cosine, linear, constant, polynomial,
 spectral-mixture, and sum/product kernels when the polynomial base is positive.

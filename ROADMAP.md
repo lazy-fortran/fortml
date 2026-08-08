@@ -16,12 +16,12 @@ gate is still open, so this work does not move or recreate that tag.
 
 | Compiler | Command | Result |
 | --- | --- | --- |
-| GNU Fortran | `fo` | Static build, all 200 behavioral tests, and lint passed at the current FortML/FortAD-main revisions. The compiler still emits non-fatal array-temporary warnings; see [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
-| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded older compiler lane. The checked-in NVIDIA log predates the current 200-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
+| GNU Fortran | `fo` | Static build, all 204 behavioral tests, and lint passed at the current FortML/FortAD-main revisions. The compiler still emits non-fatal array-temporary warnings; see [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
+| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded older compiler lane. The checked-in NVIDIA log predates the current 204-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
 The checked-in GNU compiler log is the fresh 2026-08-08 run against FortML code
-revision `487607ed8b046de41821e78b769ca8a67ad40acf`, FortAD `origin/main` at
+revision `457c7b68c7dfc3f6218dae6ae55e9e80f1093b26`, FortAD `origin/main` at
 `159e38d2ad085853a3e6b092c1c1fb0e300319ca`, and FortNum at
 `38bc0e578ec5c6c0e636e8fdd3844f54f9e3e473`, run from the clean checkout
 under `/mnt/storage/code/lazy-fortran/fortml`. The run includes the
@@ -45,7 +45,7 @@ variational-GP objective, multiclass variational-GP prediction/JVPs/VJPs, positi
  training objective. The build emits non-fatal GNU
 array-temporary warnings in FortFront query/generator calls, existing GP
 benchmark boundaries, variational-GP batch conversions, and basis-pipeline
-shape conversions. They are isolated to array construction; all 200 behavioral
+shape conversions. They are isolated to array construction; all 204 behavioral
 tests pass. Lint has zero unused-import findings and the full `fo` lint stage
 passes despite the non-fatal compiler warning corpus. The independent CUDA gate additionally covers the
 resident dense-affine value/JVP/VJP path and its single-layer MSE update with
@@ -54,7 +54,7 @@ compiler coverage remains an
 explicit older-build result.
 
 The companion benchmark harness is clean at FortML-bench revision
-`63c721d0abc0c7841e37ac2aed9c3817fcb16ba7`;
+`319122a1d8cd7025958f878d7bcb6610a6e990db`;
 the trainer-checkpoint, unfactored-Adafactor, binary-objective,
 multiclass-calibration, variational-multiclass-GP, PINN/physics-objective,
 physics HVP, grouped K-fold, spectral-mixture, XGBoost-ranking,
@@ -81,6 +81,10 @@ an independent NumPy group-mean/path-mask oracle for unconstrained and
 separated-group depth-two trees; its CPU rows pass with zero prediction error
 and its CUDA row is an explicit unavailable capability record in
 `results/xgboost_interaction.csv`.
+The ARD derivative-GP lane adds dense mixed-observation input JVP/VJP and
+parameter HVP rows in `results/DERIVATIVE_GP.md`; the RAdam trajectory lane is
+`results/MLP_RADAM_HYPERGRADIENT.md`, and the Tweedie tree lane is
+`results/XGBOOST_TWEEDIE.md`. Each includes explicit CUDA-unavailable rows.
 
 ### 2026-08-08 parity and provenance slice
 
@@ -113,7 +117,7 @@ optimizer-group execution, mixed precision, distributed state, and migration
 remain open. The source and benchmark pins for this earlier optimizer-group
 slice were FortML `05632ce8fa95268417c7a2d979fa1461a202abaa` and
 FortML-bench `0fb8ac7`; the current aggregate verification is the newer
-`487607e`/`63c721d0abc0c7841e37ac2aed9c3817fcb16ba7` pair recorded above.
+`457c7b6`/`319122a1d8cd7025958f878d7bcb6610a6e990db` pair recorded above.
 
 The variational-GP classification and OVR wrappers now expose fixed-state
 kernel-log-parameter JVP/VJP products for latent margins and normalized
@@ -531,7 +535,7 @@ only listed as gaps:
 
 The FortBO and FortMC companion pins were rechecked against their remote
 `main` branches on 2026-08-08: FortBO
-`95495344e109b52e8562ebe7c36329e30a754688` and FortMC
+`b575209d648d11b7813a635e71ba45376384c585` and FortMC
 `4dde0ccdc37b4c331126605406b08e1f3bda4f59`. Their roadmaps remain authoritative
 for acquisition and sampling algorithms; FortML owns the posterior/log-density
 protocols and does not embed sampler or acquisition state. FortBO additionally
@@ -542,7 +546,9 @@ adapter that chooses value-only versus derivative-observation GPs from the
 history contract. FortBO now also runs its gradient-based DTuRBO in-region
 acquisition search end to end with Sobol multistarts and FortOpt L-BFGS-B,
 beating random search on the Branin fixture at equal budget. The current pin
-also supplies exact posterior mean Hessians from derivative predictions, an
+also supplies preference learning and noisy-dominance probabilities with
+FortSym-generated Gaussian-comparison derivatives, exact posterior mean
+Hessians from derivative predictions, an
 indefinite-curvature bound-constrained quadratic subproblem, multi-objective
 Pareto archives with exact hypervolume and scalarizations, and stopping rules
 that report a machine-readable reason. Posterior-
@@ -618,20 +624,22 @@ acquisition work packages:
 
 The companion repositories were checked on 2026-08-08 at FortMC
 `4dde0ccdc37b4c331126605406b08e1f3bda4f59` and FortBO
-`95495344e109b52e8562ebe7c36329e30a754688`, both on their `main` branches. The
+`b575209d648d11b7813a635e71ba45376384c585`, both on their `main` branches. The
 FortBO pin now includes a versioned capability-gated posterior contract,
 gradient-aware observation history/checkpointing, normalized continuous/integer/
 categorical/mixed/conditional search spaces, a differentiable-coordinate mask,
-analytic EI/PI/UCB/log-EI, and marginal Monte-Carlo EI/PI with CRN, antithetic
+analytic EI/PI/UCB/log-EI, marginal Monte-Carlo EI/PI with CRN, antithetic
 draws and pathwise gradients, Sobol TuRBO candidates, Thompson selection,
 gradient-based DTuRBO in-region acquisition search, exact posterior mean
 Hessians, an indefinite-curvature quadratic subproblem, Pareto archives with
-exact hypervolume, scalarizations, machine-readable stopping reasons, and FortML
-value/derivative-GP adapters; refresh these pins when
+exact hypervolume, scalarizations, machine-readable stopping reasons,
+preference learning, noisy dominance, the FortML derivative-GP input-HVP
+adapter, and FortML value/derivative-GP adapters;
+refresh these pins when
 their protocol or device contracts change.
 
-The current FortBO checkout builds and runs all 14 registered tests with `fo
-test`. FortMC's current checkout builds cleanly and reports zero registered
+The current FortBO checkout builds and runs all 15 registered tests with `fo
+test`, including the preference-learning and noisy-dominance oracle. FortMC's current checkout builds cleanly and reports zero registered
 tests, so its sampler and diagnostics claims remain roadmap items rather than
 FortML verification evidence.
 
@@ -1337,7 +1345,7 @@ The source inventory is dated 2026-08-08.
 | Tree boosting | Partial | `decision_stump_t`, weighted depth-limited `cart_regressor_t` and `cart_classifier_t`, squared-loss `gradient_boosting_regressor_t`, `xgboost_t`, `xgboost_multiclass_t`, and separately named `lightgbm_t` provide deterministic exhaustive, bounded-histogram, and best-first leaf-wise split products. The CART lanes have weighted squared-error or Gini/entropy criteria, depth and leaf constraints, fixed feature/threshold tie ordering, piecewise input JVP/refusal for regression, and finite-only probability/prediction paths for classification. The XGBoost-style lane has exact and weighted-histogram squared/logistic/Poisson/Huber/quantile/absolute and bounded pairwise-ranking gradients, Hessians, regularized gains, recursive Newton leaves, per-feature monotonic bounds, tree-depth/node diagnostics, binary and one-vs-rest multiclass probabilities, staged predictions/margins, and gain/weight/cover feature importance. The LightGBM-style lane supports weighted regression/binary logistic objectives, shared weighted-quantile cuts, deterministic global best-leaf growth up to `num_leaves`, validation monitoring with patience/min-delta, best-round metadata, restore-best or retain-all ensembles, and typed split-boundary/CUDA refusals. | Regression and classification trees support validation-based stopping, categorical objectives, interaction constraints, deeper growth, and model persistence. |
 | Current bounded additions | Partial | The current source and evidence also include seeded CART bagging with multiclass probability alignment, weighted binary/OVR Laplace-GP fits and FortOpt envelope hyperparameter adapters, fixed-SGD optimizer-group multiplier trajectory JVP/VJP products, batched multi-output GP posterior means with query JVP/VJP products, typed CPU/CUDA dispatch for fitted column basis pipelines, CPU RAdam training with exact format-8/text-schema-6 checkpoint resume, and fixed full-batch RAdam trajectory value/JVP/VJP products with a bounded FortOpt adapter and typed rho-boundary/CUDA refusals. | OOB/permutation/SHAP bagging workflows, coupled GP likelihoods, stochastic/device optimizer groups, parameter products over batched GP queries, broader stochastic/device optimizer hypergradients, and resident GPU execution remain open. |
 | Training infrastructure | Partial | Model-specific gradients, exact MSE+L2 neural HVPs including the L2 mixed hyperparameter block, weighted multiclass MLP cross-entropy value/JVP/VJP/HVP products with bounded FortOpt L-BFGS-B, `mlp_training_objective_t` scalar JVP/VJP products (including the optional optimized L2 coordinate), named group-wise log-L2 objective/HVP products, differentiable Huber/quantile loss products, a joint basis-pipeline value/gradient/JVP/VJP/HVP objective, `fortopt_adam` and FortOpt SGD momentum/Nesterov integration, AdamW with decoupled decay, coupled-L2 Adam with exact fixed full-batch trajectory hypergradients, Adagrad with an explicit accumulated-square state, RMSprop with centered/uncentered statistics and optional momentum, CPU AMSGrad with bias-corrected max-second-moment state and exact checkpoint/resume, CPU RAdam with validated rho-threshold rectification, exact checkpoint/resume, and exact fixed-trajectory value/JVP/VJP products, deterministic seeded batch cursors, per-update callback and typed learning-rate schedules, norm clipping, sample-weighted gradient accumulation, validation/early stopping, resumable optimizer state, generic versioned portable trainer checkpoints, versioned portable MLP checkpoint files, fixed-trajectory full-batch SGD/Adam/AdamW/RMSprop/Adagrad/RAdam and deterministic mini-batch SGD hypergradients, unfactored Adafactor rate/accumulator/validation hypergradients including smooth relative-step and parameter-scaling branches, scheduled-Adagrad rate/accumulator/validation hypergradients with FortOpt L-BFGS-B, natural-gradient seams, and seeded variational draws exist. | One trainer owns batches, optimizer state, schedules, clipping, validation, early stopping, callbacks, and resumable state for every model with a completed trainer adapter; stochastic and device-resident optimizer hypergradients remain open. |
-| GP derivatives and hyperparameters | Partial | Exact GP likelihood and prediction products include parameter gradients and HVPs. Mixed value and first-derivative observations can be fitted and predicted; value-only HVPs use the analytic kernel-HVP/differentiated-solve path, while RBF/linear/constant/polynomial and their sum/product mixed-observation HVPs now use analytic covariance-block second products. Polynomial HVPs cover all four log kernel coordinates, including the degree-one limit, and have an independent likelihood finite-difference oracle. Spectral-mixture value/first-derivative parameter gradients and query JVP/VJP products are analytic; its mixed parameter HVP remains a typed refusal. Correlated multi-output GPs now expose packed coregionalization/noise/kernel parameters plus posterior-mean query and parameter JVP/VJP products through a differentiated Cholesky solve, with independent finite-difference and adjoint oracles; independent query batches also have shape-checked means and input JVP/VJP products with explicit CUDA refusal. Binary and OVR Laplace classifiers now expose fixed-state kernel-parameter JVP/VJP products for latent and normalized observed predictions. Other mixed leaves return an explicit `FORTNUM_NOT_IMPLEMENTED` refusal rather than finite-differencing. Scalar likelihood VJPs include the packed noise block. Dense joint posterior covariance now also exposes exact parameter JVP/VJP products through the same solve, with independent finite-difference and adjoint oracles. | Exact, derivative, multi-output, sparse, and matrix-free GP families expose documented trainable parameters, scalar objectives, parameter gradients, and train-state adapters. |
+| GP derivatives and hyperparameters | Partial | Exact GP likelihood and prediction products include parameter gradients and HVPs. Mixed value and first-derivative observations can be fitted and predicted; value-only HVPs use the analytic kernel-HVP/differentiated-solve path, while RBF/ARD-RBF/linear/constant/polynomial and their sum/product mixed-observation HVPs now use analytic covariance-block second products. Polynomial HVPs cover all four log kernel coordinates, including the degree-one limit, and have an independent likelihood finite-difference oracle. Spectral-mixture value/first-derivative parameter gradients and query JVP/VJP products are analytic; its mixed parameter HVP remains a typed refusal. Correlated multi-output GPs now expose packed coregionalization/noise/kernel parameters plus posterior-mean query and parameter JVP/VJP products through a differentiated Cholesky solve, with independent finite-difference and adjoint oracles; independent query batches also have shape-checked means and input JVP/VJP products with explicit CUDA refusal. Binary and OVR Laplace classifiers now expose fixed-state kernel-parameter JVP/VJP products for latent and normalized observed predictions. Other mixed leaves return an explicit `FORTNUM_NOT_IMPLEMENTED` refusal rather than finite-differencing. Scalar likelihood VJPs include the packed noise block. Dense joint posterior covariance now also exposes exact parameter JVP/VJP products through the same solve, with independent finite-difference and adjoint oracles. | Exact, derivative, multi-output, sparse, and matrix-free GP families expose documented trainable parameters, scalar objectives, parameter gradients, and train-state adapters. |
 | GPU and device execution | Partial | Kernel, structured, and sparse operator products have selected OpenACC or CUDA paths, including resident CG for kernel operators. The kNN classifier has a resident native-CUDA training-set plan with a direct kernel oracle; no-autodiff RMSprop, AdamW, and Adagrad state recurrences have resident CUDA C plans with independent recurrence tests; weighted MSE has both a transfer-inclusive CUDA reduction and a resident C-ABI plan; the dense-affine plan now includes resident value/JVP/VJP and single-layer mean-squared-error updates with parameter snapshots and transfer counters; and a prediction-only resident CUDA forest C ABI now retains flattened trees across repeated query batches with an independent CPU tree-walk oracle. Elastic-net, OVO, binary/OVR-multiclass GP classification, bounded pairwise XGBoost ranking, probability calibration, multilabel/Jaccard/Hamming/ROC/PR ranking, derivative-GP covariance, and typed schedule trajectories expose CPU dispatch plus explicit CUDA refusal until resident kernels are linked. `fortml_device` gives callers an explicit CPU/CUDA selector, runtime capability probe, backend identity, residency ownership metadata, transfer counters, and typed refusal when a CUDA object is not linked. The sibling benchmark harness records independent-NumPy CUDA gates for the resident micro-kernels and all currently implemented CPU metric lanes. | Supported training and prediction workflows keep model, optimizer, and batch state resident on a selected device and have CPU parity tests. |
 | Serialization and distributed execution | Partial | `fortml_mlp_checkpoint` provides a versioned compiler-independent formatted-text representation with schema magic/version, exact optimizer/iterator/history state, validated temporary loading, and malformed/truncated/extra-record refusals. Other model/pipeline files and distributed execution remain open. | Versioned model and trainer files round-trip across supported compilers, and MPI training or inference agrees with a one-rank oracle. |
 | Benchmark coverage | Partial | Correctness-gated model and GP applications feed release harnesses in `../fortml-bench`; current release lanes include Bernoulli/Multinomial/ComplementNB, integer one-hot encoding, weighted ridge and elastic-net derivative products, scalar and multi-output radius neighbors, seeded CART bagging, binary and multiclass SAMME AdaBoost, CPU RAdam flat/MLP training with checkpoint replay, fixed full-batch RAdam trajectory value/JVP/VJP/FortOpt products (`MLP_RADAM_HYPERGRADIENT.md`), ordered-gradient categorical XGBoost partitions, OVR/OVO/multilabel/ordinal/RBF-SVM classification, multilabel precision/recall/F1/Jaccard/Hamming and ROC/PR-AUC metrics, temperature/sigmoid/isotonic probability calibration, weighted Laplace and variational GP classification, batched multi-output GP query products, typed column-pipeline device dispatch, AMSGrad recurrence/MLP training, the shared objective trainer and portable checkpoint, weighted binary and multiclass MLP objectives with bounded L-BFGS-B, optimizer-group trajectory hypergradients, Lion hypergradients, transformed softmax log-L2 products, additive XGBoost contributions, pairwise ranking, and interaction constraints, bounded LightGBM leaf-wise boosting with validation early stopping, XGBoost warm-start continuation, MLP activation products, MLP SGD/Nesterov/Adam/AdamW, coupled-Adam and other fixed-trajectory hypergradients, typed schedules including one-cycle, fixed-trajectory and resident-state Adagrad, scheduled-Adagrad hypergradients, differentiable imputation, basis/pipeline, exact/approximate and correlated multi-output GP products including weighted OVR variational and packed Laplace multiclass prediction products, analytic GP likelihood products, derivative-GP spectral-mixture products, polynomial mixed-observation GP HVPs, exact and weighted-histogram squared/logistic/Poisson boosting, monotonic-constraint query grids, general Hamiltonian MLP products, generic grid/L-BFGS-B search, resident CUDA dense-affine value/JVP/VJP and MSE-update device-contract gates, and resident forest prediction. | Every completed parity package has a pinned external oracle, release timings, memory measurements, provenance, raw data, and a maintained report. |
@@ -1774,7 +1782,12 @@ hyperparameter block. A deliberate train/validation leakage fixture must fail.
   weighted-median identity-link base margin, an exact sign subgradient with a
   positive Hessian floor, exact/histogram split parity, fixed-tree products,
   and explicit CUDA refusal; the independent oracle is `test_xgboost_absolute`.
-- [ ] Add gradient-boosted regression for Tweedie losses.
+- [x] Add gradient-boosted regression for Tweedie losses. `xgboost_t` now
+  exposes `fit_tweedie`, stable compound-Poisson log-link value/gradient/
+  Hessian products for `1 < variance_power < 2`, weighted exact and histogram
+  growth, validation/early stopping, and typed CUDA refusal. The independent
+  `test_xgboost_tweedie` oracle and `fortml-bench/results/XGBOOST_TWEEDIE.md`
+  report record zero CPU oracle error and the unavailable CUDA row.
 - [x] Add binary and deterministic one-vs-rest multiclass gradient-boosted
   classification with stable logistic objectives, staged margins, normalized
   probabilities, feature diagnostics, and typed CUDA refusals.
@@ -2310,7 +2323,10 @@ state phases are reported separately.
   the analytic kernel parameter-HVP and differentiated Cholesky solve; mixed
   observation lists retain a deterministic directional finite-difference
   fallback until generated input-parameter second products cover every
-  supported kernel. `test_derivative_gp_products` checks both branches.
+  supported kernel. ARD-RBF mixed observations now also expose analytic
+  parameter HVPs and query-input JVP/VJPs, with a dense finite-difference
+  oracle in `test_derivative_gp_ard` and a 94-row CPU/CUDA benchmark lane.
+  `test_derivative_gp_products` checks both branches.
 - [x] Add trainable constant and linear mean templates to exact GP regression.
   Per-output mean coefficients follow kernel and log-noise parameters, and
   prediction/LML JVP, VJP, and HVP products include the mean block. Automatic
