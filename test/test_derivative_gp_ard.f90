@@ -16,6 +16,13 @@ program test_derivative_gp_ard
     real(dp) :: query(3, 2), query_direction(3, 2)
     real(dp) :: mean(3, 1), mean_dot(3, 1), mean_plus(3, 1), mean_minus(3, 1)
     real(dp) :: variance(3), variance_dot(3), variance_plus(3), variance_minus(3)
+    real(dp) :: query_point(2), query_point_direction(2), query_batch(1, 2)
+    real(dp) :: query_direction_batch(1, 2), basis_direction(1, 2)
+    real(dp) :: mean_hvp(2, 1), variance_hvp(2), mean_hvp_fd(2, 1), variance_hvp_fd(2)
+    real(dp) :: mean_batch_plus(1, 1), mean_batch_minus(1, 1)
+    real(dp) :: mean_dot_plus(1, 1), mean_dot_minus(1, 1)
+    real(dp) :: variance_batch_plus(1), variance_batch_minus(1)
+    real(dp) :: variance_dot_plus(1), variance_dot_minus(1), hvp_query_h
     real(dp) :: theta(4), gradient(4), finite_gradient(4)
     real(dp) :: direction(4), hvp(4), gradient_plus(4), gradient_minus(4)
     real(dp) :: h, hvp_h
@@ -65,6 +72,30 @@ program test_derivative_gp_ard
         (2.0_dp*h))) < 3.0e-7_dp .and. maxval(abs(variance_dot - &
         (variance_plus - variance_minus)/(2.0_dp*h))) < 3.0e-7_dp, &
         "ARD derivative-GP query-input JVP oracle", failures)
+
+    query_point = [0.27_dp, -0.41_dp]
+    query_point_direction = [0.06_dp, -0.03_dp]
+    hvp_query_h = 2.0e-5_dp
+    call model%predict_input_hvp(query_point, query_point_direction, mean_hvp, &
+        variance_hvp, status)
+    do i = 1, 2
+        basis_direction = 0.0_dp
+        basis_direction(1, i) = 1.0_dp
+        query_direction_batch = basis_direction
+        query_batch(1, :) = query_point + hvp_query_h*query_point_direction
+        call model%predict_input_jvp(query_batch, [0], query_direction_batch, &
+            mean_batch_plus, mean_dot_plus, variance_batch_plus, variance_dot_plus, status)
+        query_batch(1, :) = query_point - hvp_query_h*query_point_direction
+        call model%predict_input_jvp(query_batch, [0], query_direction_batch, &
+            mean_batch_minus, mean_dot_minus, variance_batch_minus, variance_dot_minus, status)
+        mean_hvp_fd(i, 1) = (mean_dot_plus(1, 1) - mean_dot_minus(1, 1))/ &
+            (2.0_dp*hvp_query_h)
+        variance_hvp_fd(i) = (variance_dot_plus(1) - variance_dot_minus(1))/ &
+            (2.0_dp*hvp_query_h)
+    end do
+    call check(status_ok(status) .and. maxval(abs(mean_hvp - mean_hvp_fd)) < 2.0e-6_dp .and. &
+        maxval(abs(variance_hvp - variance_hvp_fd)) < 2.0e-6_dp, &
+        "ARD derivative-GP query-input HVP oracle", failures)
     if (failures /= 0) then
         write (error_unit, '(a,i0)') "FAIL ARD derivative-GP cases: ", failures
         error stop 1

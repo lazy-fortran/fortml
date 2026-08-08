@@ -45,6 +45,7 @@ module fortml_derivative_gaussian_process
         procedure, public :: predict_vjp => gp_derivative_predict_vjp
         procedure, public :: predict_input_jvp => gp_derivative_predict_input_jvp
         procedure, public :: predict_input_vjp => gp_derivative_predict_input_vjp
+        procedure, public :: predict_input_hvp => gp_derivative_predict_input_hvp
         procedure, public :: observation_count => gp_derivative_observation_count
         procedure, public :: parameter_count => gp_derivative_parameter_count
         procedure, public :: parameters => gp_derivative_parameters
@@ -76,6 +77,7 @@ module fortml_derivative_gaussian_process
     public :: gp_derivative_predict_vjp
     public :: gp_derivative_predict_input_jvp
     public :: gp_derivative_predict_input_vjp
+    public :: gp_derivative_predict_input_hvp
     public :: gp_derivative_log_marginal_likelihood
     public :: gp_derivative_log_marginal_likelihood_vjp
     public :: gp_derivative_hyperparameter_gradient
@@ -848,6 +850,144 @@ contains
         end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine gp_derivative_predict_input_vjp
+
+    subroutine gp_derivative_predict_input_hvp(self, x, direction, mean_hvp, &
+            variance_hvp, status)
+        !! Query-input Hessian-vector products of the posterior mean and
+        !! variance at one point.
+        !!
+        !! This is the second-order counterpart of `predict_input_jvp`, and the
+        !! piece a local quadratic model of an acquisition needs. The mean's
+        !! curvature can be reached indirectly, by predicting derivative
+        !! components and differentiating those once more, but the variance's
+        !! cannot: the posterior variance is not a predicted component, it is
+        !! the quadratic form
+        !!
+        !!     s(x) = k(x, x) - k_*(x)^T K^-1 k_*(x),
+        !!
+        !! so its curvature needs genuine second input derivatives of both the
+        !! prior term and the cross covariance. Those are assembled here from
+        !! the existing exact third-derivative machinery rather than by finite
+        !! differences, which at a near-stationary point lose most of their
+        !! significant digits precisely where the curvature matters.
+        !!
+        !! Differentiating the quadratic form twice gives
+        !!
+        !!     H_s v = (grad^2 k(x,x)) v - 2 sum_i w_i (grad^2 k_i) v
+        !!             - 2 J^T K^-1 J v,
+        !!
+        !! with w = K^-1 k_* and J the Jacobian of k_* in the query input. The
+        !! last term is what a first-order method never sees: it is the
+        !! curvature the data itself imposes, and it is negative semidefinite,
+        !! so dropping it would make the model claim the variance is more
+        !! convex than it is.
+        !!
+        !! Only value queries are supported. A derivative-component query would
+        !! need a fourth input derivative of the kernel, which the leaves do not
+        !! provide; that is refused by capability rather than approximated.
+        class(gp_derivative_regression_t), intent(in) :: self
+        real(dp), intent(in) :: x(:)
+        real(dp), intent(in) :: direction(:)
+        !! `mean_hvp(feature, output)` and `variance_hvp(feature)`.
+        real(dp), intent(out) :: mean_hvp(:, :)
+        real(dp), intent(out) :: variance_hvp(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: cross(:, :), cross_jacobian(:, :), cross_hvp(:, :)
+        real(dp), allocatable :: solved(:, :), projected(:, :)
+        real(dp), allocatable :: prior_hvp(:), zero_direction(:)
+        real(dp), allocatable :: gradient_x1(:), gradient_x2(:), mixed(:, :)
+        real(dp), allocatable :: gradient_x1_dot(:), gradient_x2_dot(:), mixed_dot(:, :)
+        real(dp) :: value, value_dot
+        integer :: i, j, d, n
+
+        d = self%n_features
+        n = self%n_observations
+        mean_hvp = 0.0_dp
+        variance_hvp = 0.0_dp
+
+        if (.not. derivative_gp_fitted(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "derivative GP predict_input_hvp: model is not fitted")
+            return
+        end if
+        if (size(x) /= d .or. size(direction) /= d .or. &
+            size(variance_hvp) /= d .or. &
+            any(shape(mean_hvp) /= [d, self%n_outputs])) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "derivative GP predict_input_hvp: input or output shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(x)) .or. any(.not. ieee_is_finite(direction))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "derivative GP predict_input_hvp: input or direction is not finite")
+            return
+        end if
+
+        allocate(cross(n, 1), cross_jacobian(d, n), cross_hvp(d, n))
+        allocate(prior_hvp(d), zero_direction(d))
+        allocate(gradient_x1(d), gradient_x2(d), mixed(d, d))
+        allocate(gradient_x1_dot(d), gradient_x2_dot(d), mixed_dot(d, d))
+        zero_direction = 0.0_dp
+
+        ! Each training row contributes its covariance with the query, that
+        ! covariance's gradient in the query input, and its Hessian contracted
+        ! with `direction`. Holding the first argument still (a zero tangent
+        ! there) makes every `_dot` output a pure query-input derivative.
+        do i = 1, n
+            call kernel_input_third_direction(self%kernel, self%x_train(i, :), x, &
+                zero_direction, direction, value, gradient_x1, gradient_x2, mixed, &
+                value_dot, gradient_x1_dot, gradient_x2_dot, mixed_dot, status)
+            if (status%code /= FORTNUM_OK) return
+            if (self%components(i) == 0) then
+                cross(i, 1) = value
+                cross_jacobian(:, i) = gradient_x2
+                cross_hvp(:, i) = gradient_x2_dot
+            else
+                ! A derivative observation differentiates the first argument
+                ! once; the query derivatives it carries are one row of the
+                ! mixed Hessian and of that Hessian's directional derivative.
+                cross(i, 1) = gradient_x1(self%components(i))
+                cross_jacobian(:, i) = mixed(self%components(i), :)
+                cross_hvp(:, i) = mixed_dot(self%components(i), :)
+            end if
+        end do
+
+        ! The prior term k(x, x) has the query in both arguments, so its total
+        ! Hessian collects all four blocks. Moving both arguments along the same
+        ! direction and summing the two gradient tangents is exactly that sum.
+        call kernel_input_third_direction(self%kernel, x, x, direction, direction, &
+            value, gradient_x1, gradient_x2, mixed, value_dot, gradient_x1_dot, &
+            gradient_x2_dot, mixed_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        prior_hvp = gradient_x1_dot + gradient_x2_dot
+
+        allocate(solved, source=cross)
+        call self%factorization%solve(solved, status)
+        if (status%code /= FORTNUM_OK) return
+
+        ! J v projected into observation space, then pulled back through K^-1.
+        allocate(projected(n, 1))
+        do i = 1, n
+            projected(i, 1) = dot_product(cross_jacobian(:, i), direction)
+        end do
+        call self%factorization%solve(projected, status)
+        if (status%code /= FORTNUM_OK) return
+
+        mean_hvp = matmul(cross_hvp, self%alpha)
+        do j = 1, d
+            variance_hvp(j) = prior_hvp(j) &
+                - 2.0_dp*dot_product(cross_hvp(j, :), solved(:, 1)) &
+                - 2.0_dp*dot_product(cross_jacobian(j, :), projected(:, 1))
+        end do
+
+        if (any(.not. ieee_is_finite(mean_hvp)) .or. &
+            any(.not. ieee_is_finite(variance_hvp))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "derivative GP predict_input_hvp: nonfinite product")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_derivative_predict_input_hvp
 
     subroutine check_derivative_prediction_shapes(self, x, components, mean, variance, status)
         class(gp_derivative_regression_t), intent(in) :: self
