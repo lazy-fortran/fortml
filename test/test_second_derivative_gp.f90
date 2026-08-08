@@ -5,12 +5,13 @@ program test_second_derivative_gp
     use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_DOMAIN_ERROR, &
         FORTNUM_NOT_IMPLEMENTED
     use fortml_device, only: fortml_device_t, FORTML_DEVICE_CUDA
-    use fortml_kernels, only: kernel_t, make_rbf_kernel, make_matern32_kernel
+    use fortml_kernels, only: kernel_t, make_rbf_kernel, make_matern32_kernel, &
+        make_matern52_kernel
     use fortml_second_derivative_gaussian_process, only: second_derivative_gp_t
     implicit none
 
-    type(second_derivative_gp_t) :: model, bad_model
-    type(kernel_t) :: rbf, matern
+    type(second_derivative_gp_t) :: model, matern_model, bad_model
+    type(kernel_t) :: rbf, matern, matern52
     type(fortml_device_t) :: cuda
     type(fortnum_status_t) :: status
     real(dp) :: x(4, 1), y(4), query(4, 1), direction(4)
@@ -89,6 +90,57 @@ program test_second_derivative_gp
     rhs = dot_product(mean_bar, mean_dot) + dot_product(variance_bar, variance_dot)
     call check(status_ok(status) .and. abs(lhs - rhs) < 3.0e-6_dp, "input VJP duality", failures)
 
+    matern52 = make_matern52_kernel(1, 1.6_dp, 0.75_dp, status)
+    call check(status_ok(status), "Matern-5/2 kernel construction", failures)
+    call matern_model%fit(x, orders, y, matern52, 0.035_dp, status, 1.0e-10_dp)
+    call check(status_ok(status) .and. matern_model%fitted(), "order-two Matern-5/2 fit", failures)
+    deallocate(gram, alpha)
+    call matern_independent_setup(x, orders, y, 1.6_dp, 0.75_dp, 0.035_dp, gram, alpha)
+    do j = 1, 4
+        do i = 1, 4
+            cross(i, j) = matern52_oracle_cov(1.6_dp, 0.75_dp, x(i, 1), orders(i), &
+                query(j, 1), query_orders(j))
+        end do
+    end do
+    mean_expected = matmul(transpose(cross), alpha)
+    work = cross
+    do j = 1, 4
+        call oracle_solve(gram, work(:, j))
+    end do
+    do j = 1, 4
+        prior = matern52_oracle_cov(1.6_dp, 0.75_dp, query(j, 1), query_orders(j), &
+            query(j, 1), query_orders(j))
+        variance_expected(j) = prior - dot_product(cross(:, j), work(:, j))
+    end do
+    call matern_model%predict(query, query_orders, mean, variance, status)
+    max_error = max(maxval(abs(mean - mean_expected)), maxval(abs(variance - variance_expected)))
+    call check(status_ok(status) .and. max_error < 5.0e-10_dp, &
+        "independent Matern-5/2 prediction oracle", failures)
+
+    h = 2.0e-5_dp
+    call matern_model%predict_input_jvp(query, query_orders, direction, mean, mean_dot, variance, &
+        variance_dot, status)
+    call matern_model%predict(query + h*spread(direction, 2, 1), query_orders, mean_plus, variance_plus, status)
+    call matern_model%predict(query - h*spread(direction, 2, 1), query_orders, mean_minus, variance_minus, status)
+    call check(status_ok(status) .and. maxval(abs(mean_dot - (mean_plus - mean_minus)/(2.0_dp*h))) < 5.0e-5_dp &
+        .and. maxval(abs(variance_dot - (variance_plus - variance_minus)/(2.0_dp*h))) < 5.0e-5_dp, &
+        "Matern-5/2 input JVP central difference", failures)
+
+    call matern_model%predict_input_vjp(query, query_orders, mean_bar, variance_bar, query_bar, status)
+    lhs = dot_product(query_bar, direction)
+    rhs = dot_product(mean_bar, mean_dot) + dot_product(variance_bar, variance_dot)
+    call check(status_ok(status) .and. abs(lhs - rhs) < 8.0e-5_dp, &
+        "Matern-5/2 input VJP duality", failures)
+
+    query(1, 1) = x(3, 1)
+    query_orders(1) = 2
+    call matern_model%predict_input_jvp(query, query_orders, direction, mean, mean_dot, variance, &
+        variance_dot, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
+        "Matern-5/2 coincident fifth-derivative refusal", failures)
+    query(1, 1) = -0.8_dp
+    query_orders(1) = 0
+
     cuda%kind = FORTML_DEVICE_CUDA
     cuda%selected = .true.
     cuda%available = .true.
@@ -138,6 +190,25 @@ contains
         call oracle_solve(gram, alpha)
     end subroutine independent_setup
 
+    subroutine matern_independent_setup(x, orders, y, variance, lengthscale, noise, gram, alpha)
+        real(dp), intent(in) :: x(:, :), y(:), variance, lengthscale, noise
+        integer, intent(in) :: orders(:)
+        real(dp), allocatable, intent(out) :: gram(:, :), alpha(:)
+        integer :: i, j, n
+
+        n = size(x, 1)
+        allocate(gram(n, n), alpha(n))
+        do j = 1, n
+            do i = 1, n
+                gram(i, j) = matern52_oracle_cov(variance, lengthscale, x(i, 1), orders(i), &
+                    x(j, 1), orders(j))
+            end do
+            gram(j, j) = gram(j, j) + noise + 1.0e-10_dp
+        end do
+        alpha = y
+        call oracle_solve(gram, alpha)
+    end subroutine matern_independent_setup
+
     subroutine oracle_solve(matrix, rhs)
         real(dp), intent(in) :: matrix(:, :)
         real(dp), intent(inout) :: rhs(:)
@@ -186,6 +257,38 @@ contains
         base = variance*exp(-0.5_dp*d*d/(lengthscale*lengthscale))
         value = (-1.0_dp)**order2*oracle_distance_derivative(base, d, lengthscale, order1 + order2)
     end function oracle_cov
+
+    pure real(dp) function matern52_oracle_cov(variance, lengthscale, x1, order1, x2, order2) result(value)
+        real(dp), intent(in) :: variance, lengthscale, x1, x2
+        integer, intent(in) :: order1, order2
+        real(dp), parameter :: root_five = 2.2360679774997896964_dp
+        real(dp) :: tau, radius, base, radial_derivative
+        integer :: total_order, sign_tau
+
+        tau = x1 - x2
+        radius = abs(tau)/lengthscale
+        base = variance*exp(-root_five*radius)
+        total_order = order1 + order2
+        select case (total_order)
+        case (0)
+            radial_derivative = 1.0_dp + root_five*radius + (5.0_dp/3.0_dp)*radius*radius
+        case (1)
+            radial_derivative = -(5.0_dp/3.0_dp)*radius*(1.0_dp + root_five*radius)
+        case (2)
+            radial_derivative = (5.0_dp/3.0_dp)*(5.0_dp*radius*radius - root_five*radius - 1.0_dp)
+        case (3)
+            radial_derivative = (25.0_dp/3.0_dp)*radius*(3.0_dp - root_five*radius)
+        case (4)
+            radial_derivative = (25.0_dp/3.0_dp)*(3.0_dp - 5.0_dp*root_five*radius + 5.0_dp*radius*radius)
+        case default
+            radial_derivative = 0.0_dp
+        end select
+        sign_tau = 1
+        if (tau < 0.0_dp) sign_tau = -1
+        if (mod(total_order, 2) == 1) radial_derivative = sign_tau*radial_derivative
+        value = base*radial_derivative/lengthscale**total_order
+        if (mod(order2, 2) == 1) value = -value
+    end function matern52_oracle_cov
 
     pure real(dp) function oracle_distance_derivative(base, d, lengthscale, order) result(value)
         real(dp), intent(in) :: base, d, lengthscale

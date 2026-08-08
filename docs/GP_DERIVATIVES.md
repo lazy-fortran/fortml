@@ -52,9 +52,11 @@ input/parameter products have generated kernels and independent oracles. A
 mixed HVP never silently central-differences the likelihood gradient.
 The general derivative-GP type still stops at value/first-derivative
 components. A bounded companion, `second_derivative_gp_t`, covers mixed
-value/first/second-derivative observations for a scalar one-dimensional RBF
-kernel, including order-four covariance blocks, order-five query JVP/VJP
-products, and dense latent joint covariance. See
+value/first/second-derivative observations for scalar one-dimensional RBF and
+Matérn-5/2 kernels, including order-four covariance blocks, order-five query
+JVP/VJP products, and dense latent joint covariance. Matérn-5/2 order-five
+products at coincident inputs return `FORTNUM_NOT_IMPLEMENTED` because the
+fifth derivative is discontinuous. See
 [`SECOND_DERIVATIVE_GP.md`](SECOND_DERIVATIVE_GP.md) for its explicit order
 vector and independent oracle. Higher orders, other kernels, operator-valued
 outputs, sparse/variational derivative inference, and resident CUDA
