@@ -50,11 +50,17 @@ spectral-mixture, user-formula, and other leaves return
 `FORTNUM_NOT_IMPLEMENTED` for a mixed HVP until their required second
 input/parameter products have generated kernels and independent oracles. A
 mixed HVP never silently central-differences the likelihood gradient.
-Second-derivative observations, operator-valued outputs, sparse/variational
-derivative inference, and resident CUDA covariance/factorization kernels are
-not implemented. `device_supported(FORTML_DEVICE_CUDA)` is false and the
-device prediction/covariance entry points return `FORTNUM_NOT_IMPLEMENTED`
-without a host fallback.
+The general derivative-GP type still stops at value/first-derivative
+components. A bounded companion, `second_derivative_gp_t`, covers mixed
+value/first/second-derivative observations for a scalar one-dimensional RBF
+kernel, including order-four covariance blocks, order-five query JVP/VJP
+products, and dense latent joint covariance. See
+[`SECOND_DERIVATIVE_GP.md`](SECOND_DERIVATIVE_GP.md) for its explicit order
+vector and independent oracle. Higher orders, other kernels, operator-valued
+outputs, sparse/variational derivative inference, and resident CUDA
+covariance/factorization kernels remain open. `device_supported(FORTML_DEVICE_CUDA)`
+is false for the bounded companion and its device prediction/covariance entry
+points return `FORTNUM_NOT_IMPLEMENTED` without a host fallback.
 
 `joint_covariance_jvp` and `joint_covariance_vjp` provide the same packed
 kernel-log/noise-log derivative contract for the dense latent posterior

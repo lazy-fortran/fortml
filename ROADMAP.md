@@ -1085,10 +1085,21 @@ when a lower-level primitive already exists.
   class order, parameter/input finite differences, JVP/VJP duality, and typed
   CUDA refusals; see `docs/GP_ORDINAL_CLASSIFICATION.md`. Native cumulative
   likelihoods, optimized cut points, and resident GPU inference remain open.
-- [ ] Derivative observations for every supported smooth kernel, mixed orders,
-  vector fields, Hessian observations, operator-valued outputs, analytic
-  third-order query products, and covariance products over value/derivative
-  blocks.
+- [x] Add `second_derivative_gp_t` as a bounded exact scalar 1-D RBF reference
+  for mixed value/first/second-derivative observations and predictions. The
+  explicit order vector uses `0:2`; exact covariance blocks reach total
+  derivative order four, query input JVP/VJP products use the fifth derivative,
+  and dense latent joint covariance is available on CPU. The independent
+  `test_second_derivative_gp` oracle checks posterior moments, mixed covariance,
+  central-difference JVPs, adjoint duality, and typed CUDA/non-RBF/order refusal
+  boundaries; see `docs/SECOND_DERIVATIVE_GP.md` and the release benchmark
+  `fortml-bench/results/SECOND_DERIVATIVE_GP.md`. Hyperparameter products,
+  arbitrary kernels/dimensions, higher orders, operator-valued outputs, and
+  resident derivative covariance/factorization remain open.
+- [ ] Generalize derivative observations to every supported smooth kernel,
+  mixed orders beyond two, vector fields, Hessian observations, registered
+  linear operators, operator-valued outputs, analytic higher-order query
+  products, and covariance products over value/derivative blocks.
 - [ ] GP classification optimization beyond the implemented binary/shared-kernel
   adapters: likelihood parameters, independent per-class blocks, multiclass
   likelihoods beyond one-vs-rest, calibration, Laplace evidence corrections,
@@ -2575,8 +2586,13 @@ state phases are reported separately.
   posterior covariance, packed parameter gradients, and query adjoints;
   mixed parameter HVPs remain a typed `FORTNUM_NOT_IMPLEMENTED` refusal until
   fourth input/parameter products are generated.
-- [ ] Extend derivative observations to second derivatives only for kernels with
-  the required smoothness, with explicit refusal at singular coincident cases.
+- [x] Add the bounded scalar 1-D RBF second-derivative observation reference
+  `second_derivative_gp_t`. Mixed orders `0:2`, exact order-four covariance
+  blocks, order-five query JVP/VJP products, dense latent covariance, and
+  explicit non-RBF/order/CUDA refusals are independently checked; see
+  `docs/SECOND_DERIVATIVE_GP.md` and the release benchmark lane. General
+  kernels, higher orders, operators, and resident derivative solves remain
+  open.
 - [ ] Add scalar objectives and parameter gradients for multi-output, sparse
   variational, local, SKI, Lanczos, and matrix-free GP paths. Inducing-point and
   local-gate training remain separate parameter blocks.
