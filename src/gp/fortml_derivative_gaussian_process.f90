@@ -1516,8 +1516,8 @@ contains
             covariance_parameter, covariance_parameter_dot, status)
         !! Return one derivative-observation covariance block and its
         !! parameter/directional products.  The HVP needs
-        !! ``d C_p / d direction`` in addition to ``C_p``.  RBF, linear, and
-        !! constant leaves have closed forms; sums/products use exact product
+        !! ``d C_p / d direction`` in addition to ``C_p``.  RBF, linear, constant,
+        !! and polynomial leaves have closed forms; sums/products use exact product
         !! rules.  Other leaves deliberately refuse until their fourth-order
         !! input/parameter products are generated and independently checked.
         type(kernel_t), intent(in) :: kernel

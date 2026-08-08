@@ -23,7 +23,7 @@ the requested pair is smooth and finite. A refusal is a typed
 | Linear, constant | Yes | Yes; mixed-observation HVPs are analytic | Yes | none |
 | Polynomial | Yes when the positive polynomial base is finite | Gradient/JVP/VJP and analytic mixed HVP (all four logarithmic parameters) | Yes when the positive base is finite | `FORTNUM_DOMAIN_ERROR` for a nonpositive base |
 | Spectral mixture | Yes | Gradient/JVP/VJP for packed log-weights, log-scales, and signed means; mixed HVP refusal | Yes | mixed HVP `FORTNUM_NOT_IMPLEMENTED` until fourth input/parameter products exist |
-| Sum/product composites | Yes when every child supports the requested product | Gradient/JVP/VJP for every supported child; mixed HVP analytic only for RBF/linear/constant-only trees | Yes when every child supports it | Unsupported mixed HVP child returns `FORTNUM_NOT_IMPLEMENTED` |
+| Sum/product composites | Yes when every child supports the requested product | Gradient/JVP/VJP for every supported child; mixed HVP analytic only for RBF/linear/constant/polynomial-only trees | Yes when every child supports it | Unsupported mixed HVP child returns `FORTNUM_NOT_IMPLEMENTED` |
 | Validated user formula | Yes for formulas with defined input derivatives | Variance and formula input products where defined; mixed HVP refusal | Not implemented | `push_distance` additionally refuses at coincident points |
 | White noise | Value-only | Value-only | Not a differentiable query covariance | Any derivative observation is refused as nonsmooth |
 
@@ -34,7 +34,7 @@ four logarithmic polynomial parameters. `log_marginal_likelihood_vjp` and its
 packed kernel/noise pullback. For value-only observation lists,
 `hyperparameter_hvp` uses the analytic kernel parameter-HVP and differentiated
 Cholesky solve. For mixed value/first-derivative lists, the HVP is analytic for
-RBF, linear, constant, and sums/products built entirely from those leaves;
+RBF, linear, constant, polynomial, and sums/products built entirely from those leaves;
 the implementation differentiates the dense covariance, Cholesky solve, and
 each parameter covariance block in one direction. Polynomial mixed HVPs now
 use a closed-form positive-base expression, including the degree-log tangent
