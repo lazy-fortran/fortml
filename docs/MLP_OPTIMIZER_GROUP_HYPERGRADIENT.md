@@ -9,26 +9,26 @@ fixed full-batch SGD trajectory packs
 ```
 
 Group names and ranges are discrete metadata captured at initialization.
-Every update uses the same post-optimizer scaling as `mlp_train`: parameters in
+Every update uses the same post-optimizer scaling as `mlp_train`. Parameters in
 group `i` receive `multiplier_i` times the shared SGD delta, while uncovered
 parameters retain multiplier one. The outer coordinates are differentiable
 through the MLP analytic HVP, the learning rate, L2, and every group
 multiplier. `value_gradient`, `jvp`, `vjp`, and the FortOpt bounded L-BFGS-B
-adapter share one deterministic objective; no finite-difference optimizer
+adapter share one deterministic objective. No finite-difference optimizer
 fallback is used. The public `hvp` entry point is equally explicit: it
 returns a zero product with `FORTNUM_NOT_IMPLEMENTED` until third network
 derivatives are available. Shape or non-finite inputs return
-`FORTNUM_DOMAIN_ERROR`; no numerical hyper-HVP is hidden behind the API.
+`FORTNUM_DOMAIN_ERROR`. No numerical hyper-HVP is hidden behind the API.
 
 The adapter also accepts a fixed `gradient_clip_norm` and applies the same
 global-norm clipping order as `mlp_train`, after the L2 term and before grouped
 scaling. The packed derivatives propagate through the clipped branch for a
 fixed active set. A trajectory that lands on the clipping boundary returns a
-typed `FORTNUM_NOT_IMPLEMENTED` instead of assigning a false derivative; the
+typed `FORTNUM_NOT_IMPLEMENTED` instead of assigning a false derivative. The
 clip norm itself is not an outer coordinate. Momentum, Adam-family state,
 schedules, minibatch cursors, and resident CUDA group state remain separate
 capability boundaries. CUDA requests return typed
-`FORTNUM_NOT_IMPLEMENTED`; invalid or overlapping ranges are domain errors.
+`FORTNUM_NOT_IMPLEMENTED`. Invalid or overlapping ranges are domain errors.
 
 ```fortran
 use fortml_mlp_training, only: mlp_optimizer_group_t
