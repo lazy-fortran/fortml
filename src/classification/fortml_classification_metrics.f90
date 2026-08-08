@@ -24,6 +24,7 @@ module fortml_classification_metrics
     public :: classification_binary_matthews
     public :: classification_calibration_error
     public :: classification_maximum_calibration_error
+    public :: classification_reliability_diagram
     public :: classification_multilabel_precision_recall_f1
     public :: classification_multilabel_precision_recall_fbeta
     public :: classification_multilabel_probability_metrics
@@ -1320,39 +1321,47 @@ contains
             expected_error, value, status, sample_weight)
     end subroutine classification_maximum_calibration_error
 
-    subroutine calibration_errors(probabilities, labels, classes, bins, expected, &
-            maximum, status, sample_weight)
+    subroutine classification_reliability_diagram(probabilities, labels, classes, &
+            bins, mean_confidence, mean_accuracy, bin_weight, status, sample_weight)
+        !! Return the weighted reliability-curve points for equal-width bins.
+        !!
+        !! ``mean_confidence`` and ``mean_accuracy`` are zero for empty bins;
+        !! ``bin_weight`` is the total sample mass in each bin.  Confidence is
+        !! the normalized maximum class probability and ties use the first
+        !! class in the supplied order, matching the calibration-error metrics.
         real(dp), intent(in) :: probabilities(:, :)
         integer, intent(in) :: labels(:), classes(:), bins
-        real(dp), intent(out) :: expected, maximum
+        real(dp), intent(out) :: mean_confidence(:), mean_accuracy(:), bin_weight(:)
         type(fortnum_status_t), intent(out) :: status
         real(dp), intent(in), optional :: sample_weight(:)
-        real(dp), allocatable :: bin_weight(:), confidence_sum(:), correct_sum(:)
-        real(dp) :: denominator, row_sum, confidence, weight, gap
+        real(dp) :: denominator, row_sum, confidence, weight
         integer :: i, j, bin, predicted, class_index
 
-        expected = 0.0_dp
-        maximum = 0.0_dp
-        call validate_probability_inputs(probabilities, labels, classes, status, &
-            "calibration error")
-        if (status%code /= FORTNUM_OK) return
+        mean_confidence = 0.0_dp
+        mean_accuracy = 0.0_dp
+        bin_weight = 0.0_dp
         if (bins < 1) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
-                "calibration error: bin count must be positive")
+                "reliability diagram: bin count must be positive")
             return
         end if
-        call validate_weights(size(labels), sample_weight, denominator, status, &
-            "calibration error")
+        if (size(mean_confidence) /= bins .or. size(mean_accuracy) /= bins .or. &
+                size(bin_weight) /= bins) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "reliability diagram: output shape is invalid")
+            return
+        end if
+        call validate_probability_inputs(probabilities, labels, classes, status, &
+            "reliability diagram")
         if (status%code /= FORTNUM_OK) return
-        allocate(bin_weight(bins), confidence_sum(bins), correct_sum(bins))
-        bin_weight = 0.0_dp
-        confidence_sum = 0.0_dp
-        correct_sum = 0.0_dp
+        call validate_weights(size(labels), sample_weight, denominator, status, &
+            "reliability diagram")
+        if (status%code /= FORTNUM_OK) return
         do i = 1, size(labels)
             class_index = class_position(labels(i), classes)
             if (class_index == 0) then
                 call status_set(status, FORTNUM_DOMAIN_ERROR, &
-                    "calibration error: label is not in classes")
+                    "reliability diagram: label is not in classes")
                 return
             end if
             row_sum = sum(probabilities(i, :))
@@ -1368,14 +1377,47 @@ contains
             weight = 1.0_dp
             if (present(sample_weight)) weight = sample_weight(i)
             bin_weight(bin) = bin_weight(bin) + weight
-            confidence_sum(bin) = confidence_sum(bin) + weight*confidence
-            if (predicted == class_index) correct_sum(bin) = &
-                correct_sum(bin) + weight
+            mean_confidence(bin) = mean_confidence(bin) + weight*confidence
+            if (predicted == class_index) mean_accuracy(bin) = &
+                mean_accuracy(bin) + weight
         end do
         do bin = 1, bins
             if (bin_weight(bin) > 0.0_dp) then
-                gap = abs(correct_sum(bin)/bin_weight(bin) - &
-                    confidence_sum(bin)/bin_weight(bin))
+                mean_confidence(bin) = mean_confidence(bin)/bin_weight(bin)
+                mean_accuracy(bin) = mean_accuracy(bin)/bin_weight(bin)
+            end if
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine classification_reliability_diagram
+
+    subroutine calibration_errors(probabilities, labels, classes, bins, expected, &
+            maximum, status, sample_weight)
+        real(dp), intent(in) :: probabilities(:, :)
+        integer, intent(in) :: labels(:), classes(:), bins
+        real(dp), intent(out) :: expected, maximum
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
+        real(dp), allocatable :: bin_weight(:), mean_confidence(:), mean_accuracy(:)
+        real(dp) :: denominator, gap
+        integer :: bin
+
+        expected = 0.0_dp
+        maximum = 0.0_dp
+        if (bins < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "calibration error: bin count must be positive")
+            return
+        end if
+        allocate(bin_weight(bins), mean_confidence(bins), mean_accuracy(bins))
+        call classification_reliability_diagram(probabilities, labels, classes, &
+            bins, mean_confidence, mean_accuracy, bin_weight, status, sample_weight)
+        if (status%code /= FORTNUM_OK) return
+        call validate_weights(size(labels), sample_weight, denominator, status, &
+            "calibration error")
+        if (status%code /= FORTNUM_OK) return
+        do bin = 1, bins
+            if (bin_weight(bin) > 0.0_dp) then
+                gap = abs(mean_accuracy(bin) - mean_confidence(bin))
                 expected = expected + bin_weight(bin)/denominator*gap
                 maximum = max(maximum, gap)
             end if

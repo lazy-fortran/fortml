@@ -786,6 +786,12 @@ deterministic first-maximum predictions, equal-width bins, and optional
 sample weights. Empty bins do not contribute, and confidence one belongs to
 the final bin. Shape, duplicate-class, unknown-label, nonfinite, negative-
 weight, invalid-bin, and zero-weight-mass cases return a domain status.
+`classification_reliability_diagram(probabilities, labels, classes, bins,
+mean_confidence, mean_accuracy, bin_weight, status[, sample_weight])` exposes
+the corresponding per-bin curve points for plotting or calibration-aware
+model selection. Empty bins return zero confidence and accuracy with zero
+weight; populated bins return weighted means using the same normalized
+confidence and deterministic tie policy.
 
 `classification_multilabel_precision_recall_f1` evaluates binary indicator
 matrices with `CLASSIFICATION_AVERAGE_MICRO`,
@@ -1392,6 +1398,7 @@ input derivative is required.  This boundary is covered by
 | Constructor | Features | Active parameter vector |
 | --- | --- | --- |
 | `make_polynomial_basis(n_inputs,degree,status[,include_intercept])` | Separate powers 1 through `degree` for each input | Empty |
+| `make_polynomial_interaction_basis(n_inputs,degree,status[,include_intercept])` | All nonconstant monomials through total degree `degree`, in deterministic graded order | Empty |
 | `make_fourier_basis(n_inputs,frequencies,status[,include_intercept])` | Sine/cosine pair for each positive frequency and input | Log frequencies, column-major |
 | `make_radial_basis(n_inputs,centers,scales,status[,include_intercept])` | One anisotropic Gaussian feature per center | Centers followed by log scales |
 | `make_spline_basis(n_inputs,order,breakpoints,status[,include_intercept])` | B-spline basis functions for each input | Empty |
@@ -1410,6 +1417,11 @@ declare second derivatives. The intercept column has no active parameter.
 
 `BASIS_POLYNOMIAL`, `BASIS_FOURIER`, `BASIS_RADIAL`, `BASIS_SPLINE`, and
 `BASIS_CALLBACK` are the public family codes used by extension and test code.
+
+`make_polynomial_interaction_basis` is the interaction-aware polynomial
+variant. For two inputs and degree two its optional-intercept feature order is
+`1, x1, x2, x1**2, x1*x2, x2**2`; its value, JVP, VJP, and HVP products are
+analytic and use no finite-difference fallback.
 
 Callback initialization takes explicit value, JVP, and VJP procedures matching
 `basis_value_callback`, `basis_jvp_callback`, and `basis_vjp_callback`. A

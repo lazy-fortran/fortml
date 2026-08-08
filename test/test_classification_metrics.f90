@@ -4,7 +4,7 @@ program test_classification_metrics
         classification_precision_recall_f1, classification_log_loss, &
         classification_top_k_accuracy, classification_brier_score, &
         classification_binary_matthews, classification_calibration_error, &
-        classification_maximum_calibration_error
+        classification_maximum_calibration_error, classification_reliability_diagram
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_ok
     implicit none
@@ -145,6 +145,7 @@ contains
             0.10_dp, 0.30_dp, 0.50_dp, 0.30_dp], [4, 3])
         real(dp), parameter :: weights(4) = [1.0_dp, 2.0_dp, 1.0_dp, 2.0_dp]
         real(dp) :: expected_error, maximum_error
+        real(dp) :: mean_confidence(2), mean_accuracy(2), bin_weight(2)
 
         call classification_calibration_error(probabilities, labels, classes, 2, &
             expected_error, status)
@@ -162,6 +163,26 @@ contains
         call check(status_ok(status), "weighted calibration error status", failures)
         call check(abs(expected_error - 0.1_dp) < 1.0e-14_dp, &
             "weighted calibration error hand oracle", failures)
+
+        call classification_reliability_diagram(probabilities, labels, classes, 2, &
+            mean_confidence, mean_accuracy, bin_weight, status)
+        call check(status_ok(status), "reliability diagram status", failures)
+        call check(all(abs(mean_confidence - [0.0_dp, 0.575_dp]) < 1.0e-14_dp), &
+            "reliability confidence hand oracle", failures)
+        call check(all(abs(mean_accuracy - [0.0_dp, 0.75_dp]) < 1.0e-14_dp), &
+            "reliability accuracy hand oracle", failures)
+        call check(all(abs(bin_weight - [0.0_dp, 4.0_dp]) < 1.0e-14_dp), &
+            "reliability mass hand oracle", failures)
+
+        call classification_reliability_diagram(probabilities, labels, classes, 2, &
+            mean_confidence, mean_accuracy, bin_weight, status, sample_weight=weights)
+        call check(status_ok(status), "weighted reliability diagram status", failures)
+        call check(abs(mean_confidence(2) - (3.4_dp/6.0_dp)) < 1.0e-14_dp, &
+            "weighted reliability confidence oracle", failures)
+        call check(abs(mean_accuracy(2) - (4.0_dp/6.0_dp)) < 1.0e-14_dp, &
+            "weighted reliability accuracy oracle", failures)
+        call check(abs(bin_weight(2) - 6.0_dp) < 1.0e-14_dp, &
+            "weighted reliability mass oracle", failures)
 
         call classification_calibration_error(reshape([0.5_dp, 1.0_dp, &
             0.5_dp, 0.0_dp, 0.0_dp, 0.0_dp], [2, 3]), [1, 0], classes, 2, &
@@ -196,6 +217,9 @@ contains
         call classification_calibration_error(reshape([0.5_dp, 0.5_dp], [1, 2]), &
             [2], [0, 1], 2, value, status)
         call check(.not. status_ok(status), "unknown calibration label refusal", failures)
+        call classification_reliability_diagram(reshape([0.5_dp, 0.5_dp], [1, 2]), &
+            [0], [0, 1], 2, [0.0_dp], mean_accuracy, bin_weight, status)
+        call check(.not. status_ok(status), "reliability output shape refusal", failures)
     end subroutine test_refusals
 
 end program test_classification_metrics
