@@ -1,13 +1,13 @@
 Verification date: 2026-08-08
-FortML revision: 1f71052
+FortML revision: 89f6341
 FortAD dependency: origin/main a423904da02ece090a10248ffff50d82e3f8f7a8 (code clean; local FortAD ROADMAP edit present)
 FortNum dependency: clean origin/main 38bc0e578ec5c6c0e636e8fdd3844f54f9e3e473
 Command: fo clean; fo build --flag -O3 (twice); fo test; fo lint
 Worktree: /mnt/storage/code/lazy-fortran/fortml
-Static: OK (396 modules, 396 changed, 396 affected)
-First build: OK (806 units)
-Second build: OK (806 units)
-Tests: OK (181/181)
+Static: OK (400 modules, 400 changed, 400 affected)
+First build: OK (808 units)
+Second build: OK (808 units)
+Tests: OK (183/183)
 Lint: OK (0 unused imports; non-fatal compiler warnings remain)
 Result: All static, build, behavioral, and lint stages passed
 Warnings: existing non-fatal GNU compiler warnings, primarily
