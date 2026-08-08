@@ -24,10 +24,13 @@ module fortml_xgboost
     integer, parameter, public :: XGB_MISSING_RIGHT = 3
     integer, parameter, public :: XGB_TREE_EXACT = 1
     integer, parameter, public :: XGB_TREE_HIST = 2
+    integer, parameter, public :: XGB_CATEGORICAL_NONE = 0
+    integer, parameter, public :: XGB_CATEGORICAL_ORDERED = 1
     character(*), parameter, public :: XGB_MODEL_TEXT_MAGIC = &
         "FORTML_XGBOOST_TEXT"
-    integer, parameter, public :: XGB_MODEL_TEXT_SCHEMA_VERSION = 2
+    integer, parameter, public :: XGB_MODEL_TEXT_SCHEMA_VERSION = 3
     integer, parameter :: XGB_MAX_SERIALIZED_NODES = 1000000
+    integer, parameter :: XGB_MAX_CATEGORICAL_VALUES = 64
 
     public :: xgb_pairwise_loss, xgb_pairwise_derivatives
     public :: xgb_histogram_cut_positions
@@ -72,6 +75,13 @@ module fortml_xgboost
         character(len=16) :: missing_policy = "error"
         character(len=16) :: tree_method = "exact"
         integer :: max_bin = 256
+        !! Integer-coded categorical feature indices (one-based, sorted).
+        !! The bounded ordered-gradient policy is selected with
+        !! `categorical_policy="ordered"`; categories beyond
+        !! `categorical_max_categories` are refused explicitly.
+        character(len=16) :: categorical_policy = "none"
+        integer :: categorical_max_categories = 8
+        integer, allocatable :: categorical_features(:)
         !! Evaluate an optional validation set after every boosting round.
         !! A positive value stops after this many consecutive rounds without
         !! an improvement larger than `early_stopping_min_delta`.
@@ -109,6 +119,8 @@ module fortml_xgboost
         real(dp), allocatable :: node_cover(:)
         logical, allocatable :: leaf(:)
         logical, allocatable :: missing_left(:)
+        logical, allocatable :: categorical(:)
+        integer, allocatable :: category_count(:), category_values(:, :)
     end type xgb_tree_t
 
     !> Second-order boosting for squared, squared-log (RMSLE), binary
@@ -142,6 +154,9 @@ module fortml_xgboost
         real(dp) :: best_validation_loss_value = huge(1.0_dp)
         logical :: early_stopped_flag = .false.
         integer :: missing_code = XGB_MISSING_ERROR
+        integer :: categorical_policy_code = XGB_CATEGORICAL_NONE
+        integer :: categorical_max_categories_value = 0
+        integer, allocatable :: categorical_features(:)
         integer, allocatable :: monotone_constraints(:)
         integer, allocatable :: interaction_groups(:)
         type(xgb_tree_t), allocatable :: estimators(:)
@@ -195,6 +210,9 @@ module fortml_xgboost
         procedure, public :: tree_method => xgb_tree_method
         procedure, public :: max_bin_count => xgb_max_bin_count
         procedure, public :: accepts_missing => xgb_accepts_missing
+        procedure, public :: categorical_policy => xgb_categorical_policy
+        procedure, public :: categorical_max_categories => xgb_categorical_max_categories
+        procedure, public :: categorical_feature => xgb_categorical_feature
         procedure, public :: monotone_constraint => xgb_monotone_constraint
         procedure, public :: interaction_group => xgb_interaction_group
         procedure, public :: fitted => xgb_fitted
@@ -251,7 +269,8 @@ contains
         type(xgb_tree_t), allocatable :: best_estimators(:), retained_estimators(:)
         real(dp) :: mean_target, rate, weight_sum
         real(dp) :: validation_loss, best_validation_loss
-        integer :: objective_code, missing_code, tree_method_code, i, n_samples
+        integer :: objective_code, missing_code, tree_method_code, categorical_policy_code
+        integer :: i, n_samples
         integer :: n_features, n_validation, completed_estimators
         integer :: best_iteration, stale_rounds
         integer(int64) :: sampling_state
@@ -320,6 +339,19 @@ contains
                 "xgboost fit: tree_method must be exact or hist")
             return
         end if
+        categorical_policy_code = parse_categorical_policy(settings%categorical_policy)
+        if (categorical_policy_code < 0) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost fit: categorical_policy must be none or ordered")
+            return
+        end if
+        if (categorical_policy_code == 0 .and. allocated(settings%categorical_features)) then
+            if (size(settings%categorical_features) > 0) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "xgboost fit: categorical_features require categorical_policy=ordered")
+                return
+            end if
+        end if
 
         n_samples = size(x, 1)
         n_features = size(x, 2)
@@ -356,10 +388,24 @@ contains
             .not. ieee_is_finite(settings%colsample_bytree) .or. &
             settings%colsample_bytree <= 0.0_dp .or. &
             settings%colsample_bytree > 1.0_dp .or. settings%seed <= 0_int64 .or. &
-            (tree_method_code == XGB_TREE_HIST .and. settings%max_bin < 2)) then
+            (tree_method_code == XGB_TREE_HIST .and. settings%max_bin < 2) .or. &
+            (categorical_policy_code == XGB_CATEGORICAL_ORDERED .and. &
+             (settings%categorical_max_categories < 2 .or. &
+              settings%categorical_max_categories > XGB_MAX_CATEGORICAL_VALUES))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "xgboost fit: invalid dimensions or hyperparameters")
             return
+        end if
+        if (categorical_policy_code == XGB_CATEGORICAL_ORDERED) then
+            if (.not. allocated(settings%categorical_features) .or. &
+                size(settings%categorical_features) < 1 .or. &
+                any(settings%categorical_features < 1) .or. &
+                any(settings%categorical_features > n_features) .or. &
+                has_duplicate_sorted_index(settings%categorical_features)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "xgboost fit: categorical_features must be unique one-based feature indices")
+                return
+            end if
         end if
         if (allocated(settings%monotone_constraints)) then
             if (size(settings%monotone_constraints) /= n_features .or. &
@@ -382,6 +428,22 @@ contains
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "xgboost fit: inputs must be finite or IEEE NaN and targets finite")
             return
+        end if
+        if (categorical_policy_code == XGB_CATEGORICAL_ORDERED) then
+            if (.not. valid_categorical_values(x, settings%categorical_features, &
+                    settings%categorical_max_categories)) then
+                call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                    "xgboost fit: categorical values must be finite integer codes within max category bound")
+                return
+            end if
+            if (have_validation) then
+                if (.not. valid_categorical_values(validation_x, settings%categorical_features, &
+                        settings%categorical_max_categories)) then
+                    call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                        "xgboost fit: validation categorical values exceed integer/max-category boundary")
+                    return
+                end if
+            end if
         end if
         if (have_validation) then
             if (any((.not. ieee_is_finite(validation_x)) .and. &
@@ -646,6 +708,14 @@ contains
             self%objective_parameter = 0.0_dp
         end if
         self%missing_code = missing_code
+        self%categorical_policy_code = categorical_policy_code
+        self%categorical_max_categories_value = settings%categorical_max_categories
+        if (allocated(settings%categorical_features)) then
+            allocate(self%categorical_features(size(settings%categorical_features)))
+            self%categorical_features = settings%categorical_features
+        else
+            allocate(self%categorical_features(0))
+        end if
         allocate(self%monotone_constraints(n_features))
         self%monotone_constraints = 0
         if (allocated(settings%monotone_constraints)) then
@@ -687,7 +757,7 @@ contains
         type(xgb_tree_t), allocatable :: expanded_estimators(:), best_estimators(:)
         integer, allocatable :: sample_index(:)
         logical, allocatable :: feature_mask(:)
-        integer :: objective_code, tree_method_code, missing_code
+        integer :: objective_code, tree_method_code, missing_code, categorical_policy_code
         integer :: n_samples, n_features, n_validation, start_estimators
         integer :: target_estimators, i, completed_estimators, best_iteration, stale_rounds
         integer(int64) :: sampling_state
@@ -696,7 +766,8 @@ contains
 
         if (.not. self%initialized .or. .not. allocated(self%estimators) .or. &
             .not. allocated(self%monotone_constraints) .or. &
-            .not. allocated(self%interaction_groups)) then
+            .not. allocated(self%interaction_groups) .or. &
+            .not. allocated(self%categorical_features)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "xgboost warm start: source is not a valid fitted model")
             return
@@ -719,6 +790,12 @@ contains
         objective_code = parse_objective(settings%objective)
         tree_method_code = parse_tree_method(settings%tree_method)
         missing_code = parse_missing_policy(settings%missing_policy)
+        categorical_policy_code = parse_categorical_policy(settings%categorical_policy)
+        if (categorical_policy_code < 0) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost warm start: categorical_policy must be none or ordered")
+            return
+        end if
         is_ranking = self%objective_code == XGB_OBJECTIVE_RANK_PAIRWISE
         if (objective_code /= self%objective_code .or. tree_method_code /= self%tree_method_code .or. &
             missing_code /= self%missing_code .or. settings%max_bin /= self%max_bin .or. &
@@ -729,9 +806,23 @@ contains
             settings%min_child_weight /= self%min_child_weight_value .or. &
             settings%subsample /= self%subsample_value .or. &
             settings%colsample_bytree /= self%colsample_bytree_value .or. &
-            settings%seed /= self%seed_value) then
+            settings%seed /= self%seed_value .or. categorical_policy_code /= self%categorical_policy_code .or. &
+            settings%categorical_max_categories /= self%categorical_max_categories_value) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "xgboost warm start: objective, tree, sampling, or regularisation controls differ")
+            return
+        end if
+        if (categorical_policy_code == XGB_CATEGORICAL_ORDERED) then
+            if (.not. allocated(settings%categorical_features) .or. &
+                size(settings%categorical_features) /= size(self%categorical_features) .or. &
+                any(settings%categorical_features /= self%categorical_features)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "xgboost warm start: categorical feature metadata differs from the fitted model")
+                return
+            end if
+        else if (size(self%categorical_features) /= 0) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost warm start: categorical policy differs from the fitted model")
             return
         end if
         if (objective_code == 0 .or. tree_method_code == 0 .or. missing_code < 0) then
@@ -850,6 +941,22 @@ contains
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "xgboost warm start: training inputs are invalid")
             return
+        end if
+        if (categorical_policy_code == XGB_CATEGORICAL_ORDERED) then
+            if (.not. valid_categorical_values(x, settings%categorical_features, &
+                    settings%categorical_max_categories)) then
+                call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                    "xgboost warm start: categorical values exceed integer/max-category boundary")
+                return
+            end if
+            if (have_validation) then
+                if (.not. valid_categorical_values(validation_x, settings%categorical_features, &
+                        settings%categorical_max_categories)) then
+                    call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                        "xgboost warm start: validation categorical values exceed integer/max-category boundary")
+                    return
+                end if
+            end if
         end if
         if (have_validation) then
             if (any((.not. ieee_is_finite(validation_x)) .and. &
@@ -1729,6 +1836,11 @@ contains
                 "xgboost predict_jvp: model, input, or output shape is invalid")
             return
         end if
+        if (self%categorical_policy_code == XGB_CATEGORICAL_ORDERED) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "xgboost predict_jvp: categorical feature tangents are discrete")
+            return
+        end if
         if (.not. valid_query_values(self%missing_code, x) .or. &
             any(.not. ieee_is_finite(x_dot))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -1782,6 +1894,11 @@ contains
                 "xgboost predict_vjp: model, cotangent, or output shape is invalid")
             return
         end if
+        if (self%categorical_policy_code == XGB_CATEGORICAL_ORDERED) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "xgboost predict_vjp: categorical feature cotangents are discrete")
+            return
+        end if
         if (.not. valid_query_values(self%missing_code, x) .or. &
             any(.not. ieee_is_finite(output_bar))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -1824,7 +1941,8 @@ contains
 
         if (.not. self%initialized .or. .not. allocated(self%estimators) .or. &
             .not. allocated(self%monotone_constraints) .or. &
-            .not. allocated(self%interaction_groups)) then
+            .not. allocated(self%interaction_groups) .or. &
+            .not. allocated(self%categorical_features)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "xgboost slice: source is not a valid fitted ensemble")
             return
@@ -1870,10 +1988,14 @@ contains
         candidate%best_validation_loss_value = self%best_validation_loss_value
         candidate%early_stopped_flag = self%early_stopped_flag
         candidate%missing_code = self%missing_code
+        candidate%categorical_policy_code = self%categorical_policy_code
+        candidate%categorical_max_categories_value = self%categorical_max_categories_value
         allocate(candidate%monotone_constraints(self%n_inputs))
         candidate%monotone_constraints = self%monotone_constraints
         allocate(candidate%interaction_groups(self%n_inputs))
         candidate%interaction_groups = self%interaction_groups
+        allocate(candidate%categorical_features(size(self%categorical_features)))
+        candidate%categorical_features = self%categorical_features
         allocate(candidate%estimators(n_trees))
         candidate%estimators = self%estimators(:n_trees)
         candidate%initialized = .true.
@@ -2115,6 +2237,35 @@ contains
         value = self%initialized .and. self%missing_code /= XGB_MISSING_ERROR
     end function xgb_accepts_missing
 
+    character(len=16) function xgb_categorical_policy(self) result(name)
+        class(xgboost_t), intent(in) :: self
+
+        select case (self%categorical_policy_code)
+        case (XGB_CATEGORICAL_NONE)
+            name = "none"
+        case (XGB_CATEGORICAL_ORDERED)
+            name = "ordered"
+        case default
+            name = "unfitted"
+        end select
+    end function xgb_categorical_policy
+
+    integer function xgb_categorical_max_categories(self) result(count)
+        class(xgboost_t), intent(in) :: self
+
+        count = self%categorical_max_categories_value
+    end function xgb_categorical_max_categories
+
+    logical function xgb_categorical_feature(self, feature_index) result(value)
+        class(xgboost_t), intent(in) :: self
+        integer, intent(in) :: feature_index
+
+        value = .false.
+        if (.not. allocated(self%categorical_features)) return
+        if (feature_index < 1 .or. feature_index > self%n_inputs) return
+        value = any(self%categorical_features == feature_index)
+    end function xgb_categorical_feature
+
     integer function xgb_monotone_constraint(self, feature_index) result(value)
         class(xgboost_t), intent(in) :: self
         integer, intent(in) :: feature_index
@@ -2201,6 +2352,11 @@ contains
                 "xgboost save_text: model is not a valid fitted ensemble")
             return
         end if
+        if (.not. allocated(self%categorical_features)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost save_text: model is not a valid fitted ensemble")
+            return
+        end if
         if (size(self%monotone_constraints) /= self%n_inputs) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "xgboost save_text: model is not a valid fitted ensemble")
@@ -2210,6 +2366,21 @@ contains
             any(self%interaction_groups < 0)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "xgboost save_text: model contains invalid interaction groups")
+            return
+        end if
+        if (self%categorical_policy_code == XGB_CATEGORICAL_ORDERED) then
+            if (self%categorical_max_categories_value < 2 .or. &
+                size(self%categorical_features) < 1 .or. &
+                any(self%categorical_features < 1) .or. &
+                any(self%categorical_features > self%n_inputs) .or. &
+                has_duplicate_sorted_index(self%categorical_features)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "xgboost save_text: model contains invalid categorical metadata")
+                return
+            end if
+        else if (size(self%categorical_features) /= 0) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost save_text: categorical feature list requires ordered policy")
             return
         end if
         do i = 1, self%n_estimators
@@ -2261,6 +2432,10 @@ contains
         if (ios == 0) call xgb_write_l(unit, "restore_best", &
             self%restore_best_value, ios)
         if (ios == 0) call xgb_write_i(unit, "missing_code", self%missing_code, ios)
+        if (ios == 0) call xgb_write_i(unit, "categorical_policy_code", &
+            self%categorical_policy_code, ios)
+        if (ios == 0) call xgb_write_i(unit, "categorical_max_categories", &
+            self%categorical_max_categories_value, ios)
         if (ios == 0) call xgb_write_i(unit, "best_iteration", &
             self%best_iteration_value, ios)
         if (ios == 0) call xgb_write_r(unit, "best_validation_loss", &
@@ -2278,6 +2453,12 @@ contains
         do i = 1, self%n_inputs
             if (ios /= 0) exit
             call xgb_write_i(unit, "interaction_item", self%interaction_groups(i), ios)
+        end do
+        if (ios == 0) call xgb_write_i(unit, "categorical_count", &
+            size(self%categorical_features), ios)
+        do i = 1, size(self%categorical_features)
+            if (ios /= 0) exit
+            call xgb_write_i(unit, "categorical_item", self%categorical_features(i), ios)
         end do
         if (ios == 0) call xgb_write_i(unit, "tree_count", self%n_estimators, ios)
         do i = 1, self%n_estimators
@@ -2307,7 +2488,7 @@ contains
         type(xgboost_t) :: candidate
         character(len=256) :: line
         integer :: unit, ios, close_ios, schema, i, tree_count, monotone_count
-        integer :: interaction_count
+        integer :: interaction_count, categorical_count
 
         open(newunit=unit, file=path, status="old", action="read", &
             form="formatted", access="sequential", iostat=ios)
@@ -2351,6 +2532,10 @@ contains
         if (ios == 0) call xgb_read_l(unit, "restore_best", &
             candidate%restore_best_value, ios)
         if (ios == 0) call xgb_read_i(unit, "missing_code", candidate%missing_code, ios)
+        if (ios == 0) call xgb_read_i(unit, "categorical_policy_code", &
+            candidate%categorical_policy_code, ios)
+        if (ios == 0) call xgb_read_i(unit, "categorical_max_categories", &
+            candidate%categorical_max_categories_value, ios)
         if (ios == 0) call xgb_read_i(unit, "best_iteration", &
             candidate%best_iteration_value, ios)
         if (ios == 0) call xgb_read_r(unit, "best_validation_loss", &
@@ -2376,12 +2561,29 @@ contains
             call xgb_read_i(unit, "interaction_item", candidate%interaction_groups(i), ios)
             if (ios /= 0 .or. candidate%interaction_groups(i) < 0) goto 900
         end do
+        call xgb_read_i(unit, "categorical_count", categorical_count, ios)
+        if (ios /= 0 .or. categorical_count < 0 .or. categorical_count > candidate%n_inputs) goto 900
+        allocate(candidate%categorical_features(categorical_count), stat=ios)
+        if (ios /= 0) goto 900
+        do i = 1, categorical_count
+            call xgb_read_i(unit, "categorical_item", candidate%categorical_features(i), ios)
+            if (ios /= 0) goto 900
+        end do
+        if (candidate%categorical_policy_code == XGB_CATEGORICAL_ORDERED) then
+            if (categorical_count < 1 .or. candidate%categorical_max_categories_value < 2 .or. &
+                any(candidate%categorical_features < 1) .or. &
+                any(candidate%categorical_features > candidate%n_inputs) .or. &
+                has_duplicate_sorted_index(candidate%categorical_features)) goto 900
+        else if (categorical_count /= 0) then
+            goto 900
+        end if
         call xgb_read_i(unit, "tree_count", tree_count, ios)
         if (ios /= 0 .or. tree_count /= candidate%n_estimators) goto 900
         allocate(candidate%estimators(tree_count), stat=ios)
         if (ios /= 0) goto 900
         do i = 1, tree_count
-            call xgb_read_tree(unit, candidate%estimators(i), i, candidate%n_inputs, ios)
+            call xgb_read_tree(unit, candidate%estimators(i), i, candidate%n_inputs, &
+                candidate%categorical_max_categories_value, ios)
             if (ios /= 0) goto 900
         end do
         read(unit, "(A)", iostat=ios) line
@@ -2418,7 +2620,7 @@ contains
         integer, intent(in) :: unit, index
         type(xgb_tree_t), intent(in) :: tree
         integer, intent(out) :: ios
-        integer :: i
+        integer :: i, j
 
         call xgb_write_i(unit, "tree_begin", index, ios)
         if (ios == 0) call xgb_write_i(unit, "n_nodes", tree%n_nodes, ios)
@@ -2445,15 +2647,23 @@ contains
             if (ios == 0) call xgb_write_r(unit, "node_cover", tree%node_cover(i), ios)
             if (ios == 0) call xgb_write_l(unit, "leaf", tree%leaf(i), ios)
             if (ios == 0) call xgb_write_l(unit, "missing_left", tree%missing_left(i), ios)
+            if (ios == 0) call xgb_write_l(unit, "categorical", tree%categorical(i), ios)
+            if (ios == 0) call xgb_write_i(unit, "category_count", tree%category_count(i), ios)
+            if (tree%categorical(i)) then
+                do j = 1, tree%category_count(i)
+                    if (ios /= 0) exit
+                    call xgb_write_i(unit, "category_value", tree%category_values(i, j), ios)
+                end do
+            end if
         end do
         if (ios == 0) write(unit, "(A)", iostat=ios) "tree_end"
     end subroutine xgb_write_tree
 
-    subroutine xgb_read_tree(unit, tree, index, n_inputs, ios)
-        integer, intent(in) :: unit, index, n_inputs
+    subroutine xgb_read_tree(unit, tree, index, n_inputs, category_capacity, ios)
+        integer, intent(in) :: unit, index, n_inputs, category_capacity
         type(xgb_tree_t), intent(out) :: tree
         integer, intent(out) :: ios
-        integer :: tree_index, node_count, i, alloc_ios
+        integer :: tree_index, node_count, i, j, alloc_ios, category_count
         character(len=256) :: line_for_tree_record
 
         call xgb_read_i(unit, "tree_begin", tree_index, ios)
@@ -2478,7 +2688,8 @@ contains
             tree%right_child(tree%n_nodes), tree%node_threshold(tree%n_nodes), &
             tree%weight(tree%n_nodes), tree%node_gain(tree%n_nodes), &
             tree%node_cover(tree%n_nodes), tree%leaf(tree%n_nodes), &
-            tree%missing_left(tree%n_nodes), stat=alloc_ios)
+            tree%missing_left(tree%n_nodes), tree%categorical(tree%n_nodes), &
+            tree%category_count(tree%n_nodes), tree%category_values(tree%n_nodes, max(1, category_capacity)), stat=alloc_ios)
         if (alloc_ios /= 0) then
             ios = 1
             return
@@ -2496,6 +2707,22 @@ contains
             if (ios == 0) call xgb_read_r(unit, "node_cover", tree%node_cover(i), ios)
             if (ios == 0) call xgb_read_l(unit, "leaf", tree%leaf(i), ios)
             if (ios == 0) call xgb_read_l(unit, "missing_left", tree%missing_left(i), ios)
+            if (ios == 0) call xgb_read_l(unit, "categorical", tree%categorical(i), ios)
+            if (ios == 0) call xgb_read_i(unit, "category_count", category_count, ios)
+            tree%category_count(i) = category_count
+            if (ios == 0 .and. (category_count < 0 .or. category_count > category_capacity)) then
+                ios = 1
+            end if
+            if (ios == 0 .and. tree%categorical(i)) then
+                if (category_count < 1) then
+                    ios = 1
+                else
+                    do j = 1, category_count
+                        call xgb_read_i(unit, "category_value", tree%category_values(i, j), ios)
+                        if (ios /= 0) exit
+                    end do
+                end if
+            end if
             if (ios /= 0) return
         end do
         read(unit, "(A)", iostat=ios) line_for_tree_record
@@ -2538,6 +2765,12 @@ contains
             model%subsample_value <= 1.0_dp .and. ieee_is_finite(model%colsample_bytree_value) .and. &
             model%colsample_bytree_value > 0.0_dp .and. model%colsample_bytree_value <= 1.0_dp .and. &
             ieee_is_finite(model%best_validation_loss_value)
+        if (valid) then
+            valid = (model%categorical_policy_code == XGB_CATEGORICAL_NONE .and. &
+                model%categorical_max_categories_value >= 0) .or. &
+                (model%categorical_policy_code == XGB_CATEGORICAL_ORDERED .and. &
+                model%categorical_max_categories_value >= 2)
+        end if
     end function valid_serialized_scalars
 
     logical function valid_serialized_tree(tree, n_inputs) result(valid)
@@ -2545,7 +2778,7 @@ contains
         integer, intent(in) :: n_inputs
         logical, allocatable :: seen(:)
         integer, allocatable :: stack(:)
-        integer :: i, node, top
+        integer :: i, j, node, top
 
         valid = tree%n_nodes >= 1 .and. tree%n_nodes <= XGB_MAX_SERIALIZED_NODES .and. &
             tree%depth >= 0 .and. tree%feature_index >= 0 .and. &
@@ -2556,7 +2789,9 @@ contains
             allocated(tree%left_child) .and. allocated(tree%right_child) .and. &
             allocated(tree%node_threshold) .and. allocated(tree%weight) .and. &
             allocated(tree%node_gain) .and. allocated(tree%node_cover) .and. &
-            allocated(tree%leaf) .and. allocated(tree%missing_left)
+            allocated(tree%leaf) .and. allocated(tree%missing_left) .and. &
+            allocated(tree%categorical) .and. allocated(tree%category_count) .and. &
+            allocated(tree%category_values)
         if (.not. valid) return
         valid = size(tree%feature) >= tree%n_nodes .and. &
             size(tree%left_child) >= tree%n_nodes .and. &
@@ -2566,7 +2801,10 @@ contains
             size(tree%node_gain) >= tree%n_nodes .and. &
             size(tree%node_cover) >= tree%n_nodes .and. &
             size(tree%leaf) >= tree%n_nodes .and. &
-            size(tree%missing_left) >= tree%n_nodes
+            size(tree%missing_left) >= tree%n_nodes .and. &
+            size(tree%categorical) >= tree%n_nodes .and. &
+            size(tree%category_count) >= tree%n_nodes .and. &
+            size(tree%category_values, 1) >= tree%n_nodes
         if (.not. valid) return
         if (any(.not. ieee_is_finite(tree%node_threshold)) .or. &
             any(.not. ieee_is_finite(tree%weight)) .or. &
@@ -2577,6 +2815,10 @@ contains
         end if
         do i = 1, tree%n_nodes
             if (tree%leaf(i)) then
+                if (tree%categorical(i) .or. tree%category_count(i) /= 0) then
+                    valid = .false.
+                    return
+                end if
                 if (tree%feature(i) /= 0 .or. tree%left_child(i) /= 0 .or. &
                     tree%right_child(i) /= 0) then
                     valid = .false.
@@ -2586,6 +2828,30 @@ contains
                 if (tree%feature(i) < 1 .or. tree%feature(i) > n_inputs) then
                     valid = .false.
                     return
+                end if
+                if (tree%category_count(i) < 0 .or. tree%category_count(i) > &
+                    size(tree%category_values, 2)) then
+                    valid = .false.
+                    return
+                end if
+                if (tree%categorical(i) .and. tree%category_count(i) < 1) then
+                    valid = .false.
+                    return
+                end if
+                if (.not. tree%categorical(i) .and. tree%category_count(i) /= 0) then
+                    valid = .false.
+                    return
+                end if
+                if (tree%categorical(i)) then
+                    if (tree%category_count(i) > 1) then
+                        do j = 1, tree%category_count(i) - 1
+                            if (any(tree%category_values(i, j + 1:tree%category_count(i)) == &
+                                tree%category_values(i, j))) then
+                                valid = .false.
+                                return
+                            end if
+                        end do
+                    end if
                 end if
                 if (tree%left_child(i) <= i) then
                     valid = .false.
@@ -3178,7 +3444,9 @@ contains
             tree%right_child(max_nodes), tree%node_threshold(max_nodes), &
             tree%weight(max_nodes), tree%node_gain(max_nodes), &
             tree%node_cover(max_nodes), &
-            tree%leaf(max_nodes), tree%missing_left(max_nodes))
+            tree%leaf(max_nodes), tree%missing_left(max_nodes), &
+            tree%categorical(max_nodes), tree%category_count(max_nodes), &
+            tree%category_values(max_nodes, max(1, options%categorical_max_categories)))
         tree%feature = 0
         tree%left_child = 0
         tree%right_child = 0
@@ -3188,6 +3456,9 @@ contains
         tree%node_cover = 0.0_dp
         tree%leaf = .true.
         tree%missing_left = .true.
+        tree%categorical = .false.
+        tree%category_count = 0
+        tree%category_values = 0
         next_node = 0
         tree%depth = 0
         call build_tree_node(x, gradient, hessian, observation_weight, options, &
@@ -3225,8 +3496,11 @@ contains
         integer, allocatable :: order(:), left_index(:), right_index(:)
         logical, allocatable :: left_path_mask(:), right_path_mask(:)
         integer, allocatable :: finite_index(:), candidate_position(:)
+        integer, allocatable :: category_values_local(:), category_counts_local(:)
+        integer, allocatable :: category_order(:), best_categories(:)
         logical, allocatable :: candidate_mask(:)
         real(dp), allocatable :: feature_values(:), finite_values(:)
+        real(dp), allocatable :: category_gradients(:), category_hessians(:), category_scores(:)
         integer :: n_local, n_features, feature, k, i, left_count
         integer :: n_finite, n_missing, direction, n_directions
         integer :: n_candidates, candidate_index
@@ -3241,7 +3515,8 @@ contains
         real(dp) :: best_left_lower, best_left_upper
         real(dp) :: best_right_lower, best_right_upper
         integer :: monotone
-        logical :: best_missing_left, missing_left
+        integer :: n_categories, category_index, best_category_count
+        logical :: best_missing_left, missing_left, best_is_categorical
 
         n_local = size(sample_index)
         n_features = size(x, 2)
@@ -3277,9 +3552,130 @@ contains
         best_left_upper = upper_bound
         best_right_lower = lower_bound
         best_right_upper = upper_bound
+        best_is_categorical = .false.
+        best_category_count = 0
+        allocate(category_values_local(max(1, options%categorical_max_categories)), &
+            category_counts_local(max(1, options%categorical_max_categories)), &
+            category_gradients(max(1, options%categorical_max_categories)), &
+            category_hessians(max(1, options%categorical_max_categories)), &
+            category_scores(max(1, options%categorical_max_categories)), &
+            category_order(max(1, options%categorical_max_categories)), &
+            best_categories(max(1, options%categorical_max_categories)))
         do feature = 1, n_features
             if (.not. feature_mask(feature) .or. &
                 .not. path_feature_mask(feature)) cycle
+            if (is_categorical_feature(options, feature)) then
+                n_categories = 0
+                n_missing = 0
+                missing_gradient = 0.0_dp
+                missing_hessian = 0.0_dp
+                category_values_local = 0
+                category_counts_local = 0
+                category_gradients = 0.0_dp
+                category_hessians = 0.0_dp
+                do i = 1, n_local
+                    value = x(sample_index(i), feature)
+                    if (ieee_is_nan(value)) then
+                        n_missing = n_missing + 1
+                        missing_gradient = missing_gradient + gradient(sample_index(i))
+                        missing_hessian = missing_hessian + hessian(sample_index(i))
+                    else
+                        if (.not. is_integer_code(value)) then
+                            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                                "xgboost tree: categorical value is not an integer code")
+                            return
+                        end if
+                        category_index = find_category(category_values_local, n_categories, &
+                            nint(value))
+                        if (category_index == 0) then
+                            if (n_categories >= options%categorical_max_categories) then
+                                call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                                    "xgboost tree: categorical cardinality exceeds categorical_max_categories")
+                                return
+                            end if
+                            n_categories = n_categories + 1
+                            category_index = n_categories
+                            category_values_local(category_index) = nint(value)
+                        end if
+                        category_counts_local(category_index) = category_counts_local(category_index) + 1
+                        category_gradients(category_index) = category_gradients(category_index) + &
+                            gradient(sample_index(i))
+                        category_hessians(category_index) = category_hessians(category_index) + &
+                            hessian(sample_index(i))
+                    end if
+                end do
+                if (n_categories < 2) cycle
+                do i = 1, n_categories
+                    category_order(i) = i
+                    category_scores(i) = category_gradients(i) / max(category_hessians(i), 1.0e-12_dp)
+                end do
+                call sort_category_order(category_values_local, category_scores, category_order, n_categories)
+                left_gradient = 0.0_dp
+                left_hessian = 0.0_dp
+                left_count = 0
+                n_directions = 1
+                if (missing_code_for_options(options) == XGB_MISSING_LEARN) n_directions = 2
+                do k = 1, n_categories - 1
+                    category_index = category_order(k)
+                    left_gradient = left_gradient + category_gradients(category_index)
+                    left_hessian = left_hessian + category_hessians(category_index)
+                    left_count = left_count + category_counts_local(category_index)
+                    do direction = 1, n_directions
+                        missing_left = direction == 1
+                        if (missing_code_for_options(options) == XGB_MISSING_RIGHT) then
+                            missing_left = .false.
+                        else if (missing_code_for_options(options) == XGB_MISSING_LEFT) then
+                            missing_left = .true.
+                        end if
+                        if (missing_left) then
+                            if (left_count + n_missing < options%min_samples_leaf .or. &
+                                n_local - left_count < options%min_samples_leaf) cycle
+                            if (left_hessian + missing_hessian < options%min_child_weight .or. &
+                                total_hessian - left_hessian - missing_hessian < options%min_child_weight) cycle
+                            candidate_left_weight = bounded_leaf_weight(left_gradient + missing_gradient, &
+                                left_hessian + missing_hessian, options, lower_bound, upper_bound)
+                            candidate_right_weight = bounded_leaf_weight(total_gradient - left_gradient - &
+                                missing_gradient, total_hessian - left_hessian - missing_hessian, options, &
+                                lower_bound, upper_bound)
+                            candidate_gain = 0.5_dp*(regularized_leaf_score(left_gradient + missing_gradient, &
+                                left_hessian + missing_hessian, options) + regularized_leaf_score( &
+                                total_gradient - left_gradient - missing_gradient, total_hessian - &
+                                left_hessian - missing_hessian, options) - regularized_leaf_score(total_gradient, &
+                                total_hessian, options)) - options%gamma
+                        else
+                            if (left_count < options%min_samples_leaf .or. &
+                                n_local - left_count + n_missing < options%min_samples_leaf) cycle
+                            if (left_hessian < options%min_child_weight .or. &
+                                total_hessian - left_hessian - missing_hessian < options%min_child_weight) cycle
+                            candidate_left_weight = bounded_leaf_weight(left_gradient, left_hessian, options, &
+                                lower_bound, upper_bound)
+                            candidate_right_weight = bounded_leaf_weight(total_gradient - left_gradient - &
+                                missing_gradient, total_hessian - left_hessian - missing_hessian, options, &
+                                lower_bound, upper_bound)
+                            candidate_gain = 0.5_dp*(regularized_leaf_score(left_gradient, left_hessian, options) + &
+                                regularized_leaf_score(total_gradient - left_gradient - missing_gradient, &
+                                total_hessian - left_hessian - missing_hessian, options) - regularized_leaf_score( &
+                                total_gradient, total_hessian, options)) - options%gamma
+                        end if
+                        ! Monotonic constraints are defined on ordered numeric cuts;
+                        ! categorical partitions retain the unconstrained policy.
+                        if (candidate_gain > best_gain) then
+                            best_gain = candidate_gain
+                            best_feature = feature
+                            best_threshold = 0.0_dp
+                            best_missing_left = missing_left
+                            best_is_categorical = .true.
+                            best_category_count = k
+                            best_categories(:k) = category_values_local(category_order(:k))
+                            best_left_lower = lower_bound
+                            best_left_upper = upper_bound
+                            best_right_lower = lower_bound
+                            best_right_upper = upper_bound
+                        end if
+                    end do
+                end do
+                cycle
+            end if
             n_finite = 0
             n_missing = 0
             missing_gradient = 0.0_dp
@@ -3420,14 +3816,19 @@ contains
         end do
 
         if (best_feature == 0) then
+            deallocate(category_values_local, category_counts_local, category_gradients, &
+                category_hessians, category_scores, category_order, best_categories)
             call status_set(status, FORTNUM_OK, "")
             return
         end if
 
         left_count = 0
         do i = 1, n_local
-            if (go_left(x(sample_index(i), best_feature), best_threshold, &
-                best_missing_left)) then
+            if (best_is_categorical) then
+                if (category_go_left(x(sample_index(i), best_feature), best_categories, &
+                        best_category_count, best_missing_left)) left_count = left_count + 1
+            else if (go_left(x(sample_index(i), best_feature), best_threshold, &
+                    best_missing_left)) then
                 left_count = left_count + 1
             end if
         end do
@@ -3441,8 +3842,10 @@ contains
         left_count = 0
         k = 0
         do i = 1, n_local
-            if (go_left(x(sample_index(i), best_feature), best_threshold, &
-                best_missing_left)) then
+            if ((best_is_categorical .and. category_go_left(x(sample_index(i), best_feature), &
+                    best_categories, best_category_count, best_missing_left)) .or. &
+                ((.not. best_is_categorical) .and. go_left(x(sample_index(i), best_feature), &
+                    best_threshold, best_missing_left))) then
                 left_count = left_count + 1
                 left_index(left_count) = sample_index(i)
             else
@@ -3455,6 +3858,12 @@ contains
         tree%node_threshold(node_id) = best_threshold
         tree%node_gain(node_id) = best_gain
         tree%missing_left(node_id) = best_missing_left
+        tree%categorical(node_id) = best_is_categorical
+        tree%category_count(node_id) = 0
+        if (best_is_categorical) then
+            tree%category_count(node_id) = best_category_count
+            tree%category_values(node_id, :best_category_count) = best_categories(:best_category_count)
+        end if
         allocate(left_path_mask(n_features), right_path_mask(n_features))
         left_path_mask = path_feature_mask
         right_path_mask = path_feature_mask
@@ -3477,6 +3886,8 @@ contains
             right_index, feature_mask, right_path_mask, depth + 1, tree, next_node, &
             right_node, status, best_right_lower, best_right_upper)
         deallocate(left_path_mask, right_path_mask)
+        deallocate(category_values_local, category_counts_local, category_gradients, &
+            category_hessians, category_scores, category_order, best_categories)
         if (status%code /= FORTNUM_OK) return
         tree%left_child(node_id) = left_node
         tree%right_child(node_id) = right_node
@@ -3508,7 +3919,14 @@ contains
         do i = 1, size(x, 1)
             node = 1
             do while (.not. tree%leaf(node))
-                if (go_left(x(i, tree%feature(node)), &
+                if (tree%categorical(node)) then
+                    if (category_go_left(x(i, tree%feature(node)), tree%category_values(node, :), &
+                            tree%category_count(node), tree%missing_left(node))) then
+                        node = tree%left_child(node)
+                    else
+                        node = tree%right_child(node)
+                    end if
+                else if (go_left(x(i, tree%feature(node)), &
                     tree%node_threshold(node), tree%missing_left(node))) then
                     node = tree%left_child(node)
                 else
@@ -3625,6 +4043,122 @@ contains
         end select
     end function parse_tree_method
 
+    integer function parse_categorical_policy(name) result(code)
+        character(len=*), intent(in) :: name
+        character(len=:), allocatable :: normalized
+
+        normalized = trim(adjustl(name))
+        select case (normalized)
+        case ("none", "numeric", "off")
+            code = XGB_CATEGORICAL_NONE
+        case ("ordered", "ordered-gradient", "gradient")
+            code = XGB_CATEGORICAL_ORDERED
+        case default
+            code = -1
+        end select
+    end function parse_categorical_policy
+
+    logical function has_duplicate_sorted_index(values) result(duplicate)
+        integer, intent(in) :: values(:)
+        integer :: i
+
+        duplicate = .false.
+        do i = 2, size(values)
+            if (values(i) <= values(i - 1)) then
+                duplicate = .true.
+                return
+            end if
+        end do
+    end function has_duplicate_sorted_index
+
+    logical function is_integer_code(value) result(valid)
+        real(dp), intent(in) :: value
+
+        valid = ieee_is_finite(value)
+        if (.not. valid) return
+        if (abs(value) > real(huge(0), dp)) then
+            valid = .false.
+            return
+        end if
+        valid = value == real(nint(value), dp)
+    end function is_integer_code
+
+    logical function valid_categorical_values(x, features, max_categories) result(valid)
+        real(dp), intent(in) :: x(:, :)
+        integer, intent(in) :: features(:), max_categories
+        integer :: j, i, n_categories, category
+        integer, allocatable :: values(:)
+
+        valid = max_categories >= 2 .and. max_categories <= XGB_MAX_CATEGORICAL_VALUES
+        if (.not. valid) return
+        allocate(values(max_categories))
+        do j = 1, size(features)
+            if (features(j) < 1 .or. features(j) > size(x, 2)) then
+                valid = .false.
+                return
+            end if
+            n_categories = 0
+            do i = 1, size(x, 1)
+                if (ieee_is_nan(x(i, features(j)))) cycle
+                if (.not. is_integer_code(x(i, features(j)))) then
+                    valid = .false.
+                    return
+                end if
+                category = nint(x(i, features(j)))
+                if (find_category(values, n_categories, category) == 0) then
+                    n_categories = n_categories + 1
+                    if (n_categories > max_categories) then
+                        valid = .false.
+                        return
+                    end if
+                    values(n_categories) = category
+                end if
+            end do
+        end do
+    end function valid_categorical_values
+
+    logical function is_categorical_feature(options, feature) result(value)
+        type(xgboost_options_t), intent(in) :: options
+        integer, intent(in) :: feature
+
+        value = .false.
+        if (parse_categorical_policy(options%categorical_policy) /= XGB_CATEGORICAL_ORDERED) return
+        if (.not. allocated(options%categorical_features)) return
+        value = any(options%categorical_features == feature)
+    end function is_categorical_feature
+
+    integer function find_category(values, n_values, category) result(index)
+        integer, intent(in) :: values(:), n_values, category
+        integer :: i
+
+        index = 0
+        do i = 1, n_values
+            if (values(i) == category) then
+                index = i
+                return
+            end if
+        end do
+    end function find_category
+
+    subroutine sort_category_order(values, scores, order, n_values)
+        integer, intent(in) :: values(:), n_values
+        real(dp), intent(in) :: scores(:)
+        integer, intent(inout) :: order(:)
+        integer :: i, j, key
+
+        do i = 2, n_values
+            key = order(i)
+            j = i - 1
+            do while (j >= 1)
+                if (.not. (scores(order(j)) > scores(key) .or. &
+                    (scores(order(j)) == scores(key) .and. values(order(j)) > values(key)))) exit
+                order(j + 1) = order(j)
+                j = j - 1
+            end do
+            order(j + 1) = key
+        end do
+    end subroutine sort_category_order
+
     integer function missing_code_for_options(options) result(code)
         type(xgboost_options_t), intent(in) :: options
 
@@ -3736,6 +4270,30 @@ contains
             value_is_left = value < threshold
         end if
     end function go_left
+
+    logical function category_go_left(value, categories, n_categories, missing_left) result(value_is_left)
+        real(dp), intent(in) :: value
+        integer, intent(in) :: categories(:), n_categories
+        logical, intent(in) :: missing_left
+        integer :: i, category
+
+        if (ieee_is_nan(value)) then
+            value_is_left = missing_left
+            return
+        end if
+        if (.not. is_integer_code(value)) then
+            value_is_left = .false.
+            return
+        end if
+        category = nint(value)
+        value_is_left = .false.
+        do i = 1, n_categories
+            if (categories(i) == category) then
+                value_is_left = .true.
+                return
+            end if
+        end do
+    end function category_go_left
 
     real(dp) function stable_logit(probability) result(value)
         real(dp), intent(in) :: probability

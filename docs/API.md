@@ -195,7 +195,7 @@ repeated resident-batch evidence.
 | `vae_t` | `elbo`, `reconstruct` | No | ELBO gradient | No |
 | `rnn_t` | `forward`, squared-error `loss` | No | Loss gradient by BPTT | No |
 | `kernel_t` | Scalar value and matrix | Parameter JVP | Parameter VJP | Parameter HVP |
-| `xgboost_t` | Squared/squared-log (RMSLE)/logistic/Poisson/Huber/quantile/absolute/rank:pairwise margins, predictions, additive tree contributions, and fitted-prefix slicing | Fixed-tree input JVP away from split boundaries | Fixed-tree input VJP away from split boundaries | No |
+| `xgboost_t` | Squared/squared-log (RMSLE)/logistic/Poisson/Huber/quantile/absolute/rank:pairwise margins, predictions, additive tree contributions, fitted-prefix slicing, and bounded ordered-gradient integer categorical partitions | Fixed-tree input JVP away from split boundaries; categorical models refuse discrete tangents | Fixed-tree input VJP away from split boundaries; categorical models refuse discrete cotangents | No |
 | `xgboost_classifier_t` | Binary integer labels, logistic `(n,2)` probabilities, staged margins, and feature diagnostics | Fixed-tree probability/input JVP away from split boundaries | Fixed-tree probability/input VJP away from split boundaries | No |
 | `lightgbm_t` | Weighted numeric regression/binary logistic histogram boosting with deterministic globally best-leaf growth | Fixed-tree input JVP away from split boundaries | Fixed-tree input VJP away from split boundaries | No |
 | `random_forest_classifier_t` | Bootstrap-ensemble probabilities and labels | Refused: split routing is discrete | Refused: split routing is discrete | No |
@@ -2582,6 +2582,22 @@ the vector is validated, copied by `slice` and warm starts, and persisted by
 the versioned text snapshot. A changed or malformed policy is a typed domain
 error, and tree fit remains discrete with the existing split-boundary
 derivative refusal.
+
+Integer-coded categorical columns use the bounded ordered-gradient policy.
+Set `categorical_policy="ordered"`, provide sorted one-based feature indices
+in `categorical_features(:)`, and choose `categorical_max_categories` between
+2 and 64.  At each node, category codes are ordered by accumulated
+gradient/Hessian score (code order breaks ties), and every prefix partition is
+evaluated with the ordinary second-order gain.  Non-integer codes and a
+cardinality above the explicit bound return `FORTNUM_NOT_IMPLEMENTED`.
+The policy and feature metadata survive warm starts, prefix slices, and the
+version-3 text snapshot.  CPU value prediction is supported; CUDA dispatch is
+a typed refusal until a resident categorical-tree kernel exists.  Categorical
+models refuse `predict_jvp` and `predict_vjp` because integer categories have
+no canonical continuous tangent space.  See
+[`docs/XGBOOST_CATEGORICAL.md`](XGBOOST_CATEGORICAL.md) and the independent
+`test_xgboost_categorical` fixture.
+
 The
 `missing_policy` option is `error` by default and rejects IEEE NaNs. `learn`
 evaluates both default directions for every finite threshold and stores the
