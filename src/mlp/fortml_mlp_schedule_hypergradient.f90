@@ -7,7 +7,9 @@ module fortml_mlp_schedule_hypergradient
     !!
     !! where `rate` is one of the typed stateless schedules from
     !! `fortml_mlp_schedules`.  The outer variable is
-    !! `[log(base_rate), log(l2), logit(min_fraction), logit(decay_factor)]`.
+    !! `[log(base_rate), log(l2), logit(min_fraction), logit(decay_factor)]`
+    !! for ordinary schedules.  For one-cycle schedules the final two
+    !! coordinates are `[log(peak_rate_fraction), log(final_rate_fraction)]`.
     !! Schedule shape (kind and integer update counts) is deliberately fixed;
     !! all continuous fields have exact forward JVP and reverse VJP products.
     !! The objective is a FortOpt context, so the same reverse product is used
@@ -23,7 +25,7 @@ module fortml_mlp_schedule_hypergradient
         FORTNUM_CONVERGENCE_ERROR
     use fortml_device, only: FORTML_DEVICE_CPU
     use fortml_mlp, only: mlp_t
-    use fortml_mlp_schedules, only: mlp_learning_rate_schedule_t
+    use fortml_mlp_schedules, only: mlp_learning_rate_schedule_t, MLP_SCHEDULE_ONE_CYCLE
     use fortml_mlp_training, only: mlp_loss_value_gradient, mlp_loss_hvp
     use fortopt_objective, only: objective_t
     use fortopt_lbfgsb, only: lbfgsb_t, lbfgsb_options_t, lbfgsb_result_t
@@ -35,6 +37,8 @@ module fortml_mlp_schedule_hypergradient
     integer, parameter, public :: MLP_SCHEDULE_LOG_L2 = 2
     integer, parameter, public :: MLP_SCHEDULE_LOGIT_MIN_FRACTION = 3
     integer, parameter, public :: MLP_SCHEDULE_LOGIT_DECAY_FACTOR = 4
+    integer, parameter, public :: MLP_SCHEDULE_LOG_PEAK_FRACTION = 3
+    integer, parameter, public :: MLP_SCHEDULE_LOG_FINAL_FRACTION = 4
 
     type, public :: mlp_schedule_hypergradient_metadata_t
         integer :: parameter_count = MLP_SCHEDULE_HYPERPARAMETER_COUNT
@@ -46,6 +50,7 @@ module fortml_mlp_schedule_hypergradient
         integer :: schedule_kind = 0
         integer :: warmup_updates = 0
         integer :: total_updates = 0
+        logical :: one_cycle_coordinates = .false.
     end type mlp_schedule_hypergradient_metadata_t
 
     type, public :: mlp_schedule_hypergradient_options_t
@@ -164,10 +169,21 @@ contains
         self%layout%total_updates = options%schedule%total_updates
         self%initial_log_base_rate = log(options%base_rate)
         self%initial_log_l2 = log(options%l2)
-        min_fraction = interior_probability(options%schedule%min_rate_fraction)
-        decay_factor = interior_probability(options%schedule%decay_factor)
-        self%initial_logit_min_fraction = logit(min_fraction)
-        self%initial_logit_decay_factor = logit(decay_factor)
+        if (options%schedule%kind == MLP_SCHEDULE_ONE_CYCLE) then
+            ! The coordinate slots are logarithms for positive one-cycle
+            ! peak/final fractions.  The schedule validator enforces
+            ! peak >= 1 and final <= peak.
+            min_fraction = max(options%schedule%peak_rate_fraction, 1.0e-12_dp)
+            decay_factor = max(options%schedule%final_rate_fraction, 1.0e-12_dp)
+            self%layout%one_cycle_coordinates = .true.
+            self%initial_logit_min_fraction = log(min_fraction)
+            self%initial_logit_decay_factor = log(decay_factor)
+        else
+            min_fraction = interior_probability(options%schedule%min_rate_fraction)
+            decay_factor = interior_probability(options%schedule%decay_factor)
+            self%initial_logit_min_fraction = logit(min_fraction)
+            self%initial_logit_decay_factor = logit(decay_factor)
+        end if
         self%initialized = .true.
         call status_set(status, FORTNUM_OK, "")
     end subroutine schedule_hypergradient_initialize
@@ -405,6 +421,10 @@ contains
         call unpack_parameters(parameters, result%base_rate, result%l2, &
             result%min_rate_fraction, result%decay_factor, status)
         if (.not. status_ok(status)) return
+        if (options%schedule%kind == MLP_SCHEDULE_ONE_CYCLE) then
+            result%min_rate_fraction = exp(parameters(MLP_SCHEDULE_LOG_PEAK_FRACTION))
+            result%decay_factor = exp(parameters(MLP_SCHEDULE_LOG_FINAL_FRACTION))
+        end if
         result%log_base_rate = parameters(MLP_SCHEDULE_LOG_BASE_RATE)
         result%log_l2 = parameters(MLP_SCHEDULE_LOG_L2)
         result%logit_min_fraction = parameters(MLP_SCHEDULE_LOGIT_MIN_FRACTION)
@@ -436,6 +456,17 @@ contains
         call unpack_parameters(parameters, base_rate, l2, min_fraction, &
             decay_factor, status)
         if (.not. status_ok(status)) return
+        if (self%layout%one_cycle_coordinates) then
+            min_fraction = exp(parameters(MLP_SCHEDULE_LOG_PEAK_FRACTION))
+            decay_factor = exp(parameters(MLP_SCHEDULE_LOG_FINAL_FRACTION))
+            if (.not. ieee_is_finite(min_fraction) .or. &
+                .not. ieee_is_finite(decay_factor) .or. min_fraction < 1.0_dp .or. &
+                decay_factor <= 0.0_dp .or. decay_factor > min_fraction) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP schedule hypergradient: one-cycle fractions are invalid")
+                return
+            end if
+        end if
         n_parameters = size(self%initial_parameters)
         allocate(theta_history(n_parameters, self%layout%inner_steps + 1))
         allocate(gradient_history(n_parameters, self%layout%inner_steps))
@@ -489,12 +520,21 @@ contains
                 dbase_history(step)*base_rate
             gradient(MLP_SCHEDULE_LOG_L2) = gradient(MLP_SCHEDULE_LOG_L2) - &
                 rate_history(step)*dot_product(theta_bar, theta_history(:, step))*l2
-            gradient(MLP_SCHEDULE_LOGIT_MIN_FRACTION) = &
-                gradient(MLP_SCHEDULE_LOGIT_MIN_FRACTION) + coefficient* &
-                dmin_history(step)*min_fraction*(1.0_dp-min_fraction)
-            gradient(MLP_SCHEDULE_LOGIT_DECAY_FACTOR) = &
-                gradient(MLP_SCHEDULE_LOGIT_DECAY_FACTOR) + coefficient* &
-                ddecay_history(step)*decay_factor*(1.0_dp-decay_factor)
+            if (self%layout%one_cycle_coordinates) then
+                gradient(MLP_SCHEDULE_LOG_PEAK_FRACTION) = &
+                    gradient(MLP_SCHEDULE_LOG_PEAK_FRACTION) + coefficient* &
+                    dmin_history(step)*min_fraction
+                gradient(MLP_SCHEDULE_LOG_FINAL_FRACTION) = &
+                    gradient(MLP_SCHEDULE_LOG_FINAL_FRACTION) + coefficient* &
+                    ddecay_history(step)*decay_factor
+            else
+                gradient(MLP_SCHEDULE_LOGIT_MIN_FRACTION) = &
+                    gradient(MLP_SCHEDULE_LOGIT_MIN_FRACTION) + coefficient* &
+                    dmin_history(step)*min_fraction*(1.0_dp-min_fraction)
+                gradient(MLP_SCHEDULE_LOGIT_DECAY_FACTOR) = &
+                    gradient(MLP_SCHEDULE_LOGIT_DECAY_FACTOR) + coefficient* &
+                    ddecay_history(step)*decay_factor*(1.0_dp-decay_factor)
+            end if
             theta_bar = theta_bar - rate_history(step)*hvp
         end do
         if (.not. ieee_is_finite(value) .or. any(.not. ieee_is_finite(gradient))) then
@@ -522,12 +562,28 @@ contains
         call unpack_parameters(parameters, base_rate, l2, min_fraction, &
             decay_factor, status)
         if (.not. status_ok(status)) return
+        if (self%layout%one_cycle_coordinates) then
+            min_fraction = exp(parameters(MLP_SCHEDULE_LOG_PEAK_FRACTION))
+            decay_factor = exp(parameters(MLP_SCHEDULE_LOG_FINAL_FRACTION))
+            if (.not. ieee_is_finite(min_fraction) .or. &
+                .not. ieee_is_finite(decay_factor) .or. min_fraction < 1.0_dp .or. &
+                decay_factor <= 0.0_dp .or. decay_factor > min_fraction) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP schedule hypergradient: one-cycle fractions are invalid")
+                return
+            end if
+        end if
         base_dot = base_rate*direction(MLP_SCHEDULE_LOG_BASE_RATE)
         l2_dot = l2*direction(MLP_SCHEDULE_LOG_L2)
-        min_dot = min_fraction*(1.0_dp-min_fraction)* &
-            direction(MLP_SCHEDULE_LOGIT_MIN_FRACTION)
-        decay_dot = decay_factor*(1.0_dp-decay_factor)* &
-            direction(MLP_SCHEDULE_LOGIT_DECAY_FACTOR)
+        if (self%layout%one_cycle_coordinates) then
+            min_dot = min_fraction*direction(MLP_SCHEDULE_LOG_PEAK_FRACTION)
+            decay_dot = decay_factor*direction(MLP_SCHEDULE_LOG_FINAL_FRACTION)
+        else
+            min_dot = min_fraction*(1.0_dp-min_fraction)* &
+                direction(MLP_SCHEDULE_LOGIT_MIN_FRACTION)
+            decay_dot = decay_factor*(1.0_dp-decay_factor)* &
+                direction(MLP_SCHEDULE_LOGIT_DECAY_FACTOR)
+        end if
         n_parameters = size(self%initial_parameters)
         allocate(theta, source=self%initial_parameters)
         allocate(theta_dot(n_parameters), gradient(n_parameters), hvp(n_parameters))
@@ -577,12 +633,26 @@ contains
         real(dp), intent(out) :: rate, dbase, dmin, ddecay
         type(fortnum_status_t), intent(out) :: status
         type(mlp_learning_rate_schedule_t) :: schedule
+        real(dp) :: dpeak, dfinal
 
         schedule = base_schedule
-        schedule%min_rate_fraction = min_fraction
-        schedule%decay_factor = decay_factor
-        call schedule%rate_with_derivatives(update, base_rate, rate, dbase, dmin, &
-            ddecay, status)
+        if (base_schedule%kind == MLP_SCHEDULE_ONE_CYCLE) then
+            schedule%peak_rate_fraction = min_fraction
+            schedule%final_rate_fraction = decay_factor
+        else
+            schedule%min_rate_fraction = min_fraction
+            schedule%decay_factor = decay_factor
+        end if
+        ! The legacy three-derivative wrapper intentionally omits the peak and
+        ! final-fraction products used by one-cycle schedules.  Request the
+        ! complete derivative set and map those coordinates onto the common
+        ! hypergradient slots.
+        call schedule%rate_with_full_derivatives(update, base_rate, rate, dbase, dmin, &
+            ddecay, dpeak, dfinal, status)
+        if (base_schedule%kind == MLP_SCHEDULE_ONE_CYCLE) then
+            dmin = dpeak
+            ddecay = dfinal
+        end if
     end subroutine schedule_at
 
     subroutine unpack_parameters(parameters, base_rate, l2, min_fraction, &
@@ -603,6 +673,8 @@ contains
         end if
         base_rate = exp(parameters(MLP_SCHEDULE_LOG_BASE_RATE))
         l2 = exp(parameters(MLP_SCHEDULE_LOG_L2))
+        ! The one-cycle branch is unpacked by the trajectory caller because
+        ! this helper intentionally remains schedule-family agnostic.
         min_fraction = sigmoid(parameters(MLP_SCHEDULE_LOGIT_MIN_FRACTION))
         decay_factor = sigmoid(parameters(MLP_SCHEDULE_LOGIT_DECAY_FACTOR))
         if (.not. ieee_is_finite(base_rate) .or. .not. ieee_is_finite(l2) .or. &

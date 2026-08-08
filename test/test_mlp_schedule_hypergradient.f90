@@ -7,7 +7,7 @@ program test_mlp_schedule_hypergradient
     use fortml_device, only: FORTML_DEVICE_CUDA
     use fortml_mlp, only: mlp_t
     use fortml_mlp_schedules, only: make_mlp_schedule_cosine_decay, &
-        make_mlp_schedule_constant
+        make_mlp_schedule_constant, make_mlp_schedule_one_cycle
     use fortml_mlp_schedule_hypergradient, only: &
         mlp_schedule_hypergradient_objective_t, &
         mlp_schedule_hypergradient_options_t, &
@@ -16,7 +16,8 @@ program test_mlp_schedule_hypergradient
         mlp_optimize_schedule_hyperparameters, &
         MLP_SCHEDULE_HYPERPARAMETER_COUNT, MLP_SCHEDULE_LOG_BASE_RATE, &
         MLP_SCHEDULE_LOG_L2, MLP_SCHEDULE_LOGIT_MIN_FRACTION, &
-        MLP_SCHEDULE_LOGIT_DECAY_FACTOR
+        MLP_SCHEDULE_LOGIT_DECAY_FACTOR, MLP_SCHEDULE_LOG_PEAK_FRACTION, &
+        MLP_SCHEDULE_LOG_FINAL_FRACTION
     implicit none
 
     type(mlp_t), target :: model
@@ -97,6 +98,45 @@ program test_mlp_schedule_hypergradient
     call objective%hvp(parameters, direction, hvp_product, status)
     call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
         "outer schedule HVP typed refusal", failures)
+
+    ! One-cycle uses logarithmic peak/final-rate coordinates in the same
+    ! four-vector, with exact JVP/VJP products through both schedule phases.
+    options%schedule = make_mlp_schedule_one_cycle(2, 8, 1.8_dp, 0.08_dp)
+    options%steps = 5
+    call objective%initialize(model, train_x, train_target, validation_x, &
+        validation_target, options, status)
+    call check(status_ok(status), "one-cycle hypergradient initialization", failures)
+    metadata = objective%metadata()
+    call check(metadata%one_cycle_coordinates, "one-cycle coordinate metadata", failures)
+    parameters = objective%parameters()
+    call check(abs(parameters(MLP_SCHEDULE_LOG_PEAK_FRACTION)-log(1.8_dp)) < 1.0e-14_dp .and. &
+        abs(parameters(MLP_SCHEDULE_LOG_FINAL_FRACTION)-log(0.08_dp)) < 1.0e-14_dp, &
+        "one-cycle packed logarithms", failures)
+    call objective%value_gradient(parameters, value, gradient, status)
+    call check(status_ok(status), "one-cycle value/gradient", failures)
+    do i = 1, MLP_SCHEDULE_HYPERPARAMETER_COUNT
+        parameters(i) = parameters(i) + h
+        call objective%value_gradient(parameters, value_plus, vjp_gradient, status)
+        parameters(i) = parameters(i) - 2.0_dp*h
+        call objective%value_gradient(parameters, value_minus, vjp_gradient, status)
+        parameters(i) = parameters(i) + h
+        call check(status_ok(status) .and. abs(gradient(i) - &
+            (value_plus-value_minus)/(2.0_dp*h)) < 4.0e-7_dp, &
+            "one-cycle hypergradient central difference", failures)
+    end do
+    direction = [0.17_dp, -0.13_dp, 0.21_dp, -0.19_dp]
+    call objective%jvp(parameters, direction, value, tangent, status)
+    call objective%value_gradient(parameters+h*direction, value_plus, vjp_gradient, status)
+    call objective%value_gradient(parameters-h*direction, value_minus, vjp_gradient, status)
+    call check(status_ok(status) .and. abs(tangent - &
+        (value_plus-value_minus)/(2.0_dp*h)) < 5.0e-7_dp, &
+        "one-cycle JVP central difference", failures)
+    call objective%vjp(parameters, output_bar, vjp_gradient, status)
+    call objective%value_gradient(parameters, value, gradient, status)
+    call check(status_ok(status) .and. maxval(abs(vjp_gradient-output_bar*gradient)) < &
+        2.0e-12_dp, "one-cycle scalar VJP adjoint", failures)
+    call objective%fortopt(fortopt_objective, status)
+    call check(status_ok(status), "one-cycle FortOpt context adapter", failures)
 
     call objective%fortopt(fortopt_objective, status)
     call check(status_ok(status), "FortOpt schedule context adapter", failures)
