@@ -249,6 +249,11 @@ contains
         real(dp), allocatable :: score(:)
         integer :: i
 
+        if (.not. self%initialized) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "AdaBoost predict_proba: model is not fitted")
+            return
+        end if
         if (size(probabilities, 1) /= size(x, 1) .or. size(probabilities, 2) /= self%n_classes) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "AdaBoost predict_proba: output shape is invalid")
