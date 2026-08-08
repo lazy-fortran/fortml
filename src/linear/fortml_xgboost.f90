@@ -821,6 +821,31 @@ contains
                 return
             end if
         end if
+        if (self%objective_code == XGB_OBJECTIVE_LOGISTIC) then
+            if (any(y < 0.0_dp) .or. any(y > 1.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "xgboost warm start: logistic targets must be in [0, 1]")
+                return
+            end if
+            if (have_validation .and. (any(validation_y < 0.0_dp) .or. &
+                any(validation_y > 1.0_dp))) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "xgboost warm start: validation logistic targets must be in [0, 1]")
+                return
+            end if
+        else if (self%objective_code == XGB_OBJECTIVE_POISSON .or. &
+            self%objective_code == XGB_OBJECTIVE_SQUARED_LOG) then
+            if (any(y < 0.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "xgboost warm start: target values must be nonnegative")
+                return
+            end if
+            if (have_validation .and. any(validation_y < 0.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "xgboost warm start: validation target values must be nonnegative")
+                return
+            end if
+        end if
 
         allocate(observation_weight(n_samples))
         observation_weight = 1.0_dp
