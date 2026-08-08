@@ -204,7 +204,7 @@ repeated resident-batch evidence.
 | `rnn_t` | `forward`, squared-error `loss` | No | Loss gradient by BPTT | No |
 | `kernel_t` | Scalar value and matrix | Parameter JVP | Parameter VJP | Parameter HVP |
 | `xgboost_t` | Squared/squared-log (RMSLE)/logistic/Poisson/fixed-shape Gamma/Tweedie/Huber/quantile/absolute/rank:pairwise margins, predictions, additive tree contributions, fitted-prefix slicing, bounded ordered-gradient integer categorical partitions, and packed fixed-structure base/leaf coordinates | Fixed-tree input JVP away from split boundaries; categorical models refuse discrete tangents; raw-margin leaf-coordinate JVP | Fixed-tree input VJP away from split boundaries; categorical models refuse discrete cotangents; raw-margin leaf-coordinate VJP | No |
-| `xgboost_classifier_t` | Binary integer labels, logistic `(n,2)` probabilities, staged margins, and feature diagnostics | Fixed-tree probability/input JVP away from split boundaries | Fixed-tree probability/input VJP away from split boundaries | No |
+| `xgboost_classifier_t` | Binary integer labels, logistic `(n,2)` probabilities and stable log probabilities, staged margins, feature diagnostics, and categorical/interaction metadata | Fixed-tree probability/log-probability/input JVP away from split boundaries | Fixed-tree probability/log-probability/input VJP away from split boundaries | No |
 | `lightgbm_t` | Weighted numeric regression/binary logistic histogram boosting with deterministic globally best-leaf growth, GOSS top/other-rate gradient/Hessian sampling, seeded DART/dropout with persisted tree-normalisation scales, and packed fixed-structure base/leaf coordinates | Fixed-tree input JVP away from split boundaries; raw-margin leaf-coordinate JVP | Fixed-tree input VJP away from split boundaries; raw-margin leaf-coordinate VJP | No |
 | `random_forest_classifier_t` | Bootstrap-ensemble probabilities/labels plus transactional OOB decision probabilities, OOB accuracy, coverage, bootstrap-inclusion audit state, and deterministic fixed-state accuracy permutation importance | Refused: split routing and permutation membership are discrete | Refused: split routing and permutation membership are discrete | CPU OOB/permutation diagnostics; CUDA returns typed `FORTNUM_NOT_IMPLEMENTED` |
 | `extra_trees_classifier_t` | Randomized-threshold ensemble probabilities and labels | Refused: split routing is discrete | Refused: split routing is discrete | No |
@@ -3222,6 +3222,13 @@ class raw logit, while `predict_proba_staged` and
 `feature_count`, `estimator_count`, `feature_importance`, `missing_policy`,
 `accepts_missing`, `tree_method`, monotone metadata, and validation lifecycle
 queries expose fitted state without exposing tree storage.
+
+`predict_log_proba` evaluates stable class log probabilities directly from the
+margin. `predict_log_proba_jvp` and `predict_log_proba_vjp` provide the matching
+fixed-tree input products. `categorical_policy`,
+`categorical_max_categories`, `categorical_feature`, and `interaction_group`
+expose ordered-partition metadata and preserve the typed discrete-product
+boundary for integer categorical features.
 
 `predict_proba_jvp`/`predict_proba_vjp` are fixed-tree input products. They
 return zero away from finite split thresholds and preserve the underlying

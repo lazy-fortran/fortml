@@ -15,10 +15,12 @@ type(xgboost_classifier_t) :: model
 type(xgboost_options_t) :: options
 type(fortnum_status_t) :: status
 real(dp) :: x(n_samples, n_features), probabilities(n_query, 2)
+real(dp) :: log_probabilities(n_query, 2)
 integer :: labels(n_samples), prediction(n_query)
 
 call model%fit(x, labels, status, options, sample_weight=weights)
 call model%predict_proba(x_query, probabilities, status)
+call model%predict_log_proba(x_query, log_probabilities, status)
 call model%predict(x_query, prediction, status)
 ```
 
@@ -29,6 +31,14 @@ argmax convention used by the multiclass adapter.  `decision_function`
 returns the positive-class logit, and `predict_proba_staged` and
 `decision_function_staged` expose all cumulative boosting rounds.  The final
 staged slice is equal to the ordinary prediction.
+
+`predict_log_proba` evaluates both log probabilities directly from the raw
+margin.  Stable positive and negative margin branches keep tail values finite
+when a probability would underflow.  `predict_log_proba_jvp` and
+`predict_log_proba_vjp` expose the corresponding fixed-tree input products and
+inherit the split-boundary and categorical-discrete refusals of the margin
+products.  Exponentiating either column reproduces `predict_proba` to floating-
+point rounding.
 
 `fit` accepts positive finite `sample_weight`, optional validation features
 and integer labels, and `validation_weight`.  Validation labels must belong
@@ -44,6 +54,11 @@ the fixed-tree input products: they are zero away from split boundaries and
 return the same structured domain refusal as the underlying tree at a finite
 threshold.  Labels are discrete and have no derivative product.
 
+`categorical_policy`, `categorical_max_categories`, `categorical_feature`, and
+`interaction_group` expose fitted ordered-partition metadata.  Integer
+categorical features retain their discrete tangent and cotangent refusal, while
+continuous features use the fixed-tree piecewise contract.
+
 Device dispatch is explicit.  CPU methods call the validated host path;
 `predict_device` and `predict_proba_device` return
 `FORTNUM_NOT_IMPLEMENTED` for selected CUDA until a resident tree/histogram
@@ -51,5 +66,5 @@ kernel is linked.  No host fallback is hidden in a CUDA timing row.
 
 The independent behavioral oracle is `test_xgboost_classifier`.  The release
 workload `fortml_bench_xgboost_classifier` reports weighted CPU fit/predict
-timings, log loss, accuracy, staged-probability consistency, and the typed
-CUDA refusal.
+timings, log loss, accuracy, staged-probability and log-probability consistency,
+and the typed CUDA refusal.

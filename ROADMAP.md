@@ -2515,6 +2515,14 @@ hyperparameter block. A deliberate train/validation leakage fixture must fail.
   invariants, weights, validation, NaN routing, derivatives, feature
   diagnostics, and device behavior; `fortml_bench_xgboost_classifier` records
   weighted CPU timing, accuracy/log loss, and the CUDA refusal.
+- [x] Complete binary XGBoost classifier probability products. Add stable
+  `predict_log_proba` values computed directly from the raw margin, with
+  fixed-tree input JVP/VJP products and finite-difference/adjoint oracles.
+  Expose ordered categorical policy, category cardinality, categorical-feature,
+  and interaction-group metadata through the classifier facade. The release
+  benchmark records log-probability round-trip error; categorical products
+  retain the typed discrete derivative refusal and selected CUDA remains an
+  explicit `FORTNUM_NOT_IMPLEMENTED` boundary.
 - [x] Add explicit XGBoost-compatible NaN handling to binary and one-vs-rest
   trees. `missing_policy="error"` is the default refusal; `"learn"` compares
   both default directions in every exact threshold and stores the strict-best

@@ -29,6 +29,7 @@ module fortml_xgboost_classifier
     contains
         procedure, public :: fit => xgb_classifier_fit
         procedure, public :: predict_proba => xgb_classifier_predict_proba
+        procedure, public :: predict_log_proba => xgb_classifier_predict_log_proba
         procedure, public :: predict_proba_device => &
             xgb_classifier_predict_proba_device
         procedure, public :: predict_proba_staged => &
@@ -40,6 +41,8 @@ module fortml_xgboost_classifier
         procedure, public :: predict_device => xgb_classifier_predict_device
         procedure, public :: predict_proba_jvp => xgb_classifier_predict_proba_jvp
         procedure, public :: predict_proba_vjp => xgb_classifier_predict_proba_vjp
+        procedure, public :: predict_log_proba_jvp => xgb_classifier_predict_log_proba_jvp
+        procedure, public :: predict_log_proba_vjp => xgb_classifier_predict_log_proba_vjp
         procedure, public :: feature_importance => &
             xgb_classifier_feature_importance
         procedure, public :: classes => xgb_classifier_classes
@@ -51,6 +54,11 @@ module fortml_xgboost_classifier
         procedure, public :: missing_policy => xgb_classifier_missing_policy
         procedure, public :: accepts_missing => xgb_classifier_accepts_missing
         procedure, public :: tree_method => xgb_classifier_tree_method
+        procedure, public :: categorical_policy => xgb_classifier_categorical_policy
+        procedure, public :: categorical_max_categories => &
+            xgb_classifier_categorical_max_categories
+        procedure, public :: categorical_feature => xgb_classifier_categorical_feature
+        procedure, public :: interaction_group => xgb_classifier_interaction_group
         procedure, public :: fitted => xgb_classifier_fitted
         procedure, public :: best_iteration => xgb_classifier_best_iteration
         procedure, public :: best_validation_loss => &
@@ -189,6 +197,30 @@ contains
         end if
         call self%booster%predict_proba(x, probabilities, status)
     end subroutine xgb_classifier_predict_proba
+
+    !> Return per-class log probabilities in the fitted sorted class order.
+    !! The log-sigmoid branches are evaluated from the margin directly so
+    !! probabilities in either tail remain finite and do not underflow before
+    !! taking the logarithm.
+    subroutine xgb_classifier_predict_log_proba(self, x, log_probabilities, status)
+        class(xgboost_classifier_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: log_probabilities(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: margin(:)
+
+        if (.not. self%initialized .or. size(x, 2) /= self%n_inputs .or. &
+            any(shape(log_probabilities) /= [size(x, 1), 2])) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "XGBoost binary classifier predict_log_proba: model, input, or output shape is invalid")
+            return
+        end if
+        allocate(margin(size(x, 1)))
+        call self%booster%decision_function(x, margin, status)
+        if (status%code /= FORTNUM_OK) return
+        call fill_log_probability_columns(margin, log_probabilities)
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine xgb_classifier_predict_log_proba
 
     subroutine xgb_classifier_predict_proba_device(self, device, x, probabilities, &
             status)
@@ -375,6 +407,62 @@ contains
         call self%booster%predict_vjp(x, positive_bar, x_bar, status)
     end subroutine xgb_classifier_predict_proba_vjp
 
+    !> Forward product of the log-probability output and an input tangent.
+    !! The fitted tree remains fixed, so the product inherits the tree's
+    !! split-boundary and categorical-discrete refusal contract.
+    subroutine xgb_classifier_predict_log_proba_jvp(self, x, x_dot, &
+            log_probabilities, log_probabilities_dot, status)
+        class(xgboost_classifier_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), x_dot(:, :)
+        real(dp), intent(out) :: log_probabilities(:, :), log_probabilities_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: margin(:), margin_dot(:), positive(:)
+
+        if (.not. self%initialized .or. size(x, 2) /= self%n_inputs .or. &
+            any(shape(x_dot) /= shape(x)) .or. &
+            any(shape(log_probabilities) /= [size(x, 1), 2]) .or. &
+            any(shape(log_probabilities_dot) /= shape(log_probabilities))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "XGBoost binary classifier log-probability JVP: shape is invalid")
+            return
+        end if
+        allocate(margin(size(x, 1)), margin_dot(size(x, 1)), positive(size(x, 1)))
+        call self%booster%predict_jvp(x, x_dot, margin, margin_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        call fill_log_probability_columns(margin, log_probabilities)
+        positive = exp(log_probabilities(:, 2))
+        log_probabilities_dot(:, 2) = (1.0_dp - positive)*margin_dot
+        log_probabilities_dot(:, 1) = -positive*margin_dot
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine xgb_classifier_predict_log_proba_jvp
+
+    !> Reverse product of the log-probability output with respect to inputs.
+    subroutine xgb_classifier_predict_log_proba_vjp(self, x, log_probabilities_bar, &
+            x_bar, status)
+        class(xgboost_classifier_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), log_probabilities_bar(:, :)
+        real(dp), intent(out) :: x_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: margin(:), positive(:), margin_bar(:)
+
+        x_bar = 0.0_dp
+        if (.not. self%initialized .or. size(x, 2) /= self%n_inputs .or. &
+            any(shape(log_probabilities_bar) /= [size(x, 1), 2]) .or. &
+            any(shape(x_bar) /= shape(x)) .or. &
+            any(.not. ieee_is_finite(log_probabilities_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "XGBoost binary classifier log-probability VJP: shape or cotangent is invalid")
+            return
+        end if
+        allocate(margin(size(x, 1)), positive(size(x, 1)), margin_bar(size(x, 1)))
+        call self%booster%decision_function(x, margin, status)
+        if (status%code /= FORTNUM_OK) return
+        positive = classifier_stable_sigmoid_array(margin)
+        margin_bar = -positive*log_probabilities_bar(:, 1) + &
+            (1.0_dp - positive)*log_probabilities_bar(:, 2)
+        call self%booster%predict_vjp(x, margin_bar, x_bar, status)
+    end subroutine xgb_classifier_predict_log_proba_vjp
+
     subroutine xgb_classifier_feature_importance(self, importance, status, kind, &
             normalize)
         class(xgboost_classifier_t), intent(in) :: self
@@ -450,6 +538,28 @@ contains
         value = self%booster%tree_method()
     end function xgb_classifier_tree_method
 
+    character(len=16) function xgb_classifier_categorical_policy(self) result(value)
+        class(xgboost_classifier_t), intent(in) :: self
+        value = self%booster%categorical_policy()
+    end function xgb_classifier_categorical_policy
+
+    integer function xgb_classifier_categorical_max_categories(self) result(value)
+        class(xgboost_classifier_t), intent(in) :: self
+        value = self%booster%categorical_max_categories()
+    end function xgb_classifier_categorical_max_categories
+
+    logical function xgb_classifier_categorical_feature(self, feature_index) result(value)
+        class(xgboost_classifier_t), intent(in) :: self
+        integer, intent(in) :: feature_index
+        value = self%booster%categorical_feature(feature_index)
+    end function xgb_classifier_categorical_feature
+
+    integer function xgb_classifier_interaction_group(self, feature_index) result(value)
+        class(xgboost_classifier_t), intent(in) :: self
+        integer, intent(in) :: feature_index
+        value = self%booster%interaction_group(feature_index)
+    end function xgb_classifier_interaction_group
+
     logical function xgb_classifier_fitted(self) result(value)
         class(xgboost_classifier_t), intent(in) :: self
         value = self%initialized
@@ -469,6 +579,57 @@ contains
         class(xgboost_classifier_t), intent(in) :: self
         value = self%booster%early_stopped()
     end function xgb_classifier_early_stopped
+
+    pure real(dp) function classifier_log_sigmoid(value) result(log_probability)
+        real(dp), intent(in) :: value
+
+        if (value >= 0.0_dp) then
+            log_probability = -log(1.0_dp + exp(-value))
+        else
+            log_probability = value - log(1.0_dp + exp(value))
+        end if
+    end function classifier_log_sigmoid
+
+    pure real(dp) function classifier_log_one_minus_sigmoid(value) result(log_probability)
+        real(dp), intent(in) :: value
+
+        if (value >= 0.0_dp) then
+            log_probability = -value - log(1.0_dp + exp(-value))
+        else
+            log_probability = -log(1.0_dp + exp(value))
+        end if
+    end function classifier_log_one_minus_sigmoid
+
+    pure real(dp) function classifier_stable_sigmoid(value) result(probability)
+        real(dp), intent(in) :: value
+
+        if (value >= 0.0_dp) then
+            probability = 1.0_dp/(1.0_dp + exp(-value))
+        else
+            probability = exp(value)/(1.0_dp + exp(value))
+        end if
+    end function classifier_stable_sigmoid
+
+    function classifier_stable_sigmoid_array(values) result(probabilities)
+        real(dp), intent(in) :: values(:)
+        real(dp) :: probabilities(size(values))
+        integer :: i
+
+        do i = 1, size(values)
+            probabilities(i) = classifier_stable_sigmoid(values(i))
+        end do
+    end function classifier_stable_sigmoid_array
+
+    subroutine fill_log_probability_columns(margin, log_probabilities)
+        real(dp), intent(in) :: margin(:)
+        real(dp), intent(out) :: log_probabilities(:, :)
+        integer :: i
+
+        do i = 1, size(margin)
+            log_probabilities(i, 1) = classifier_log_one_minus_sigmoid(margin(i))
+            log_probabilities(i, 2) = classifier_log_sigmoid(margin(i))
+        end do
+    end subroutine fill_log_probability_columns
 
     subroutine sorted_unique_labels(labels, classes)
         integer, intent(in) :: labels(:)

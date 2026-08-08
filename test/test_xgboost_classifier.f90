@@ -16,6 +16,7 @@ program test_xgboost_classifier
     failures = 0
     call test_classifier_contract(failures)
     call test_weighted_validation_and_missing(failures)
+    call test_log_probability_products(failures)
     call test_derivative_and_device_contract(failures)
     call test_refusals(failures)
     if (failures /= 0) then
@@ -131,6 +132,76 @@ contains
             maxval(abs(sum(missing_probabilities, dim=2) - 1.0_dp)) < 3.0e-14_dp, &
             "learned missing routing", failures)
     end subroutine test_weighted_validation_and_missing
+
+    subroutine test_log_probability_products(failures)
+        integer, intent(inout) :: failures
+        type(xgboost_classifier_t) :: model, categorical
+        type(xgboost_options_t) :: options
+        type(fortnum_status_t) :: status
+        real(dp) :: x(8, 2), query(3, 2), tangent(3, 2)
+        real(dp) :: log_probabilities(3, 2), probabilities(3, 2)
+        real(dp) :: log_probabilities_dot(3, 2), x_bar(3, 2), cotangent(3, 2)
+        real(dp) :: finite_difference(3, 2), plus(3, 2), minus(3, 2)
+        integer :: labels(8), i
+
+        x(:, 1) = [0.0_dp, 1.0_dp, 2.0_dp, 3.0_dp, 4.0_dp, 5.0_dp, &
+            6.0_dp, 7.0_dp]
+        x(:, 2) = [0.0_dp, 1.0_dp, 0.0_dp, 1.0_dp, 0.0_dp, 1.0_dp, &
+            0.0_dp, 1.0_dp]
+        labels = [-9, -9, -9, -9, 13, 13, 13, 13]
+        query(:, 1) = [0.25_dp, 3.25_dp, 6.75_dp]
+        query(:, 2) = [0.0_dp, 1.0_dp, 0.0_dp]
+        options%n_estimators = 3
+        options%max_depth = 1
+        options%learning_rate = 0.4_dp
+        options%l2 = 1.0_dp
+        options%min_child_weight = 0.0_dp
+        call model%fit(x, labels, status, options)
+        call model%predict_log_proba(query, log_probabilities, status)
+        call model%predict_proba(query, probabilities, status)
+        call check(status_ok(status) .and. all(ieee_is_finite(log_probabilities)), &
+            "finite log probabilities", failures)
+        call check(maxval(abs(exp(log_probabilities) - probabilities)) < 3.0e-14_dp, &
+            "log probability exponential link", failures)
+        call check(maxval(abs(exp(log_probabilities(:, 1)) + &
+            exp(log_probabilities(:, 2)) - 1.0_dp)) < 3.0e-14_dp, &
+            "log probability simplex", failures)
+
+        tangent = 1.0_dp
+        call model%predict_log_proba_jvp(query, tangent, log_probabilities, &
+            log_probabilities_dot, status)
+        call check(status_ok(status) .and. maxval(abs(log_probabilities_dot)) < &
+            3.0e-14_dp, "piecewise log probability JVP", failures)
+        cotangent = reshape([1.0_dp, -2.0_dp, 0.5_dp, 3.0_dp, -1.0_dp, 2.0_dp], &
+            shape(cotangent))
+        call model%predict_log_proba_vjp(query, cotangent, x_bar, status)
+        call check(status_ok(status) .and. maxval(abs(x_bar)) < 3.0e-14_dp, &
+            "piecewise log probability VJP", failures)
+
+        finite_difference = 0.0_dp
+        do i = 1, 2
+            plus = query
+            minus = query
+            plus(:, i) = plus(:, i) + 1.0e-6_dp
+            minus(:, i) = minus(:, i) - 1.0e-6_dp
+            call model%predict_log_proba(plus, probabilities, status)
+            call model%predict_log_proba(minus, log_probabilities, status)
+            finite_difference(:, i) = maxval(abs((probabilities - log_probabilities)/2.0e-6_dp))
+        end do
+        call check(maxval(finite_difference) < 3.0e-8_dp, &
+            "independent finite-difference log probability oracle", failures)
+
+        categorical = model
+        options%categorical_policy = "ordered"
+        options%categorical_max_categories = 2
+        options%categorical_features = [2]
+        call categorical%fit(x, labels, status, options)
+        call check(status_ok(status) .and. categorical%categorical_policy() == "ordered" .and. &
+            categorical%categorical_max_categories() == 2 .and. &
+            categorical%categorical_feature(2) .and. &
+            categorical%interaction_group(1) == 0, &
+            "classifier categorical metadata", failures)
+    end subroutine test_log_probability_products
 
     subroutine test_derivative_and_device_contract(failures)
         integer, intent(inout) :: failures

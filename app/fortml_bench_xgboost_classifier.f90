@@ -15,9 +15,10 @@ program fortml_bench_xgboost_classifier
     integer, parameter :: n_estimators = 12, fit_repetitions = 4
     integer, parameter :: predict_repetitions = 32
     real(dp) :: x(n_samples, n_features), probabilities(n_samples, 2)
+    real(dp) :: log_probabilities(n_samples, 2)
     real(dp) :: staged(n_samples, 2, n_estimators), importance(n_features)
     real(dp) :: weights(n_samples), positive_logloss, accuracy
-    real(dp) :: fit_seconds, predict_seconds, invariant_error
+    real(dp) :: fit_seconds, predict_seconds, invariant_error, log_probability_error
     integer :: labels(n_samples), predicted(n_samples), i, repetition
     integer(int64) :: clock_start, clock_end, clock_rate
     type(xgboost_classifier_t) :: model
@@ -54,6 +55,8 @@ program fortml_bench_xgboost_classifier
     if (.not. status_ok(status)) error stop "XGBoost classifier reference fit failed"
     call model%predict_proba(x, probabilities, status)
     if (.not. status_ok(status)) error stop "XGBoost classifier probability failed"
+    call model%predict_log_proba(x, log_probabilities, status)
+    if (.not. status_ok(status)) error stop "XGBoost classifier log probability failed"
     call model%predict(x, predicted, status)
     if (.not. status_ok(status)) error stop "XGBoost classifier label failed"
     call model%predict_proba_staged(x, staged, status)
@@ -66,10 +69,11 @@ program fortml_bench_xgboost_classifier
     positive_logloss = positive_logloss/real(n_samples, dp)
     accuracy = real(count(predicted == labels), dp)/real(n_samples, dp)
     invariant_error = maxval(abs(staged(:, :, n_estimators) - probabilities))
-    write (*, '(a,i0,a,i0,a,i0,a,es24.16,a,es24.16,a,es24.16,a,es24.16)') &
+    log_probability_error = maxval(abs(exp(log_probabilities) - probabilities))
+    write (*, '(a,i0,a,i0,a,i0,a,es24.16,a,es24.16,a,es24.16,a,es24.16,a,es24.16)') &
         "xgb_classifier_fit,", n_samples, ",", n_features, ",", n_estimators, &
         ",", fit_seconds, ",", positive_logloss, ",", accuracy, ",", &
-        invariant_error
+        invariant_error, ",", log_probability_error
 
     call system_clock(clock_start, clock_rate)
     do repetition = 1, predict_repetitions
