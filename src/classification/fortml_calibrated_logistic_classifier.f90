@@ -1,0 +1,742 @@
+module fortml_calibrated_logistic_classifier
+    !! Leakage-safe binary logistic calibration with stratified out-of-fold scores.
+    !!
+    !! ``calibrated_logistic_classifier_t`` first builds one out-of-fold margin
+    !! for every sample with a deterministic stratified K-fold splitter, fits a
+    !! binary probability calibrator on those held-out margins, and finally fits
+    !! the deployment logistic model on all rows.  Calibration therefore never
+    !! sees an in-sample margin.  Sigmoid, temperature, and isotonic policies
+    !! are supported; smooth policies expose exact input/parameter JVP and VJP
+    !! products, while isotonic active-set products return a typed refusal.
+    !!
+    !! The cross-validation fit is a host operation.  CPU prediction and all
+    !! declared derivative products are available after fitting.  CUDA requests
+    !! return ``FORTNUM_NOT_IMPLEMENTED`` until a resident logistic-plus-
+    !! calibration kernel is linked; no hidden host fallback is used.
+    use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+    use fortnum_kinds, only: dp
+    use fortnum_status, only: fortnum_status_t, status_set, status_ok, &
+        FORTNUM_OK, FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED
+    use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU, &
+        FORTML_DEVICE_CUDA
+    use fortml_logistic_regression, only: logistic_regression_t
+    use fortml_probability_calibration, only: probability_calibrator_t, &
+        probability_calibration_options_t, probability_calibration_state_t, &
+        CALIBRATION_SIGMOID, CALIBRATION_ISOTONIC, CALIBRATION_TEMPERATURE
+    use fortml_validation, only: stratified_kfold_splitter_t
+    implicit none
+    private
+
+    type, public :: calibrated_logistic_classifier_options_t
+        !! Base logistic, calibration, and deterministic OOF controls.
+        real(dp) :: l2 = 1.0_dp
+        real(dp) :: tolerance = 1.0e-8_dp
+        integer :: max_iterations = 200
+        logical :: fit_intercept = .true.
+        integer :: cv_folds = 5
+        logical :: cv_shuffle = .false.
+        integer :: cv_seed = 17
+        type(probability_calibration_options_t) :: calibration
+    end type calibrated_logistic_classifier_options_t
+
+    type, public :: calibrated_logistic_classifier_state_t
+        integer :: cv_folds = 0
+        integer :: cv_samples = 0
+        integer :: calibration_iterations = 0
+        logical :: cv_converged = .false.
+        logical :: classifier_converged = .false.
+        logical :: calibration_converged = .false.
+        logical :: converged = .false.
+        real(dp) :: oof_log_loss = huge(1.0_dp)
+        real(dp) :: calibrated_oof_log_loss = huge(1.0_dp)
+        real(dp) :: calibration_objective = huge(1.0_dp)
+    end type calibrated_logistic_classifier_state_t
+
+    type, public :: calibrated_logistic_classifier_t
+        private
+        type(logistic_regression_t) :: classifier
+        type(probability_calibrator_t) :: calibrator
+        integer :: calibration_method_code = CALIBRATION_SIGMOID
+        integer :: cv_fold_count = 0
+        real(dp) :: oof_log_loss_value = huge(1.0_dp)
+        real(dp) :: calibrated_oof_log_loss_value = huge(1.0_dp)
+        logical :: is_fitted = .false.
+    contains
+        procedure, public :: fit => calibrated_logistic_fit
+        procedure, public :: decision_function => calibrated_logistic_decision
+        procedure, public :: decision_function_device => &
+            calibrated_logistic_decision_device
+        procedure, public :: decision_function_jvp => calibrated_logistic_decision_jvp
+        procedure, public :: decision_function_vjp => calibrated_logistic_decision_vjp
+        procedure, public :: predict_proba => calibrated_logistic_predict_proba
+        procedure, public :: predict_proba_device => calibrated_logistic_predict_proba_device
+        procedure, public :: predict_proba_jvp => calibrated_logistic_predict_proba_jvp
+        procedure, public :: predict_proba_parameter_jvp => &
+            calibrated_logistic_predict_proba_parameter_jvp
+        procedure, public :: predict_proba_vjp => calibrated_logistic_predict_proba_vjp
+        procedure, public :: predict_proba_parameter_vjp => &
+            calibrated_logistic_predict_proba_parameter_vjp
+        procedure, public :: predict => calibrated_logistic_predict
+        procedure, public :: classes => calibrated_logistic_classes
+        procedure, public :: feature_count => calibrated_logistic_feature_count
+        procedure, public :: parameter_count => calibrated_logistic_parameter_count
+        procedure, public :: parameters => calibrated_logistic_parameters
+        procedure, public :: set_parameters => calibrated_logistic_set_parameters
+        procedure, public :: fitted => calibrated_logistic_fitted
+        procedure, public :: device_supported => calibrated_logistic_device_supported
+        procedure, public :: calibration_method => calibrated_logistic_method
+        procedure, public :: cv_folds => calibrated_logistic_cv_folds
+        procedure, public :: oof_log_loss => calibrated_logistic_oof_log_loss
+        procedure, public :: calibrated_oof_log_loss => &
+            calibrated_logistic_calibrated_oof_log_loss
+    end type calibrated_logistic_classifier_t
+
+    public :: calibrated_logistic_fit
+    public :: calibrated_logistic_decision
+    public :: calibrated_logistic_decision_device
+    public :: calibrated_logistic_decision_jvp
+    public :: calibrated_logistic_decision_vjp
+    public :: calibrated_logistic_predict_proba
+    public :: calibrated_logistic_predict_proba_device
+    public :: calibrated_logistic_predict_proba_jvp
+    public :: calibrated_logistic_predict_proba_parameter_jvp
+    public :: calibrated_logistic_predict_proba_vjp
+    public :: calibrated_logistic_predict_proba_parameter_vjp
+    public :: calibrated_logistic_predict
+
+contains
+
+    subroutine calibrated_logistic_fit(self, x, labels, status, options, state, &
+            sample_weight, class_weight)
+        class(calibrated_logistic_classifier_t), intent(out) :: self
+        real(dp), intent(in) :: x(:, :)
+        integer, intent(in) :: labels(:)
+        type(fortnum_status_t), intent(out) :: status
+        type(calibrated_logistic_classifier_options_t), intent(in), optional :: options
+        type(calibrated_logistic_classifier_state_t), intent(out), optional :: state
+        real(dp), intent(in), optional :: sample_weight(:), class_weight(:)
+        type(calibrated_logistic_classifier_options_t) :: config
+        type(calibrated_logistic_classifier_state_t) :: result
+        type(probability_calibration_state_t) :: calibration_state
+        type(stratified_kfold_splitter_t) :: splitter
+        type(logistic_regression_t) :: fold_model
+        integer, allocatable :: train_indices(:), test_indices(:)
+        real(dp), allocatable :: train_x(:, :), test_x(:, :), fold_margin(:), oof_margin(:)
+        real(dp), allocatable :: fold_weights(:), oof_weights(:), oof_prob(:, :)
+        logical :: has_split
+        integer :: fold, n_features
+
+        self%is_fitted = .false.
+        config = calibrated_logistic_classifier_options_t()
+        if (present(options)) config = options
+        result = calibrated_logistic_classifier_state_t()
+        if (present(state)) state = result
+        if (.not. valid_options(config)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "calibrated logistic fit: options are invalid")
+            return
+        end if
+        if (size(x, 1) < config%cv_folds .or. size(x, 2) < 1 .or. &
+            size(labels) /= size(x, 1) .or. any(.not. ieee_is_finite(x))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "calibrated logistic fit: input dimensions or values are invalid")
+            return
+        end if
+        if (present(sample_weight)) then
+            if (size(sample_weight) /= size(labels) .or. &
+                any(.not. ieee_is_finite(sample_weight)) .or. &
+                any(sample_weight < 0.0_dp) .or. sum(sample_weight) <= 0.0_dp) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "calibrated logistic fit: sample weights are invalid")
+                return
+            end if
+        end if
+        if (present(class_weight)) then
+            if (size(class_weight) /= 2 .or. any(.not. ieee_is_finite(class_weight)) .or. &
+                any(class_weight <= 0.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "calibrated logistic fit: class weights need two positive values")
+                return
+            end if
+        end if
+
+        call splitter%initialize(labels, config%cv_folds, status, &
+            shuffle=config%cv_shuffle, seed=config%cv_seed)
+        if (.not. status_ok(status)) return
+        allocate(oof_margin(size(labels)), oof_weights(size(labels)))
+        oof_margin = 0.0_dp
+        oof_weights = 1.0_dp
+        if (present(sample_weight)) oof_weights = sample_weight
+        do fold = 1, config%cv_folds
+            call splitter%next_split(train_indices, test_indices, has_split, status)
+            if (.not. status_ok(status)) return
+            if (.not. has_split) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "calibrated logistic fit: splitter ended before all folds")
+                return
+            end if
+            call gather_rows(x, train_indices, train_x)
+            call gather_rows(x, test_indices, test_x)
+            if (present(sample_weight)) then
+                allocate(fold_weights(size(train_indices)))
+                fold_weights = sample_weight(train_indices)
+            end if
+            if (present(sample_weight)) then
+                if (present(class_weight)) then
+                    call fit_base(fold_model, train_x, labels(train_indices), status, config, &
+                        fold_weights, class_weight)
+                else
+                    call fit_base(fold_model, train_x, labels(train_indices), status, config, &
+                        sample_weight=fold_weights)
+                end if
+            else if (present(class_weight)) then
+                call fit_base(fold_model, train_x, labels(train_indices), status, config, &
+                    class_weight=class_weight)
+            else
+                call fit_base(fold_model, train_x, labels(train_indices), status, config)
+            end if
+            if (allocated(fold_weights)) deallocate(fold_weights)
+            if (.not. status_ok(status)) return
+            allocate(fold_margin(size(test_indices)))
+            call fold_model%decision_function(test_x, fold_margin, status)
+            if (.not. status_ok(status)) return
+            oof_margin(test_indices) = fold_margin
+            deallocate(fold_margin)
+            deallocate(train_x, test_x)
+        end do
+        result%cv_folds = config%cv_folds
+        result%cv_samples = size(labels)
+        result%cv_converged = .true.
+        allocate(oof_prob(size(labels), 2))
+        call raw_probabilities(oof_margin, oof_prob)
+        result%oof_log_loss = weighted_log_loss(oof_prob, labels, fold_model%classes(), &
+            oof_weights)
+        self%oof_log_loss_value = result%oof_log_loss
+        if (present(sample_weight)) then
+            call self%calibrator%fit(oof_margin, labels, status, &
+                options=config%calibration, sample_weight=oof_weights, state=calibration_state)
+        else
+            call self%calibrator%fit(oof_margin, labels, status, &
+                options=config%calibration, state=calibration_state)
+        end if
+        if (.not. status_ok(status)) return
+        self%calibration_method_code = config%calibration%method
+        result%calibration_iterations = calibration_state%iterations
+        result%calibration_converged = calibration_state%converged
+        result%calibration_objective = calibration_state%objective
+        call self%calibrator%predict_proba(oof_margin, oof_prob, status)
+        if (.not. status_ok(status)) return
+        result%calibrated_oof_log_loss = weighted_log_loss(oof_prob, labels, &
+            fold_model%classes(), oof_weights)
+        self%calibrated_oof_log_loss_value = result%calibrated_oof_log_loss
+        if (present(sample_weight)) then
+            if (present(class_weight)) then
+                call fit_base(self%classifier, x, labels, status, config, sample_weight, class_weight)
+            else
+                call fit_base(self%classifier, x, labels, status, config, sample_weight=sample_weight)
+            end if
+        else if (present(class_weight)) then
+            call fit_base(self%classifier, x, labels, status, config, class_weight=class_weight)
+        else
+            call fit_base(self%classifier, x, labels, status, config)
+        end if
+        if (.not. status_ok(status)) return
+        result%classifier_converged = self%classifier%fitted()
+        result%converged = result%cv_converged .and. result%calibration_converged .and. &
+            result%classifier_converged
+        self%cv_fold_count = config%cv_folds
+        self%is_fitted = .true.
+        if (present(state)) state = result
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine calibrated_logistic_fit
+
+    subroutine calibrated_logistic_decision(self, x, scores, status)
+        class(calibrated_logistic_classifier_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: scores(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. self%is_fitted) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "calibrated logistic decision: model is not fitted")
+            return
+        end if
+        call self%classifier%decision_function(x, scores, status)
+    end subroutine calibrated_logistic_decision
+
+    subroutine calibrated_logistic_decision_device(self, device, x, scores, status)
+        class(calibrated_logistic_classifier_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: scores(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "calibrated logistic device decision: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%decision_function(x, scores, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "calibrated logistic device decision: no resident CUDA kernel is linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "calibrated logistic device decision: device kind is invalid")
+        end select
+    end subroutine calibrated_logistic_decision_device
+
+    subroutine calibrated_logistic_decision_jvp(self, x, theta_dot, x_dot, scores, &
+            scores_dot, status)
+        class(calibrated_logistic_classifier_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), theta_dot(:), x_dot(:, :)
+        real(dp), intent(out) :: scores(:), scores_dot(:)
+        type(fortnum_status_t), intent(out) :: status
+        integer :: n_base
+
+        if (.not. self%is_fitted) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "calibrated logistic decision JVP: model is not fitted")
+            return
+        end if
+        n_base = self%classifier%parameter_count()
+        if (size(theta_dot) /= self%parameter_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "calibrated logistic decision JVP: parameter tangent has invalid size")
+            return
+        end if
+        call self%classifier%decision_function_jvp(x, theta_dot(:n_base), x_dot, &
+            scores, scores_dot, status)
+    end subroutine calibrated_logistic_decision_jvp
+
+    subroutine calibrated_logistic_decision_vjp(self, x, scores_bar, theta_bar, x_bar, status)
+        class(calibrated_logistic_classifier_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), scores_bar(:)
+        real(dp), intent(out) :: theta_bar(:), x_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        integer :: n_base
+        real(dp), allocatable :: base_bar(:)
+
+        theta_bar = 0.0_dp
+        x_bar = 0.0_dp
+        if (.not. self%is_fitted) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "calibrated logistic decision VJP: model is not fitted")
+            return
+        end if
+        if (size(theta_bar) /= self%parameter_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "calibrated logistic decision VJP: parameter cotangent has invalid size")
+            return
+        end if
+        n_base = self%classifier%parameter_count()
+        allocate(base_bar(n_base))
+        call self%classifier%decision_function_vjp(x, scores_bar, base_bar, x_bar, status)
+        if (status_ok(status)) theta_bar(:n_base) = base_bar
+    end subroutine calibrated_logistic_decision_vjp
+
+    subroutine calibrated_logistic_predict_proba(self, x, probabilities, status)
+        class(calibrated_logistic_classifier_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: probabilities(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: scores(:)
+
+        if (.not. self%is_fitted) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "calibrated logistic probability: model is not fitted")
+            return
+        end if
+        if (any(shape(probabilities) /= [size(x, 1), 2])) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "calibrated logistic probability: output shape is invalid")
+            return
+        end if
+        allocate(scores(size(x, 1)))
+        call self%decision_function(x, scores, status)
+        if (.not. status_ok(status)) return
+        call self%calibrator%predict_proba(scores, probabilities, status)
+    end subroutine calibrated_logistic_predict_proba
+
+    subroutine calibrated_logistic_predict_proba_device(self, device, x, probabilities, status)
+        class(calibrated_logistic_classifier_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: probabilities(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "calibrated logistic device probability: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_proba(x, probabilities, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "calibrated logistic device probability: no resident CUDA kernel is linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "calibrated logistic device probability: device kind is invalid")
+        end select
+    end subroutine calibrated_logistic_predict_proba_device
+
+    subroutine calibrated_logistic_predict_proba_jvp(self, x, theta_dot, x_dot, probabilities, &
+            probabilities_dot, status)
+        class(calibrated_logistic_classifier_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), theta_dot(:), x_dot(:, :)
+        real(dp), intent(out) :: probabilities(:, :), probabilities_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: scores(:), scores_dot(:), calibration_dot(:, :)
+        integer :: n_base, n_calibration
+
+        probabilities = 0.0_dp
+        probabilities_dot = 0.0_dp
+        if (.not. self%is_fitted) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "calibrated logistic probability JVP: model is not fitted")
+            return
+        end if
+        if (size(theta_dot) /= self%parameter_count() .or. &
+            any(shape(probabilities) /= [size(x, 1), 2]) .or. &
+            any(shape(probabilities_dot) /= shape(probabilities))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "calibrated logistic probability JVP: input or output shape is invalid")
+            return
+        end if
+        if (self%calibration_method_code == CALIBRATION_ISOTONIC) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "calibrated logistic probability JVP: isotonic active set is discrete")
+            return
+        end if
+        n_base = self%classifier%parameter_count()
+        n_calibration = self%calibrator%parameter_count()
+        allocate(scores(size(x, 1)), scores_dot(size(x, 1)), calibration_dot(size(x, 1), 2))
+        call self%classifier%decision_function_jvp(x, theta_dot(:n_base), x_dot, &
+            scores, scores_dot, status)
+        if (.not. status_ok(status)) return
+        call self%calibrator%predict_proba_jvp(scores, scores_dot, probabilities, &
+            probabilities_dot, status)
+        if (.not. status_ok(status)) return
+        if (n_calibration > 0) then
+            call self%calibrator%predict_proba_parameter_jvp(scores, &
+                theta_dot(n_base + 1:n_base + n_calibration), probabilities, calibration_dot, status)
+            if (.not. status_ok(status)) return
+            probabilities_dot = probabilities_dot + calibration_dot
+        end if
+    end subroutine calibrated_logistic_predict_proba_jvp
+
+    subroutine calibrated_logistic_predict_proba_parameter_jvp(self, x, theta_dot, &
+            probabilities, probabilities_dot, status, x_dot)
+        class(calibrated_logistic_classifier_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), theta_dot(:)
+        real(dp), intent(out) :: probabilities(:, :), probabilities_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: x_dot(:, :)
+        real(dp), allocatable :: local_x_dot(:, :)
+
+        allocate(local_x_dot(size(x, 1), size(x, 2)))
+        local_x_dot = 0.0_dp
+        if (present(x_dot)) then
+            if (any(shape(x_dot) /= shape(x))) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "calibrated logistic parameter JVP: input tangent shape is invalid")
+                probabilities = 0.0_dp
+                probabilities_dot = 0.0_dp
+                return
+            end if
+            local_x_dot = x_dot
+        end if
+        call self%predict_proba_jvp(x, theta_dot, local_x_dot, probabilities, &
+            probabilities_dot, status)
+    end subroutine calibrated_logistic_predict_proba_parameter_jvp
+
+    subroutine calibrated_logistic_predict_proba_vjp(self, x, probabilities_bar, theta_bar, &
+            x_bar, status)
+        class(calibrated_logistic_classifier_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), probabilities_bar(:, :)
+        real(dp), intent(out) :: theta_bar(:), x_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: scores(:), scores_bar(:), base_bar(:), calibration_bar(:)
+        integer :: n_base, n_calibration
+
+        theta_bar = 0.0_dp
+        x_bar = 0.0_dp
+        if (.not. self%is_fitted) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "calibrated logistic probability VJP: model is not fitted")
+            return
+        end if
+        if (size(theta_bar) /= self%parameter_count() .or. &
+            any(shape(probabilities_bar) /= [size(x, 1), 2])) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "calibrated logistic probability VJP: input or output shape is invalid")
+            return
+        end if
+        if (self%calibration_method_code == CALIBRATION_ISOTONIC) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "calibrated logistic probability VJP: isotonic active set is discrete")
+            return
+        end if
+        n_base = self%classifier%parameter_count()
+        n_calibration = self%calibrator%parameter_count()
+        allocate(scores(size(x, 1)), scores_bar(size(x, 1)), base_bar(n_base), &
+            calibration_bar(max(1, n_calibration)))
+        call self%classifier%decision_function(x, scores, status)
+        if (.not. status_ok(status)) return
+        call self%calibrator%predict_proba_vjp(scores, probabilities_bar, scores_bar, status)
+        if (.not. status_ok(status)) return
+        call self%classifier%decision_function_vjp(x, scores_bar, base_bar, x_bar, status)
+        if (.not. status_ok(status)) return
+        theta_bar(:n_base) = base_bar
+        if (n_calibration > 0) then
+            call self%calibrator%predict_proba_parameter_vjp(scores, probabilities_bar, &
+                calibration_bar(:n_calibration), status)
+            if (.not. status_ok(status)) return
+            theta_bar(n_base + 1:) = calibration_bar(:n_calibration)
+        end if
+    end subroutine calibrated_logistic_predict_proba_vjp
+
+    subroutine calibrated_logistic_predict_proba_parameter_vjp(self, x, probabilities_bar, &
+            theta_bar, status, x_bar)
+        class(calibrated_logistic_classifier_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), probabilities_bar(:, :)
+        real(dp), intent(out) :: theta_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(out), optional :: x_bar(:, :)
+        real(dp), allocatable :: local_x_bar(:, :)
+
+        allocate(local_x_bar(size(x, 1), size(x, 2)))
+        call self%predict_proba_vjp(x, probabilities_bar, theta_bar, local_x_bar, status)
+        if (present(x_bar)) then
+            if (any(shape(x_bar) /= shape(x))) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "calibrated logistic parameter VJP: input cotangent shape is invalid")
+                return
+            end if
+            x_bar = local_x_bar
+        end if
+    end subroutine calibrated_logistic_predict_proba_parameter_vjp
+
+    subroutine calibrated_logistic_predict(self, x, labels, status)
+        class(calibrated_logistic_classifier_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        integer, intent(out) :: labels(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: scores(:)
+
+        if (size(labels) /= size(x, 1)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "calibrated logistic predict: output shape is invalid")
+            return
+        end if
+        allocate(scores(size(x, 1)))
+        call self%decision_function(x, scores, status)
+        if (.not. status_ok(status)) return
+        call self%calibrator%predict(scores, labels, status)
+    end subroutine calibrated_logistic_predict
+
+    function calibrated_logistic_classes(self) result(labels)
+        class(calibrated_logistic_classifier_t), intent(in) :: self
+        integer :: labels(2)
+
+        labels = self%classifier%classes()
+    end function calibrated_logistic_classes
+
+    integer function calibrated_logistic_feature_count(self) result(count)
+        class(calibrated_logistic_classifier_t), intent(in) :: self
+
+        count = self%classifier%feature_count()
+    end function calibrated_logistic_feature_count
+
+    integer function calibrated_logistic_parameter_count(self) result(count)
+        class(calibrated_logistic_classifier_t), intent(in) :: self
+
+        if (.not. self%is_fitted) then
+            count = 0
+        else
+            count = self%classifier%parameter_count() + self%calibrator%parameter_count()
+        end if
+    end function calibrated_logistic_parameter_count
+
+    function calibrated_logistic_parameters(self) result(values)
+        class(calibrated_logistic_classifier_t), intent(in) :: self
+        real(dp), allocatable :: values(:), base(:), calibration(:)
+        integer :: n_base, n_calibration
+
+        if (.not. self%is_fitted) then
+            allocate(values(0))
+            return
+        end if
+        base = self%classifier%parameters()
+        calibration = self%calibrator%parameters()
+        n_base = size(base)
+        n_calibration = size(calibration)
+        allocate(values(n_base + n_calibration))
+        values(:n_base) = base
+        if (n_calibration > 0) values(n_base + 1:) = calibration
+    end function calibrated_logistic_parameters
+
+    subroutine calibrated_logistic_set_parameters(self, values, status)
+        class(calibrated_logistic_classifier_t), intent(inout) :: self
+        real(dp), intent(in) :: values(:)
+        type(fortnum_status_t), intent(out) :: status
+        integer :: n_base, n_calibration
+
+        if (.not. self%is_fitted .or. size(values) /= self%parameter_count() .or. &
+            any(.not. ieee_is_finite(values))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "calibrated logistic set_parameters: model or vector is invalid")
+            return
+        end if
+        n_base = self%classifier%parameter_count()
+        n_calibration = self%calibrator%parameter_count()
+        call self%classifier%set_parameters(values(:n_base), status)
+        if (.not. status_ok(status)) return
+        if (n_calibration > 0) then
+            call self%calibrator%set_parameters(values(n_base + 1:n_base + n_calibration), status)
+        end if
+    end subroutine calibrated_logistic_set_parameters
+
+    logical function calibrated_logistic_fitted(self) result(value)
+        class(calibrated_logistic_classifier_t), intent(in) :: self
+
+        value = self%is_fitted .and. self%classifier%fitted() .and. self%calibrator%fitted()
+    end function calibrated_logistic_fitted
+
+    logical function calibrated_logistic_device_supported(self, device_kind) result(value)
+        class(calibrated_logistic_classifier_t), intent(in) :: self
+        integer, intent(in) :: device_kind
+
+        select case (device_kind)
+        case (FORTML_DEVICE_CPU)
+            value = self%fitted()
+        case (FORTML_DEVICE_CUDA)
+            value = .false.
+        case default
+            value = .false.
+        end select
+    end function calibrated_logistic_device_supported
+
+    integer function calibrated_logistic_method(self) result(value)
+        class(calibrated_logistic_classifier_t), intent(in) :: self
+
+        value = self%calibration_method_code
+    end function calibrated_logistic_method
+
+    integer function calibrated_logistic_cv_folds(self) result(value)
+        class(calibrated_logistic_classifier_t), intent(in) :: self
+
+        value = self%cv_fold_count
+    end function calibrated_logistic_cv_folds
+
+    real(dp) function calibrated_logistic_oof_log_loss(self) result(value)
+        class(calibrated_logistic_classifier_t), intent(in) :: self
+
+        value = self%oof_log_loss_value
+    end function calibrated_logistic_oof_log_loss
+
+    real(dp) function calibrated_logistic_calibrated_oof_log_loss(self) result(value)
+        class(calibrated_logistic_classifier_t), intent(in) :: self
+
+        value = self%calibrated_oof_log_loss_value
+    end function calibrated_logistic_calibrated_oof_log_loss
+
+    logical function valid_options(config) result(valid)
+        type(calibrated_logistic_classifier_options_t), intent(in) :: config
+
+        valid = ieee_is_finite(config%l2) .and. config%l2 >= 0.0_dp
+        if (.not. valid) return
+        valid = ieee_is_finite(config%tolerance) .and. config%tolerance > 0.0_dp
+        if (.not. valid) return
+        valid = config%max_iterations >= 1 .and. config%cv_folds >= 2
+        if (.not. valid) return
+        valid = config%cv_seed > 0
+        if (.not. valid .and. config%cv_shuffle) return
+        valid = config%calibration%max_iterations >= 1 .and. &
+            ieee_is_finite(config%calibration%tolerance) .and. &
+            config%calibration%tolerance > 0.0_dp
+    end function valid_options
+
+    subroutine fit_base(model, x, labels, status, config, sample_weight, class_weight)
+        type(logistic_regression_t), intent(out) :: model
+        real(dp), intent(in) :: x(:, :)
+        integer, intent(in) :: labels(:)
+        type(fortnum_status_t), intent(out) :: status
+        type(calibrated_logistic_classifier_options_t), intent(in) :: config
+        real(dp), intent(in), optional :: sample_weight(:), class_weight(:)
+
+        if (present(sample_weight)) then
+            if (present(class_weight)) then
+                call model%fit(x, labels, status, l2=config%l2, &
+                    fit_intercept=config%fit_intercept, max_iterations=config%max_iterations, &
+                    tolerance=config%tolerance, sample_weight=sample_weight, &
+                    class_weight=class_weight)
+            else
+                call model%fit(x, labels, status, l2=config%l2, &
+                    fit_intercept=config%fit_intercept, max_iterations=config%max_iterations, &
+                    tolerance=config%tolerance, sample_weight=sample_weight)
+            end if
+        else if (present(class_weight)) then
+            call model%fit(x, labels, status, l2=config%l2, &
+                fit_intercept=config%fit_intercept, max_iterations=config%max_iterations, &
+                tolerance=config%tolerance, class_weight=class_weight)
+        else
+            call model%fit(x, labels, status, l2=config%l2, &
+                fit_intercept=config%fit_intercept, max_iterations=config%max_iterations, &
+                tolerance=config%tolerance)
+        end if
+    end subroutine fit_base
+
+    subroutine gather_rows(x, indices, result)
+        real(dp), intent(in) :: x(:, :)
+        integer, intent(in) :: indices(:)
+        real(dp), allocatable, intent(out) :: result(:, :)
+        integer :: i
+
+        allocate(result(size(indices), size(x, 2)))
+        do i = 1, size(indices)
+            result(i, :) = x(indices(i), :)
+        end do
+    end subroutine gather_rows
+
+    subroutine raw_probabilities(scores, probabilities)
+        real(dp), intent(in) :: scores(:)
+        real(dp), intent(out) :: probabilities(:, :)
+        integer :: i
+        real(dp) :: positive
+
+        do i = 1, size(scores)
+            if (scores(i) >= 0.0_dp) then
+                positive = 1.0_dp/(1.0_dp + exp(-scores(i)))
+            else
+                positive = exp(scores(i))/(1.0_dp + exp(scores(i)))
+            end if
+            probabilities(i, 1) = 1.0_dp - positive
+            probabilities(i, 2) = positive
+        end do
+    end subroutine raw_probabilities
+
+    real(dp) function weighted_log_loss(probabilities, labels, classes, weights) result(value)
+        real(dp), intent(in) :: probabilities(:, :), weights(:)
+        integer, intent(in) :: labels(:), classes(:)
+        real(dp) :: denominator, positive
+        integer :: i
+
+        value = 0.0_dp
+        denominator = sum(weights)
+        do i = 1, size(labels)
+            positive = probabilities(i, 2)
+            if (labels(i) == classes(1)) then
+                value = value - weights(i)*log(max(1.0_dp - positive, 1.0e-15_dp))
+            else
+                value = value - weights(i)*log(max(positive, 1.0e-15_dp))
+            end if
+        end do
+        value = value/denominator
+    end function weighted_log_loss
+
+end module fortml_calibrated_logistic_classifier

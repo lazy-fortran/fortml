@@ -912,6 +912,31 @@ coordinate and agree with finite differences and the adjoint identity.
 supported; CUDA prediction returns a typed `FORTNUM_NOT_IMPLEMENTED` refusal
 until a resident calibration kernel is linked.
 
+### `fortml_calibrated_logistic_classifier`
+
+`calibrated_logistic_classifier_t%fit(x,labels,status[,options,state,
+sample_weight,class_weight])` implements a leakage-safe binary calibration
+workflow. It uses `stratified_kfold_splitter_t` to fit a fresh logistic model
+on each training fold, writes one held-out margin for every sample, fits the
+selected binary calibration map on those out-of-fold margins, and then fits
+the deployment logistic model on all rows. `cv_folds`, `cv_shuffle`, and
+`cv_seed` are explicit options. The state records the fold count, convergence
+flags, and uncalibrated and calibrated out-of-fold log losses, so a caller can
+check calibration without evaluating a map on the margins used to fit it.
+
+`predict_proba`, `predict`, `classes`, `decision_function`, `parameters`,
+`parameter_count`, and `set_parameters` expose the final deployment model.
+The packed vector is `[logistic parameters, calibration parameters]`; the
+calibration suffix is `[T]` for temperature, `[slope,intercept]` for sigmoid,
+and empty for isotonic. Smooth temperature and sigmoid maps provide exact
+joint input/parameter JVP and VJP products. Isotonic derivative calls return
+`FORTNUM_NOT_IMPLEMENTED` because the PAVA active set is discrete. Selected
+CPU prediction is supported. CUDA prediction and decision requests return a
+typed `FORTNUM_NOT_IMPLEMENTED` refusal until a resident logistic-plus-
+calibration kernel is linked. `test_calibrated_logistic_classifier` checks
+simplex and sorted-label behavior, OOF diagnostics, central finite differences,
+the JVP/VJP adjoint identity, isotonic refusal, and the CUDA boundary.
+
 ### `fortml_regression_metrics`
 
 The regression metric procedures accept row-oriented target and prediction

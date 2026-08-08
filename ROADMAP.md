@@ -846,11 +846,14 @@ The parity target includes the following independent model variants. The matrix
 is intentionally explicit so a binary implementation cannot be mistaken for
 multiclass, weighted, probabilistic, derivative, or GPU coverage.
 
-Calibration update (2026-08-07): `CALIBRATION_TEMPERATURE` now fits a positive
+Calibration update (2026-08-08): `CALIBRATION_TEMPERATURE` fits a positive
 scalar temperature for binary, pre-oriented logits and exposes exact score and
 temperature-parameter JVP/VJP products. Weighted equal-width reliability
-diagrams now have a deterministic metric/API and benchmark oracle; multiclass
-temperature scaling and calibration-aware cross-validation remain open.
+diagrams now have a deterministic metric/API and benchmark oracle.
+`calibrated_logistic_classifier_t` adds leakage-safe binary calibration from
+stratified out-of-fold margins, fold diagnostics, and exact smooth products;
+multiclass calibrated cross-validation and generic estimator routing remain
+open.
 
 | Family | Required variants | Current FortML baseline | Missing production gates |
 | --- | --- | --- | --- |
@@ -1525,7 +1528,7 @@ The source inventory is dated 2026-08-08.
 
 | Work package | State | Implemented baseline | Package exit |
 | --- | --- | --- | --- |
-| Classification | Partial | `fortml_logistic_regression` and `fortml_softmax_regression` provide binary and multinomial integer-label fitting with sample-weighted reductions, `fortml_ovr_logistic_classifier` adds deterministic one-vs-rest binary logistic fits with normalized probabilities and parameter products, `fortml_ovo_logistic_classifier` adds deterministic one-vs-one pairwise-vote probabilities and input/parameter products, `fortml_multilabel_logistic_classifier` adds independent dense indicator heads, `fortml_ordinal_logistic_classifier` adds weighted cumulative-logit fitting with ordered cut points and input/packed-parameter JVP/VJPs, `fortml_gaussian_naive_bayes` adds weighted Gaussian class moments and input/parameter probability products, `fortml_bernoulli_naive_bayes` adds weighted relaxed-[0,1] Bernoulli features, positive smoothing, packed state, and input/parameter probability products, `fortml_multinomial_naive_bayes` adds weighted relaxed nonnegative counts, token-mass smoothing, packed state, and input/parameter probability products, `fortml_complement_naive_bayes` adds weighted complement distributions, optional weight normalization, packed state, and input/parameter probability products, `fortml_lda_classifier`/`fortml_qda_classifier` add weighted Cholesky Gaussian discriminants with input/parameter products, `fortml_probability_calibration` adds Platt sigmoid and weighted PAVA isotonic calibration with score/parameter products and active-set refusals, `fortml_knn_classifier` adds deterministic dense uniform or inverse-distance neighbors with explicit discrete derivative refusals, `fortml_logistic_training` adds an exact weighted logistic objective with parameter/L2 gradients and HVPs plus bounded FortOpt L-BFGS-B, `fortml_linear_svm_classifier` and `fortml_rbf_svm_classifier` add weighted hinge/squared-hinge binary margins with fixed-state probability and product contracts, `fortml_cart_classifier` adds deterministic weighted Gini/entropy trees and leaf probabilities, `fortml_random_forest_classifier` adds seeded bootstrap CART probabilities, `fortml_extra_trees_classifier` adds seeded randomized-threshold/feature ensembles, `fortml_mlp_classifier` adds deterministic multiclass logits training with Adam and sample/class weights, `fortml_mlp_ordinal_classifier` adds a scalar-score neural cumulative-logit head with ordered cut points and deterministic FortOpt L-BFGS-B training, `fortml_gp_classification` adds binary Laplace logistic/probit inference plus an exact mode-envelope kernel gradient and query-feature JVP/VJP products, `fortml_gp_multiclass_classification` adds packed one-vs-rest envelope gradients, latent margins, and query-feature JVP/VJP products, and shared metrics cover accuracy, top-k, balanced accuracy, confusion, precision/recall/F1, Brier, binary Matthews, weighted accuracy, log loss, and expected/maximum calibration error. | Binary and multiclass linear, multilabel, ordinal, tree, neural, GP, and boosted-tree classifiers share label, probability, weighting, metric, and calibration conventions. |
+| Classification | Partial | `fortml_logistic_regression` and `fortml_softmax_regression` provide binary and multinomial integer-label fitting with sample-weighted reductions, `fortml_ovr_logistic_classifier` adds deterministic one-vs-rest binary logistic fits with normalized probabilities and parameter products, `fortml_ovo_logistic_classifier` adds deterministic one-vs-one pairwise-vote probabilities and input/parameter products, `fortml_multilabel_logistic_classifier` adds independent dense indicator heads, `fortml_ordinal_logistic_classifier` adds weighted cumulative-logit fitting with ordered cut points and input/packed-parameter JVP/VJPs, `fortml_gaussian_naive_bayes` adds weighted Gaussian class moments and input/parameter probability products, `fortml_bernoulli_naive_bayes` adds weighted relaxed-[0,1] Bernoulli features, positive smoothing, packed state, and input/parameter probability products, `fortml_multinomial_naive_bayes` adds weighted relaxed nonnegative counts, token-mass smoothing, packed state, and input/parameter probability products, `fortml_complement_naive_bayes` adds weighted complement distributions, optional weight normalization, packed state, and input/parameter probability products, `fortml_lda_classifier`/`fortml_qda_classifier` add weighted Cholesky Gaussian discriminants with input/parameter products, `fortml_probability_calibration` adds Platt sigmoid and weighted PAVA isotonic calibration with score/parameter products and active-set refusals, `fortml_calibrated_logistic_classifier` adds stratified out-of-fold binary calibration and fold log-loss diagnostics, `fortml_knn_classifier` adds deterministic dense uniform or inverse-distance neighbors with explicit discrete derivative refusals, `fortml_logistic_training` adds an exact weighted logistic objective with parameter/L2 gradients and HVPs plus bounded FortOpt L-BFGS-B, `fortml_linear_svm_classifier` and `fortml_rbf_svm_classifier` add weighted hinge/squared-hinge binary margins with fixed-state probability and product contracts, `fortml_cart_classifier` adds deterministic weighted Gini/entropy trees and leaf probabilities, `fortml_random_forest_classifier` adds seeded bootstrap CART probabilities, `fortml_extra_trees_classifier` adds seeded randomized-threshold/feature ensembles, `fortml_mlp_classifier` adds deterministic multiclass logits training with Adam and sample/class weights, `fortml_mlp_ordinal_classifier` adds a scalar-score neural cumulative-logit head with ordered cut points and deterministic FortOpt L-BFGS-B training, `fortml_gp_classification` adds binary Laplace logistic/probit inference plus an exact mode-envelope kernel gradient and query-feature JVP/VJP products, `fortml_gp_multiclass_classification` adds packed one-vs-rest envelope gradients, latent margins, and query-feature JVP/VJP products, and shared metrics cover accuracy, top-k, balanced accuracy, confusion, precision/recall/F1, Brier, binary Matthews, weighted accuracy, log loss, and expected/maximum calibration error. | Binary and multiclass linear, multilabel, ordinal, tree, neural, GP, and boosted-tree classifiers share label, probability, weighting, metric, and calibration conventions. |
 
 | Estimator contracts, pipelines, and bases | Partial | `basis_map_t`, horizontal and sequential basis pipelines, fitted standard/min-max scalers with input JVPs, `basis_linear_regression_t`, joint `basis_pipeline_training_objective_t`, weighted multi-output `ridge_regression_t` and `elastic_net_regression_t`, weighted `linear_svr_regression_t`, row-oriented sample conventions, status objects, and the parameter registry are public. | Fitted transformers and estimators compose without data leakage, expose routed parameters, and run through cross-validation. |
 | Tree boosting | Partial | `decision_stump_t`, weighted depth-limited `cart_regressor_t` and `cart_classifier_t`, squared-loss `gradient_boosting_regressor_t`, `xgboost_t`, `xgboost_multiclass_t`, and separately named `lightgbm_t` provide deterministic exhaustive, bounded-histogram, and best-first leaf-wise split products. The CART lanes have weighted squared-error or Gini/entropy criteria, depth and leaf constraints, fixed feature/threshold tie ordering, piecewise input JVP/refusal for regression, and finite-only probability/prediction paths for classification. The XGBoost-style lane has exact and weighted-histogram squared/logistic/Poisson/Huber/quantile/absolute and bounded pairwise-ranking gradients, Hessians, regularized gains, recursive Newton leaves, per-feature monotonic bounds, tree-depth/node diagnostics, binary and one-vs-rest multiclass probabilities, staged predictions/margins, and gain/weight/cover feature importance. The LightGBM-style lane supports weighted regression/binary logistic objectives, shared weighted-quantile cuts, deterministic global best-leaf growth up to `num_leaves`, validation monitoring with patience/min-delta, best-round metadata, restore-best or retain-all ensembles, staged/contribution/slice products, versioned text persistence, matched-option warm starts, and typed split-boundary/CUDA refusals. | Regression and classification trees support validation-based stopping, categorical objectives, interaction constraints, deeper growth, and model persistence. |
@@ -1555,6 +1558,16 @@ baseline includes the four-slot residual objective seam;
 the detailed closure slices and their independent benchmark reports below are
 authoritative when this compact work-package table is read alongside older
 package prose.
+
+The calibration-aware binary cross-validation slice adds
+`calibrated_logistic_classifier_t`. Stratified folds produce one held-out
+logistic margin per row before the binary sigmoid, temperature, or isotonic
+map is fitted. The deployment model is refit on all rows, and the state keeps
+both out-of-fold log-loss values. `test_calibrated_logistic_classifier` checks
+the simplex, arbitrary sorted labels, smooth JVP/VJP products, isotonic
+active-set refusal, and explicit CUDA refusal. The companion benchmark is
+`results/calibrated_logistic_cv.csv`; multiclass calibration CV and generic
+estimator callbacks remain open.
 
 The calibrated neural classification slice adds
 `mlp_calibrated_classifier_t`: binary MLP logits can be calibrated with the
@@ -1731,6 +1744,17 @@ CUDA refusal until private CART storage is safely bound to the C ABI.
   `test_multiclass_probability_calibration` and the multiclass calibration
   benchmark lane. Multiclass Platt and isotonic maps remain typed
   `FORTNUM_NOT_IMPLEMENTED` policies rather than independent binary fits.
+- [x] Add leakage-safe binary calibration-aware cross-validation through
+  `calibrated_logistic_classifier_t`. Each deterministic stratified fold fits
+  an independent logistic model, produces held-out margins for every sample,
+  fits sigmoid, positive-temperature, or weighted isotonic calibration on the
+  out-of-fold margins, and then fits the deployment model on all rows. The
+  state records fold count and pre/post-calibration out-of-fold log loss.
+  Smooth temperature and sigmoid maps expose exact joint input/parameter
+  JVP/VJP products; isotonic active sets and CUDA prediction return typed
+  refusals. `test_calibrated_logistic_classifier` supplies central
+  finite-difference, adjoint, sorted-label, simplex, and device-boundary
+  oracles. Multiclass and generic estimator CV routing remain open.
 
 Acceptance: hand-computed separable and nonseparable fixtures cover labels,
 weights, ties, probabilities, multilabel thresholds, and ordinal cut points.
