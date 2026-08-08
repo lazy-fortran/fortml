@@ -14,7 +14,7 @@ module fortml_xgboost_multiclass
 
     character(*), parameter, public :: XGB_MULTICLASS_MODEL_TEXT_MAGIC = &
         "FORTML_XGBOOST_MULTICLASS_TEXT"
-    integer, parameter, public :: XGB_MULTICLASS_MODEL_TEXT_SCHEMA_VERSION = 1
+    integer, parameter, public :: XGB_MULTICLASS_MODEL_TEXT_SCHEMA_VERSION = 2
 
     !> Deterministic one-vs-rest multiclass XGBoost-style classifier.
     !>
@@ -28,6 +28,10 @@ module fortml_xgboost_multiclass
         type(xgboost_t), allocatable :: one_vs_rest(:)
         integer, allocatable :: class_label(:)
         integer :: n_inputs = 0
+        integer :: requested_estimators = 0
+        integer :: best_iteration_value = 0
+        real(dp) :: best_validation_loss_value = huge(1.0_dp)
+        logical :: early_stopped_flag = .false.
         logical :: initialized = .false.
     contains
         procedure, public :: fit => xgb_multiclass_fit
@@ -52,6 +56,12 @@ module fortml_xgboost_multiclass
         procedure, public :: feature_count => xgb_multiclass_feature_count
         procedure, public :: class_count => xgb_multiclass_class_count
         procedure, public :: estimator_count => xgb_multiclass_estimator_count
+        procedure, public :: requested_estimator_count => &
+            xgb_multiclass_requested_estimator_count
+        procedure, public :: best_iteration => xgb_multiclass_best_iteration
+        procedure, public :: best_validation_loss => &
+            xgb_multiclass_best_validation_loss
+        procedure, public :: early_stopped => xgb_multiclass_early_stopped
         procedure, public :: monotone_constraint => &
             xgb_multiclass_monotone_constraint
         procedure, public :: fitted => xgb_multiclass_fitted
@@ -59,16 +69,27 @@ module fortml_xgboost_multiclass
 
 contains
 
-    subroutine xgb_multiclass_fit(self, x, labels, status, options, sample_weight)
-        class(xgboost_multiclass_t), intent(out) :: self
+    subroutine xgb_multiclass_fit(self, x, labels, status, options, sample_weight, &
+            validation_x, validation_labels, validation_weight)
+        class(xgboost_multiclass_t), intent(inout) :: self
         real(dp), intent(in) :: x(:, :)
         integer, intent(in) :: labels(:)
         type(fortnum_status_t), intent(out) :: status
         type(xgboost_options_t), intent(in), optional :: options
         real(dp), intent(in), optional :: sample_weight(:)
-        type(xgboost_options_t) :: settings
-        integer, allocatable :: classes(:), binary_labels(:)
-        integer :: i, n_classes, n_samples
+        real(dp), intent(in), optional :: validation_x(:, :)
+        integer, intent(in), optional :: validation_labels(:)
+        real(dp), intent(in), optional :: validation_weight(:)
+        type(xgboost_options_t) :: settings, child_settings
+        type(xgboost_multiclass_t) :: candidate
+        type(xgboost_t) :: sliced
+        integer, allocatable :: classes(:), binary_labels(:), validation_binary(:)
+        real(dp), allocatable :: staged(:, :, :), child_staged(:, :, :), totals(:, :)
+        real(dp), allocatable :: validation_observation_weight(:)
+        real(dp) :: validation_loss, best_validation_loss, weight_sum
+        integer :: i, j, n_classes, n_samples, n_validation, completed_estimators
+        integer :: best_iteration, stale_rounds, keep_estimators
+        logical :: have_validation, improved, known_label
         !! Default-initialized instances, standing in for empty
         !! structure constructors: nvfortran rejects `T()` outright,
         !! and a declared local carries the same default init.
@@ -76,6 +97,26 @@ contains
 
         settings = xgboost_options_t_default
         if (present(options)) settings = options
+        have_validation = present(validation_x) .or. present(validation_labels) .or. &
+            present(validation_weight)
+        if (present(validation_x) .neqv. present(validation_labels)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "XGBoost multiclass fit: validation_x and validation_labels must be supplied together")
+            return
+        end if
+        if (present(validation_weight) .and. .not. present(validation_x)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "XGBoost multiclass fit: validation_weight requires validation data")
+            return
+        end if
+        if (settings%early_stopping_rounds < 0 .or. &
+            .not. ieee_is_finite(settings%early_stopping_min_delta) .or. &
+            settings%early_stopping_min_delta < 0.0_dp .or. &
+            (settings%early_stopping_rounds > 0 .and. .not. have_validation)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "XGBoost multiclass fit: invalid early-stopping configuration")
+            return
+        end if
         n_samples = size(x, 1)
         if (n_samples < 2 .or. size(x, 2) < 1 .or. size(labels) /= n_samples) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -98,24 +139,181 @@ contains
                 "XGBoost multiclass fit: at least two classes are required")
             return
         end if
+        if (have_validation) then
+            n_validation = size(validation_x, 1)
+            if (n_validation < 1 .or. size(validation_x, 2) /= size(x, 2) .or. &
+                size(validation_labels) /= n_validation) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "XGBoost multiclass fit: validation dimensions do not match training features")
+                return
+            end if
+            if (present(validation_weight)) then
+                if (size(validation_weight) /= n_validation .or. &
+                    any(.not. ieee_is_finite(validation_weight)) .or. &
+                    any(validation_weight <= 0.0_dp)) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "XGBoost multiclass fit: validation_weight must be positive and finite")
+                    return
+                end if
+            end if
+            do i = 1, n_validation
+                known_label = any(validation_labels(i) == classes)
+                if (.not. known_label) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "XGBoost multiclass fit: validation labels must belong to training classes")
+                    return
+                end if
+            end do
+        else
+            n_validation = 0
+        end if
 
-        allocate(self%one_vs_rest(n_classes), self%class_label(n_classes))
-        self%class_label = classes
+        ! Every child must retain the same complete tree prefix.  Validation
+        ! stopping is therefore evaluated once on the normalized multiclass
+        ! probabilities below; the binary estimator still performs all of its
+        ! usual validation/input checks and staged prediction work.
+        child_settings = settings
+        child_settings%early_stopping_rounds = 0
+        child_settings%restore_best = .false.
+        allocate(candidate%one_vs_rest(n_classes), candidate%class_label(n_classes))
+        candidate%class_label = classes
         allocate(binary_labels(n_samples))
+        if (have_validation) allocate(validation_binary(n_validation))
         do i = 1, n_classes
             binary_labels = 0
             where (labels == classes(i)) binary_labels = 1
+            if (have_validation) then
+                validation_binary = 0
+                where (validation_labels == classes(i)) validation_binary = 1
+            end if
             if (present(sample_weight)) then
-                call self%one_vs_rest(i)%fit_binary(x, real(binary_labels, dp), &
-                    status, settings, sample_weight)
+                if (have_validation) then
+                    if (present(validation_weight)) then
+                        call candidate%one_vs_rest(i)%fit_binary(x, real(binary_labels, dp), &
+                            status, child_settings, sample_weight, validation_x, &
+                            real(validation_binary, dp), validation_weight)
+                    else
+                        call candidate%one_vs_rest(i)%fit_binary(x, real(binary_labels, dp), &
+                            status, child_settings, sample_weight, validation_x, &
+                            real(validation_binary, dp))
+                    end if
+                else
+                    call candidate%one_vs_rest(i)%fit_binary(x, real(binary_labels, dp), &
+                        status, child_settings, sample_weight)
+                end if
+            else if (have_validation) then
+                if (present(validation_weight)) then
+                    call candidate%one_vs_rest(i)%fit_binary(x, real(binary_labels, dp), &
+                        status, child_settings, validation_x=validation_x, &
+                        validation_y=real(validation_binary, dp), &
+                        validation_weight=validation_weight)
+                else
+                    call candidate%one_vs_rest(i)%fit_binary(x, real(binary_labels, dp), &
+                        status, child_settings, validation_x=validation_x, &
+                        validation_y=real(validation_binary, dp))
+                end if
             else
-                call self%one_vs_rest(i)%fit_binary(x, real(binary_labels, dp), &
-                    status, settings)
+                call candidate%one_vs_rest(i)%fit_binary(x, real(binary_labels, dp), &
+                    status, child_settings)
             end if
             if (status%code /= FORTNUM_OK) return
         end do
-        self%n_inputs = size(x, 2)
-        self%initialized = .true.
+        candidate%n_inputs = size(x, 2)
+        candidate%requested_estimators = settings%n_estimators
+        candidate%best_iteration_value = settings%n_estimators
+        candidate%best_validation_loss_value = huge(1.0_dp)
+        candidate%early_stopped_flag = .false.
+        completed_estimators = candidate%one_vs_rest(1)%estimator_count()
+
+        if (have_validation) then
+            allocate(staged(n_validation, n_classes, completed_estimators), &
+                child_staged(n_validation, 2, completed_estimators), &
+                totals(n_validation, completed_estimators), &
+                validation_observation_weight(n_validation))
+            validation_observation_weight = 1.0_dp
+            if (present(validation_weight)) validation_observation_weight = validation_weight
+            weight_sum = sum(validation_observation_weight)
+            if (.not. ieee_is_finite(weight_sum) .or. weight_sum <= 0.0_dp) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "XGBoost multiclass fit: validation_weight has no positive mass")
+                return
+            end if
+            staged = 0.0_dp
+            do i = 1, n_classes
+                call candidate%one_vs_rest(i)%predict_proba_staged(validation_x, &
+                    child_staged, status)
+                if (status%code /= FORTNUM_OK) return
+                staged(:, i, :) = child_staged(:, 2, :)
+            end do
+            totals = sum(staged, dim=2)
+            if (any(.not. ieee_is_finite(totals)) .or. any(totals <= 0.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "XGBoost multiclass fit: validation normalization failed")
+                return
+            end if
+            best_validation_loss = huge(1.0_dp)
+            best_iteration = 0
+            stale_rounds = 0
+            do j = 1, completed_estimators
+                validation_loss = multiclass_log_loss(staged(:, :, j), &
+                    totals(:, j), validation_labels, classes, validation_observation_weight, &
+                    weight_sum)
+                if (.not. ieee_is_finite(validation_loss)) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "XGBoost multiclass fit: validation objective is nonfinite")
+                    return
+                end if
+                improved = validation_loss < best_validation_loss - &
+                    settings%early_stopping_min_delta
+                if (improved) then
+                    best_validation_loss = validation_loss
+                    best_iteration = j
+                    stale_rounds = 0
+                else
+                    stale_rounds = stale_rounds + 1
+                end if
+                if (settings%early_stopping_rounds > 0 .and. &
+                    stale_rounds >= settings%early_stopping_rounds) then
+                    candidate%early_stopped_flag = .true.
+                    exit
+                end if
+            end do
+            if (best_iteration < 1) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "XGBoost multiclass fit: validation objective did not produce a finite score")
+                return
+            end if
+            candidate%best_iteration_value = best_iteration
+            candidate%best_validation_loss_value = best_validation_loss
+            keep_estimators = completed_estimators
+            if (settings%restore_best) keep_estimators = best_iteration
+            if (candidate%early_stopped_flag .and. .not. settings%restore_best) then
+                keep_estimators = j
+            end if
+            if (keep_estimators < 1) keep_estimators = best_iteration
+            if (keep_estimators < completed_estimators) then
+                do i = 1, n_classes
+                    call candidate%one_vs_rest(i)%slice(keep_estimators, sliced, status)
+                    if (status%code /= FORTNUM_OK) return
+                    candidate%one_vs_rest(i) = sliced
+                end do
+            end if
+        end if
+        candidate%n_inputs = size(x, 2)
+        candidate%initialized = .true.
+        if (.not. valid_multiclass_model(candidate)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "XGBoost multiclass fit: child model metadata is inconsistent")
+            return
+        end if
+        self%one_vs_rest = candidate%one_vs_rest
+        self%class_label = candidate%class_label
+        self%n_inputs = candidate%n_inputs
+        self%requested_estimators = candidate%requested_estimators
+        self%best_iteration_value = candidate%best_iteration_value
+        self%best_validation_loss_value = candidate%best_validation_loss_value
+        self%early_stopped_flag = candidate%early_stopped_flag
+        self%initialized = candidate%initialized
         call status_set(status, FORTNUM_OK, "")
     end subroutine xgb_multiclass_fit
 
@@ -156,6 +354,14 @@ contains
             XGB_MULTICLASS_MODEL_TEXT_SCHEMA_VERSION, ios)
         if (ios == 0) call multi_write_i(unit, "n_inputs", self%n_inputs, ios)
         if (ios == 0) call multi_write_i(unit, "class_count", self%class_count(), ios)
+        if (ios == 0) call multi_write_i(unit, "requested_estimators", &
+            self%requested_estimators, ios)
+        if (ios == 0) call multi_write_i(unit, "best_iteration", &
+            self%best_iteration_value, ios)
+        if (ios == 0) call multi_write_r(unit, "best_validation_loss", &
+            self%best_validation_loss_value, ios)
+        if (ios == 0) call multi_write_l(unit, "early_stopped", &
+            self%early_stopped_flag, ios)
         do i = 1, self%class_count()
             if (ios /= 0) exit
             call multi_write_i(unit, "class_label", self%class_label(i), ios)
@@ -222,6 +428,9 @@ contains
         type(xgboost_multiclass_t) :: candidate
         integer :: unit, child_unit, ios, close_ios, schema, n_inputs
         integer :: class_count, i, child_index
+        integer :: requested_estimators, best_iteration
+        real(dp) :: best_validation_loss
+        logical :: early_stopped
         logical :: child_open
         character(len=1024) :: line, key
         character(len=1024) :: child_path
@@ -243,10 +452,21 @@ contains
         if (ios /= 0 .or. n_inputs < 1) goto 900
         call multi_read_i(unit, "class_count", class_count, ios)
         if (ios /= 0 .or. class_count < 2) goto 900
+        call multi_read_i(unit, "requested_estimators", requested_estimators, ios)
+        if (ios /= 0 .or. requested_estimators < 1) goto 900
+        call multi_read_i(unit, "best_iteration", best_iteration, ios)
+        call multi_read_r(unit, "best_validation_loss", best_validation_loss, ios)
+        call multi_read_l(unit, "early_stopped", early_stopped, ios)
+        if (ios /= 0 .or. best_iteration < 1 .or. &
+            .not. ieee_is_finite(best_validation_loss)) goto 900
         allocate(candidate%class_label(class_count), candidate%one_vs_rest(class_count), &
             stat=ios)
         if (ios /= 0) goto 900
         candidate%n_inputs = n_inputs
+        candidate%requested_estimators = requested_estimators
+        candidate%best_iteration_value = best_iteration
+        candidate%best_validation_loss_value = best_validation_loss
+        candidate%early_stopped_flag = early_stopped
         do i = 1, class_count
             call multi_read_i(unit, "class_label", candidate%class_label(i), ios)
             if (ios /= 0) goto 900
@@ -312,7 +532,7 @@ contains
             return
         end if
         select type(destination => self)
-        type is (xgboost_multiclass_t)
+            type is (xgboost_multiclass_t)
             destination = candidate
         class default
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -322,7 +542,7 @@ contains
         call status_set(status, FORTNUM_OK, "")
         return
 
-900     continue
+        900     continue
         if (child_open) close(child_unit, iostat=close_ios)
         call delete_file(trim(child_path))
         close_ios = 0
@@ -708,6 +928,35 @@ contains
         count = self%one_vs_rest(1)%estimator_count()
     end function xgb_multiclass_estimator_count
 
+    integer function xgb_multiclass_requested_estimator_count(self) result(count)
+        class(xgboost_multiclass_t), intent(in) :: self
+
+        count = self%requested_estimators
+    end function xgb_multiclass_requested_estimator_count
+
+    integer function xgb_multiclass_best_iteration(self) result(iteration)
+        !! One-based boosting round with the lowest normalized validation
+        !! multiclass log-loss.  Without validation this is the requested
+        !! estimator count.
+        class(xgboost_multiclass_t), intent(in) :: self
+
+        iteration = self%best_iteration_value
+    end function xgb_multiclass_best_iteration
+
+    real(dp) function xgb_multiclass_best_validation_loss(self) result(loss)
+        !! Best weighted normalized multiclass validation log-loss.  It is
+        !! `huge()` when no validation set was supplied.
+        class(xgboost_multiclass_t), intent(in) :: self
+
+        loss = self%best_validation_loss_value
+    end function xgb_multiclass_best_validation_loss
+
+    logical function xgb_multiclass_early_stopped(self) result(stopped)
+        class(xgboost_multiclass_t), intent(in) :: self
+
+        stopped = self%early_stopped_flag
+    end function xgb_multiclass_early_stopped
+
     integer function xgb_multiclass_monotone_constraint(self, feature_index) &
             result(value)
         class(xgboost_multiclass_t), intent(in) :: self
@@ -787,6 +1036,24 @@ contains
         write(unit, "(A,1X,I0)", iostat=ios) trim(key), value
     end subroutine multi_write_i
 
+    subroutine multi_write_r(unit, key, value, ios)
+        integer, intent(in) :: unit
+        character(*), intent(in) :: key
+        real(dp), intent(in) :: value
+        integer, intent(out) :: ios
+
+        write(unit, "(A,1X,ES24.16E3)", iostat=ios) trim(key), value
+    end subroutine multi_write_r
+
+    subroutine multi_write_l(unit, key, value, ios)
+        integer, intent(in) :: unit
+        character(*), intent(in) :: key
+        logical, intent(in) :: value
+        integer, intent(out) :: ios
+
+        write(unit, "(A,1X,I0)", iostat=ios) trim(key), merge(1, 0, value)
+    end subroutine multi_write_l
+
     subroutine multi_read_i(unit, expected, value, ios)
         integer, intent(in) :: unit
         character(*), intent(in) :: expected
@@ -797,6 +1064,32 @@ contains
         read(unit, *, iostat=ios) key, value
         if (ios == 0 .and. trim(key) /= trim(expected)) ios = 1
     end subroutine multi_read_i
+
+    subroutine multi_read_r(unit, expected, value, ios)
+        integer, intent(in) :: unit
+        character(*), intent(in) :: expected
+        real(dp), intent(out) :: value
+        integer, intent(out) :: ios
+        character(len=80) :: key
+
+        read(unit, *, iostat=ios) key, value
+        if (ios == 0 .and. trim(key) /= trim(expected)) ios = 1
+    end subroutine multi_read_r
+
+    subroutine multi_read_l(unit, expected, value, ios)
+        integer, intent(in) :: unit
+        character(*), intent(in) :: expected
+        logical, intent(out) :: value
+        integer, intent(out) :: ios
+        character(len=80) :: key
+        integer :: encoded
+
+        encoded = 0
+        read(unit, *, iostat=ios) key, encoded
+        if (ios == 0 .and. trim(key) /= trim(expected)) ios = 1
+        if (ios == 0 .and. encoded /= 0 .and. encoded /= 1) ios = 1
+        value = encoded == 1
+    end subroutine multi_read_l
 
     subroutine make_child_path(path, index, child_path, ios)
         character(*), intent(in) :: path
@@ -844,5 +1137,39 @@ contains
             classes = classes(:n_unique)
         end if
     end subroutine unique_sorted_labels
+
+    real(dp) function multiclass_log_loss(probabilities, totals, labels, classes, &
+            observation_weight, weight_sum) result(loss)
+        real(dp), intent(in) :: probabilities(:, :), totals(:)
+        integer, intent(in) :: labels(:), classes(:)
+        real(dp), intent(in) :: observation_weight(:), weight_sum
+        integer :: i, class_index
+        real(dp), parameter :: probability_floor = 1.0e-15_dp
+
+        loss = 0.0_dp
+        do i = 1, size(labels)
+            class_index = find_label_index(classes, labels(i))
+            if (class_index < 1 .or. class_index > size(probabilities, 2)) then
+                loss = huge(1.0_dp)
+                return
+            end if
+            loss = loss - observation_weight(i)*log(max( &
+                probabilities(i, class_index)/totals(i), probability_floor))
+        end do
+        loss = loss/weight_sum
+    end function multiclass_log_loss
+
+    integer function find_label_index(classes, label) result(index)
+        integer, intent(in) :: classes(:), label
+        integer :: i
+
+        index = 0
+        do i = 1, size(classes)
+            if (classes(i) == label) then
+                index = i
+                return
+            end if
+        end do
+    end function find_label_index
 
 end module fortml_xgboost_multiclass

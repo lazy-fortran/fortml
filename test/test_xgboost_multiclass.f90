@@ -18,6 +18,7 @@ program test_xgboost_multiclass
     call test_probability_vjp(failures)
     call test_text_persistence(failures)
     call test_missing_value_routing(failures)
+    call test_validation_early_stopping(failures)
     call test_refusals(failures)
     if (failures > 0) then
         write (error_unit, '(i0,a)') failures, &
@@ -117,6 +118,73 @@ contains
         call check(maxval(abs(sum(probabilities, dim=2) - 1.0_dp)) < 3.0e-14_dp, &
             "missing-value probability normalization", failures)
     end subroutine test_missing_value_routing
+
+    subroutine test_validation_early_stopping(failures)
+        integer, intent(inout) :: failures
+        type(xgboost_multiclass_t) :: model, retained
+        type(xgboost_options_t) :: options
+        type(fortnum_status_t) :: status
+        real(dp) :: x(9, 1), validation_x(6, 1), staged(6, 3, 1)
+        real(dp) :: validation_weight(6), expected_loss, before(6, 3), after(6, 3)
+        integer :: labels(9), validation_labels(6), invalid_labels(6)
+        integer :: i, class_index
+        logical :: refused
+
+        x(:, 1) = [-4.0_dp, -3.0_dp, -2.0_dp, -1.0_dp, 0.0_dp, 1.0_dp, &
+            2.0_dp, 3.0_dp, 4.0_dp]
+        labels = [-8, -8, -8, 2, 2, 2, 11, 11, 11]
+        validation_x(:, 1) = [-3.5_dp, -1.5_dp, -0.2_dp, 0.8_dp, 2.2_dp, 3.7_dp]
+        validation_labels = [-8, -8, 2, 2, 11, 11]
+        validation_weight = [1.0_dp, 2.0_dp, 1.0_dp, 1.0_dp, 2.0_dp, 3.0_dp]
+        options%n_estimators = 5
+        options%max_depth = 1
+        options%learning_rate = 0.4_dp
+        options%l2 = 1.0_dp
+        options%min_child_weight = 0.0_dp
+        options%early_stopping_rounds = 1
+        options%early_stopping_min_delta = 1.0e6_dp
+        options%restore_best = .true.
+        call model%fit(x, labels, status, options, validation_x=validation_x, &
+            validation_labels=validation_labels, validation_weight=validation_weight)
+        call model%predict_proba_staged(validation_x, staged, status)
+        call model%predict_proba(validation_x, before, status)
+        expected_loss = 0.0_dp
+        do i = 1, size(validation_labels)
+            class_index = 1
+            if (validation_labels(i) == 2) class_index = 2
+            if (validation_labels(i) == 11) class_index = 3
+            expected_loss = expected_loss - validation_weight(i)*log(max( &
+                staged(i, class_index, 1), 1.0e-15_dp))
+        end do
+        expected_loss = expected_loss/sum(validation_weight)
+        call check(status_ok(status), "multiclass validation fit status", failures)
+        call check(model%requested_estimator_count() == 5 .and. &
+            model%best_iteration() == 1 .and. model%estimator_count() == 1 .and. &
+            model%early_stopped(), "multiclass validation metadata", failures)
+        call check(abs(model%best_validation_loss() - expected_loss) < 3.0e-14_dp, &
+            "multiclass weighted validation log-loss oracle", failures)
+        call check(maxval(abs(before - staged(:, :, 1))) < 3.0e-14_dp, &
+            "best-prefix staged probability contract", failures)
+
+        options%restore_best = .false.
+        call retained%fit(x, labels, status, options, validation_x=validation_x, &
+            validation_labels=validation_labels, validation_weight=validation_weight)
+        call check(status_ok(status) .and. retained%early_stopped() .and. &
+            retained%best_iteration() == 1 .and. retained%estimator_count() == 2, &
+            "retain-completed-prefix validation contract", failures)
+        options%restore_best = .true.
+
+        invalid_labels = validation_labels
+        invalid_labels(1) = 999
+        call model%fit(x, labels, status, options, validation_x=validation_x, &
+            validation_labels=invalid_labels, validation_weight=validation_weight)
+        refused = .not. status_ok(status)
+        call model%predict_proba(validation_x, after, status)
+        call check(refused, &
+            "unknown validation label refusal", failures)
+        call check(maxval(abs(after - before)) < 3.0e-14_dp .and. &
+            model%best_iteration() == 1, "transactional validation refusal", failures)
+    end subroutine test_validation_early_stopping
 
     subroutine test_probability_and_labels(failures)
         integer, intent(inout) :: failures

@@ -1330,6 +1330,16 @@ when a lower-level primitive already exists.
 - [x] Binary and one-vs-rest XGBoost-style staged predictions, cumulative
   margins, gain/weight/cover feature-importance diagnostics, and fixed-tree
   input JVP/VJP products with split-boundary refusals.
+- [x] Add weighted validation to `xgboost_multiclass_t`. The adapter validates
+  arbitrary integer validation labels and positive weights, scores normalized
+  multiclass log-loss after every common OVR stage, exposes requested/best
+  iteration, best loss, and early-stop metadata, restores a common best prefix
+  transactionally, persists those diagnostics in schema 2, and leaves fitted
+  state unchanged on malformed validation input. The independent
+  `test_xgboost_multiclass` replay covers weighted loss, best-prefix staged
+  probabilities, metadata, and unknown-label refusal; CUDA remains a typed
+  resident-tree refusal. See `docs/XGBOOST_MULTICLASS_VALIDATION.md` and the
+  release benchmark lane.
 - [x] Add additive XGBoost base-margin and per-tree contribution predictions
   for regression and logistic objectives, staged-margin equivalence, explicit
   CPU/CUDA dispatch, and malformed-shape refusals. Split-routing and tree
