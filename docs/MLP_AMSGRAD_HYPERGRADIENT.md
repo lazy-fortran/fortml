@@ -37,6 +37,5 @@ parameters = objective%parameters()
 call objective%value_gradient(parameters, value, gradient, status)
 ```
 
-This slice is CPU-only by contract and uses the existing exact MLP loss HVP;
-no finite differences or hidden optimizer fallback are used in production
-code.
+This slice is CPU-only by contract and uses the existing exact MLP loss HVP.
+Production code contains no finite-difference or hidden optimizer fallback.
