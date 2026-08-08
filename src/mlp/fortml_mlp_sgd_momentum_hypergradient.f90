@@ -7,9 +7,14 @@ module fortml_mlp_sgd_momentum_hypergradient
     !! fixed number of full-batch updates.  Both classical momentum and the
     !! Nesterov look-ahead update use the same recurrence as `fortopt_sgd`.
     !! Forward sensitivities use the MLP analytic Hessian-vector product; no
-    !! finite differences or optimizer fallback are used.  CUDA and stochastic
-    !! trajectories are explicit typed refusals until resident state products
-    !! are available.
+    !! finite differences or optimizer fallback are used.  A positive,
+    !! finite validation-weight vector may be supplied at initialization.  Its
+    !! weighted mean is part of the differentiated outer objective, so model,
+    !! optimizer, JVP, and VJP products all use the same validation measure.
+    !! A non-uniform measure has an explicit typed HVP refusal because the
+    !! current affine-trajectory second product is only certified for the
+    !! uniform residual contraction.  CUDA and stochastic trajectories are
+    !! explicit typed refusals until resident state products are available.
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
@@ -35,6 +40,10 @@ module fortml_mlp_sgd_momentum_hypergradient
         integer :: momentum_index = MLP_SGD_MOMENTUM
         integer :: inner_steps = 0
         logical :: nesterov = .false.
+        !! A non-uniform validation measure has exact value/JVP/VJP products;
+        !! its second trajectory product remains an explicit boundary until
+        !! the residual-weighted MLP third-order contraction is generalized.
+        logical :: validation_weights_nonuniform = .false.
     end type mlp_sgd_momentum_hypergradient_metadata_t
 
     type, public :: mlp_sgd_momentum_hypergradient_options_t
@@ -79,6 +88,7 @@ module fortml_mlp_sgd_momentum_hypergradient
         type(mlp_t), pointer :: model => null()
         real(dp), allocatable :: train_x(:, :), train_target(:, :)
         real(dp), allocatable :: validation_x(:, :), validation_target(:, :)
+        real(dp), allocatable :: validation_weight(:)
         real(dp), allocatable :: initial_parameters(:)
         type(mlp_sgd_momentum_hypergradient_metadata_t) :: layout
         real(dp) :: initial_log_learning_rate = 0.0_dp
@@ -103,13 +113,15 @@ module fortml_mlp_sgd_momentum_hypergradient
 contains
 
     subroutine mlp_sgd_momentum_hypergradient_initialize(self, model, train_x, &
-            train_target, validation_x, validation_target, options, status)
+            train_target, validation_x, validation_target, options, status, &
+            validation_weight)
         class(mlp_sgd_momentum_hypergradient_objective_t), intent(out) :: self
         type(mlp_t), target, intent(inout) :: model
         real(dp), intent(in) :: train_x(:, :), train_target(:, :)
         real(dp), intent(in) :: validation_x(:, :), validation_target(:, :)
         type(mlp_sgd_momentum_hypergradient_options_t), intent(in) :: options
         type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: validation_weight(:)
         !! Default-initialized instances, standing in for empty
         !! structure constructors: nvfortran rejects `T()` outright,
         !! and a declared local carries the same default init.
@@ -134,15 +146,30 @@ contains
                 "MLP SGD momentum hypergradient: model or data is invalid")
             return
         end if
+        if (present(validation_weight)) then
+            if (.not. valid_validation_weight(validation_weight, size(validation_x, 1))) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP SGD momentum hypergradient: validation weights are invalid")
+                return
+            end if
+        end if
 
         self%model => model
         allocate(self%train_x, source=train_x)
         allocate(self%train_target, source=train_target)
         allocate(self%validation_x, source=validation_x)
         allocate(self%validation_target, source=validation_target)
+        allocate(self%validation_weight(size(validation_x, 1)))
+        if (present(validation_weight)) then
+            self%validation_weight = validation_weight
+        else
+            self%validation_weight = 1.0_dp
+        end if
         allocate(self%initial_parameters, source=model%parameters())
         self%layout%inner_steps = options%steps
         self%layout%nesterov = options%nesterov
+        self%layout%validation_weights_nonuniform = present(validation_weight) .and. &
+            .not. uniform_validation_weight(self%validation_weight)
         self%initial_log_learning_rate = log(options%learning_rate)
         self%initial_log_l2 = log(options%l2)
         self%initial_momentum = options%momentum
@@ -290,6 +317,11 @@ contains
                 "MLP SGD momentum hypergradient HVP: objective is not initialized")
             return
         end if
+        if (self%layout%validation_weights_nonuniform) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "MLP SGD momentum hypergradient HVP: non-uniform validation weights are unsupported")
+            return
+        end if
         if (size(parameters) /= MLP_SGD_MOMENTUM_HYPERPARAMETER_COUNT .or. &
             size(direction) /= MLP_SGD_MOMENTUM_HYPERPARAMETER_COUNT .or. &
             size(product) /= MLP_SGD_MOMENTUM_HYPERPARAMETER_COUNT .or. &
@@ -429,11 +461,13 @@ contains
         call self%model%set_parameters(theta, status)
         if (status%code /= FORTNUM_OK) return
         call mlp_loss_value_gradient(self%model, self%validation_x, self%validation_target, &
-            0.0_dp, train_value, validation_gradient, l2_gradient, status)
+            0.0_dp, train_value, validation_gradient, l2_gradient, status, &
+            sample_weight=self%validation_weight)
         if (status%code /= FORTNUM_OK) return
         theta_dir = matmul(theta_dot, direction)
         call mlp_loss_hvp(self%model, self%validation_x, self%validation_target, 0.0_dp, &
-            theta_dir, 0.0_dp, validation_hvp, scalar_hvp, status)
+            theta_dir, 0.0_dp, validation_hvp, scalar_hvp, status, &
+            sample_weight=self%validation_weight)
         if (status%code /= FORTNUM_OK) return
         do i = 1, MLP_SGD_MOMENTUM_HYPERPARAMETER_COUNT
             product(i) = dot_product(validation_hvp, theta_dot(:, i)) + &
@@ -478,13 +512,14 @@ contains
     end subroutine mlp_sgd_momentum_hypergradient_context_callback
 
     subroutine mlp_optimize_sgd_momentum_hyperparameters(model, train_x, train_target, &
-            validation_x, validation_target, options, result, status)
+            validation_x, validation_target, options, result, status, validation_weight)
         type(mlp_t), target, intent(inout) :: model
         real(dp), intent(in) :: train_x(:, :), train_target(:, :)
         real(dp), intent(in) :: validation_x(:, :), validation_target(:, :)
         type(mlp_sgd_momentum_hypergradient_options_t), intent(in) :: options
         type(mlp_sgd_momentum_hypergradient_result_t), intent(out) :: result
         type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: validation_weight(:)
         type(mlp_sgd_momentum_hypergradient_objective_t), target :: adapter
         type(objective_t) :: objective
         type(lbfgsb_t) :: optimizer
@@ -511,8 +546,13 @@ contains
             end if
             return
         end if
-        call adapter%initialize(model, train_x, train_target, validation_x, &
-            validation_target, options, status)
+        if (present(validation_weight)) then
+            call adapter%initialize(model, train_x, train_target, validation_x, &
+                validation_target, options, status, validation_weight)
+        else
+            call adapter%initialize(model, train_x, train_target, validation_x, &
+                validation_target, options, status)
+        end if
         if (status%code /= FORTNUM_OK) return
         parameters = adapter%parameters()
         lower = [options%lower_log_learning_rate, options%lower_log_l2, &
@@ -727,6 +767,27 @@ contains
             size(target, 2) /= model%layer_sizes(size(model%layer_sizes))) return
         valid = all(ieee_is_finite(x)) .and. all(ieee_is_finite(target))
     end function valid_data
+
+    logical function valid_validation_weight(weight, n_samples) result(valid)
+        !! Validation weights define a finite, non-empty measure for the
+        !! weighted-mean outer objective.  Zero-weight rows are allowed, but
+        !! all-zero support is rejected by the same contract as the loss.
+        real(dp), intent(in) :: weight(:)
+        integer, intent(in) :: n_samples
+
+        valid = size(weight) == n_samples .and. n_samples >= 1
+        if (.not. valid) return
+        valid = all(ieee_is_finite(weight)) .and. all(weight >= 0.0_dp) .and. &
+            sum(weight) > 0.0_dp .and. ieee_is_finite(sum(weight))
+    end function valid_validation_weight
+
+    logical function uniform_validation_weight(weight) result(uniform)
+        real(dp), intent(in) :: weight(:)
+
+        uniform = size(weight) >= 1
+        if (.not. uniform) return
+        uniform = all(weight == weight(1))
+    end function uniform_validation_weight
 
     logical function affine_one_layer(model) result(valid)
         !! The only branch with a parameter-independent MSE Hessian.

@@ -1385,6 +1385,16 @@ when a lower-level primitive already exists.
   fixed active set; the clipping boundary is a typed refusal. General
   stochastic-loader, clipping-coordinate, validation-policy, migration, and
   resident-device products remain open.
+- [x] Add a weighted validation-measure contract to the fixed full-batch SGD
+  momentum/Nesterov trajectory objective. `validation_weight(:)` is copied and
+  validated transactionally (finite, non-negative, positive support), and the
+  weighted mean is propagated exactly through value/gradient, JVP, VJP, and
+  FortOpt L-BFGS-B products. Uniform affine validation keeps the existing exact
+  outer HVP; non-uniform HVP requests return an explicit
+  `FORTNUM_NOT_IMPLEMENTED` status until residual-weighted second contractions
+  are independently certified. `test_mlp_weighted_validation_hypergradient`
+  provides central-difference, adjoint, uniform-HVP, malformed-weight, and
+  CUDA refusal oracles; see `docs/MLP_WEIGHTED_VALIDATION_HYPERGRADIENT.md`.
 - [x] Add production Lion to `mlp_train`. The stateful CPU trainer now uses
   the beta1 interpolation and beta2 momentum recurrence, decoupled weight
   decay, clipping, schedules, EMA, validation, optimizer groups, and exact

@@ -15,6 +15,16 @@ held-out validation MSE after the final update.  Momentum is constrained to
 `[0, 1)` and Nesterov mode is selected as a fixed discrete option; Nesterov
 requires a positive lower momentum bound.
 
+`initialize` and `mlp_optimize_sgd_momentum_hyperparameters` accept an optional
+`validation_weight(:)` vector.  It must have one finite non-negative entry per
+validation row and positive total mass; the held-out objective then uses that
+weighted mean.  The weights are copied into the objective, so subsequent caller
+mutation cannot change an evaluation.  Value, JVP, VJP, and FortOpt products
+use the same weighted measure.  The affine outer HVP remains certified for a
+uniform measure; a non-uniform vector returns a typed
+`FORTNUM_NOT_IMPLEMENTED` HVP status until residual-weighted second products
+are generalized.
+
 The recurrence is the one used by FortOpt's `sgd_t`:
 
 ```text

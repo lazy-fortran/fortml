@@ -2222,7 +2222,12 @@ discrete choice and requires a positive momentum bound. Mini-batch, schedules,
 clipping, stochastic/device-resident state, and CUDA products remain typed
 refusals until their full state derivatives are available. The `hvp` entry
 point is exact for a one-layer MLP with linear output (constant network Hessian) and
-returns `FORTNUM_NOT_IMPLEMENTED` for nonlinear or multilayer models. See
+returns `FORTNUM_NOT_IMPLEMENTED` for nonlinear or multilayer models. An
+optional `validation_weight(:)` argument defines a finite positive-support
+weighted validation mean and is differentiated by value/JVP/VJP and FortOpt.
+The affine HVP is certified for uniform weights; non-uniform weights return a
+typed HVP refusal until the residual-weighted second contraction is generalized.
+Invalid weight vectors are rejected without mutating the objective. See
 [`docs/MLP_SGD_MOMENTUM_HYPERGRADIENT.md`](MLP_SGD_MOMENTUM_HYPERGRADIENT.md).
 
 `mlp_adamw_hypergradient_objective_t` provides the corresponding exact
