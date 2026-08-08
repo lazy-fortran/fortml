@@ -52,13 +52,14 @@ contains
 
     subroutine test_determinism_and_products(failures)
         integer, intent(inout) :: failures
-        type(xgboost_t) :: first, repeat, restored
+        type(xgboost_t) :: first, repeat, restored, sliced
         type(xgboost_options_t) :: options
         type(fortnum_status_t) :: status
         real(real64) :: x(12, 2), y(12), query(7, 2)
         real(real64) :: p_first(7), p_repeat(7), p_restored(7), margin(7)
         real(real64) :: staged(7, 6), contributions(7, 7), product_sum(7)
         real(real64) :: staged_margin(7, 6)
+        real(real64) :: slice_margin(7)
         character(*), parameter :: path = "test_xgboost_dart.txt"
         integer :: i
 
@@ -99,6 +100,10 @@ contains
         call restored%predict(query, p_restored, status)
         call check(status_ok(status) .and. maxval(abs(p_restored-p_first)) < 2.0e-13_real64, &
             "DART persistence prediction", failures)
+        call first%slice(2, sliced, status)
+        call sliced%predict_margin(query, slice_margin, status)
+        call check(status_ok(status) .and. maxval(abs(slice_margin-staged_margin(:, 2))) < &
+            2.0e-13_real64, "DART slice preserves normalised prefix", failures)
         call execute_command_line("rm -f "//path)
     end subroutine test_determinism_and_products
 
