@@ -3467,6 +3467,19 @@ quiet/noisy posterior behavior, interpolation, and typed refusals. Joint noise
 inference, derivative products, approximate inference, and resident CUDA remain
 open; see [`docs/GP_HETEROSKEDASTIC.md`](GP_HETEROSKEDASTIC.md).
 
+### `fortml_robust_gp`
+
+`robust_gp_t` is a dense Laplace GP for non-Gaussian observations. Select
+`FORTML_LIKELIHOOD_POISSON` for nonnegative counts and a positive latent
+log-rate, or `FORTML_LIKELIHOOD_STUDENT_T` for an outlier-resistant location
+model. `fit` exposes convergence, iteration, mode, curvature, and stationary
+`alpha` state; `predict_latent` returns the Laplace latent marginal and
+`predict_response` returns a positive Poisson rate or Student-t response
+summary. `test_robust_gp` independently checks Poisson stationarity/rates,
+Student-t outlier resistance, and typed input/convergence refusals. Exact
+non-Gaussian evidence, derivative products, approximate scalable inference,
+and resident CUDA remain open; see [`docs/GP_ROBUST.md`](GP_ROBUST.md).
+
 ### `fortml_sparse_prior_gp`
 
 `sparse_prior_gp_t` implements `SPARSE_SOR`, `SPARSE_DTC`, `SPARSE_FITC`, and
