@@ -1464,8 +1464,12 @@ and HVPs gather input tangents, and VJPs scatter-add stage cotangents into the o
 input columns. Optional unique stage names and the same stable feature and
 parameter metadata are available; `stage_columns` returns a defensive copy of
 the selected input indices. This is a deterministic feature union, not a DAG
-scheduler or a parallel device executor. Those capabilities remain separate
-roadmap items.
+scheduler. `transform_device`, `jvp_device`, `vjp_device`, and `hvp_device`
+take a selected `fortml_device_t`: CPU dispatch delegates to the exact host
+products, while CUDA returns `FORTNUM_NOT_IMPLEMENTED` without touching output
+arrays until a resident basis executor is linked. `device_supported` reports
+the same contract (fitted CPU unions only). This explicit boundary prevents a
+feature-union call from hiding host transfers behind an accelerator request.
 
 ### `fortml_basis_linear_regression`
 

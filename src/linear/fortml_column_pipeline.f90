@@ -2,7 +2,9 @@
 module fortml_column_pipeline
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
-        FORTNUM_DOMAIN_ERROR
+        FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED
+    use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU, &
+        FORTML_DEVICE_CUDA
     use fortml_basis, only: basis_map_t
     use fortml_estimator_capabilities, only: estimator_capability_t, &
         make_transformer_capabilities
@@ -36,10 +38,14 @@ module fortml_column_pipeline
         procedure, public :: append => column_pipeline_append
         procedure, public :: fit => column_pipeline_fit
         procedure, public :: transform => column_pipeline_transform
+        procedure, public :: transform_device => column_pipeline_transform_device
         procedure, public :: evaluate => column_pipeline_transform
         procedure, public :: jvp => column_pipeline_jvp
+        procedure, public :: jvp_device => column_pipeline_jvp_device
         procedure, public :: vjp => column_pipeline_vjp
+        procedure, public :: vjp_device => column_pipeline_vjp_device
         procedure, public :: hvp => column_pipeline_hvp
+        procedure, public :: hvp_device => column_pipeline_hvp_device
         procedure, public :: input_count => column_pipeline_input_count
         procedure, public :: stage_count => column_pipeline_stage_count
         procedure, public :: feature_count => column_pipeline_feature_count
@@ -57,6 +63,7 @@ module fortml_column_pipeline
         procedure, public :: static_lowering_eligible => &
             column_pipeline_static_lowering_eligible
         procedure, public :: capabilities => column_pipeline_capabilities
+        procedure, public :: device_supported => column_pipeline_device_supported
         procedure, public :: valid => column_pipeline_valid
         procedure, public :: is_fitted => column_pipeline_is_fitted
     end type column_basis_pipeline_t
@@ -225,6 +232,33 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine column_pipeline_transform
 
+    !> Dispatch a feature-union transform through an explicitly selected device.
+    !>
+    !> A CPU selection delegates to the host transform.  CUDA is intentionally
+    !> refused until a resident basis-map executor is linked; this boundary
+    !> avoids silently copying accelerator requests back to the host.
+    subroutine column_pipeline_transform_device(self, device, x, phi, status)
+        class(column_basis_pipeline_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: phi(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. column_pipeline_device_ready(self, device, status, &
+            "column basis pipeline transform")) return
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%transform(x, phi, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "column basis pipeline transform: no resident CUDA basis kernel "// &
+                "is linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "column basis pipeline transform: device kind is invalid")
+        end select
+    end subroutine column_pipeline_transform_device
+
     subroutine column_pipeline_jvp(self, x, theta_dot, x_dot, phi, phi_dot, &
             status)
         class(column_basis_pipeline_t), intent(in) :: self
@@ -273,6 +307,30 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine column_pipeline_jvp
+
+    !> Device-dispatched exact JVP for the column feature union.
+    subroutine column_pipeline_jvp_device(self, device, x, theta_dot, x_dot, &
+            phi, phi_dot, status)
+        class(column_basis_pipeline_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :), theta_dot(:), x_dot(:, :)
+        real(dp), intent(out) :: phi(:, :), phi_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. column_pipeline_device_ready(self, device, status, &
+            "column basis pipeline JVP")) return
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%jvp(x, theta_dot, x_dot, phi, phi_dot, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "column basis pipeline JVP: no resident CUDA basis kernel is "// &
+                "linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "column basis pipeline JVP: device kind is invalid")
+        end select
+    end subroutine column_pipeline_jvp_device
 
     subroutine column_pipeline_vjp(self, x, u, theta_bar, x_bar, status)
         class(column_basis_pipeline_t), intent(in) :: self
@@ -329,6 +387,30 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine column_pipeline_vjp
 
+    !> Device-dispatched exact VJP for the column feature union.
+    subroutine column_pipeline_vjp_device(self, device, x, u, theta_bar, x_bar, &
+            status)
+        class(column_basis_pipeline_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :), u(:, :)
+        real(dp), intent(out) :: theta_bar(:), x_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. column_pipeline_device_ready(self, device, status, &
+            "column basis pipeline VJP")) return
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%vjp(x, u, theta_bar, x_bar, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "column basis pipeline VJP: no resident CUDA basis kernel is "// &
+                "linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "column basis pipeline VJP: device kind is invalid")
+        end select
+    end subroutine column_pipeline_vjp_device
+
     subroutine column_pipeline_hvp(self, x, u, theta_dot, x_dot, theta_hvp, &
             x_hvp, status)
         !! HVP for a column-selecting union.  Each stage computes its local
@@ -349,11 +431,11 @@ contains
             return
         end if
         if (size(x, 1) < 1 .or. size(x, 2) /= self%n_inputs .or. &
-                size(u, 1) /= size(x, 1) .or. size(u, 2) /= self%feature_count() .or. &
-                any(shape(x_dot) /= shape(x)) .or. &
-                size(theta_dot) /= self%parameter_count() .or. &
-                size(theta_hvp) /= self%parameter_count() .or. &
-                any(shape(x_hvp) /= shape(x))) then
+            size(u, 1) /= size(x, 1) .or. size(u, 2) /= self%feature_count() .or. &
+            any(shape(x_dot) /= shape(x)) .or. &
+            size(theta_dot) /= self%parameter_count() .or. &
+            size(theta_hvp) /= self%parameter_count() .or. &
+            any(shape(x_hvp) /= shape(x))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "column basis pipeline hvp: array shape is invalid")
             return
@@ -394,6 +476,30 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine column_pipeline_hvp
+
+    !> Device-dispatched exact HVP for the column feature union.
+    subroutine column_pipeline_hvp_device(self, device, x, u, theta_dot, x_dot, &
+            theta_hvp, x_hvp, status)
+        class(column_basis_pipeline_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :), u(:, :), theta_dot(:), x_dot(:, :)
+        real(dp), intent(out) :: theta_hvp(:), x_hvp(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. column_pipeline_device_ready(self, device, status, &
+            "column basis pipeline HVP")) return
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%hvp(x, u, theta_dot, x_dot, theta_hvp, x_hvp, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "column basis pipeline HVP: no resident CUDA basis kernel is "// &
+                "linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "column basis pipeline HVP: device kind is invalid")
+        end select
+    end subroutine column_pipeline_hvp_device
 
     integer function column_pipeline_input_count(self) result(count)
         class(column_basis_pipeline_t), intent(in) :: self
@@ -657,6 +763,51 @@ contains
         report%supports_parameter_vjp = .true.
         report%supports_parameter_hvp = .true.
     end subroutine column_pipeline_capabilities
+
+    !> Report the execution backends implemented by the typed dispatch API.
+    !! A fitted column union currently has a host executor only.
+    logical function column_pipeline_device_supported(self, device_kind) &
+            result(supported)
+        class(column_basis_pipeline_t), intent(in) :: self
+        integer, intent(in) :: device_kind
+
+        select case (device_kind)
+        case (FORTML_DEVICE_CPU)
+            supported = self%is_fitted() .and. column_pipeline_valid(self)
+        case (FORTML_DEVICE_CUDA)
+            supported = .false.
+        case default
+            supported = .false.
+        end select
+    end function column_pipeline_device_supported
+
+    !> Validate the common part of every device-dispatched product.
+    logical function column_pipeline_device_ready(self, device, status, operation) &
+            result(ready)
+        class(column_basis_pipeline_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        type(fortnum_status_t), intent(out) :: status
+        character(*), intent(in) :: operation
+
+        ready = .false.
+        if (.not. column_pipeline_valid(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, trim(operation)// &
+                ": model is invalid")
+            return
+        end if
+        if (.not. self%is_fitted()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, trim(operation)// &
+                ": model is not fitted")
+            return
+        end if
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, trim(operation)// &
+                ": device is not selected")
+            return
+        end if
+        ready = .true.
+        call status_set(status, FORTNUM_OK, "")
+    end function column_pipeline_device_ready
 
     subroutine gather_columns(x, columns, selected)
         real(dp), intent(in) :: x(:, :)
