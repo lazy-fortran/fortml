@@ -1,5 +1,5 @@
 Verification date: 2026-08-08
-FortML revision: 9ef69b7bb7b9fab0217130a5bcadae65df2e71b9 (isolated clean-dependency gate; categorical likelihood products, SHAP-like tree attribution, and trainer validation diagnostics included)
+FortML revision: d52ec440cb9d535695ff5ab9f0ada9a5633a5a7f (isolated clean-dependency gate; categorical likelihood products, SHAP-like tree attribution, and trainer validation diagnostics included)
 FortAD dependency: origin/main 7c65a88194b4cce796d58f90e12f147be29cd63e (clean verification worktree)
 FortFront dependency: origin/main 0bce426a0b69920e867d580b163508afba51d439 (clean verification worktree)
 FortSym dependency: origin/main 26250ce24e3890711343a2f18d5feae2be832508 (generation pin rechecked 2026-08-08)

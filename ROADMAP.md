@@ -25,7 +25,7 @@ behavior, and benchmark evidence land together.
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
 The checked-in GNU compiler log is the fresh 2026-08-08 run against FortML code
-revision `9ef69b7` (including scheduled AdamW trajectory hypergradients,
+revision `d52ec44` (including scheduled AdamW trajectory hypergradients,
 calibrated-softmax OOF policies, affine schedule
 outer HVPs, and seeded XGBoost DART), FortAD `origin/main` at
 `7c65a88194b4cce796d58f90e12f147be29cd63e`, FortFront at
