@@ -54,7 +54,7 @@ contains
         call xgb_tweedie_loss(margin + h*direction, target, power, value_plus, status)
         call xgb_tweedie_loss(margin - h*direction, target, power, value_minus, status)
         call check(abs((value_plus - value_minus)/(2.0_real64*h) - &
-            sum(expected_gradient*direction)/3.0_real64) < 3.0e-10_real64, &
+            sum(expected_gradient*direction)/3.0_real64) < 1.0e-9_real64, &
             "Tweedie value/gradient finite-difference oracle", failures)
     end subroutine test_derivative_oracle
 

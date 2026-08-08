@@ -589,7 +589,8 @@ contains
             self%base_score = 0.0_dp
         else if (objective_code == XGB_OBJECTIVE_LOGISTIC) then
             self%base_score = stable_logit(mean_target)
-        else if (objective_code == XGB_OBJECTIVE_POISSON) then
+        else if (objective_code == XGB_OBJECTIVE_POISSON .or. &
+            objective_code == XGB_OBJECTIVE_TWEEDIE) then
             self%base_score = stable_log_rate(mean_target)
         else if (objective_code == XGB_OBJECTIVE_SQUARED_LOG) then
             ! The constant optimum is the weighted geometric mean in the
