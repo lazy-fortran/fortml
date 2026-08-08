@@ -1174,10 +1174,9 @@ when a lower-level primitive already exists.
   and independent central-difference/adjoint oracles. The `rho_t = 4` and
   zero-square-root boundaries return typed nonsmooth refusals; resident CUDA
   state remains open.
-- [ ] Production optimizers and schedules: matrix-factored
-  Adafactor,
-  Lion, cosine/one-cycle/warmup/plateau schedules, gradient
-  accumulation, clipping, EMA, decoupled regularization, and parameter groups.
+- [ ] Remaining production optimizer gaps: matrix-factored Adafactor,
+  cosine/one-cycle/warmup/plateau schedules, and derivative products through
+  optimizer groups, validation policy, checkpoint migration, and device state.
   The deterministic mini-batch SGD trajectory objective now records a private
   batch cursor (including seeded epoch shuffles), exposes exact learning-rate
   and L2 hypergradients through validation MSE, and is consumable by FortOpt
@@ -1190,6 +1189,14 @@ when a lower-level primitive already exists.
   fixed active set; the clipping boundary is a typed refusal. General
   stochastic-loader, clipping-coordinate, validation-policy, migration, and
   resident-device products remain open.
+- [x] Add production Lion to `mlp_train`. The stateful CPU trainer now uses
+  the beta1 interpolation and beta2 momentum recurrence, decoupled weight
+  decay, clipping, schedules, EMA, validation, optimizer groups, and exact
+  in-memory/text checkpoint resume. `test_mlp_lion_training` independently
+  recomputes the linear-model gradient and checks the parameter, momentum,
+  EMA, and split-resume trajectories. Resident CUDA Lion state and
+  differentiable sign-branch products remain typed follow-up capabilities;
+  see `docs/MLP_LION_TRAINING.md`.
 - [x] Add the fixed full-batch Lion trajectory hypergradient. The packed
   coordinates are log learning rate, log L2, and beta logits; analytic
   MLP-HVP products feed a bounded FortOpt L-BFGS-B adapter. Sign-margin and

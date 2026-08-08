@@ -41,6 +41,7 @@ module fortml_mlp_training
     integer, parameter, public :: MLP_OPTIMIZER_ADAFACTOR = 6
     integer, parameter, public :: MLP_OPTIMIZER_AMSGRAD = 7
     integer, parameter, public :: MLP_OPTIMIZER_RADAM = 8
+    integer, parameter, public :: MLP_OPTIMIZER_LION = 9
 
     ! Precision is a first-class training contract.  FP64 is the current
     ! deterministic reference implementation; lower-precision modes are
@@ -670,7 +671,8 @@ contains
             self%optimizer == MLP_OPTIMIZER_RMSPROP .or. &
             self%optimizer == MLP_OPTIMIZER_ADAFACTOR .or. &
             self%optimizer == MLP_OPTIMIZER_AMSGRAD .or. &
-            self%optimizer == MLP_OPTIMIZER_RADAM) .and. &
+            self%optimizer == MLP_OPTIMIZER_RADAM .or. &
+            self%optimizer == MLP_OPTIMIZER_LION) .and. &
             self%validation_interval > 0 .and. self%patience >= 0 .and. &
             self%gradient_clipped_updates >= 0 .and. &
             allocated(self%parameters) .and. allocated(self%first_moment) .and. &
@@ -1358,6 +1360,7 @@ contains
         real(dp), allocatable :: theta(:), theta_before(:), best_theta(:), gradient(:)
         real(dp), allocatable :: accumulated_gradient(:)
         real(dp), allocatable :: ema_parameters(:)
+        real(dp), allocatable :: lion_momentum(:)
         real(dp), allocatable :: x_batch(:, :), target_batch(:, :)
         integer, allocatable :: batch_indices(:)
         real(dp) :: loss, l2_gradient, gradient_norm, improvement
@@ -1525,11 +1528,18 @@ contains
             if (config%ema_decay > 0.0_dp) then
                 allocate(ema_parameters, source=checkpoint%ema_parameters)
             end if
+            if (config%optimizer == MLP_OPTIMIZER_LION) then
+                allocate(lion_momentum, source=checkpoint%first_moment)
+            end if
         else
             theta = model%parameters()
             allocate(best_theta, source=theta)
             if (config%ema_decay > 0.0_dp) then
                 allocate(ema_parameters, source=theta)
+            end if
+            if (config%optimizer == MLP_OPTIMIZER_LION) then
+                allocate(lion_momentum(n_parameters))
+                lion_momentum = 0.0_dp
             end if
         end if
         result%has_ema = config%ema_decay > 0.0_dp
@@ -1640,6 +1650,10 @@ contains
             call radam_optimizer%initialize(n_parameters, status, &
                 learning_rate=config%learning_rate, beta1=config%beta1, &
                 beta2=config%beta2, epsilon=config%epsilon)
+        else if (config%optimizer == MLP_OPTIMIZER_LION) then
+            ! Lion keeps one interpolated-gradient momentum vector.  It is
+            ! initialized above and is restored from checkpoint%first_moment.
+            call status_set(status, FORTNUM_OK, "")
         else
             call rmsprop_optimizer%initialize(n_parameters, status, &
                 learning_rate=config%learning_rate, decay=config%rmsprop_decay, &
@@ -1705,6 +1719,9 @@ contains
                 if (radam_optimizer%learning_rate <= 0.0_dp) then
                     radam_optimizer%learning_rate = config%learning_rate
                 end if
+            else if (config%optimizer == MLP_OPTIMIZER_LION) then
+                ! Lion has no bias-correction counter; the first-moment
+                ! checkpoint slot stores its single momentum vector.
             else
                 rmsprop_optimizer%square_average = checkpoint%first_moment
                 rmsprop_optimizer%gradient_average = checkpoint%second_moment
@@ -1829,6 +1846,8 @@ contains
                             amsgrad_optimizer%learning_rate = effective_rate
                         else if (config%optimizer == MLP_OPTIMIZER_RADAM) then
                             radam_optimizer%learning_rate = effective_rate
+                        else if (config%optimizer == MLP_OPTIMIZER_LION) then
+                            ! Lion consumes the effective rate directly below.
                         else
                             rmsprop_optimizer%learning_rate = effective_rate
                         end if
@@ -1848,6 +1867,9 @@ contains
                             call amsgrad_optimizer%step(theta, gradient, status)
                         else if (config%optimizer == MLP_OPTIMIZER_RADAM) then
                             call radam_optimizer%step(theta, gradient, status)
+                        else if (config%optimizer == MLP_OPTIMIZER_LION) then
+                            call lion_step(theta, gradient, lion_momentum, config%beta1, &
+                                config%beta2, effective_rate, config%weight_decay, status)
                         else
                             call rmsprop_optimizer%step(theta, gradient, status)
                         end if
@@ -1891,7 +1913,7 @@ contains
                     call checkpoint_capture(checkpoint, x, target, config, result, &
                         iterator, optimizer, adamw_optimizer, adagrad_optimizer, &
                         rmsprop_optimizer, adafactor_optimizer, amsgrad_optimizer, &
-                        radam_optimizer, sgd_optimizer, theta, &
+                        radam_optimizer, sgd_optimizer, lion_momentum, theta, &
                         best_theta, stale_epochs, &
                         epoch, microbatch_count, accumulated_samples, &
                         accumulated_gradient, ema_parameters, has_typed_schedule, &
@@ -1990,7 +2012,7 @@ contains
                 call checkpoint_capture(checkpoint, x, target, config, result, &
                     iterator, optimizer, adamw_optimizer, adagrad_optimizer, &
                     rmsprop_optimizer, adafactor_optimizer, amsgrad_optimizer, &
-                    radam_optimizer, sgd_optimizer, theta, &
+                    radam_optimizer, sgd_optimizer, lion_momentum, theta, &
                     best_theta, stale_epochs, &
                     epoch, microbatch_count, accumulated_samples, &
                     accumulated_gradient, ema_parameters, has_typed_schedule, &
@@ -2055,10 +2077,57 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine mlp_train
 
+    subroutine lion_step(theta, gradient, momentum, beta1, beta2, learning_rate, &
+            weight_decay, status)
+        !! One Lion update with the canonical sign/interpolation recurrence.
+        !!
+        !! `momentum` is the beta2 exponential moving average.  The update
+        !! direction uses the beta1 interpolation before the momentum state is
+        !! advanced.  Weight decay is decoupled and therefore does not alter
+        !! the sign branch; a zero interpolated component has a zero update.
+        real(dp), intent(inout) :: theta(:), momentum(:)
+        real(dp), intent(in) :: gradient(:), beta1, beta2, learning_rate
+        real(dp), intent(in) :: weight_decay
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: interpolated(:), update(:)
+        integer :: i
+
+        if (size(theta) < 1 .or. size(momentum) /= size(theta) .or. &
+                size(gradient) /= size(theta) .or. beta1 < 0.0_dp .or. &
+                beta1 >= 1.0_dp .or. beta2 < 0.0_dp .or. beta2 >= 1.0_dp .or. &
+                learning_rate <= 0.0_dp .or. weight_decay < 0.0_dp .or. &
+                .not. all(ieee_is_finite(theta)) .or. &
+                .not. all(ieee_is_finite(gradient)) .or. &
+                .not. all(ieee_is_finite(momentum))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP Lion: update state or options are invalid")
+            return
+        end if
+        allocate(interpolated(size(theta)), update(size(theta)))
+        interpolated = beta1*momentum + (1.0_dp-beta1)*gradient
+        do i = 1, size(theta)
+            if (interpolated(i) > 0.0_dp) then
+                update(i) = 1.0_dp
+            else if (interpolated(i) < 0.0_dp) then
+                update(i) = -1.0_dp
+            else
+                update(i) = 0.0_dp
+            end if
+        end do
+        theta = theta - learning_rate*(update + weight_decay*theta)
+        momentum = beta2*momentum + (1.0_dp-beta2)*gradient
+        if (any(.not. ieee_is_finite(theta)) .or. any(.not. ieee_is_finite(momentum))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP Lion: update produced a non-finite state")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine lion_step
+
     subroutine checkpoint_capture(checkpoint, x, target, config, result, iterator, &
             optimizer, adamw_optimizer, adagrad_optimizer, rmsprop_optimizer, &
             adafactor_optimizer, amsgrad_optimizer, &
-            radam_optimizer, sgd_optimizer, theta, best_theta, &
+            radam_optimizer, sgd_optimizer, lion_momentum, theta, best_theta, &
             stale_epochs, active_epoch, &
             active_microbatches, accumulated_samples, accumulated_gradient, &
             ema_parameters, has_typed_schedule, typed_schedule, has_validation, status)
@@ -2075,6 +2144,7 @@ contains
         type(amsgrad_t), intent(in) :: amsgrad_optimizer
         type(radam_t), intent(in) :: radam_optimizer
         type(sgd_t), intent(in) :: sgd_optimizer
+        real(dp), allocatable, intent(in) :: lion_momentum(:)
         real(dp), intent(in) :: theta(:), best_theta(:)
         integer, intent(in) :: stale_epochs
         integer, intent(in) :: active_epoch, active_microbatches, accumulated_samples
@@ -2167,6 +2237,12 @@ contains
             end if
             if (allocated(radam_optimizer%second_moment)) then
                 if (size(radam_optimizer%second_moment) /= size(theta)) invalid_state = .true.
+            end if
+        else if (config%optimizer == MLP_OPTIMIZER_LION) then
+            if (.not. allocated(lion_momentum)) then
+                invalid_state = .true.
+            else if (size(lion_momentum) /= size(theta)) then
+                invalid_state = .true.
             end if
         else if (config%optimizer == MLP_OPTIMIZER_RMSPROP) then
             if (.not. allocated(rmsprop_optimizer%square_average) .or. &
@@ -2316,6 +2392,10 @@ contains
         else if (config%optimizer == MLP_OPTIMIZER_RADAM) then
             allocate(checkpoint%first_moment, source=radam_optimizer%first_moment)
             allocate(checkpoint%second_moment, source=radam_optimizer%second_moment)
+        else if (config%optimizer == MLP_OPTIMIZER_LION) then
+            allocate(checkpoint%first_moment, source=lion_momentum)
+            allocate(checkpoint%second_moment(size(theta)))
+            checkpoint%second_moment = 0.0_dp
         else
             allocate(checkpoint%first_moment, source=rmsprop_optimizer%square_average)
             allocate(checkpoint%second_moment, source=rmsprop_optimizer%gradient_average)
@@ -2381,7 +2461,8 @@ contains
             options%optimizer == MLP_OPTIMIZER_RMSPROP .or. &
             options%optimizer == MLP_OPTIMIZER_ADAFACTOR .or. &
             options%optimizer == MLP_OPTIMIZER_AMSGRAD .or. &
-            options%optimizer == MLP_OPTIMIZER_RADAM) .and. &
+            options%optimizer == MLP_OPTIMIZER_RADAM .or. &
+            options%optimizer == MLP_OPTIMIZER_LION) .and. &
             options%beta1 >= 0.0_dp .and. options%beta1 < 1.0_dp .and. &
             options%beta2 >= 0.0_dp .and. options%beta2 < 1.0_dp .and. &
             options%epsilon > 0.0_dp .and. options%l2 >= 0.0_dp .and. &
