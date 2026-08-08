@@ -2964,6 +2964,17 @@ trials remain visible in the result schema.
   NumPy benchmark, and explicit second-order hyper-HVP scope (third network
   derivatives are not approximated). L-BFGS-B consumes the same reverse
   products; unsupported device trajectories return typed refusal.
+- [x] Close the affine scheduled outer-HVP slice for the stateless schedule
+  families. `mlp_learning_rate_schedule_t%rate_with_second_derivatives`
+  returns the exact raw rate Hessian; the scheduled trajectory propagates
+  mixed state tangents through constant, linear-warm-up, cosine,
+  warm-up-plus-cosine, exponential, and one-cycle rates, including the
+  log/logit chain rule for schedule fields. Independent cosine and one-cycle
+  central-difference/Hessian-symmetry checks, `fortml_bench_mlp_schedule_hvp`,
+  and `results/mlp_schedule_hvp.csv` gate the CPU affine path. Nonlinear
+  networks, plateau branch changes, and CUDA remain typed refusals rather than
+  hidden finite-difference or host fallbacks; optimizer-group and mini-batch
+  outer HVPs remain open.
 - [x] Extend the scheduled trajectory objective with exact one-cycle
   peak/final-rate derivatives. The shared four-vector uses logarithmic
   peak/final coordinates for `MLP_SCHEDULE_ONE_CYCLE`, with exact products

@@ -59,12 +59,20 @@ derivatives through the linear warm-up and cosine tail. Therefore the
 finite-difference or optimizer fallback code.
 
 The type also exposes `hvp(parameters, direction, product, status)`.  For a
-single affine layer and a constant schedule it is exact; see
-`MLP_CONSTANT_SCHEDULE_HVP.md`.  Nonlinear networks return a typed
-`FORTNUM_NOT_IMPLEMENTED` refusal because an outer hyper-HVP would require
-third network derivatives.  Nonconstant schedules likewise refuse until their
-rate second products are implemented.  Invalid shapes remain domain errors.
-These boundaries are tested rather than replaced by hidden finite differences.
+single affine layer it is exact for constant, linear warm-up, cosine,
+warm-up-plus-cosine, exponential, and one-cycle schedules.  The schedule
+object's `rate_with_second_derivatives` method supplies raw rate Hessians; the
+objective applies the exact log/logit chain rule and propagates mixed state
+tangents through the affine MSE Hessian.  Independent central-difference
+oracles cover cosine and one-cycle products in
+`test_mlp_schedule_hypergradient` and the release workload
+`fortml_bench_mlp_schedule_hvp`.
+
+Nonlinear networks return a typed `FORTNUM_NOT_IMPLEMENTED` refusal because an
+outer hyper-HVP would require third network derivatives.  Metric plateau
+branches retain a typed refusal because their comparison selects a discrete
+trajectory.  Invalid shapes remain domain errors.  These boundaries are
+tested rather than replaced by hidden finite differences.
 
 `mlp_optimize_schedule_hyperparameters` wraps the objective in FortOpt's
 projected L-BFGS-B implementation.  Bounds are on the packed log/logit
@@ -82,6 +90,7 @@ from CPU products; it is never represented as a host timing labelled CUDA.
 The release workload is `fortml_bench_mlp_schedule_hypergradient`; the
 independent benchmark harness records exact values, gradient components, and a
 directional JVP before retaining timing rows.  The affine constant-rate HVP
-workload is `fortml_bench_mlp_constant_schedule_hvp`.  A second-order
-hyper-HVP for nonlinear or nonconstant trajectories remains a separate
+workload is `fortml_bench_mlp_constant_schedule_hvp`; the warm-up/cosine
+second-order workload is `fortml_bench_mlp_schedule_hvp`.  A second-order
+hyper-HVP for nonlinear or metric-branch trajectories remains a separate
 capability boundary rather than being approximated with finite differences.

@@ -100,8 +100,12 @@ program test_mlp_schedule_hypergradient
         "schedule VJP scalar adjoint", failures)
 
     call objective%hvp(parameters, direction, hvp_product, status)
-    call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
-        "nonconstant affine schedule HVP typed refusal", failures)
+    call check(status_ok(status), "nonconstant affine schedule HVP status", failures)
+    call objective%value_gradient(parameters+h*direction, value_plus, vjp_gradient, status)
+    call objective%value_gradient(parameters-h*direction, value_minus, gradient, status)
+    hessian_fd = (vjp_gradient-gradient)/(2.0_dp*h)
+    call check(status_ok(status) .and. maxval(abs(hvp_product-hessian_fd)) < 2.0e-6_dp, &
+        "nonconstant affine schedule HVP central difference", failures)
 
     ! A constant-rate trajectory of one affine layer has an exact outer HVP.
     options%schedule = make_mlp_schedule_constant()
@@ -182,6 +186,14 @@ program test_mlp_schedule_hypergradient
     call fortopt_objective%value_gradient(parameters, value, vjp_gradient, status)
     call check(status_ok(status), "FortOpt schedule callback", failures)
 
+    call objective%hvp(parameters, direction, hvp_product, status)
+    call check(status_ok(status), "one-cycle affine HVP status", failures)
+    call objective%value_gradient(parameters+h*direction, value_plus, vjp_gradient, status)
+    call objective%value_gradient(parameters-h*direction, value_minus, gradient, status)
+    hessian_fd = (vjp_gradient-gradient)/(2.0_dp*h)
+    call check(status_ok(status) .and. maxval(abs(hvp_product-hessian_fd)) < 2.0e-6_dp, &
+        "one-cycle affine HVP central difference", failures)
+
     ! Nonlinear networks retain the explicit third-derivative refusal even
     ! under a constant schedule.
     call nonlinear_model%initialize([1, 2, 1], status, initialization_seed=29)
@@ -197,15 +209,19 @@ program test_mlp_schedule_hypergradient
     call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
         "nonlinear schedule HVP typed refusal", failures)
 
-    ! Nonconstant affine schedules retain the rate-second-product refusal.
+    ! Nonconstant affine schedules now expose analytic rate-second products.
     options%schedule = make_mlp_schedule_cosine_decay(6, 0.2_dp)
     call objective%initialize(model, train_x, train_target, validation_x, &
         validation_target, options, status)
     call check(status_ok(status), "nonconstant affine HVP initialization", failures)
     parameters = objective%parameters()
     call objective%hvp(parameters, direction, hvp_product, status)
-    call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
-        "nonconstant affine schedule HVP typed refusal", failures)
+    call check(status_ok(status), "nonconstant affine schedule HVP status", failures)
+    call objective%value_gradient(parameters+h*direction, value_plus, vjp_gradient, status)
+    call objective%value_gradient(parameters-h*direction, value_minus, gradient, status)
+    hessian_fd = (vjp_gradient-gradient)/(2.0_dp*h)
+    call check(status_ok(status) .and. maxval(abs(hvp_product-hessian_fd)) < 2.0e-6_dp, &
+        "nonconstant affine schedule HVP central difference", failures)
 
     bad_options = options
     bad_options%device_kind = FORTML_DEVICE_CUDA
@@ -220,6 +236,8 @@ program test_mlp_schedule_hypergradient
     options%steps = 3
     options%max_iterations = 120
     options%gradient_tolerance = 1.0e-5_dp
+    call model%set_parameters([0.15_dp, -0.1_dp], status)
+    call check(status_ok(status), "FortOpt scheduled solve model reset", failures)
     call mlp_optimize_schedule_hyperparameters(model, train_x, train_target, &
         validation_x, validation_target, options, result, status)
     call check(status_ok(status), "FortOpt scheduled hyperparameter solve", failures)

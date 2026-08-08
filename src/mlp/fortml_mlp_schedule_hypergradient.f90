@@ -26,7 +26,7 @@ module fortml_mlp_schedule_hypergradient
     use fortml_device, only: FORTML_DEVICE_CPU
     use fortml_mlp, only: mlp_t, MLP_LINEAR
     use fortml_mlp_schedules, only: mlp_learning_rate_schedule_t, &
-        MLP_SCHEDULE_CONSTANT, MLP_SCHEDULE_ONE_CYCLE
+        MLP_SCHEDULE_PLATEAU, MLP_SCHEDULE_ONE_CYCLE
     use fortml_mlp_training, only: mlp_loss_value_gradient, mlp_loss_hvp
     use fortopt_objective, only: objective_t
     use fortopt_lbfgsb, only: lbfgsb_t, lbfgsb_options_t, lbfgsb_result_t
@@ -296,13 +296,15 @@ contains
     end subroutine schedule_hypergradient_vjp
 
     subroutine schedule_hypergradient_hvp(self, parameters, direction, product, status)
-        !! Exact outer HVP for a constant-rate affine trajectory.
+        !! Exact outer HVP for a fixed affine MLP trajectory.
         !!
         !! A one-layer linear MLP has a parameter-independent MSE Hessian, so
-        !! mixed second tangents through the fixed constant-rate schedule can
-        !! be propagated analytically.  Other schedule families retain a typed
-        !! refusal until their rate second products are specified; nonlinear
-        !! networks retain the third-derivative boundary.
+        !! mixed second tangents through constant, cosine, warm-up, exponential,
+        !! and one-cycle schedules can be propagated analytically.  The schedule
+        !! object supplies raw rate second products; transformed log/logit
+        !! coordinates are handled here.  Nonlinear networks retain the
+        !! third-derivative boundary and plateau schedules retain their
+        !! discrete-branch boundary.
         class(mlp_schedule_hypergradient_objective_t), intent(inout) :: self
         real(dp), intent(in) :: parameters(:), direction(:)
         real(dp), intent(out) :: product(:)
@@ -323,9 +325,9 @@ contains
                 "MLP schedule hypergradient HVP: objective is not initialized")
             return
         end if
-        if (self%layout%schedule_kind /= MLP_SCHEDULE_CONSTANT) then
+        if (self%layout%schedule_kind == MLP_SCHEDULE_PLATEAU) then
             call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
-                "MLP schedule hypergradient HVP requires schedule rate second products")
+                "MLP schedule hypergradient HVP refuses metric-branch schedule")
             return
         end if
         if (.not. affine_one_layer(self%model)) then
@@ -333,105 +335,175 @@ contains
                 "MLP schedule hypergradient HVP requires one linear dense layer")
             return
         end if
-        call constant_schedule_affine_hvp(self, parameters, direction, product, status)
+        call affine_schedule_hvp(self, parameters, direction, product, status)
     end subroutine schedule_hypergradient_hvp
 
-    subroutine constant_schedule_affine_hvp(self, parameters, direction, product, status)
-        !! Mixed second tangent for the constant-rate affine branch.
+    subroutine affine_schedule_hvp(self, parameters, direction, product, status)
+        !! Propagate exact mixed state tangents for an affine MLP.
+        !!
+        !! The first state tangent `theta_i` and the mixed tangent
+        !! `theta_{i,d}` satisfy the differentiated fixed trajectory.  This
+        !! avoids finite-difference training runs and gives the complete outer
+        !! HVP for all continuous schedule fields supported by the stateless
+        !! schedule object.
         class(mlp_schedule_hypergradient_objective_t), intent(inout) :: self
         real(dp), intent(in) :: parameters(:), direction(:)
         real(dp), intent(out) :: product(:)
         type(fortnum_status_t), intent(out) :: status
-        real(dp), allocatable :: theta(:), theta_dot(:, :), theta_ddot(:, :)
-        real(dp), allocatable :: gradient(:), gradient_dot(:, :), gradient_ddot(:)
-        real(dp), allocatable :: theta_direction(:), gradient_direction(:)
-        real(dp), allocatable :: validation_gradient(:), validation_hvp(:)
+        real(dp), allocatable :: theta(:), theta_dot(:), theta_i(:, :), theta_id(:, :)
+        real(dp), allocatable :: gradient(:), gradient_i(:), gradient_id(:)
+        real(dp), allocatable :: gradient_dot(:), hvp_validation(:)
+        real(dp), allocatable :: raw_i(:, :, :)
+        real(dp), allocatable :: raw_dot(:), raw_i_dot(:, :)
+        real(dp), allocatable :: rate_i(:), rate_i_dot(:)
         real(dp) :: base_rate, l2, min_fraction, decay_factor
-        real(dp) :: base_direction, l2_direction, base_second, l2_second
-        real(dp) :: base_tangent, l2_tangent
+        real(dp) :: l2_dot
+        real(dp) :: l2_i(MLP_SCHEDULE_HYPERPARAMETER_COUNT)
+        real(dp) :: l2_i_dot(MLP_SCHEDULE_HYPERPARAMETER_COUNT)
+        real(dp) :: rate, rate_dot, dbase, dmin, ddecay, dpeak, dfinal
+        real(dp) :: rate_first(3), rate_second(3, 3)
         real(dp) :: train_value, validation_value, l2_gradient, scalar_hvp
-        integer :: n_parameters, step, i
+        integer :: n_parameters, step, i, a, b
 
         product = 0.0_dp
-        call unpack_parameters(parameters, base_rate, l2, min_fraction, decay_factor, status)
+        call unpack_parameters(parameters, base_rate, l2, min_fraction, decay_factor, &
+            status)
         if (.not. status_ok(status)) return
+        if (self%layout%one_cycle_coordinates) then
+            min_fraction = exp(parameters(MLP_SCHEDULE_LOG_PEAK_FRACTION))
+            decay_factor = exp(parameters(MLP_SCHEDULE_LOG_FINAL_FRACTION))
+            if (.not. ieee_is_finite(min_fraction) .or. &
+                .not. ieee_is_finite(decay_factor) .or. min_fraction < 1.0_dp .or. &
+                decay_factor <= 0.0_dp .or. decay_factor > min_fraction) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP schedule hypergradient HVP: one-cycle fractions are invalid")
+                return
+            end if
+        end if
+
         n_parameters = size(self%initial_parameters)
         allocate(theta, source=self%initial_parameters)
-        allocate(theta_dot(n_parameters, MLP_SCHEDULE_HYPERPARAMETER_COUNT))
-        allocate(theta_ddot(n_parameters, MLP_SCHEDULE_HYPERPARAMETER_COUNT))
-        allocate(gradient(n_parameters), gradient_dot(n_parameters, &
-            MLP_SCHEDULE_HYPERPARAMETER_COUNT), gradient_ddot(n_parameters))
-        allocate(theta_direction(n_parameters), gradient_direction(n_parameters))
+        allocate(theta_dot(n_parameters), theta_i(n_parameters, &
+            MLP_SCHEDULE_HYPERPARAMETER_COUNT))
+        allocate(theta_id(n_parameters, MLP_SCHEDULE_HYPERPARAMETER_COUNT))
+        allocate(gradient(n_parameters), gradient_i(n_parameters), &
+            gradient_id(n_parameters), gradient_dot(n_parameters))
+        allocate(hvp_validation(n_parameters))
+        allocate(raw_i(3, MLP_SCHEDULE_HYPERPARAMETER_COUNT, self%layout%inner_steps))
+        allocate(raw_dot(3), raw_i_dot(3, MLP_SCHEDULE_HYPERPARAMETER_COUNT))
+        allocate(rate_i(MLP_SCHEDULE_HYPERPARAMETER_COUNT), &
+            rate_i_dot(MLP_SCHEDULE_HYPERPARAMETER_COUNT))
+        theta_i = 0.0_dp
+        theta_id = 0.0_dp
+        l2_i = 0.0_dp
+        l2_i_dot = 0.0_dp
+        l2_i(MLP_SCHEDULE_LOG_L2) = l2
+        l2_i_dot(MLP_SCHEDULE_LOG_L2) = l2*direction(MLP_SCHEDULE_LOG_L2)
+        l2_dot = l2*direction(MLP_SCHEDULE_LOG_L2)
+        raw_dot = 0.0_dp
+        raw_dot(1) = base_rate*direction(MLP_SCHEDULE_LOG_BASE_RATE)
+        if (self%layout%one_cycle_coordinates) then
+            raw_dot(2) = min_fraction*direction(MLP_SCHEDULE_LOG_PEAK_FRACTION)
+            raw_dot(3) = decay_factor*direction(MLP_SCHEDULE_LOG_FINAL_FRACTION)
+        else
+            raw_dot(2) = min_fraction*(1.0_dp-min_fraction)* &
+                direction(MLP_SCHEDULE_LOGIT_MIN_FRACTION)
+            raw_dot(3) = decay_factor*(1.0_dp-decay_factor)* &
+                direction(MLP_SCHEDULE_LOGIT_DECAY_FACTOR)
+        end if
+
+        do step = 1, self%layout%inner_steps
+            raw_i(:, :, step) = 0.0_dp
+            raw_i(1, MLP_SCHEDULE_LOG_BASE_RATE, step) = base_rate
+            if (self%layout%one_cycle_coordinates) then
+                raw_i(2, MLP_SCHEDULE_LOG_PEAK_FRACTION, step) = min_fraction
+                raw_i(3, MLP_SCHEDULE_LOG_FINAL_FRACTION, step) = decay_factor
+            else
+                raw_i(2, MLP_SCHEDULE_LOGIT_MIN_FRACTION, step) = &
+                    min_fraction*(1.0_dp-min_fraction)
+                raw_i(3, MLP_SCHEDULE_LOGIT_DECAY_FACTOR, step) = &
+                    decay_factor*(1.0_dp-decay_factor)
+            end if
+            raw_i_dot = 0.0_dp
+            raw_i_dot(1, MLP_SCHEDULE_LOG_BASE_RATE) = base_rate* &
+                direction(MLP_SCHEDULE_LOG_BASE_RATE)
+            if (self%layout%one_cycle_coordinates) then
+                raw_i_dot(2, MLP_SCHEDULE_LOG_PEAK_FRACTION) = min_fraction* &
+                    direction(MLP_SCHEDULE_LOG_PEAK_FRACTION)
+                raw_i_dot(3, MLP_SCHEDULE_LOG_FINAL_FRACTION) = decay_factor* &
+                    direction(MLP_SCHEDULE_LOG_FINAL_FRACTION)
+            else
+                raw_i_dot(2, MLP_SCHEDULE_LOGIT_MIN_FRACTION) = &
+                    min_fraction*(1.0_dp-min_fraction)*(1.0_dp-2.0_dp*min_fraction)* &
+                    direction(MLP_SCHEDULE_LOGIT_MIN_FRACTION)
+                raw_i_dot(3, MLP_SCHEDULE_LOGIT_DECAY_FACTOR) = &
+                    decay_factor*(1.0_dp-decay_factor)*(1.0_dp-2.0_dp*decay_factor)* &
+                    direction(MLP_SCHEDULE_LOGIT_DECAY_FACTOR)
+            end if
+        end do
+
         theta_dot = 0.0_dp
-        theta_ddot = 0.0_dp
         do step = 1, self%layout%inner_steps
             call self%model%set_parameters(theta, status)
             if (.not. status_ok(status)) return
             call mlp_loss_value_gradient(self%model, self%train_x, self%train_target, &
                 l2, train_value, gradient, l2_gradient, status)
             if (.not. status_ok(status)) return
-            theta_direction = matmul(theta_dot, direction)
-            gradient_direction = 0.0_dp
+            call schedule_at_second(self%schedule, step, base_rate, min_fraction, &
+                decay_factor, rate, rate_first, rate_second, status)
+            if (.not. status_ok(status)) return
+            rate_i = 0.0_dp
+            rate_i_dot = 0.0_dp
             do i = 1, MLP_SCHEDULE_HYPERPARAMETER_COUNT
-                base_tangent = 0.0_dp
-                l2_tangent = 0.0_dp
-                if (i == MLP_SCHEDULE_LOG_BASE_RATE) then
-                    base_tangent = base_rate
-                else if (i == MLP_SCHEDULE_LOG_L2) then
-                    l2_tangent = l2
-                end if
-                call mlp_loss_hvp(self%model, self%train_x, self%train_target, l2, &
-                    theta_dot(:, i), l2_tangent, gradient_dot(:, i), scalar_hvp, status)
-                if (.not. status_ok(status)) return
-                gradient_direction = gradient_direction + direction(i)*gradient_dot(:, i)
+                do a = 1, 3
+                    rate_i(i) = rate_i(i) + rate_first(a)*raw_i(a, i, step)
+                    rate_i_dot(i) = rate_i_dot(i) + rate_first(a)*raw_i_dot(a, i)
+                    do b = 1, 3
+                        rate_i_dot(i) = rate_i_dot(i) + rate_second(a, b)* &
+                            raw_i(a, i, step)*raw_dot(b)
+                    end do
+                end do
             end do
-            base_direction = base_rate*direction(MLP_SCHEDULE_LOG_BASE_RATE)
-            l2_direction = l2*direction(MLP_SCHEDULE_LOG_L2)
+            rate_dot = dot_product(rate_first, raw_dot)
+            theta_dot = matmul(theta_i, direction)
+            call mlp_loss_hvp(self%model, self%train_x, self%train_target, l2, &
+                theta_dot, l2_dot, gradient_dot, scalar_hvp, status)
+            if (.not. status_ok(status)) return
             do i = 1, MLP_SCHEDULE_HYPERPARAMETER_COUNT
-                base_tangent = 0.0_dp
-                l2_tangent = 0.0_dp
-                base_second = 0.0_dp
-                l2_second = 0.0_dp
-                if (i == MLP_SCHEDULE_LOG_BASE_RATE) then
-                    base_tangent = base_rate
-                    base_second = base_rate*direction(MLP_SCHEDULE_LOG_BASE_RATE)
-                else if (i == MLP_SCHEDULE_LOG_L2) then
-                    l2_tangent = l2
-                    l2_second = l2*direction(MLP_SCHEDULE_LOG_L2)
-                end if
                 call mlp_loss_hvp(self%model, self%train_x, self%train_target, l2, &
-                    theta_ddot(:, i), l2_second, gradient_ddot, scalar_hvp, status)
+                    theta_i(:, i), l2_i(i), gradient_i, scalar_hvp, status)
                 if (.not. status_ok(status)) return
-                gradient_ddot = gradient_ddot + l2_direction*theta_dot(:, i) + &
-                    l2_tangent*theta_direction
-                theta_ddot(:, i) = theta_ddot(:, i) - base_second*gradient - &
-                    base_tangent*gradient_direction - base_direction*gradient_dot(:, i) - &
-                    base_rate*gradient_ddot
-                theta_dot(:, i) = theta_dot(:, i) - base_tangent*gradient - &
-                    base_rate*gradient_dot(:, i)
+                call mlp_loss_hvp(self%model, self%train_x, self%train_target, l2, &
+                    theta_id(:, i), l2_i_dot(i), gradient_id, scalar_hvp, status)
+                if (.not. status_ok(status)) return
+                gradient_id = gradient_id + l2_i(i)*theta_dot + l2_dot*theta_i(:, i)
+                theta_id(:, i) = theta_id(:, i) - rate_i_dot(i)*gradient - &
+                    rate_i(i)*gradient_dot - rate_dot*gradient_i - rate*gradient_id
+                theta_i(:, i) = theta_i(:, i) - rate_i(i)*gradient - rate*gradient_i
             end do
-            theta = theta - base_rate*gradient
+            theta = theta - rate*gradient
             if (any(.not. ieee_is_finite(theta)) .or. &
-                any(.not. ieee_is_finite(theta_dot)) .or. &
-                any(.not. ieee_is_finite(theta_ddot))) then
+                any(.not. ieee_is_finite(theta_i)) .or. &
+                any(.not. ieee_is_finite(theta_id))) then
                 call status_set(status, FORTNUM_DOMAIN_ERROR, &
                     "MLP schedule hypergradient HVP: trajectory is not finite")
                 return
             end if
         end do
+
         call self%model%set_parameters(theta, status)
         if (.not. status_ok(status)) return
-        allocate(validation_gradient(n_parameters), validation_hvp(n_parameters))
-        call mlp_loss_value_gradient(self%model, self%validation_x, self%validation_target, &
-            0.0_dp, validation_value, validation_gradient, l2_gradient, status)
+        call mlp_loss_value_gradient(self%model, self%validation_x, &
+            self%validation_target, 0.0_dp, validation_value, gradient, &
+            l2_gradient, status)
         if (.not. status_ok(status)) return
-        theta_direction = matmul(theta_dot, direction)
+        theta_dot = matmul(theta_i, direction)
         call mlp_loss_hvp(self%model, self%validation_x, self%validation_target, 0.0_dp, &
-            theta_direction, 0.0_dp, validation_hvp, scalar_hvp, status)
+            theta_dot, 0.0_dp, hvp_validation, scalar_hvp, status)
         if (.not. status_ok(status)) return
         do i = 1, MLP_SCHEDULE_HYPERPARAMETER_COUNT
-            product(i) = dot_product(validation_hvp, theta_dot(:, i)) + &
-                dot_product(validation_gradient, theta_ddot(:, i))
+            product(i) = dot_product(hvp_validation, theta_i(:, i)) + &
+                dot_product(gradient, theta_id(:, i))
         end do
         if (any(.not. ieee_is_finite(product))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -439,7 +511,7 @@ contains
             return
         end if
         call status_set(status, FORTNUM_OK, "")
-    end subroutine constant_schedule_affine_hvp
+    end subroutine affine_schedule_hvp
 
     subroutine schedule_hypergradient_fortopt(self, objective, status)
         class(mlp_schedule_hypergradient_objective_t), target, intent(inout) :: self
@@ -738,6 +810,42 @@ contains
         end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine forward_jvp
+
+    subroutine schedule_at_second(base_schedule, update, base_rate, min_fraction, &
+            decay_factor, rate, first, second, status)
+        type(mlp_learning_rate_schedule_t), intent(in) :: base_schedule
+        integer, intent(in) :: update
+        real(dp), intent(in) :: base_rate, min_fraction, decay_factor
+        real(dp), intent(out) :: rate, first(3), second(3, 3)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: dbase, dmin, ddecay, dpeak, dfinal
+        type(mlp_learning_rate_schedule_t) :: schedule
+        real(dp) :: full_second(5, 5)
+
+        schedule = base_schedule
+        if (base_schedule%kind == MLP_SCHEDULE_ONE_CYCLE) then
+            schedule%peak_rate_fraction = min_fraction
+            schedule%final_rate_fraction = decay_factor
+        else
+            schedule%min_rate_fraction = min_fraction
+            schedule%decay_factor = decay_factor
+        end if
+        call schedule%rate_with_second_derivatives(update, base_rate, rate, dbase, &
+            dmin, ddecay, dpeak, dfinal, full_second, status)
+        if (.not. status_ok(status)) return
+        first = [dbase, dmin, ddecay]
+        second = 0.0_dp
+        if (base_schedule%kind == MLP_SCHEDULE_ONE_CYCLE) then
+            first(2) = dpeak
+            first(3) = dfinal
+            second(1, 2) = full_second(1, 4)
+            second(2, 1) = second(1, 2)
+            second(1, 3) = full_second(1, 5)
+            second(3, 1) = second(1, 3)
+        else
+            second = full_second(1:3, 1:3)
+        end if
+    end subroutine schedule_at_second
 
     subroutine schedule_at(base_schedule, update, base_rate, min_fraction, &
             decay_factor, rate, dbase, dmin, ddecay, status)

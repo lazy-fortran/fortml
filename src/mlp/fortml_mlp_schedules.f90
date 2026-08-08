@@ -44,6 +44,8 @@ module fortml_mlp_schedules
         procedure, public :: device_supported => schedule_device_supported
         procedure, public :: rate_with_derivatives => schedule_rate_with_derivatives
         procedure, public :: rate_with_full_derivatives => schedule_rate_with_full_derivatives
+        procedure, public :: rate_with_second_derivatives => &
+            schedule_rate_with_second_derivatives
         procedure, public :: rate_with_metric => schedule_rate_with_metric
         procedure, public :: rate_with_metric_derivatives => &
             schedule_rate_with_metric_derivatives
@@ -379,6 +381,69 @@ contains
         end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine schedule_rate_with_full_derivatives
+
+    subroutine schedule_rate_with_second_derivatives(self, update, base_rate, rate, &
+            d_base_rate, d_min_rate_fraction, d_decay_factor, &
+            d_peak_rate_fraction, d_final_rate_fraction, second, status)
+        !! Return the rate Hessian with respect to continuous schedule fields.
+        !!
+        !! `second` uses the stable five-slot layout
+        !! `(base_rate, min_rate_fraction, decay_factor, peak_rate_fraction,
+        !! final_rate_fraction)`.  Inactive slots are zero.  The product is
+        !! exact for all stateless non-plateau schedules: the cosine, warm-up,
+        !! and one-cycle factors are affine in their fractions; exponential
+        !! decay additionally has the analytic second derivative in its decay
+        !! factor.  This method is intentionally separate from the legacy
+        !! first-product wrapper so callers can propagate outer HVPs without
+        !! finite differences.
+        class(mlp_learning_rate_schedule_t), intent(in) :: self
+        integer, intent(in) :: update
+        real(dp), intent(in) :: base_rate
+        real(dp), intent(out) :: rate, d_base_rate, d_min_rate_fraction
+        real(dp), intent(out) :: d_decay_factor, d_peak_rate_fraction
+        real(dp), intent(out) :: d_final_rate_fraction, second(5, 5)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: exponent, decay_second
+        integer :: elapsed
+
+        second = 0.0_dp
+        call self%rate_with_full_derivatives(update, base_rate, rate, d_base_rate, &
+            d_min_rate_fraction, d_decay_factor, d_peak_rate_fraction, &
+            d_final_rate_fraction, status)
+        if (status%code /= FORTNUM_OK) return
+
+        ! r = base_rate * factor, so the only nonzero cross derivatives are
+        ! between base_rate and each active fraction.  The non-affine
+        ! exponential factor contributes one raw decay-factor second product.
+        select case (self%kind)
+        case (MLP_SCHEDULE_COSINE_DECAY, MLP_SCHEDULE_WARMUP_COSINE)
+            second(1, 2) = d_min_rate_fraction / base_rate
+            second(2, 1) = second(1, 2)
+        case (MLP_SCHEDULE_EXPONENTIAL_DECAY)
+            second(1, 3) = d_decay_factor / base_rate
+            second(3, 1) = second(1, 3)
+            elapsed = max(0, update-self%warmup_updates)
+            exponent = real(elapsed, dp)
+            if (elapsed > 1) then
+                decay_second = base_rate*exponent*(exponent-1.0_dp)* &
+                    self%decay_factor**real(elapsed-2, dp)
+                second(3, 3) = decay_second
+            end if
+        case (MLP_SCHEDULE_ONE_CYCLE)
+            second(1, 4) = d_peak_rate_fraction / base_rate
+            second(4, 1) = second(1, 4)
+            second(1, 5) = d_final_rate_fraction / base_rate
+            second(5, 1) = second(1, 5)
+        case default
+            continue
+        end select
+        if (any(.not. ieee_is_finite(second))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP schedule: second rate products are not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine schedule_rate_with_second_derivatives
 
     subroutine schedule_rate_with_metric(self, update, base_rate, metric, best_metric, &
             bad_updates, reductions, rate, next_best_metric, next_bad_updates, &

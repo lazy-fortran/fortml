@@ -51,6 +51,15 @@ products are exact and are zero for the other schedule families. Integer
 warm-up and total-update counts are structural controls, not differentiable
 coordinates.
 
+`rate_with_second_derivatives` adds the exact five-slot raw rate Hessian in
+the order `(base_rate, min_rate_fraction, decay_factor, peak_rate_fraction,
+final_rate_fraction)`.  Cosine and warm-up factors are affine in their minimum
+fraction, one-cycle factors are affine in their peak/final fractions, and the
+exponential factor contributes its analytic second derivative in the decay
+factor.  This product is used by the affine scheduled MLP outer-HVP objective;
+it is not a finite-difference approximation.  The schedule kind and integer
+update counts remain fixed structural controls.
+
 ## Metric-aware plateau schedule
 
 `MLP_SCHEDULE_PLATEAU` is stateless. The caller supplies the current metric,
