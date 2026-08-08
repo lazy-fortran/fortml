@@ -12,7 +12,10 @@ program test_derivative_gp_ard
     type(gp_derivative_regression_t) :: model
     type(kernel_t) :: kernel
     type(fortnum_status_t) :: status
-    real(dp) :: x(4, 2), y(4, 1), theta(4), gradient(4), finite_gradient(4)
+    real(dp) :: query(3, 2), query_direction(3, 2)
+    real(dp) :: mean(3, 1), mean_dot(3, 1), mean_plus(3, 1), mean_minus(3, 1)
+    real(dp) :: variance(3), variance_dot(3), variance_plus(3), variance_minus(3)
+    real(dp) :: theta(4), gradient(4), finite_gradient(4)
     real(dp) :: direction(4), hvp(4), gradient_plus(4), gradient_minus(4)
     real(dp) :: h, hvp_h
     integer :: i, failures
@@ -21,6 +24,9 @@ program test_derivative_gp_ard
     x = reshape([0.1_dp, -0.4_dp, 0.7_dp, 0.9_dp, &
         -0.2_dp, 0.5_dp, 1.1_dp, -0.8_dp], shape(x))
     y(:, 1) = [0.6_dp, -0.2_dp, 1.0_dp, 0.3_dp]
+    query = reshape([0.2_dp, -0.6_dp, 0.8_dp, 0.4_dp, 1.2_dp, -0.9_dp], shape(query))
+    query_direction = reshape([0.03_dp, -0.02_dp, -0.01_dp, 0.04_dp, 0.02_dp, 0.01_dp], &
+        shape(query_direction))
     kernel = make_rbf_ard_kernel(2, 1.4_dp, [0.75_dp, 1.25_dp], status)
     call check(status_ok(status), "ARD RBF construction", failures)
     call model%fit(x, [0, 1, 2, 0], y, kernel, 0.08_dp, status, jitter=1.0e-10_dp)
@@ -49,6 +55,15 @@ program test_derivative_gp_ard
     call check(status_ok(status) .and. maxval(abs(hvp - (gradient_plus - gradient_minus)/ &
         (2.0_dp*hvp_h))) < 7.0e-4_dp, &
         "ARD derivative-GP mixed HVP oracle", failures)
+
+    call model%predict_input_jvp(query, [0, 1, 2], query_direction, mean, mean_dot, &
+        variance, variance_dot, status)
+    call model%predict(query + h*query_direction, [0, 1, 2], mean_plus, variance_plus, status)
+    call model%predict(query - h*query_direction, [0, 1, 2], mean_minus, variance_minus, status)
+    call check(status_ok(status) .and. maxval(abs(mean_dot - (mean_plus - mean_minus)/ &
+        (2.0_dp*h))) < 3.0e-7_dp .and. maxval(abs(variance_dot - &
+        (variance_plus - variance_minus)/(2.0_dp*h))) < 3.0e-7_dp, &
+        "ARD derivative-GP query-input JVP oracle", failures)
     if (failures /= 0) then
         write (error_unit, '(a,i0)') "FAIL ARD derivative-GP cases: ", failures
         error stop 1

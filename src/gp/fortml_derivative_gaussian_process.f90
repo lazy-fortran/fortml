@@ -3281,6 +3281,7 @@ contains
         real(dp) :: cosine_numerator
         real(dp) :: t1, t2, t3, b, f, rscale, rsecond
         real(dp) :: a, exponential, z
+        real(dp) :: ard_q(size(x1)), ard_r(size(x1)), ard_a, ard_a_dot
         integer :: i, j
 
         value = 0.0_dp
@@ -3365,6 +3366,35 @@ contains
         delta = direction1 - direction2
         squared_distance = sum(difference*difference)
         distance = sqrt(squared_distance)
+        if (kernel%kind == KERNEL_RBF_ARD) then
+            !! Anisotropic squared-exponential leaf.  In lag coordinates
+            !! q_i=(x1_i-x2_i)/l_i^2, the directional derivative contracts
+            !! only the lag with `delta`; this supplies the exact third input
+            !! product needed by derivative-GP query JVP/VJP calls.
+            do i = 1, size(x1)
+                ard_q(i) = exp(-2.0_dp*kernel%log_parameters(i + 1))
+                ard_r(i) = difference(i)*ard_q(i)
+            end do
+            value = exp(kernel%log_parameters(1) - 0.5_dp* &
+                dot_product(difference, ard_r))
+            value_dot = -value*dot_product(ard_r, delta)
+            gradient_x1 = -value*ard_r
+            gradient_x2 = -gradient_x1
+            gradient_x1_dot = gradient_x1*(value_dot/value) - value*ard_q*delta
+            gradient_x2_dot = -gradient_x1_dot
+            do i = 1, size(x1)
+                do j = 1, size(x2)
+                    ard_a = ard_q(i)*merge(1.0_dp, 0.0_dp, i == j) - &
+                        ard_r(i)*ard_r(j)
+                    ard_a_dot = -ard_q(i)*delta(i)*ard_r(j) - &
+                        ard_r(i)*ard_q(j)*delta(j)
+                    mixed_hessian(i, j) = value*ard_a
+                    mixed_hessian_dot(i, j) = value_dot*ard_a + value*ard_a_dot
+                end do
+            end do
+            call status_set(status, FORTNUM_OK, "")
+            return
+        end if
         if (kernel%kind == KERNEL_RBF .or. kernel%kind == KERNEL_PERIODIC .or. &
             kernel%kind == KERNEL_RATIONAL_QUADRATIC .or. kernel%kind == KERNEL_COSINE) then
             variance = exp(kernel%log_parameters(1))
