@@ -2958,6 +2958,10 @@ For logistic models apply the sigmoid product separately to obtain probability
 derivatives. CUDA leaf products remain an explicit refusal until resident tree
 state and transfer accounting are available.
 
+`predict_leaf_jvp_device` and `predict_leaf_vjp_device` make this boundary
+explicit: CPU dispatches to the methods above, while selected CUDA contexts
+return `FORTNUM_NOT_IMPLEMENTED` without mutating caller buffers.
+
 Every fit method also accepts an optional validation set through
 `validation_x`, `validation_y`, and `validation_weight`. Set
 `early_stopping_rounds` to a positive patience count and optionally set
@@ -4167,6 +4171,10 @@ with respect to those coordinates while holding split routing and persisted
 tree scales fixed. These products are defined on split surfaces; input
 JVP/VJP products retain their boundary refusal. CUDA leaf products remain a
 typed refusal until resident leaf-wise state and transfer accounting exist.
+
+`predict_leaf_jvp_device` and `predict_leaf_vjp_device` dispatch the same
+products on CPU and return `FORTNUM_NOT_IMPLEMENTED` for selected CUDA
+contexts without a host fallback.
 
 The finite numeric contract is explicit: NaN and infinity inputs are refused,
 and categorical, missing-value-default, EFB, and distributed policies are not

@@ -3,6 +3,7 @@ program fortml_bench_tree_leaf_products
     use, intrinsic :: iso_fortran_env, only: real64
     use fortml_xgboost, only: xgboost_t, xgboost_options_t
     use fortml_lightgbm, only: lightgbm_t, lightgbm_options_t
+    use fortml_device, only: fortml_device_t, FORTML_DEVICE_CUDA
     use fortnum_status, only: fortnum_status_t
     implicit none
 
@@ -14,6 +15,11 @@ program fortml_bench_tree_leaf_products
     type(fortnum_status_t) :: status
     real(dp) :: x(4, 2), target(4), dot(3), y(4), y_dot(4), bar(4), pbar(3)
     real(dp) :: parameters(3), start, finish, fit_seconds, predict_seconds
+    type(fortml_device_t) :: cuda
+
+    cuda%kind = FORTML_DEVICE_CUDA
+    cuda%selected = .true.
+    cuda%available = .true.
 
     x(:, 1) = [0.0_dp, 1.0_dp, 2.0_dp, 3.0_dp]
     x(:, 2) = 0.0_dp
@@ -42,6 +48,10 @@ program fortml_bench_tree_leaf_products
     write(*,'(a,*(es24.16,1x))') 'xgb_leaf_vjp', pbar
     write(*,'(a,1x,i0,1x,es24.16)') 'xgb_leaf_status_fit_seconds', status%code, fit_seconds
     write(*,'(a,1x,es24.16)') 'xgb_leaf_predict_seconds', predict_seconds
+    call xgb%predict_leaf_jvp_device(cuda, x, dot, y, y_dot, status)
+    write(*,'(a,1x,i0)') 'xgb_leaf_cuda_jvp_status', status%code
+    call xgb%predict_leaf_vjp_device(cuda, x, bar, pbar, status)
+    write(*,'(a,1x,i0)') 'xgb_leaf_cuda_vjp_status', status%code
 
     lo%n_estimators = 1
     lo%num_leaves = 2
@@ -65,4 +75,8 @@ program fortml_bench_tree_leaf_products
     write(*,'(a,*(es24.16,1x))') 'lgbm_leaf_vjp', pbar
     write(*,'(a,1x,i0,1x,es24.16)') 'lgbm_leaf_status_fit_seconds', status%code, fit_seconds
     write(*,'(a,1x,es24.16)') 'lgbm_leaf_predict_seconds', predict_seconds
+    call lgb%predict_leaf_jvp_device(cuda, x, dot, y, y_dot, status)
+    write(*,'(a,1x,i0)') 'lgbm_leaf_cuda_jvp_status', status%code
+    call lgb%predict_leaf_vjp_device(cuda, x, bar, pbar, status)
+    write(*,'(a,1x,i0)') 'lgbm_leaf_cuda_vjp_status', status%code
 end program fortml_bench_tree_leaf_products

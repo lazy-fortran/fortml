@@ -3,9 +3,11 @@ program test_tree_leaf_products
     !! The expected contractions use only the two leaves of a hand-selected
     !! stump; no private node arrays or fitted leaf values are inspected.
     use, intrinsic :: iso_fortran_env, only: real64, error_unit
+    use fortml_device, only: fortml_device_t, FORTML_DEVICE_CUDA
     use fortml_xgboost, only: xgboost_t, xgboost_options_t
     use fortml_lightgbm, only: lightgbm_t, lightgbm_options_t
-    use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_DOMAIN_ERROR
+    use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_DOMAIN_ERROR, &
+        FORTNUM_NOT_IMPLEMENTED
     implicit none
 
     integer, parameter :: dp = real64
@@ -14,6 +16,7 @@ program test_tree_leaf_products
     type(xgboost_options_t) :: xgb_options
     type(lightgbm_options_t) :: lgb_options
     type(fortnum_status_t) :: status
+    type(fortml_device_t) :: cuda
     real(dp) :: x(4, 2), target(4), dot(3), y(4), y_dot(4), bar(4), pbar(3)
     real(dp) :: parameters(3), bad_y(4)
     integer :: failures
@@ -24,6 +27,9 @@ program test_tree_leaf_products
     dot = [0.5_dp, 1.0_dp, 2.0_dp]
     bar = [1.0_dp, 2.0_dp, 3.0_dp, 4.0_dp]
     failures = 0
+    cuda%kind = FORTML_DEVICE_CUDA
+    cuda%selected = .true.
+    cuda%available = .true.
 
     xgb_options = xgboost_options_t()
     xgb_options%n_estimators = 1
@@ -54,6 +60,12 @@ program test_tree_leaf_products
     call xgb%predict_leaf_jvp(x, dot(:2), y, y_dot, status)
     call check(status%code == FORTNUM_DOMAIN_ERROR .and. all(y == bad_y), &
         "XGBoost malformed tangent refusal is transactional", failures)
+    call xgb%predict_leaf_jvp_device(cuda, x, dot, y, y_dot, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
+        "XGBoost CUDA leaf JVP refusal", failures)
+    call xgb%predict_leaf_vjp_device(cuda, x, bar, pbar, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
+        "XGBoost CUDA leaf VJP refusal", failures)
 
     lgb_options = lightgbm_options_t()
     lgb_options%n_estimators = 1
@@ -79,6 +91,12 @@ program test_tree_leaf_products
         "LightGBM leaf VJP hand oracle", failures)
     call check(abs(dot(1)*pbar(1) + dot(2)*pbar(2) + dot(3)*pbar(3) - &
         sum(bar*y_dot)) < 2.0e-13_dp, "LightGBM leaf adjoint identity", failures)
+    call lgb%predict_leaf_jvp_device(cuda, x, dot, y, y_dot, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
+        "LightGBM CUDA leaf JVP refusal", failures)
+    call lgb%predict_leaf_vjp_device(cuda, x, bar, pbar, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
+        "LightGBM CUDA leaf VJP refusal", failures)
 
     if (failures > 0) then
         write (error_unit, '(a,i0)') "FAIL tree leaf product cases: ", failures

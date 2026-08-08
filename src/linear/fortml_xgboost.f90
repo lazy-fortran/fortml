@@ -217,6 +217,7 @@ module fortml_xgboost
             predict_margin_vector
         procedure, public :: predict_jvp => xgb_predict_jvp
         procedure, public :: predict_leaf_jvp => xgb_predict_leaf_jvp
+        procedure, public :: predict_leaf_jvp_device => xgb_predict_leaf_jvp_device
         procedure, public :: predict_staged => xgb_predict_staged
         procedure, public :: predict_staged_margin => xgb_predict_staged_margin
         procedure, public :: slice => xgb_slice
@@ -230,6 +231,7 @@ module fortml_xgboost
         procedure, public :: decision_function => xgb_decision_function
         procedure, public :: predict_vjp => xgb_predict_vjp
         procedure, public :: predict_leaf_vjp => xgb_predict_leaf_vjp
+        procedure, public :: predict_leaf_vjp_device => xgb_predict_leaf_vjp_device
         procedure, public :: split_gain => xgb_split_gain
         procedure, public :: leaf_weights => xgb_leaf_weights
         procedure, public :: leaf_parameter_count => xgb_leaf_parameter_count
@@ -2556,6 +2558,56 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine xgb_predict_leaf_vjp
+
+    subroutine xgb_predict_leaf_jvp_device(self, device, x, parameter_dot, y, &
+            y_dot, status)
+        class(xgboost_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :), parameter_dot(:)
+        real(dp), intent(out) :: y(:), y_dot(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost leaf JVP device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_leaf_jvp(x, parameter_dot, y, y_dot, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "xgboost leaf JVP device: no resident CUDA tree derivative kernel is linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost leaf JVP device: device kind is invalid")
+        end select
+    end subroutine xgb_predict_leaf_jvp_device
+
+    subroutine xgb_predict_leaf_vjp_device(self, device, x, output_bar, &
+            parameter_bar, status)
+        class(xgboost_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :), output_bar(:)
+        real(dp), intent(out) :: parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost leaf VJP device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_leaf_vjp(x, output_bar, parameter_bar, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "xgboost leaf VJP device: no resident CUDA tree derivative kernel is linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost leaf VJP device: device kind is invalid")
+        end select
+    end subroutine xgb_predict_leaf_vjp_device
 
     !> Copy the first `n_trees` fitted boosting rounds into a valid model.
     !>

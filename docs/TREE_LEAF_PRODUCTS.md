@@ -28,6 +28,11 @@ return `FORTNUM_DOMAIN_ERROR` before output mutation. The ordinary build is
 CPU-only; tree device prediction remains a typed refusal until model and
 derivative state can stay resident.
 
+The explicit `predict_leaf_jvp_device` and `predict_leaf_vjp_device` wrappers
+dispatch the same products on CPU and return `FORTNUM_NOT_IMPLEMENTED` for a
+selected CUDA context. This preserves the no-hidden-host-fallback contract
+and lets benchmark rows assert the exact refusal status.
+
 The independent hand oracle is `test_tree_leaf_products`: it fits a single
 stump, checks the two routed leaf coordinates, verifies the JVP/VJP adjoint
 identity, and checks malformed tangent transactional behavior without reading
