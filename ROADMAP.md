@@ -4,6 +4,8 @@ Verified on 2026-08-08. Interfaces are documented in
 [`docs/API.md`](docs/API.md), examples in [`docs/EXAMPLES.md`](docs/EXAMPLES.md),
 and implementation limits in [`docs/DESIGN.md`](docs/DESIGN.md) and
 [`docs/ML_ARCHITECTURE.md`](docs/ML_ARCHITECTURE.md).
+The cross-library acceptance table is maintained in
+[`docs/PARITY_MATRIX.md`](docs/PARITY_MATRIX.md).
 
 ## Verification
 
