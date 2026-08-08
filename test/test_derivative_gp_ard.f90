@@ -42,18 +42,10 @@ program test_derivative_gp_ard
     direction = [0.11_dp, -0.07_dp, 0.19_dp, -0.13_dp, 0.05_dp]
     call model%hyperparameter_hvp(direction, hvp, status)
     hvp_h = 2.0e-4_dp
-    do i = 1, size(theta)
-        gradient_plus(i) = (oracle_gradient(theta + hvp_h*direction + &
-            h*unit_vector(size(theta), i), x, [0, 1, 2, 0], y, 0.08_dp, 1.0e-10_dp) - &
-            oracle_gradient(theta + hvp_h*direction - &
-            h*unit_vector(size(theta), i), x, [0, 1, 2, 0], y, 0.08_dp, 1.0e-10_dp))/ &
-            (2.0_dp*h)
-        gradient_minus(i) = (oracle_gradient(theta - hvp_h*direction + &
-            h*unit_vector(size(theta), i), x, [0, 1, 2, 0], y, 0.08_dp, 1.0e-10_dp) - &
-            oracle_gradient(theta - hvp_h*direction - &
-            h*unit_vector(size(theta), i), x, [0, 1, 2, 0], y, 0.08_dp, 1.0e-10_dp))/ &
-            (2.0_dp*h)
-    end do
+    gradient_plus = oracle_gradient(theta + hvp_h*direction, x, [0, 1, 2, 0], y, &
+        0.08_dp, 1.0e-10_dp)
+    gradient_minus = oracle_gradient(theta - hvp_h*direction, x, [0, 1, 2, 0], y, &
+        0.08_dp, 1.0e-10_dp)
     call check(status_ok(status) .and. maxval(abs(hvp - (gradient_plus - gradient_minus)/ &
         (2.0_dp*hvp_h))) < 7.0e-4_dp, &
         "ARD derivative-GP mixed HVP oracle", failures)
