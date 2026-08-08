@@ -13,7 +13,7 @@ module fortml_mlp_training
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
-        FORTNUM_DOMAIN_ERROR, FORTNUM_CONVERGENCE_ERROR
+        FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED, FORTNUM_CONVERGENCE_ERROR
     use fortml_mlp, only: mlp_t
     use fortml_mlp_schedules, only: mlp_learning_rate_schedule_t
     use fortml_losses, only: weighted_mse_loss_value, weighted_mse_loss_vjp, &
@@ -41,6 +41,15 @@ module fortml_mlp_training
     integer, parameter, public :: MLP_OPTIMIZER_ADAFACTOR = 6
     integer, parameter, public :: MLP_OPTIMIZER_AMSGRAD = 7
     integer, parameter, public :: MLP_OPTIMIZER_RADAM = 8
+
+    ! Precision is a first-class training contract.  FP64 is the current
+    ! deterministic reference implementation; lower-precision modes are
+    ! named now so callers receive a typed refusal instead of an implicit
+    ! kind conversion or an untracked loss-scaling policy.
+    integer, parameter, public :: MLP_PRECISION_FP64 = 1
+    integer, parameter, public :: MLP_PRECISION_FP32 = 2
+    integer, parameter, public :: MLP_PRECISION_FP16 = 3
+    integer, parameter, public :: MLP_PRECISION_BF16 = 4
 
     integer, parameter, public :: MLP_EVENT_TRAIN_BEGIN = 1
     integer, parameter, public :: MLP_EVENT_UPDATE = 2
@@ -115,6 +124,7 @@ module fortml_mlp_training
         real(dp) :: rmsprop_momentum = 0.0_dp
         logical :: rmsprop_centered = .false.
         integer :: optimizer = MLP_OPTIMIZER_ADAM
+        integer :: precision_kind = MLP_PRECISION_FP64
         real(dp) :: momentum = 0.0_dp
         logical :: nesterov = .false.
         real(dp) :: weight_decay = 0.0_dp
@@ -145,6 +155,7 @@ module fortml_mlp_training
         integer :: updates = 0
         integer :: microbatches = 0
         integer :: accumulation_steps = 1
+        integer :: precision_kind = MLP_PRECISION_FP64
         integer :: best_epoch = 0
         integer :: best_validation_epoch = 0
         logical :: converged = .false.
@@ -200,6 +211,7 @@ module fortml_mlp_training
         integer :: shuffle_seed = 17
         integer :: adam_step_count = 0
         integer :: optimizer = MLP_OPTIMIZER_ADAM
+        integer :: precision_kind = MLP_PRECISION_FP64
         integer :: stale_epochs = 0
         integer :: gradient_clipped_updates = 0
         integer :: validation_interval = 1
@@ -360,8 +372,28 @@ module fortml_mlp_training
     public :: mlp_loss_hvp
     public :: mlp_train
     public :: mlp_optimize_lbfgsb
+    public :: mlp_precision_name
 
 contains
+
+    pure function mlp_precision_name(kind) result(name)
+        !! Stable human-readable spelling for the training precision contract.
+        integer, intent(in) :: kind
+        character(len=8) :: name
+
+        select case (kind)
+        case (MLP_PRECISION_FP64)
+            name = "fp64"
+        case (MLP_PRECISION_FP32)
+            name = "fp32"
+        case (MLP_PRECISION_FP16)
+            name = "fp16"
+        case (MLP_PRECISION_BF16)
+            name = "bf16"
+        case default
+            name = "unknown"
+        end select
+    end function mlp_precision_name
 
     subroutine mlp_optimizer_group_initialize(self, name, first, last, &
             learning_rate_multiplier, status)
@@ -567,6 +599,7 @@ contains
         self%iterator_position = 1
         self%batch_size = 0
         self%accumulation_steps = 1
+        self%precision_kind = MLP_PRECISION_FP64
         self%shuffle_seed = 17
         self%adam_step_count = 0
         self%optimizer = MLP_OPTIMIZER_ADAM
@@ -628,6 +661,8 @@ contains
             self%active_microbatches <= self%accumulation_steps .and. &
             self%batch_size > 0 .and. self%accumulation_steps > 0 .and. &
             self%shuffle_seed > 0 .and. self%adam_step_count >= 0 .and. &
+            self%precision_kind >= MLP_PRECISION_FP64 .and. &
+            self%precision_kind <= MLP_PRECISION_BF16 .and. &
             (self%optimizer == MLP_OPTIMIZER_ADAM .or. &
             self%optimizer == MLP_OPTIMIZER_SGD .or. &
             self%optimizer == MLP_OPTIMIZER_ADAMW .or. &
@@ -1345,6 +1380,7 @@ contains
         if (present(checkpoint)) resuming = checkpoint%initialized
         resume_active_epoch = .false.
         if (present(options)) config = options
+        result%precision_kind = config%precision_kind
         has_typed_schedule = config%use_typed_schedule
         schedule_config = config%typed_schedule
         if (has_typed_schedule .and. .not. schedule_config%valid()) then
@@ -1358,6 +1394,12 @@ contains
             (present(validation_x) .neqv. present(validation_target))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "MLP train: invalid model, data, or options")
+            if (present(state)) state = result
+            return
+        end if
+        if (config%precision_kind /= MLP_PRECISION_FP64) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "MLP train: requested precision has no master-weight/loss-scaling implementation")
             if (present(state)) state = result
             return
         end if
@@ -1390,6 +1432,9 @@ contains
             if (checkpoint%n_features /= size(x, 2)) incompatible_checkpoint = .true.
             if (checkpoint%n_outputs /= n_outputs) incompatible_checkpoint = .true.
             if (checkpoint%n_parameters /= n_parameters) incompatible_checkpoint = .true.
+            if (checkpoint%precision_kind /= config%precision_kind) then
+                incompatible_checkpoint = .true.
+            end if
             if (checkpoint%batch_size /= batch) incompatible_checkpoint = .true.
             if (checkpoint%accumulation_steps /= config%accumulation_steps) then
                 incompatible_checkpoint = .true.
@@ -2186,6 +2231,7 @@ contains
         checkpoint%iterator_position = iterator%position
         checkpoint%batch_size = iterator%batch_size
         checkpoint%accumulation_steps = config%accumulation_steps
+        checkpoint%precision_kind = config%precision_kind
         checkpoint%shuffle_seed = config%shuffle_seed
         checkpoint%optimizer = config%optimizer
         if (config%optimizer == MLP_OPTIMIZER_ADAM) then
@@ -2326,6 +2372,8 @@ contains
         valid = options%max_epochs >= 1 .and. options%batch_size >= 0 .and. &
             options%accumulation_steps >= 1 .and. &
             options%patience >= 0 .and. options%learning_rate > 0.0_dp .and. &
+            options%precision_kind >= MLP_PRECISION_FP64 .and. &
+            options%precision_kind <= MLP_PRECISION_BF16 .and. &
             (options%optimizer == MLP_OPTIMIZER_ADAM .or. &
             options%optimizer == MLP_OPTIMIZER_SGD .or. &
             options%optimizer == MLP_OPTIMIZER_ADAMW .or. &
