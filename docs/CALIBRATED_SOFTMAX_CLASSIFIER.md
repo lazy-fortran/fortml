@@ -23,7 +23,7 @@ call model%predict_proba(x_query, probabilities, status)
 call model%predict(x_query, labels_query, status)
 ```
 
-Labels are sorted and retained as arbitrary integer values.  Every class must
+The options default to positive temperature scaling.  Labels are sorted and retained as arbitrary integer values.  Every class must
 have at least `cv_folds` positive-weight rows; this prevents a training fold
 from losing a class and makes OOF calibration well-defined.  Sample weights
 are nonnegative and class weights follow the sorted class order.  The

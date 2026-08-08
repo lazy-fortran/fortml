@@ -47,6 +47,8 @@ program test_calibrated_softmax_classifier
     failures = 0
     h = 1.0e-6_dp
     options = calibrated_softmax_classifier_options_t()
+    call check(options%calibration%method == CALIBRATION_TEMPERATURE, &
+        "temperature is the multiclass default", failures)
     options%l2 = 0.2_dp
     options%max_iterations = 500
     options%tolerance = 1.0e-8_dp
