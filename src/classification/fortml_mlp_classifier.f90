@@ -14,7 +14,9 @@ module fortml_mlp_classifier
     use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU, &
         FORTML_DEVICE_CUDA
     use fortml_mlp, only: mlp_t, MLP_TANH
-    use fortml_losses, only: softmax_value, softmax_jvp, softmax_vjp
+    use fortml_losses, only: softmax_value, softmax_jvp, softmax_vjp, &
+        focal_softmax_cross_entropy_value, focal_softmax_cross_entropy_vjp, &
+        focal_softmax_cross_entropy_hvp
     use fortopt_adam, only: adam_t
     use fortopt_objective, only: objective_t
     use fortopt_lbfgsb, only: lbfgsb_t, lbfgsb_options_t, lbfgsb_result_t
@@ -35,6 +37,7 @@ module fortml_mlp_classifier
         real(dp) :: beta2 = 0.999_dp
         real(dp) :: epsilon = 1.0e-8_dp
         real(dp) :: l2 = 0.0_dp
+        real(dp) :: focal_gamma = 0.0_dp
         real(dp) :: tolerance = 1.0e-6_dp
         real(dp) :: min_delta = 0.0_dp
     end type mlp_classifier_options_t
@@ -103,6 +106,7 @@ module fortml_mlp_classifier
         integer, allocatable :: targets(:)
         real(dp), allocatable :: weights(:)
         real(dp) :: l2 = 0.0_dp
+        real(dp) :: focal_gamma = 0.0_dp
         logical :: optimize_l2 = .false.
     contains
         procedure, public :: initialize => mlp_classifier_objective_initialize
@@ -128,6 +132,7 @@ module fortml_mlp_classifier
         real(dp) :: lower_bound = -20.0_dp
         real(dp) :: upper_bound = 20.0_dp
         real(dp) :: l2 = 0.0_dp
+        real(dp) :: focal_gamma = 0.0_dp
         real(dp) :: l2_lower_bound = 0.0_dp
         real(dp) :: l2_upper_bound = 20.0_dp
         logical :: optimize_l2 = .false.
@@ -159,8 +164,8 @@ module fortml_mlp_classifier
 contains
 
     subroutine mlp_classifier_objective_initialize(self, classifier, x, labels, &
-            l2, status, optimize_l2, sample_weight, class_weight)
-        !! Initialize a weighted multiclass cross-entropy objective.
+            l2, status, optimize_l2, sample_weight, class_weight, focal_gamma)
+        !! Initialize a weighted multiclass cross-entropy or focal objective.
         class(mlp_classifier_training_objective_t), intent(out) :: self
         class(mlp_classifier_t), target, intent(inout) :: classifier
         real(dp), intent(in) :: x(:, :), l2
@@ -168,22 +173,26 @@ contains
         type(fortnum_status_t), intent(out) :: status
         logical, intent(in), optional :: optimize_l2
         real(dp), intent(in), optional :: sample_weight(:), class_weight(:)
+        real(dp), intent(in), optional :: focal_gamma
         integer, allocatable :: classes(:), encoded(:)
         real(dp), allocatable :: effective_weight(:), class_factors(:)
         real(dp) :: weight_sum
         integer :: i
 
         self%l2 = 0.0_dp
+        self%focal_gamma = 0.0_dp
         self%optimize_l2 = .false.
         if (present(optimize_l2)) self%optimize_l2 = optimize_l2
+        if (present(focal_gamma)) self%focal_gamma = focal_gamma
         if (.not. classifier%fitted()) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "MLP classifier objective: model is not fitted")
             return
         end if
-        if (.not. ieee_is_finite(l2)) then
+        if (.not. ieee_is_finite(l2) .or. .not. ieee_is_finite(self%focal_gamma) .or. &
+            self%focal_gamma < 0.0_dp) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
-                "MLP classifier objective: L2 value is not finite")
+                "MLP classifier objective: L2 or focal gamma is invalid")
             return
         end if
         if (l2 < 0.0_dp) then
@@ -344,7 +353,7 @@ contains
         call self%model%set_parameters(parameters(:n_model), status)
         if (.not. status_ok(status)) return
         call mlp_classifier_loss_gradient(self%model, self%features, self%targets, &
-            l2, value, gradient(:n_model), status, self%weights)
+            l2, value, gradient(:n_model), status, self%weights, self%focal_gamma)
         if (.not. status_ok(status)) return
         if (self%optimize_l2) gradient(n_model + 1) = &
             0.5_dp*sum(parameters(:n_model)*parameters(:n_model))
@@ -424,12 +433,11 @@ contains
         real(dp), intent(in) :: parameters(:), direction(:)
         real(dp), intent(out) :: product(:)
         type(fortnum_status_t), intent(out) :: status
-        real(dp), allocatable :: scores(:, :), scores_dot(:, :), probabilities(:, :)
-        real(dp), allocatable :: probabilities_dot(:, :), logits_bar(:, :)
+        real(dp), allocatable :: scores(:, :), scores_dot(:, :), logits_bar(:, :)
         real(dp), allocatable :: logits_bar_dot(:, :), x_dot(:, :), x_hvp(:, :)
         real(dp), allocatable :: theta_hvp(:), theta_extra(:), x_bar(:, :)
-        real(dp) :: l2, l2_direction, weight_sum
-        integer :: n_model, row, column
+        real(dp) :: l2, l2_direction
+        integer :: n_model
 
         product = 0.0_dp
         if (.not. associated(self%model)) then
@@ -475,8 +483,6 @@ contains
         allocate(scores(size(self%features, 1), &
             self%model%layer_sizes(size(self%model%layer_sizes))))
         allocate(scores_dot, mold=scores)
-        allocate(probabilities, mold=scores)
-        allocate(probabilities_dot, mold=scores)
         allocate(logits_bar, mold=scores)
         allocate(logits_bar_dot, mold=scores)
         allocate(x_dot, mold=self%features)
@@ -486,27 +492,15 @@ contains
         x_dot = 0.0_dp
         call self%model%predict(self%features, scores, status)
         if (.not. status_ok(status)) return
-        call softmax_value(scores, probabilities, status)
-        if (.not. status_ok(status)) return
         call self%model%jvp(self%features, direction(:n_model), x_dot, &
             scores, scores_dot, status)
         if (.not. status_ok(status)) return
-        call softmax_jvp(scores, scores_dot, probabilities, probabilities_dot, status)
+        call focal_softmax_cross_entropy_vjp(scores, self%targets, self%focal_gamma, &
+            1.0_dp, logits_bar, status, self%weights)
         if (.not. status_ok(status)) return
-        weight_sum = sum(self%weights)
-        logits_bar = 0.0_dp
-        logits_bar_dot = 0.0_dp
-        do row = 1, size(scores, 1)
-            do column = 1, size(scores, 2)
-                logits_bar(row, column) = self%weights(row)*probabilities(row, column)
-                logits_bar_dot(row, column) = &
-                    self%weights(row)*probabilities_dot(row, column)
-            end do
-            logits_bar(row, self%targets(row)) = &
-                logits_bar(row, self%targets(row)) - self%weights(row)
-        end do
-        logits_bar = logits_bar/weight_sum
-        logits_bar_dot = logits_bar_dot/weight_sum
+        call focal_softmax_cross_entropy_hvp(scores, self%targets, self%focal_gamma, &
+            scores_dot, logits_bar_dot, status, self%weights)
+        if (.not. status_ok(status)) return
         call self%model%hvp(self%features, logits_bar, direction(:n_model), &
             x_dot, theta_hvp, x_hvp, status)
         if (.not. status_ok(status)) return
@@ -585,7 +579,7 @@ contains
         end if
         call adapter%initialize(model, x, labels, options%l2, status, &
             optimize_l2=options%optimize_l2, sample_weight=sample_weight, &
-            class_weight=class_weight)
+            class_weight=class_weight, focal_gamma=options%focal_gamma)
         if (.not. status_ok(status)) return
         n_model = model%parameter_count()
         n_parameters = adapter%parameter_count()
@@ -768,7 +762,7 @@ contains
         allocate(order(n_samples))
         allocate(result%loss_history(config%max_epochs))
         call mlp_classifier_loss_gradient(self%logits, x, encoded, config%l2, &
-            loss, gradient, status, sample_weights)
+            loss, gradient, status, sample_weights, config%focal_gamma)
         if (.not. status_ok(status)) then
             if (present(state)) state = result
             return
@@ -806,7 +800,8 @@ contains
                     cycle
                 end if
                 call mlp_classifier_loss_gradient(self%logits, x_batch, &
-                    batch_labels, config%l2, loss, gradient, status, batch_weights)
+                    batch_labels, config%l2, loss, gradient, status, batch_weights, &
+                    config%focal_gamma)
                 deallocate(x_batch, batch_labels, batch_weights)
                 if (.not. status_ok(status)) then
                     if (present(state)) state = result
@@ -826,7 +821,7 @@ contains
             end do
 
             call mlp_classifier_loss_gradient(self%logits, x, encoded, config%l2, &
-                loss, gradient, status, sample_weights)
+                loss, gradient, status, sample_weights, config%focal_gamma)
             if (.not. status_ok(status)) then
                 if (present(state)) state = result
                 return
@@ -864,7 +859,7 @@ contains
                 return
             end if
             call mlp_classifier_loss_gradient(self%logits, x, encoded, config%l2, &
-                loss, gradient, status, sample_weights)
+                loss, gradient, status, sample_weights, config%focal_gamma)
             if (.not. status_ok(status)) then
                 if (present(state)) state = result
                 return
@@ -877,29 +872,33 @@ contains
     end subroutine mlp_classifier_fit
 
     subroutine mlp_classifier_loss_gradient(model, x, labels, l2, value, &
-            gradient, status, sample_weight)
-        !! Cross-entropy value and parameter gradient for a logits MLP.
+            gradient, status, sample_weight, focal_gamma)
+        !! Cross-entropy or focal value and parameter gradient for a logits MLP.
         class(mlp_t), intent(in) :: model
         real(dp), intent(in) :: x(:, :), l2
         integer, intent(in) :: labels(:)
         real(dp), intent(out) :: value, gradient(:)
         type(fortnum_status_t), intent(out) :: status
         real(dp), intent(in), optional :: sample_weight(:)
+        real(dp), intent(in), optional :: focal_gamma
         real(dp), allocatable :: logits(:, :), logits_bar(:, :), x_bar(:, :)
         real(dp), allocatable :: theta(:), weights(:)
-        real(dp) :: weight_sum, maximum, normalizer
+        real(dp) :: weight_sum, objective_gamma, maximum, normalizer
         integer :: row, column
 
         value = 0.0_dp
         gradient = 0.0_dp
+        objective_gamma = 0.0_dp
+        if (present(focal_gamma)) objective_gamma = focal_gamma
         if (.not. allocated(model%layer_sizes)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "MLP classifier loss: model is not initialized")
             return
         end if
-        if (l2 < 0.0_dp) then
+        if (l2 < 0.0_dp .or. .not. ieee_is_finite(objective_gamma) .or. &
+            objective_gamma < 0.0_dp) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
-                "MLP classifier loss: model, data, or gradient shape is invalid")
+                "MLP classifier loss: L2 or focal gamma is invalid")
             return
         end if
         if (.not. ieee_is_finite(l2)) then
@@ -974,22 +973,32 @@ contains
                 "MLP classifier loss: class indices are invalid")
             return
         end if
-        value = 0.0_dp
-        logits_bar = 0.0_dp
-        do row = 1, size(logits, 1)
-            maximum = maxval(logits(row, :))
-            normalizer = 0.0_dp
-            do column = 1, size(logits, 2)
-                logits_bar(row, column) = exp(logits(row, column) - maximum)
-                normalizer = normalizer + logits_bar(row, column)
+        if (objective_gamma == 0.0_dp) then
+            value = 0.0_dp
+            logits_bar = 0.0_dp
+            do row = 1, size(logits, 1)
+                maximum = maxval(logits(row, :))
+                normalizer = 0.0_dp
+                do column = 1, size(logits, 2)
+                    logits_bar(row, column) = exp(logits(row, column) - maximum)
+                    normalizer = normalizer + logits_bar(row, column)
+                end do
+                value = value + weights(row)*(maximum - logits(row, labels(row)) + &
+                    log(normalizer))
+                logits_bar(row, :) = weights(row)*logits_bar(row, :)/normalizer
+                logits_bar(row, labels(row)) = &
+                    logits_bar(row, labels(row)) - weights(row)
             end do
-            value = value + weights(row)*(maximum - logits(row, labels(row)) + &
-                log(normalizer))
-            logits_bar(row, :) = weights(row)*logits_bar(row, :)/normalizer
-            logits_bar(row, labels(row)) = logits_bar(row, labels(row)) - weights(row)
-        end do
-        value = value/weight_sum
-        logits_bar = logits_bar/weight_sum
+            value = value/weight_sum
+            logits_bar = logits_bar/weight_sum
+        else
+            call focal_softmax_cross_entropy_value(logits, labels, objective_gamma, &
+                value, status, weights)
+            if (.not. status_ok(status)) return
+            call focal_softmax_cross_entropy_vjp(logits, labels, objective_gamma, &
+                1.0_dp, logits_bar, status, weights)
+            if (.not. status_ok(status)) return
+        end if
         call model%vjp(x, logits_bar, gradient, x_bar, status)
         if (.not. status_ok(status)) return
         theta = model%parameters()
@@ -1004,13 +1013,14 @@ contains
     end subroutine mlp_classifier_loss_gradient
 
     subroutine mlp_classifier_model_loss_gradient(self, x, labels, l2, value, &
-            gradient, status, sample_weight)
+            gradient, status, sample_weight, focal_gamma)
         class(mlp_classifier_t), intent(in) :: self
         real(dp), intent(in) :: x(:, :), l2
         integer, intent(in) :: labels(:)
         real(dp), intent(out) :: value, gradient(:)
         type(fortnum_status_t), intent(out) :: status
         real(dp), intent(in), optional :: sample_weight(:)
+        real(dp), intent(in), optional :: focal_gamma
         integer, allocatable :: encoded(:)
 
         value = 0.0_dp
@@ -1028,7 +1038,7 @@ contains
         call encode_labels(labels, self%class_label, encoded, status)
         if (.not. status_ok(status)) return
         call mlp_classifier_loss_gradient(self%logits, x, encoded, l2, value, &
-            gradient, status, sample_weight)
+            gradient, status, sample_weight, focal_gamma)
     end subroutine mlp_classifier_model_loss_gradient
 
     subroutine mlp_classifier_decision(self, x, scores, status)
@@ -1543,12 +1553,14 @@ contains
             options%beta1 >= 0.0_dp .and. options%beta1 < 1.0_dp .and. &
             options%beta2 >= 0.0_dp .and. options%beta2 < 1.0_dp .and. &
             options%epsilon > 0.0_dp .and. options%l2 >= 0.0_dp .and. &
+            options%focal_gamma >= 0.0_dp .and. &
             options%tolerance >= 0.0_dp .and. options%min_delta >= 0.0_dp .and. &
             options%initialization_seed >= 0
         if (options%shuffle) valid = valid .and. options%shuffle_seed > 0
         valid = valid .and. ieee_is_finite(options%learning_rate) .and. &
             ieee_is_finite(options%beta1) .and. ieee_is_finite(options%beta2) .and. &
             ieee_is_finite(options%epsilon) .and. ieee_is_finite(options%l2) .and. &
+            ieee_is_finite(options%focal_gamma) .and. &
             ieee_is_finite(options%tolerance) .and. ieee_is_finite(options%min_delta)
     end function valid_options
 
@@ -1559,13 +1571,15 @@ contains
             options%max_line_search >= 1 .and. options%gradient_tolerance >= 0.0_dp .and. &
             options%step_tolerance >= 0.0_dp .and. options%objective_tolerance >= 0.0_dp .and. &
             options%lower_bound <= options%upper_bound .and. options%l2 >= 0.0_dp .and. &
+            options%focal_gamma >= 0.0_dp .and. &
             options%l2_lower_bound >= 0.0_dp .and. &
             options%l2_lower_bound <= options%l2_upper_bound
         valid = valid .and. ieee_is_finite(options%gradient_tolerance) .and. &
             ieee_is_finite(options%step_tolerance) .and. &
             ieee_is_finite(options%objective_tolerance) .and. &
             ieee_is_finite(options%lower_bound) .and. ieee_is_finite(options%upper_bound) .and. &
-            ieee_is_finite(options%l2) .and. ieee_is_finite(options%l2_lower_bound) .and. &
+            ieee_is_finite(options%l2) .and. ieee_is_finite(options%focal_gamma) .and. &
+            ieee_is_finite(options%l2_lower_bound) .and. &
             ieee_is_finite(options%l2_upper_bound)
         if (options%optimize_l2) valid = valid .and. &
             options%l2 >= options%l2_lower_bound .and. &

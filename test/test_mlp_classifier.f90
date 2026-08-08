@@ -2,13 +2,16 @@ program test_mlp_classifier
     !! Independent behavioral checks for the multiclass MLP classifier.
     use, intrinsic :: iso_fortran_env, only: dp => real64, error_unit
     use fortml_mlp_classifier, only: mlp_classifier_t, &
-        mlp_classifier_options_t, mlp_classifier_state_t
+        mlp_classifier_options_t, mlp_classifier_state_t, &
+        mlp_classifier_training_objective_t
     use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_NOT_IMPLEMENTED
     use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU, FORTML_DEVICE_CUDA
     implicit none
 
     type(mlp_classifier_t) :: first_model, second_model, weighted_model, &
         sample_weighted_model, combined_model, minibatch_model, unfitted
+    type(mlp_classifier_t) :: focal_model
+    type(mlp_classifier_training_objective_t) :: focal_objective
     type(fortml_device_t) :: cpu, cuda
     type(mlp_classifier_options_t) :: options
     type(mlp_classifier_state_t) :: first_state, second_state
@@ -19,6 +22,8 @@ program test_mlp_classifier
     real(dp) :: combined_probabilities(6, 3)
     real(dp) :: sample_weights(6), combined_weights(6)
     real(dp), allocatable :: theta(:), gradient(:), plus_gradient(:)
+    real(dp), allocatable :: objective_parameters(:), objective_plus(:), &
+        objective_minus(:), objective_hvp(:), objective_gradient(:)
     real(dp), allocatable :: theta_dot(:), theta_plus(:), theta_minus(:), &
         theta_bar(:), x_dot(:, :), x_bar(:, :), scores_dot(:, :), &
         scores_plus(:, :), scores_minus(:, :), probabilities_dot(:, :), &
@@ -151,6 +156,49 @@ program test_mlp_classifier
     call first_model%set_parameters(theta, status)
     call check(status_ok(status) .and. abs(gradient(1) - (plus - minus)/(2.0_dp*h)) &
         < 3.0e-6_dp, "MLP cross-entropy parameter oracle", failures)
+
+    options%focal_gamma = 2.0_dp
+    options%max_epochs = 300
+    call focal_model%fit(x, labels, status, hidden_layer_sizes=[4], &
+        options=options)
+    call check(status_ok(status), "focal MLP classifier fit", failures)
+    call check(focal_model%fitted(), "focal MLP classifier fitted state", failures)
+    theta = focal_model%parameters()
+    call focal_model%loss_gradient(x, labels, 0.0_dp, value, gradient, status, &
+        focal_gamma=2.0_dp)
+    theta(1) = theta(1) + h
+    call focal_model%set_parameters(theta, status)
+    call focal_model%loss_gradient(x, labels, 0.0_dp, plus, plus_gradient, status, &
+        focal_gamma=2.0_dp)
+    theta(1) = theta(1) - 2.0_dp*h
+    call focal_model%set_parameters(theta, status)
+    call focal_model%loss_gradient(x, labels, 0.0_dp, minus, plus_gradient, status, &
+        focal_gamma=2.0_dp)
+    theta(1) = theta(1) + h
+    call focal_model%set_parameters(theta, status)
+    call check(status_ok(status) .and. abs(gradient(1) - (plus - minus)/(2.0_dp*h)) &
+        < 5.0e-6_dp, "focal MLP classifier parameter oracle", failures)
+    call focal_objective%initialize(focal_model, x, labels, 0.0_dp, status, &
+        focal_gamma=2.0_dp)
+    call check(status_ok(status), "focal MLP FortOpt objective initialize", failures)
+    objective_parameters = focal_objective%parameters()
+    allocate(objective_plus(size(objective_parameters)), &
+        objective_minus(size(objective_parameters)), &
+        objective_hvp(size(objective_parameters)), &
+        objective_gradient(size(objective_parameters)))
+    theta_dot = 0.03_dp
+    call focal_objective%hvp(objective_parameters, theta_dot, objective_hvp, status)
+    objective_plus = objective_parameters + h*theta_dot
+    objective_minus = objective_parameters - h*theta_dot
+    call focal_objective%value_gradient(objective_plus, plus, objective_gradient, status)
+    objective_plus = objective_gradient
+    call focal_objective%value_gradient(objective_minus, minus, objective_gradient, status)
+    objective_minus = objective_gradient
+    call check(status_ok(status) .and. maxval(abs(objective_hvp - &
+        (objective_plus-objective_minus)/(2.0_dp*h))) < 2.0e-5_dp, &
+        "focal MLP objective HVP oracle", failures)
+    options%focal_gamma = 0.0_dp
+    options%max_epochs = 500
 
     call second_model%fit(x, labels, status, hidden_layer_sizes=[4], &
         options=options, state=second_state)

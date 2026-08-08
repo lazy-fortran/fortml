@@ -48,6 +48,34 @@ nonnegative. The second derivative follows the exact focusing-factor product;
 representationally saturated `1-p_t` rows use their finite limiting zero
 products. The same positive row-weight mean/sum reductions apply.
 
+## Multiclass focal cross-entropy
+
+`focal_softmax_cross_entropy_value`, `focal_softmax_cross_entropy_jvp`,
+`focal_softmax_cross_entropy_vjp`, and `focal_softmax_cross_entropy_hvp` apply
+the focal factor to the true-class softmax probability:
+
+```fortran
+call focal_softmax_cross_entropy_hvp(logits, labels, gamma, logits_dot, &
+    logits_hvp, status, sample_weight, reduction, class_weight)
+```
+
+Labels are one-based class columns. `gamma >= 0` is the focusing exponent;
+`gamma=0` is exactly the weighted softmax cross-entropy contract. Optional
+positive `class_weight` values multiply the true-class term, while
+`sample_weight` controls the shared positive-mass mean/sum reduction. The
+products are analytic scalar-composition derivatives through the true-class
+probability and softmax JVP. A true-class probability at or below machine
+tiny is refused because its focal derivatives are not representable in the
+selected precision; a representationally saturated probability of one uses
+the finite zero limiting products for `gamma>0`. The
+`multiclass_focal_cross_entropy_*` names are generic aliases.
+
+`mlp_classifier_options_t%focal_gamma` and
+`mlp_classifier_lbfgsb_options_t%focal_gamma` select the same loss for
+multiclass MLP fitting and the FortOpt objective. Their value/gradient and
+parameter HVP paths share the standalone focal-softmax products, while the
+default zero keeps the existing cross-entropy trajectory exact.
+
 ## Device boundary
 
 `softmax_value_device`, `log_softmax_value_device`,
@@ -57,6 +85,9 @@ reference implementation. CUDA requests return `FORTNUM_NOT_IMPLEMENTED`
 without a host fallback or output mutation until resident loss kernels and
 transfer accounting are available. Invalid device kinds return
 `FORTNUM_DOMAIN_ERROR`.
+
+`focal_softmax_cross_entropy_value_device` follows the same typed boundary;
+CUDA requests leave the caller's scalar untouched.
 
 The independent behavioral oracle is `test_neural_loss_products`; the release
 benchmark is `fortml-bench/scripts/bench_neural_losses.py` and records CPU

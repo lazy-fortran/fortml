@@ -6,6 +6,7 @@ program fortml_bench_neural_losses
         multilabel_binary_cross_entropy_with_logits_hvp, &
         ordinal_cumulative_logit_loss_hvp, &
         softmax_cross_entropy_hvp, softmax_hvp, log_softmax_hvp, &
+        focal_softmax_cross_entropy_hvp, &
         weighted_mse_loss_hvp, huber_loss_hvp, mae_loss_jvp, &
         focal_binary_cross_entropy_with_logits_jvp, &
         focal_binary_cross_entropy_with_logits_hvp, &
@@ -19,7 +20,8 @@ program fortml_bench_neural_losses
     real(dp) :: cotangent(n, k)
     real(dp) :: ordinal_logits(n, k - 1), ordinal_direction(n, k - 1)
     real(dp) :: ordinal_product(n, k - 1)
-    real(dp) :: prediction(n, 1), target(n, 1), weights(n), value, l2_gradient
+    real(dp) :: prediction(n, 1), target(n, 1), weights(n), class_weight(k)
+    real(dp) :: value, l2_gradient
     real(dp) :: log_variance(n, k), count_targets(n, k), variance_direction(n, k)
     real(dp) :: variance_product(n, k)
     real(dp) :: value_dot, loss_value
@@ -55,6 +57,7 @@ program fortml_bench_neural_losses
         target(i, 1) = 0.4_dp*sin(0.05_dp*real(i, dp))
         weights(i) = 0.5_dp + real(mod(i, 7), dp)/7.0_dp
     end do
+    class_weight = [0.75_dp, 1.0_dp, 1.25_dp]
 
     call binary_cross_entropy_with_logits_hvp(logits, targets, direction, product, status)
     if (.not. status_ok(status)) error stop "BCE warmup failed"
@@ -123,6 +126,17 @@ program fortml_bench_neural_losses
     end do
     call cpu_time(finish)
     call emit("weighted_softmax_cross_entropy_hvp", finish - start, sum(product))
+
+    call focal_softmax_cross_entropy_hvp(logits, labels, 2.0_dp, direction, product, &
+        status, weights, class_weight=class_weight)
+    if (.not. status_ok(status)) error stop "focal softmax warmup failed"
+    call cpu_time(start)
+    do repetition = 1, repetitions
+        call focal_softmax_cross_entropy_hvp(logits, labels, 2.0_dp, direction, &
+            product, status, weights, class_weight=class_weight)
+    end do
+    call cpu_time(finish)
+    call emit("focal_softmax_cross_entropy_hvp", finish - start, sum(product))
 
     call weighted_mse_loss_hvp(prediction, target, weights, direction(:, 1:1), &
         product(:, 1:1), status)

@@ -28,6 +28,16 @@ module fortml_losses
     public :: softmax_cross_entropy_vjp
     public :: softmax_cross_entropy_hvp
     public :: softmax_cross_entropy_value_device
+    public :: focal_softmax_cross_entropy_value
+    public :: focal_softmax_cross_entropy_jvp
+    public :: focal_softmax_cross_entropy_vjp
+    public :: focal_softmax_cross_entropy_hvp
+    public :: focal_softmax_cross_entropy_value_device
+    public :: multiclass_focal_cross_entropy_value
+    public :: multiclass_focal_cross_entropy_jvp
+    public :: multiclass_focal_cross_entropy_vjp
+    public :: multiclass_focal_cross_entropy_hvp
+    public :: multiclass_focal_cross_entropy_value_device
     public :: weighted_mse_loss_value, weighted_mse_loss_jvp
     public :: weighted_mse_loss_vjp, weighted_mse_loss_hvp
     public :: mae_loss_value, mae_loss_jvp, mae_loss_vjp
@@ -81,6 +91,26 @@ module fortml_losses
     interface binary_focal_cross_entropy_with_logits_vjp
         module procedure focal_binary_cross_entropy_with_logits_vjp
     end interface binary_focal_cross_entropy_with_logits_vjp
+
+    interface multiclass_focal_cross_entropy_value
+        module procedure focal_softmax_cross_entropy_value
+    end interface multiclass_focal_cross_entropy_value
+
+    interface multiclass_focal_cross_entropy_jvp
+        module procedure focal_softmax_cross_entropy_jvp
+    end interface multiclass_focal_cross_entropy_jvp
+
+    interface multiclass_focal_cross_entropy_vjp
+        module procedure focal_softmax_cross_entropy_vjp
+    end interface multiclass_focal_cross_entropy_vjp
+
+    interface multiclass_focal_cross_entropy_hvp
+        module procedure focal_softmax_cross_entropy_hvp
+    end interface multiclass_focal_cross_entropy_hvp
+
+    interface multiclass_focal_cross_entropy_value_device
+        module procedure focal_softmax_cross_entropy_value_device
+    end interface multiclass_focal_cross_entropy_value_device
 
     interface poisson_count_nll_value
         module procedure poisson_nll_value
@@ -1185,6 +1215,257 @@ contains
         end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine softmax_cross_entropy_hvp
+
+    subroutine focal_softmax_cross_entropy_value(logits, labels, gamma, value, &
+            status, sample_weight, reduction, class_weight)
+        !! Weighted multiclass focal cross-entropy value.
+        !!
+        !! For a row with true class `t`, the loss is
+        !! `a(t)*(1-p(t))**gamma*(-log(p(t)))`, where `p` is the stable
+        !! softmax and `a` is an optional positive class-weight vector.  The
+        !! default `gamma=0` is exactly weighted softmax cross-entropy.  Mean
+        !! reduction divides by positive sample-weight mass; sum reduction is
+        !! unnormalised.  A true-class probability below machine tiny is
+        !! rejected because its focal derivatives are not representable.
+        real(dp), intent(in) :: logits(:, :), gamma
+        integer, intent(in) :: labels(:)
+        real(dp), intent(out) :: value
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:), class_weight(:)
+        integer, intent(in), optional :: reduction
+        real(dp), allocatable :: weights(:), factors(:), probabilities(:)
+        real(dp) :: normalization, loss, first_derivative, second_derivative
+        integer :: i
+
+        value = 0.0_dp
+        call prepare_focal_softmax_inputs(logits, labels, gamma, sample_weight, &
+            reduction, class_weight, weights, factors, normalization, status)
+        if (status%code /= FORTNUM_OK) return
+        allocate(probabilities(size(logits, 2)))
+        do i = 1, size(logits, 1)
+            call focal_softmax_row(logits(i, :), labels(i), gamma, factors(i), &
+                probabilities, loss, first_derivative, second_derivative, status)
+            if (status%code /= FORTNUM_OK) then
+                value = 0.0_dp
+                return
+            end if
+            value = value + weights(i)*loss
+        end do
+        value = value/normalization
+        if (.not. ieee_is_finite(value)) then
+            value = 0.0_dp
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "focal softmax cross entropy: reduction is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine focal_softmax_cross_entropy_value
+
+    subroutine focal_softmax_cross_entropy_value_device(logits, labels, gamma, &
+            value, status, device_kind, sample_weight, reduction, class_weight)
+        !! Device boundary for multiclass focal cross-entropy values.
+        !!
+        !! CPU dispatch uses the stable reference implementation.  CUDA is an
+        !! explicit typed refusal until a resident focal-softmax kernel owns
+        !! both logits and output; no host fallback is allowed.
+        real(dp), intent(in) :: logits(:, :), gamma
+        integer, intent(in) :: labels(:)
+        real(dp), intent(inout) :: value
+        type(fortnum_status_t), intent(out) :: status
+        integer, intent(in), optional :: device_kind
+        real(dp), intent(in), optional :: sample_weight(:), class_weight(:)
+        integer, intent(in), optional :: reduction
+        integer :: requested_device
+
+        requested_device = FORTML_DEVICE_CPU
+        if (present(device_kind)) requested_device = device_kind
+        if (requested_device == FORTML_DEVICE_CUDA) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "focal softmax cross entropy: resident CUDA kernel is not implemented")
+            return
+        end if
+        if (requested_device /= FORTML_DEVICE_CPU) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "focal softmax cross entropy: device kind is invalid")
+            return
+        end if
+        call focal_softmax_cross_entropy_value(logits, labels, gamma, value, status, &
+            sample_weight, reduction, class_weight)
+    end subroutine focal_softmax_cross_entropy_value_device
+
+    subroutine focal_softmax_cross_entropy_jvp(logits, labels, gamma, logits_dot, &
+            value, value_dot, status, sample_weight, reduction, class_weight)
+        !! Value and exact logits JVP of multiclass focal cross-entropy.
+        real(dp), intent(in) :: logits(:, :), gamma, logits_dot(:, :)
+        integer, intent(in) :: labels(:)
+        real(dp), intent(out) :: value, value_dot
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:), class_weight(:)
+        integer, intent(in), optional :: reduction
+        real(dp), allocatable :: weights(:), factors(:), probabilities(:)
+        real(dp) :: normalization, loss, first_derivative, second_derivative
+        real(dp) :: probability_dot, row_dot
+        integer :: i, j
+
+        value = 0.0_dp
+        value_dot = 0.0_dp
+        if (any(shape(logits_dot) /= shape(logits))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "focal softmax cross entropy JVP: tangent shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(logits_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "focal softmax cross entropy JVP: tangent must be finite")
+            return
+        end if
+        call prepare_focal_softmax_inputs(logits, labels, gamma, sample_weight, &
+            reduction, class_weight, weights, factors, normalization, status)
+        if (status%code /= FORTNUM_OK) return
+        allocate(probabilities(size(logits, 2)))
+        do i = 1, size(logits, 1)
+            call focal_softmax_row(logits(i, :), labels(i), gamma, factors(i), &
+                probabilities, loss, first_derivative, second_derivative, status)
+            if (status%code /= FORTNUM_OK) then
+                value = 0.0_dp
+                value_dot = 0.0_dp
+                return
+            end if
+            row_dot = dot_product(probabilities, logits_dot(i, :))
+            probability_dot = probabilities(labels(i))* &
+                (logits_dot(i, labels(i)) - row_dot)
+            value = value + weights(i)*loss
+            value_dot = value_dot + weights(i)*first_derivative*probability_dot
+        end do
+        value = value/normalization
+        value_dot = value_dot/normalization
+        if (.not. ieee_is_finite(value) .or. .not. ieee_is_finite(value_dot)) then
+            value = 0.0_dp
+            value_dot = 0.0_dp
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "focal softmax cross entropy JVP: product is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine focal_softmax_cross_entropy_jvp
+
+    subroutine focal_softmax_cross_entropy_vjp(logits, labels, gamma, value_bar, &
+            logits_bar, status, sample_weight, reduction, class_weight)
+        !! Exact reverse product of multiclass focal cross-entropy.
+        real(dp), intent(in) :: logits(:, :), gamma, value_bar
+        integer, intent(in) :: labels(:)
+        real(dp), intent(out) :: logits_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:), class_weight(:)
+        integer, intent(in), optional :: reduction
+        real(dp), allocatable :: weights(:), factors(:), probabilities(:)
+        real(dp) :: normalization, loss, first_derivative, second_derivative
+        real(dp) :: coefficient
+        integer :: i, j
+
+        logits_bar = 0.0_dp
+        if (any(shape(logits_bar) /= shape(logits))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "focal softmax cross entropy VJP: output shape is invalid")
+            return
+        end if
+        if (.not. ieee_is_finite(value_bar)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "focal softmax cross entropy VJP: cotangent must be finite")
+            return
+        end if
+        call prepare_focal_softmax_inputs(logits, labels, gamma, sample_weight, &
+            reduction, class_weight, weights, factors, normalization, status)
+        if (status%code /= FORTNUM_OK) return
+        allocate(probabilities(size(logits, 2)))
+        do i = 1, size(logits, 1)
+            call focal_softmax_row(logits(i, :), labels(i), gamma, factors(i), &
+                probabilities, loss, first_derivative, second_derivative, status)
+            if (status%code /= FORTNUM_OK) then
+                logits_bar = 0.0_dp
+                return
+            end if
+            coefficient = weights(i)*first_derivative*probabilities(labels(i))/ &
+                normalization
+            do j = 1, size(logits, 2)
+                logits_bar(i, j) = coefficient*(merge(1.0_dp, 0.0_dp, &
+                    j == labels(i)) - probabilities(j))
+            end do
+        end do
+        logits_bar = value_bar*logits_bar
+        if (any(.not. ieee_is_finite(logits_bar))) then
+            logits_bar = 0.0_dp
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "focal softmax cross entropy VJP: product is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine focal_softmax_cross_entropy_vjp
+
+    subroutine focal_softmax_cross_entropy_hvp(logits, labels, gamma, logits_dot, &
+            logits_hvp, status, sample_weight, reduction, class_weight)
+        !! Exact logits Hessian-vector product of multiclass focal loss.
+        !!
+        !! The row objective is a scalar function of the true-class
+        !! probability.  The product uses its exact first and second scalar
+        !! derivatives together with the softmax JVP; it is not a finite
+        !! difference approximation.
+        real(dp), intent(in) :: logits(:, :), gamma, logits_dot(:, :)
+        integer, intent(in) :: labels(:)
+        real(dp), intent(out) :: logits_hvp(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:), class_weight(:)
+        integer, intent(in), optional :: reduction
+        real(dp), allocatable :: weights(:), factors(:), probabilities(:)
+        real(dp) :: normalization, loss, first_derivative, second_derivative
+        real(dp) :: row_dot, probability_dot, coefficient, coefficient_dot
+        real(dp) :: probability
+        integer :: i, j
+
+        logits_hvp = 0.0_dp
+        if (any(shape(logits_dot) /= shape(logits)) .or. &
+            any(shape(logits_hvp) /= shape(logits))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "focal softmax cross entropy HVP: tangent or output shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(logits_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "focal softmax cross entropy HVP: tangent must be finite")
+            return
+        end if
+        call prepare_focal_softmax_inputs(logits, labels, gamma, sample_weight, &
+            reduction, class_weight, weights, factors, normalization, status)
+        if (status%code /= FORTNUM_OK) return
+        allocate(probabilities(size(logits, 2)))
+        do i = 1, size(logits, 1)
+            call focal_softmax_row(logits(i, :), labels(i), gamma, factors(i), &
+                probabilities, loss, first_derivative, second_derivative, status)
+            if (status%code /= FORTNUM_OK) then
+                logits_hvp = 0.0_dp
+                return
+            end if
+            probability = probabilities(labels(i))
+            row_dot = dot_product(probabilities, logits_dot(i, :))
+            probability_dot = probability*(logits_dot(i, labels(i)) - row_dot)
+            coefficient = first_derivative*probability
+            coefficient_dot = (second_derivative*probability + first_derivative)* &
+                probability_dot
+            do j = 1, size(logits, 2)
+                logits_hvp(i, j) = weights(i)*(coefficient_dot* &
+                    (merge(1.0_dp, 0.0_dp, j == labels(i)) - probabilities(j)) - &
+                    coefficient*probabilities(j)*(logits_dot(i, j) - row_dot))/ &
+                    normalization
+            end do
+        end do
+        if (any(.not. ieee_is_finite(logits_hvp))) then
+            logits_hvp = 0.0_dp
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "focal softmax cross entropy HVP: product is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine focal_softmax_cross_entropy_hvp
 
     subroutine weighted_mse_loss_value(prediction, targets, sample_weight, value, &
             status, reduction)
@@ -2569,6 +2850,130 @@ contains
         second_derivative = alpha_t*(focus_second*bce + &
             2.0_dp*focus_first*residual + focus*bce_second)
     end subroutine focal_terms_with_hessian
+
+    subroutine prepare_focal_softmax_inputs(logits, labels, gamma, sample_weight, &
+            reduction, class_weight, weights, factors, normalization, status)
+        real(dp), intent(in) :: logits(:, :), gamma
+        integer, intent(in) :: labels(:)
+        real(dp), intent(in), optional :: sample_weight(:), class_weight(:)
+        integer, intent(in), optional :: reduction
+        real(dp), allocatable, intent(out) :: weights(:), factors(:)
+        real(dp), intent(out) :: normalization
+        type(fortnum_status_t), intent(out) :: status
+        integer :: i
+
+        call validate_categorical_inputs(logits, labels, status)
+        if (status%code /= FORTNUM_OK) return
+        if (.not. ieee_is_finite(gamma) .or. gamma < 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "focal softmax cross entropy: gamma must be finite and nonnegative")
+            return
+        end if
+        call prepare_loss_weights(size(logits, 1), sample_weight, reduction, &
+            weights, normalization, status)
+        if (status%code /= FORTNUM_OK) return
+        allocate(factors(size(labels)))
+        factors = 1.0_dp
+        if (present(class_weight)) then
+            if (size(class_weight) /= size(logits, 2)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "focal softmax cross entropy: class-weight shape is invalid")
+                return
+            end if
+            if (any(.not. ieee_is_finite(class_weight)) .or. &
+                any(class_weight <= 0.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "focal softmax cross entropy: class weights must be finite and positive")
+                return
+            end if
+            do i = 1, size(labels)
+                factors(i) = class_weight(labels(i))
+            end do
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine prepare_focal_softmax_inputs
+
+    subroutine focal_softmax_row(logits, label, gamma, class_factor, probabilities, &
+            loss, first_derivative, second_derivative, status)
+        real(dp), intent(in) :: logits(:), gamma, class_factor
+        integer, intent(in) :: label
+        real(dp), intent(out) :: probabilities(:), loss, first_derivative
+        real(dp), intent(out) :: second_derivative
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: maximum, normalizer, probability, complement
+        real(dp) :: log_probability, log_complement, focusing
+        integer :: j
+
+        probabilities = 0.0_dp
+        loss = 0.0_dp
+        first_derivative = 0.0_dp
+        second_derivative = 0.0_dp
+        if (size(logits) < 2 .or. size(probabilities) /= size(logits) .or. &
+            label < 1 .or. label > size(logits) .or. &
+            any(.not. ieee_is_finite(logits)) .or. &
+            .not. ieee_is_finite(gamma) .or. gamma < 0.0_dp .or. &
+            .not. ieee_is_finite(class_factor) .or. class_factor <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "focal softmax cross entropy: row inputs are invalid")
+            return
+        end if
+        maximum = maxval(logits)
+        normalizer = 0.0_dp
+        do j = 1, size(logits)
+            probabilities(j) = exp(logits(j) - maximum)
+            normalizer = normalizer + probabilities(j)
+        end do
+        if (.not. ieee_is_finite(normalizer) .or. normalizer <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "focal softmax cross entropy: softmax normalizer is invalid")
+            probabilities = 0.0_dp
+            return
+        end if
+        probabilities = probabilities/normalizer
+        probability = probabilities(label)
+        if (.not. ieee_is_finite(probability) .or. probability <= tiny(1.0_dp)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "focal softmax cross entropy: true-class probability underflowed")
+            probabilities = 0.0_dp
+            return
+        end if
+        log_probability = log(probability)
+        if (gamma == 0.0_dp) then
+            loss = -class_factor*log_probability
+            first_derivative = -class_factor/probability
+            second_derivative = class_factor/(probability*probability)
+        else
+            complement = 1.0_dp - probability
+            if (complement <= tiny(1.0_dp)) then
+                ! The representable limiting value and products are zero.
+                loss = 0.0_dp
+                first_derivative = 0.0_dp
+                second_derivative = 0.0_dp
+            else
+                log_complement = log(complement)
+                focusing = exp(gamma*log_complement)
+                loss = class_factor*focusing*(-log_probability)
+                first_derivative = class_factor*(gamma*exp((gamma - 1.0_dp)* &
+                    log_complement)*log_probability - focusing/probability)
+                second_derivative = class_factor*(-gamma*(gamma - 1.0_dp)* &
+                    exp((gamma - 2.0_dp)*log_complement)*log_probability + &
+                    2.0_dp*gamma*exp((gamma - 1.0_dp)*log_complement)/probability + &
+                    focusing/(probability*probability))
+            end if
+        end if
+        if (.not. ieee_is_finite(loss) .or. &
+            .not. ieee_is_finite(first_derivative) .or. &
+            .not. ieee_is_finite(second_derivative)) then
+            loss = 0.0_dp
+            first_derivative = 0.0_dp
+            second_derivative = 0.0_dp
+            probabilities = 0.0_dp
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "focal softmax cross entropy: derivative is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine focal_softmax_row
 
     subroutine validate_elementwise(logits, output, operation, status)
         real(dp), intent(in) :: logits(:, :), output(:, :)

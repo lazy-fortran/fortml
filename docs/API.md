@@ -177,7 +177,7 @@ repeated resident-batch evidence.
 | `mlp_t` | `predict` | Parameters and inputs | Parameters and inputs | Weighted-output HVP |
 | `mlp_last_layer_gp_initializer_t` | Finite-feature GP/NTK last-layer `fit`, `fit_apply`, and `predict` | Fixed-feature regularization JVP; named hyperparameter metadata | No VJP (the exposed product is a scalar regularization JVP) | Resident CUDA fit/predict/apply/JVP are typed `FORTNUM_NOT_IMPLEMENTED` refusals |
 | `mlp_classifier_t` | Logits, probabilities, and labels | Parameter/input JVP, probability JVP, fixed-input probability-parameter JVP | Parameter/input VJP, probability VJP, fixed-input probability-parameter VJP | No |
-| `mlp_classifier_training_objective_t` | Weighted multiclass cross-entropy + optional L2 | Packed network/L2 JVP | Packed network/L2 gradient and scalar VJP | Exact joint network/L2 HVP |
+| `mlp_classifier_training_objective_t` | Weighted multiclass cross-entropy or focal-softmax (`focal_gamma`) + optional L2 | Packed network/L2 JVP | Packed network/L2 gradient and scalar VJP | Exact joint network/L2 HVP |
 | `mlp_calibrated_classifier_t` | MLP logits with binary sigmoid/temperature/isotonic or multiclass temperature probabilities and labels | Exact joint network/input plus smooth calibration JVP; isotonic active-set refusal | Exact joint network/input plus smooth calibration VJP; isotonic active-set refusal | No |
 | `mlp_ordinal_classifier_t` | Ordered cumulative-logit neural score, probabilities, and labels | Packed network/threshold and input JVP | Packed network/threshold and input VJP | No |
 | `mlp_binary_classifier_t` | One-logit sigmoid probabilities and binary labels | Parameter/input JVP, probability JVP | Parameter/input VJP, probability VJP; weighted BCE gradient | Exact weighted BCE parameter HVP |
@@ -2048,6 +2048,16 @@ wrappers route CPU to this reference and return `FORTNUM_NOT_IMPLEMENTED` for
 CUDA until resident loss kernels exist; they never relabel a host fallback as
 GPU execution. See [`NEURAL_LOSS_PRODUCTS.md`](NEURAL_LOSS_PRODUCTS.md).
 
+The multiclass focal-softmax family (`focal_softmax_cross_entropy_*`, with
+`multiclass_focal_cross_entropy_*` aliases) uses
+`a(class)*(1-p(class))**gamma*(-log(p(class)))`. It accepts optional positive
+class factors and row weights, supports both reductions, and returns analytic
+value/JVP/VJP/HVP products. `gamma=0` is the ordinary weighted softmax
+cross-entropy limit; true-class probability underflow is a typed domain
+refusal. `focal_softmax_cross_entropy_value_device` keeps the scalar unchanged
+for an unavailable CUDA request. Multiclass MLP fit and FortOpt options expose
+the same contract through `focal_gamma`.
+
 `mlp_training_checkpoint_t` is the in-memory resumable trainer state. Pass an
 uninitialized checkpoint to `mlp_train` to capture it after each completed
 epoch (and at every microbatch boundary). Pass the initialized checkpoint back
@@ -2577,8 +2587,9 @@ fixed-input parameter products.
 
 `mlp_classifier_training_objective_t` is the FortOpt-facing multiclass
 objective adapter. `initialize(model,x,labels,l2,status[,optimize_l2,
-sample_weight,class_weight])` validates the fitted classifier's sorted class
-metadata and stores one weighted cross-entropy reduction. Its packed state is
+sample_weight,class_weight,focal_gamma])` validates the fitted classifier's
+sorted class metadata and stores one weighted cross-entropy reduction, or the
+focal-softmax reduction selected by nonnegative `focal_gamma`. Its packed state is
 the logits-network parameters, optionally followed by a non-negative L2
 coordinate. `value_gradient`, `jvp`, `vjp`, and `hvp` are analytic; the HVP
 includes the MLP's second-order parameter product and the softmax Hessian, not

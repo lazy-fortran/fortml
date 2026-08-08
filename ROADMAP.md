@@ -653,18 +653,21 @@ and source revisions. CUDA/OpenACC measurements are split into resident and
 transfer-inclusive classes. A typed unavailable row is evidence of the
 boundary, never a performance result.
 
-### 2026-08-08 neural loss product slice
+### 2026-08-09 neural loss product slice
 
 The shared loss facade now provides stable softmax and log-softmax value,
 JVP, VJP, and HVP products, weighted mean/sum softmax cross-entropy, and
-analytic focal binary cross-entropy HVPs for relaxed targets. The independent
+analytic focal binary cross-entropy HVPs for relaxed targets. The new
+multiclass focal-softmax family adds weighted mean/sum value/JVP/VJP/HVP
+products with positive class factors and a typed device boundary; multiclass
+MLP fit and FortOpt objectives select it through `focal_gamma`. The independent
 `test_neural_loss_products` fixture checks central differences, VJP adjoints,
 stable extreme logits, weighted reductions, malformed inputs, and the typed
 CUDA refusal. The release lane is
 `fortml-bench/results/neural_losses.csv`.
 
-The remaining loss catalog is still open: multiclass and multilabel focal
-variants, count/dispersion extensions, contrastive/triplet/CTC objectives,
+The remaining loss catalog is still open: multilabel focal variants,
+count/dispersion extensions, contrastive/triplet/CTC objectives,
 probabilistic reconstruction, broader PDE residuals, and resident CUDA loss
 kernels require separate contracts.
 
@@ -1581,10 +1584,14 @@ when a lower-level primitive already exists.
   kernels are linked.
 - [x] Add stable softmax/log-softmax value, JVP, VJP, and HVP products,
   weighted mean/sum softmax cross-entropy, and focal binary BCE value/JVP/VJP/
-  HVP products with independent NumPy checks and a typed CUDA boundary. See
-  `docs/NEURAL_LOSS_PRODUCTS.md` and the `fortml-bench` neural-loss lane.
-- [ ] Complete the remaining activation and loss catalog: multiclass and
-  multilabel focal variants, Poisson count/dispersion variants, contrastive,
+  HVP products with independent NumPy checks and a typed CUDA boundary. The
+  multiclass focal-softmax value/JVP/VJP/HVP family now adds positive
+  class-weight factors, stable true-class underflow refusal, and aliases; the
+  multiclass MLP fit and FortOpt objectives select the same products through
+  `focal_gamma`. See `docs/NEURAL_LOSS_PRODUCTS.md` and the `fortml-bench`
+  neural-loss lane.
+- [ ] Complete the remaining activation and loss catalog: multilabel focal
+  variants, Poisson count/dispersion variants, contrastive,
   triplet, CTC, and physics residual losses, each with explicit derivative and
   refusal contracts.
 - [x] Add a weighted one-output Poisson log-rate objective with exact value,

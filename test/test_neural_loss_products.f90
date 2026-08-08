@@ -14,7 +14,10 @@ program test_neural_loss_products
         focal_binary_cross_entropy_with_logits_vjp, &
         focal_binary_cross_entropy_with_logits_hvp, softmax_value_device, &
         log_softmax_value_device, softmax_cross_entropy_value_device, &
-        focal_binary_cross_entropy_with_logits_value_device
+        focal_binary_cross_entropy_with_logits_value_device, &
+        focal_softmax_cross_entropy_value, focal_softmax_cross_entropy_jvp, &
+        focal_softmax_cross_entropy_vjp, focal_softmax_cross_entropy_hvp, &
+        focal_softmax_cross_entropy_value_device
     implicit none
 
     integer :: failures
@@ -24,6 +27,7 @@ program test_neural_loss_products
     call test_log_softmax_products(failures)
     call test_weighted_cross_entropy_products(failures)
     call test_focal_hvp(failures)
+    call test_multiclass_focal_products(failures)
     call test_device_refusals(failures)
     if (failures > 0) then
         write (error_unit, '(a,i0)') "FAIL neural loss cases: ", failures
@@ -223,6 +227,75 @@ contains
             "focal BCE weighted HVP", failures)
     end subroutine test_focal_hvp
 
+    subroutine test_multiclass_focal_products(failures)
+        integer, intent(inout) :: failures
+        type(fortnum_status_t) :: status
+        real(dp) :: logits(3, 4), direction(3, 4), weights(3), class_weight(4)
+        real(dp) :: hvp(3, 4), bar_plus(3, 4), bar_minus(3, 4)
+        real(dp) :: value, value_dot, value_plus, value_minus, finite_dot, h
+        real(dp) :: expected, probabilities(3, 4)
+        integer :: labels(3)
+
+        logits = reshape([ -0.8_dp, 0.2_dp, 1.1_dp, 0.4_dp, &
+            1.3_dp, -0.6_dp, 0.1_dp, 0.9_dp, &
+            -0.2_dp, 0.7_dp, 0.5_dp, -1.0_dp ], shape(logits))
+        direction = reshape([ 0.2_dp, -0.3_dp, 0.4_dp, -0.1_dp, &
+            -0.4_dp, 0.1_dp, 0.3_dp, 0.2_dp, &
+            0.5_dp, -0.2_dp, 0.15_dp, 0.35_dp ], shape(direction))
+        labels = [3, 1, 4]
+        weights = [1.0_dp, 2.0_dp, 4.0_dp]
+        class_weight = [0.75_dp, 1.0_dp, 1.25_dp, 0.5_dp]
+        h = 2.0e-6_dp
+
+        call focal_softmax_cross_entropy_jvp(logits, labels, 2.0_dp, direction, &
+            value, value_dot, status, weights, class_weight=class_weight)
+        call focal_softmax_cross_entropy_value(logits + h*direction, labels, &
+            2.0_dp, value_plus, status, weights, class_weight=class_weight)
+        call focal_softmax_cross_entropy_value(logits - h*direction, labels, &
+            2.0_dp, value_minus, status, weights, class_weight=class_weight)
+        finite_dot = (value_plus-value_minus)/(2.0_dp*h)
+        call check(status_ok(status) .and. abs(value_dot-finite_dot) < 4.0e-9_dp, &
+            "multiclass focal weighted JVP", failures)
+
+        call focal_softmax_cross_entropy_vjp(logits, labels, 2.0_dp, -0.7_dp, &
+            bar_plus, status, weights, class_weight=class_weight)
+        call check(status_ok(status) .and. abs(sum(bar_plus*direction) + &
+            0.7_dp*value_dot) < 3.0e-14_dp, &
+            "multiclass focal VJP adjoint", failures)
+
+        call focal_softmax_cross_entropy_hvp(logits, labels, 2.0_dp, direction, &
+            hvp, status, weights, class_weight=class_weight)
+        call focal_softmax_cross_entropy_vjp(logits + h*direction, labels, 2.0_dp, &
+            1.0_dp, bar_plus, status, weights, class_weight=class_weight)
+        call focal_softmax_cross_entropy_vjp(logits - h*direction, labels, 2.0_dp, &
+            1.0_dp, bar_minus, status, weights, class_weight=class_weight)
+        call check(status_ok(status) .and. maxval(abs(hvp - &
+            (bar_plus-bar_minus)/(2.0_dp*h))) < 5.0e-8_dp, &
+            "multiclass focal weighted HVP", failures)
+
+        call focal_softmax_cross_entropy_value(logits, labels, 0.0_dp, value, status, &
+            weights, class_weight=class_weight)
+        call softmax_value(logits, probabilities, status)
+        expected = sum(weights*class_weight(labels)*[-log(probabilities(1, labels(1))), &
+            -log(probabilities(2, labels(2))), -log(probabilities(3, labels(3)))]) &
+            /sum(weights)
+        call check(status_ok(status) .and. abs(value-expected) < 3.0e-14_dp, &
+            "multiclass focal gamma-zero cross-entropy limit", failures)
+
+        call focal_softmax_cross_entropy_value(logits, labels, 2.0_dp, value, status, &
+            weights, class_weight=class_weight, reduction=LOSS_REDUCTION_SUM)
+        call focal_softmax_cross_entropy_value(logits, labels, 2.0_dp, value_plus, &
+            status, weights, class_weight=class_weight)
+        call check(status_ok(status) .and. abs(value-value_plus*sum(weights)) < &
+            3.0e-14_dp, "multiclass focal mean/sum reduction", failures)
+
+        call focal_softmax_cross_entropy_value(logits, labels, -0.1_dp, value, status)
+        call check(.not. status_ok(status), "multiclass focal gamma refusal", failures)
+        call focal_softmax_cross_entropy_value(logits, labels, 2.0_dp, value, status, &
+            class_weight=[1.0_dp, 0.0_dp, 1.0_dp, 1.0_dp])
+        call check(.not. status_ok(status), "multiclass focal class-weight refusal", failures)
+    end subroutine test_multiclass_focal_products
+
     subroutine test_device_refusals(failures)
         integer, intent(inout) :: failures
         type(fortnum_status_t) :: status
@@ -248,6 +321,10 @@ contains
             0.25_dp, 2.0_dp, value, status, FORTML_DEVICE_CUDA)
         call check(status%code == FORTNUM_NOT_IMPLEMENTED .and. value == -37.0_dp, &
             "focal BCE CUDA refusal is typed", failures)
+        call focal_softmax_cross_entropy_value_device(logits, labels, 2.0_dp, value, &
+            status, FORTML_DEVICE_CUDA)
+        call check(status%code == FORTNUM_NOT_IMPLEMENTED .and. value == -37.0_dp, &
+            "focal softmax CUDA refusal is typed", failures)
     end subroutine test_device_refusals
 
     function reference_softmax(logits) result(probabilities)
