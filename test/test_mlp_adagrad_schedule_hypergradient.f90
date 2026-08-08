@@ -19,7 +19,7 @@ program test_mlp_adagrad_schedule_hypergradient
 
     type(mlp_t), target :: model
     type(mlp_adagrad_schedule_hypergradient_objective_t) :: objective
-    type(mlp_adagrad_schedule_hypergradient_options_t) :: options, bad_options
+    type(mlp_adagrad_schedule_hypergradient_options_t) :: options, bad_options, default_options
     type(mlp_adagrad_schedule_hypergradient_result_t) :: result
     type(mlp_adagrad_schedule_hypergradient_metadata_t) :: metadata
     type(fortnum_status_t) :: status
@@ -40,6 +40,10 @@ program test_mlp_adagrad_schedule_hypergradient
 
     call model%initialize([1, 1], status, initialization_seed=23)
     call model%set_parameters([0.15_dp, -0.1_dp], status)
+    default_options = mlp_adagrad_schedule_hypergradient_options_t()
+    call objective%initialize(model, train_x, train_target, validation_x, &
+        validation_target, default_options, status)
+    call check(status_ok(status), "default constant schedule initialization", failures)
     options%steps = 4
     options%schedule = make_mlp_schedule_cosine_decay(6, 0.2_dp)
     options%schedule%decay_factor = 0.8_dp
