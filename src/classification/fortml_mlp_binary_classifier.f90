@@ -640,7 +640,11 @@ contains
         self%class_label = [negative_label, positive_label]
 
         theta = self%logits%parameters()
-        allocate(best_theta, source=theta, gradient(size(theta)))
+        ! Two statements: a sourced ALLOCATE names exactly one object, so mixing
+        ! a sourced and an unsourced allocation is invalid. gfortran accepted
+        ! it; nvfortran rejects it, which is what surfaced this.
+        allocate(best_theta, source=theta)
+        allocate(gradient(size(theta)))
         allocate(order(n_samples), x_indices(n_samples))
         allocate(result%loss_history(config%max_epochs))
         call mlp_binary_loss_gradient(self%logits, x, real(encoded, dp), config%l2, loss, &

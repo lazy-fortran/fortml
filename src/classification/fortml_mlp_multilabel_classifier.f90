@@ -208,7 +208,11 @@ contains
         allocate(targets(n_samples, n_labels))
         targets = real(indicators, dp)
         theta = self%logits%parameters()
-        allocate(best_theta, source=theta, gradient(size(theta)))
+        ! Two statements: a sourced ALLOCATE names exactly one object, so mixing
+        ! a sourced and an unsourced allocation is invalid. gfortran accepted
+        ! it; nvfortran rejects it, which is what surfaced this.
+        allocate(best_theta, source=theta)
+        allocate(gradient(size(theta)))
         allocate(result%loss_history(config%max_epochs))
         call mlp_multilabel_loss_gradient(self%logits, x, targets, config%l2, &
             loss, gradient, status, weights, class_weight)
