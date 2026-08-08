@@ -157,17 +157,21 @@ respectively. CPU products pass independent oracles (GOSS replay error is zero;
 the periodic HVP oracle error is `2.53e-6`), and unsupported CUDA/outer-HVP
 paths remain explicit typed refusals.
 
-The latest closure slice adds three independently oracle-backed lanes. Dense
+The latest closure slice adds four independently oracle-backed lanes. Dense
 horizontal/sequential/fan-out basis pipelines now validate transactional input
 schemas and stable feature names (`results/PIPELINE_SCHEMA.md`); the typed
 one-cycle trajectory objective differentiates peak and final-rate coordinates
 through warm-up and cosine updates (`results/MLP_ONE_CYCLE_HYPERGRADIENT.md`);
 and multiclass calibration adds weighted one-vs-rest isotonic maps with simplex
-renormalization (`results/MULTICLASS_ISOTONIC_CALIBRATION.md`). Their checked-in
-CSV rows pin FortML `33a5f8a` and clean generating benchmark revisions
-`187d2ff` (pipeline), `ced3cee` (one-cycle), and `a86b8d8` (isotonic); CPU
-oracle errors are below `5e-12` for the one-cycle products and `2e-16` for the isotonic lane, with
-CUDA and unsupported HVP/active-set paths recorded as typed refusals.
+renormalization (`results/MULTICLASS_ISOTONIC_CALIBRATION.md`). This slice now
+also adds smooth weighted one-vs-rest Platt sigmoid maps with exact input and
+packed-parameter products (`results/MULTICLASS_PLATT_CALIBRATION.md`). Their
+checked-in CSV rows pin FortML `33a5f8a` and clean generating benchmark
+revisions `187d2ff` (pipeline), `ced3cee` (one-cycle), and `a86b8d8`
+(isotonic); the Platt row will be pinned when its release lane is committed.
+CPU oracle errors are below `5e-12` for the one-cycle products and `2e-16` for
+the isotonic lane, with CUDA and unsupported HVP/active-set paths recorded as
+typed refusals.
 
 ### 2026-08-08 parity and provenance slice
 
@@ -940,9 +944,10 @@ temperature-parameter JVP/VJP products. Weighted equal-width reliability
 diagrams now have a deterministic metric/API and benchmark oracle.
 `calibrated_logistic_classifier_t` adds leakage-safe binary calibration from
 stratified out-of-fold margins, fold diagnostics, and exact smooth products.
-The standalone `multiclass_probability_calibrator_t` now also fits weighted
-one-vs-rest isotonic maps with simplex normalization; multiclass calibrated
-cross-validation, multiclass Platt, and generic estimator routing remain open.
+The standalone `multiclass_probability_calibrator_t` now fits weighted
+one-vs-rest Platt sigmoid and isotonic maps with simplex normalization;
+multiclass calibrated cross-validation for those policies and generic estimator
+routing remain open.
 
 | Family | Required variants | Current FortML baseline | Missing production gates |
 | --- | --- | --- | --- |
@@ -1906,11 +1911,20 @@ CUDA refusal until private CART storage is safely bound to the C ABI.
   and renormalized to the simplex while preserving sorted arbitrary labels.
   `test_multiclass_isotonic_calibration` checks an independent PAVA oracle,
   weighted simplex values, deterministic ties, typed active-set JVP/VJP and
-  parameter-product refusals, the typed CUDA boundary, and the remaining
-  multiclass Platt refusal. The companion
+  parameter-product refusals, and the typed CUDA boundary. The companion
   `fortml-bench/results/MULTICLASS_ISOTONIC_CALIBRATION.md` report records the
   NumPy/Fortran correctness-gated lane. Multiclass Platt and generic estimator
   routing remain open.
+- [x] Add weighted one-vs-rest Platt sigmoid calibration to
+  `multiclass_probability_calibrator_t`. Stable raw softmax columns receive
+  deterministic weighted sigmoid fits and are renormalized to a simplex while
+  preserving sorted arbitrary integer labels. Interleaved slope/intercept
+  parameters expose exact smooth input and parameter JVP/VJP products;
+  transactional failed fits leave the previously fitted model unchanged.
+  `test_multiclass_platt_calibration` supplies central-difference and adjoint
+  oracles, deterministic weighted replay, tie handling, and typed CUDA refusal;
+  `fortml-bench/results/MULTICLASS_PLATT_CALIBRATION.md` records the independent
+  NumPy correctness-gated lane. Multiclass OOF routing remains open.
 - [x] Add leakage-safe binary calibration-aware cross-validation through
   `calibrated_logistic_classifier_t`. Each deterministic stratified fold fits
   an independent logistic model, produces held-out margins for every sample,

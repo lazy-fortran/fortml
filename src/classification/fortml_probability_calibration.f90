@@ -1,5 +1,5 @@
 module fortml_probability_calibration
-    !! Binary probability calibration with explicit derivative contracts.
+    !! Binary and multiclass probability calibration with explicit derivative contracts.
     !!
     !! ``probability_calibrator_t`` implements positive-temperature scaling,
     !! Platt sigmoid calibration, and weighted isotonic calibration for a
@@ -11,6 +11,9 @@ module fortml_probability_calibration
     !! derivative away from knots; products at a knot are refused because the
     !! active interpolation segment is not unique.
     !!
+    !! Multiclass Platt scaling fits weighted one-vs-rest sigmoid maps to the
+    !! stable raw softmax columns and renormalizes them to a simplex.  Its
+    !! interleaved slope/intercept coordinates have exact smooth products.
     !! Calibration fitting is intentionally a host operation.  Prediction is
     !! available on a selected CPU context; CUDA returns a typed refusal until
     !! a resident calibration kernel is linked.  No hidden host fallback is
@@ -82,14 +85,18 @@ module fortml_probability_calibration
         !!
         !! The input rows are logits in ascending sorted-class column order.
         !! Temperature scaling learns one positive scalar from a weighted
-        !! softmax NLL.  Isotonic scaling fits one weighted one-vs-rest PAVA
+        !! softmax NLL.  Platt scaling fits one weighted one-vs-rest sigmoid
         !! map to each raw softmax column and renormalizes the calibrated
-        !! columns to a simplex.  Isotonic active-set derivatives are an
-        !! explicit refusal; values and labels remain deterministic.
+        !! columns to a simplex.  Isotonic scaling fits weighted one-vs-rest
+        !! PAVA maps with the same normalization.  Isotonic active-set
+        !! derivatives are an explicit refusal; values and labels remain
+        !! deterministic.
         private
         real(dp) :: temperature = 1.0_dp
         integer :: calibration_method = CALIBRATION_TEMPERATURE
         integer, allocatable :: class_label(:)
+        real(dp), allocatable :: sigmoid_slope(:)
+        real(dp), allocatable :: sigmoid_intercept(:)
         real(dp), allocatable :: isotonic_knots(:, :)
         real(dp), allocatable :: isotonic_values(:, :)
         integer, allocatable :: isotonic_counts(:)
@@ -142,7 +149,7 @@ contains
 
     subroutine multiclass_probability_calibration_fit(self, scores, labels, status, &
             options, sample_weight, state)
-        class(multiclass_probability_calibrator_t), intent(out) :: self
+        class(multiclass_probability_calibrator_t), intent(inout) :: self
         real(dp), intent(in) :: scores(:, :)
         integer, intent(in) :: labels(:)
         type(fortnum_status_t), intent(out) :: status
@@ -155,19 +162,16 @@ contains
         real(dp), allocatable :: weights(:)
         real(dp) :: total_weight
         integer :: i, j
+        type(multiclass_probability_calibrator_t) :: candidate
         !! Default-initialized instances, standing in for empty
         !! structure constructors: nvfortran rejects `T()` outright,
         !! and a declared local carries the same default init.
         type(probability_calibration_options_t) :: probability_calibration_options_t_default
         type(probability_calibration_state_t) :: probability_calibration_state_t_default
 
-        self%is_fitted = .false.
-        self%temperature = 1.0_dp
-        self%calibration_method = CALIBRATION_TEMPERATURE
-        if (allocated(self%class_label)) deallocate(self%class_label)
-        if (allocated(self%isotonic_knots)) deallocate(self%isotonic_knots)
-        if (allocated(self%isotonic_values)) deallocate(self%isotonic_values)
-        if (allocated(self%isotonic_counts)) deallocate(self%isotonic_counts)
+        candidate%is_fitted = .false.
+        candidate%temperature = 1.0_dp
+        candidate%calibration_method = CALIBRATION_TEMPERATURE
         requested = probability_calibration_options_t_default
         if (present(options)) requested = options
         result = probability_calibration_state_t_default
@@ -176,11 +180,6 @@ contains
         if (.not. valid_options(requested)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "multiclass probability calibration fit: options are invalid")
-            return
-        end if
-        if (requested%method == CALIBRATION_SIGMOID) then
-            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
-                "multiclass probability calibration fit: multiclass Platt scaling is not implemented")
             return
         end if
         if (size(scores, 1) < 1 .or. size(scores, 2) < 2 .or. &
@@ -238,15 +237,18 @@ contains
                 return
             end if
         end do
-        allocate(self%class_label(size(classes)))
-        self%class_label = classes
-        self%calibration_method = requested%method
+        allocate(candidate%class_label(size(classes)))
+        candidate%class_label = classes
+        candidate%calibration_method = requested%method
         select case (requested%method)
+        case (CALIBRATION_SIGMOID)
+            call fit_multiclass_sigmoid(candidate, scores, encoded, weights, total_weight, &
+                requested, result, status)
         case (CALIBRATION_TEMPERATURE)
-            call fit_multiclass_temperature(self, scores, encoded, weights, total_weight, &
+            call fit_multiclass_temperature(candidate, scores, encoded, weights, total_weight, &
                 requested, result, status)
         case (CALIBRATION_ISOTONIC)
-            call fit_multiclass_isotonic(self, scores, encoded, weights, total_weight, &
+            call fit_multiclass_isotonic(candidate, scores, encoded, weights, total_weight, &
                 result, status)
         case default
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -256,10 +258,207 @@ contains
             if (present(state)) state = result
             return
         end if
-        self%is_fitted = .true.
+        candidate%is_fitted = .true.
+        call commit_multiclass_candidate(self, candidate)
         if (present(state)) state = result
         call status_set(status, FORTNUM_OK, "")
     end subroutine multiclass_probability_calibration_fit
+
+    subroutine commit_multiclass_candidate(self, candidate)
+        class(multiclass_probability_calibrator_t), intent(inout) :: self
+        type(multiclass_probability_calibrator_t), intent(in) :: candidate
+
+        self%temperature = candidate%temperature
+        self%calibration_method = candidate%calibration_method
+        self%is_fitted = candidate%is_fitted
+        if (allocated(candidate%class_label)) then
+            self%class_label = candidate%class_label
+        else if (allocated(self%class_label)) then
+            deallocate(self%class_label)
+        end if
+        if (allocated(candidate%sigmoid_slope)) then
+            self%sigmoid_slope = candidate%sigmoid_slope
+            self%sigmoid_intercept = candidate%sigmoid_intercept
+        else if (allocated(self%sigmoid_slope)) then
+            deallocate(self%sigmoid_slope, self%sigmoid_intercept)
+        end if
+        if (allocated(candidate%isotonic_knots)) then
+            self%isotonic_knots = candidate%isotonic_knots
+            self%isotonic_values = candidate%isotonic_values
+            self%isotonic_counts = candidate%isotonic_counts
+        else
+            if (allocated(self%isotonic_knots)) deallocate(self%isotonic_knots)
+            if (allocated(self%isotonic_values)) deallocate(self%isotonic_values)
+            if (allocated(self%isotonic_counts)) deallocate(self%isotonic_counts)
+        end if
+    end subroutine commit_multiclass_candidate
+
+    subroutine fit_multiclass_sigmoid(self, scores, encoded, weights, total_weight, &
+            options, state, status)
+        !! Fit one smooth weighted Platt map to every raw softmax column.
+        !!
+        !! Each column uses a deterministic weighted one-vs-rest logistic
+        !! objective.  The fitted maps are coupled only at prediction, where
+        !! their positive values are normalized back to a simplex.  Keeping
+        !! the maps independent makes the packed parameter contract explicit
+        !! while retaining smooth input and parameter products.
+        class(multiclass_probability_calibrator_t), intent(inout) :: self
+        real(dp), intent(in) :: scores(:, :), weights(:), total_weight
+        integer, intent(in) :: encoded(:)
+        type(probability_calibration_options_t), intent(in) :: options
+        type(probability_calibration_state_t), intent(inout) :: state
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: raw(:, :)
+        real(dp) :: slope, intercept, objective, column_objective
+        integer :: j, iterations, total_iterations
+
+        allocate(raw(size(scores, 1), size(scores, 2)), &
+            self%sigmoid_slope(size(scores, 2)), self%sigmoid_intercept(size(scores, 2)))
+        call raw_multiclass_softmax(scores, raw, status)
+        if (status%code /= FORTNUM_OK) return
+        objective = 0.0_dp
+        total_iterations = 0
+        do j = 1, size(scores, 2)
+            call fit_multiclass_sigmoid_column(raw(:, j), encoded, weights, j, options, &
+                slope, intercept, column_objective, iterations, status)
+            if (status%code /= FORTNUM_OK) return
+            self%sigmoid_slope(j) = slope
+            self%sigmoid_intercept(j) = intercept
+            objective = objective + column_objective
+            total_iterations = max(total_iterations, iterations)
+        end do
+        state%iterations = total_iterations
+        state%final_step_norm = 0.0_dp
+        state%converged = .true.
+        state%objective = objective/total_weight
+        state%method = CALIBRATION_SIGMOID
+        state%knot_count = 0
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine fit_multiclass_sigmoid
+
+    subroutine fit_multiclass_sigmoid_column(scores, encoded, weights, class_index, &
+            options, slope, intercept, objective, iterations, status)
+        real(dp), intent(in) :: scores(:), weights(:)
+        integer, intent(in) :: encoded(:), class_index
+        type(probability_calibration_options_t), intent(in) :: options
+        real(dp), intent(out) :: slope, intercept, objective
+        integer, intent(out) :: iterations
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: total_mass, positive_mass, mean_label
+        real(dp) :: objective_old, objective_new
+        real(dp) :: gradient_slope, gradient_intercept
+        real(dp) :: hessian_ss, hessian_si, hessian_ii, determinant
+        real(dp) :: step_slope, step_intercept, step_scale, step_norm
+        real(dp) :: trial_slope, trial_intercept
+        integer :: iteration, line_search
+
+        if (size(scores) < 1 .or. size(encoded) /= size(scores) .or. &
+            size(weights) /= size(scores)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multiclass sigmoid calibration: column shapes are invalid")
+            return
+        end if
+        total_mass = sum(weights)
+        positive_mass = sum(weights, mask=encoded == class_index)
+        mean_label = min(max(positive_mass/total_mass, 1.0e-8_dp), 1.0_dp-1.0e-8_dp)
+        slope = 0.0_dp
+        intercept = log(mean_label/(1.0_dp-mean_label))
+        objective_old = multiclass_sigmoid_objective(scores, encoded, weights, class_index, &
+            slope, intercept, options%l2)
+        iterations = 0
+        do iteration = 1, options%max_iterations
+            call multiclass_sigmoid_derivatives(scores, encoded, weights, class_index, &
+                slope, intercept, options%l2, gradient_slope, gradient_intercept, &
+                hessian_ss, hessian_si, hessian_ii)
+            determinant = hessian_ss*hessian_ii - hessian_si*hessian_si
+            if (.not. ieee_is_finite(determinant) .or. determinant <= tiny(1.0_dp)) then
+                call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                    "multiclass sigmoid calibration: singular Newton system")
+                return
+            end if
+            step_slope = (hessian_ii*gradient_slope - hessian_si*gradient_intercept)/determinant
+            step_intercept = (-hessian_si*gradient_slope + hessian_ss*gradient_intercept)/determinant
+            step_scale = 1.0_dp
+            trial_slope = slope - step_scale*options%damping*step_slope
+            trial_intercept = intercept - step_scale*options%damping*step_intercept
+            objective_new = multiclass_sigmoid_objective(scores, encoded, weights, class_index, &
+                trial_slope, trial_intercept, options%l2)
+            do line_search = 1, 30
+                if (objective_new <= objective_old .or. step_scale <= 1.0e-8_dp) exit
+                step_scale = 0.5_dp*step_scale
+                trial_slope = slope - step_scale*options%damping*step_slope
+                trial_intercept = intercept - step_scale*options%damping*step_intercept
+                objective_new = multiclass_sigmoid_objective(scores, encoded, weights, class_index, &
+                    trial_slope, trial_intercept, options%l2)
+            end do
+            step_norm = max(abs(trial_slope-slope), abs(trial_intercept-intercept))/ &
+                max(1.0_dp, max(abs(slope), abs(intercept)))
+            slope = trial_slope
+            intercept = trial_intercept
+            objective_old = objective_new
+            iterations = iteration
+            if (step_norm <= options%tolerance .or. &
+                max(abs(gradient_slope), abs(gradient_intercept)) <= options%tolerance) exit
+        end do
+        if (iterations < 1 .or. (step_norm > options%tolerance .and. &
+            max(abs(gradient_slope), abs(gradient_intercept)) > options%tolerance)) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "multiclass sigmoid calibration: iteration limit reached")
+            return
+        end if
+        objective = objective_old
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine fit_multiclass_sigmoid_column
+
+    real(dp) function multiclass_sigmoid_objective(scores, encoded, weights, class_index, &
+            slope, intercept, l2) result(objective)
+        real(dp), intent(in) :: scores(:), weights(:), slope, intercept, l2
+        integer, intent(in) :: encoded(:), class_index
+        real(dp) :: eta, target
+        integer :: i
+
+        objective = 0.0_dp
+        do i = 1, size(scores)
+            eta = slope*scores(i) + intercept
+            target = merge(1.0_dp, 0.0_dp, encoded(i) == class_index)
+            if (eta >= 0.0_dp) then
+                objective = objective + weights(i)*(log(1.0_dp+exp(-eta)) + &
+                    (1.0_dp-target)*eta)
+            else
+                objective = objective + weights(i)*(log(1.0_dp+exp(eta)) - target*eta)
+            end if
+        end do
+        objective = objective + 0.5_dp*l2*(slope*slope+intercept*intercept)
+    end function multiclass_sigmoid_objective
+
+    subroutine multiclass_sigmoid_derivatives(scores, encoded, weights, class_index, &
+            slope, intercept, l2, gradient_slope, gradient_intercept, hessian_ss, &
+            hessian_si, hessian_ii)
+        real(dp), intent(in) :: scores(:), weights(:), slope, intercept, l2
+        integer, intent(in) :: encoded(:), class_index
+        real(dp), intent(out) :: gradient_slope, gradient_intercept
+        real(dp), intent(out) :: hessian_ss, hessian_si, hessian_ii
+        real(dp) :: eta, probability, curvature, target, residual
+        integer :: i
+
+        gradient_slope = l2*slope
+        gradient_intercept = l2*intercept
+        hessian_ss = l2
+        hessian_si = 0.0_dp
+        hessian_ii = l2
+        do i = 1, size(scores)
+            eta = slope*scores(i)+intercept
+            probability = sigmoid(eta)
+            target = merge(1.0_dp, 0.0_dp, encoded(i) == class_index)
+            residual = probability-target
+            curvature = max(probability*(1.0_dp-probability), 1.0e-14_dp)
+            gradient_slope = gradient_slope + weights(i)*residual*scores(i)
+            gradient_intercept = gradient_intercept + weights(i)*residual
+            hessian_ss = hessian_ss + weights(i)*curvature*scores(i)*scores(i)
+            hessian_si = hessian_si + weights(i)*curvature*scores(i)
+            hessian_ii = hessian_ii + weights(i)*curvature
+        end do
+    end subroutine multiclass_sigmoid_derivatives
 
     subroutine fit_multiclass_temperature(self, scores, encoded, weights, total_weight, &
             options, state, status)
@@ -550,6 +749,8 @@ contains
 
         if (.not. multiclass_prediction_valid(self, scores, probabilities, status)) return
         select case (self%calibration_method)
+        case (CALIBRATION_SIGMOID)
+            call multiclass_sigmoid(self, scores, probabilities, status)
         case (CALIBRATION_TEMPERATURE)
             call multiclass_softmax(self, scores, probabilities, status)
         case (CALIBRATION_ISOTONIC)
@@ -559,6 +760,42 @@ contains
                 "multiclass probability calibration prediction: method is invalid")
         end select
     end subroutine multiclass_probability_calibration_predict_proba
+
+    subroutine multiclass_sigmoid(self, scores, probabilities, status)
+        class(multiclass_probability_calibrator_t), intent(in) :: self
+        real(dp), intent(in) :: scores(:, :)
+        real(dp), intent(out) :: probabilities(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: raw(:, :), calibrated(:, :)
+        real(dp) :: normalizer
+        integer :: i, j
+
+        if (.not. allocated(self%sigmoid_slope) .or. &
+            .not. allocated(self%sigmoid_intercept) .or. &
+            size(self%sigmoid_slope) /= size(scores, 2) .or. &
+            size(self%sigmoid_intercept) /= size(scores, 2)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multiclass sigmoid prediction: fitted map metadata is absent")
+            return
+        end if
+        allocate(raw(size(scores, 1), size(scores, 2)), calibrated(size(scores, 1), size(scores, 2)))
+        call raw_multiclass_softmax(scores, raw, status)
+        if (status%code /= FORTNUM_OK) return
+        do i = 1, size(scores, 1)
+            do j = 1, size(scores, 2)
+                calibrated(i, j) = sigmoid(self%sigmoid_slope(j)*raw(i, j) + &
+                    self%sigmoid_intercept(j))
+            end do
+            normalizer = sum(calibrated(i, :))
+            if (.not. ieee_is_finite(normalizer) .or. normalizer <= 0.0_dp) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "multiclass sigmoid prediction: calibrated normalizer is invalid")
+                return
+            end if
+            probabilities(i, :) = calibrated(i, :)/normalizer
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine multiclass_sigmoid
 
     subroutine multiclass_softmax(self, scores, probabilities, status)
         class(multiclass_probability_calibrator_t), intent(in) :: self
@@ -694,6 +931,11 @@ contains
                 "multiclass probability calibration JVP: isotonic active-set derivatives are not implemented")
             return
         end if
+        if (self%calibration_method == CALIBRATION_SIGMOID) then
+            call multiclass_sigmoid_jvp(self, scores, scores_dot, probabilities, &
+                probabilities_dot, status)
+            return
+        end if
         call multiclass_softmax(self, scores, probabilities, status)
         if (status%code /= FORTNUM_OK) return
         alpha = 1.0_dp/self%temperature
@@ -712,6 +954,77 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine multiclass_probability_calibration_predict_proba_jvp
 
+    subroutine multiclass_sigmoid_jvp(self, scores, scores_dot, probabilities, &
+            probabilities_dot, status)
+        class(multiclass_probability_calibrator_t), intent(in) :: self
+        real(dp), intent(in) :: scores(:, :), scores_dot(:, :)
+        real(dp), intent(out) :: probabilities(:, :), probabilities_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: raw(:, :), raw_dot(:, :), calibrated(:, :), calibrated_dot(:, :)
+        real(dp) :: tangent, total_dot, normalizer
+        integer :: i, j
+
+        if (.not. allocated(self%sigmoid_slope) .or. &
+            size(self%sigmoid_slope) /= size(scores, 2)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multiclass sigmoid JVP: fitted map metadata is absent")
+            return
+        end if
+        allocate(raw(size(scores, 1), size(scores, 2)), raw_dot(size(scores, 1), size(scores, 2)), &
+            calibrated(size(scores, 1), size(scores, 2)), calibrated_dot(size(scores, 1), size(scores, 2)))
+        call raw_multiclass_softmax_jvp(scores, scores_dot, raw, raw_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        do i = 1, size(scores, 1)
+            do j = 1, size(scores, 2)
+                calibrated(i, j) = sigmoid(self%sigmoid_slope(j)*raw(i, j) + &
+                    self%sigmoid_intercept(j))
+                tangent = self%sigmoid_slope(j)*raw_dot(i, j)
+                calibrated_dot(i, j) = calibrated(i, j)*(1.0_dp-calibrated(i, j))*tangent
+            end do
+            normalizer = sum(calibrated(i, :))
+            total_dot = sum(calibrated_dot(i, :))
+            if (.not. ieee_is_finite(normalizer) .or. normalizer <= 0.0_dp) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "multiclass sigmoid JVP: calibrated normalizer is invalid")
+                return
+            end if
+            probabilities(i, :) = calibrated(i, :)/normalizer
+            probabilities_dot(i, :) = (calibrated_dot(i, :)- &
+                probabilities(i, :)*total_dot)/normalizer
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine multiclass_sigmoid_jvp
+
+    subroutine raw_multiclass_softmax_jvp(scores, scores_dot, probabilities, probabilities_dot, status)
+        real(dp), intent(in) :: scores(:, :), scores_dot(:, :)
+        real(dp), intent(out) :: probabilities(:, :), probabilities_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: normalizer, dot_product
+        integer :: i
+
+        if (any(shape(scores_dot) /= shape(scores)) .or. &
+            any(shape(probabilities) /= shape(scores)) .or. &
+            any(shape(probabilities_dot) /= shape(scores))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multiclass sigmoid JVP: softmax shape is invalid")
+            return
+        end if
+        call raw_multiclass_softmax(scores, probabilities, status)
+        if (status%code /= FORTNUM_OK) return
+        do i = 1, size(scores, 1)
+            dot_product = sum(probabilities(i, :)*scores_dot(i, :))
+            probabilities_dot(i, :) = probabilities(i, :)* &
+                (scores_dot(i, :)-dot_product)
+            normalizer = sum(probabilities(i, :))
+            if (.not. ieee_is_finite(normalizer) .or. normalizer <= 0.0_dp) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "multiclass sigmoid JVP: softmax normalizer is invalid")
+                return
+            end if
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine raw_multiclass_softmax_jvp
+
     subroutine multiclass_probability_calibration_predict_proba_vjp(self, scores, &
             probabilities_bar, scores_bar, status)
         class(multiclass_probability_calibrator_t), intent(in) :: self
@@ -729,6 +1042,10 @@ contains
                 "multiclass probability calibration VJP: isotonic active-set derivatives are not implemented")
             return
         end if
+        if (self%calibration_method == CALIBRATION_SIGMOID) then
+            call multiclass_sigmoid_vjp(self, scores, probabilities_bar, scores_bar, status)
+            return
+        end if
         allocate(probabilities(size(scores, 1), size(scores, 2)))
         call multiclass_softmax(self, scores, probabilities, status)
         if (status%code /= FORTNUM_OK) return
@@ -743,6 +1060,51 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine multiclass_probability_calibration_predict_proba_vjp
+
+    subroutine multiclass_sigmoid_vjp(self, scores, probabilities_bar, scores_bar, status)
+        class(multiclass_probability_calibrator_t), intent(in) :: self
+        real(dp), intent(in) :: scores(:, :), probabilities_bar(:, :)
+        real(dp), intent(out) :: scores_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: raw(:, :), calibrated(:, :)
+        real(dp) :: normalizer, dot_product, q_bar, raw_bar, raw_dot
+        integer :: i, j
+
+        if (.not. allocated(self%sigmoid_slope) .or. &
+            size(self%sigmoid_slope) /= size(scores, 2)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multiclass sigmoid VJP: fitted map metadata is absent")
+            return
+        end if
+        allocate(raw(size(scores, 1), size(scores, 2)), calibrated(size(scores, 1), size(scores, 2)))
+        call raw_multiclass_softmax(scores, raw, status)
+        if (status%code /= FORTNUM_OK) return
+        scores_bar = 0.0_dp
+        do i = 1, size(scores, 1)
+            do j = 1, size(scores, 2)
+                calibrated(i, j) = sigmoid(self%sigmoid_slope(j)*raw(i, j) + &
+                    self%sigmoid_intercept(j))
+            end do
+            normalizer = sum(calibrated(i, :))
+            if (.not. ieee_is_finite(normalizer) .or. normalizer <= 0.0_dp) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "multiclass sigmoid VJP: calibrated normalizer is invalid")
+                return
+            end if
+            dot_product = sum(probabilities_bar(i, :)* &
+                (calibrated(i, :)/normalizer))
+            raw_dot = 0.0_dp
+            do j = 1, size(scores, 2)
+                q_bar = (probabilities_bar(i, j)-dot_product)/normalizer
+                raw_bar = q_bar*calibrated(i, j)*(1.0_dp-calibrated(i, j))* &
+                    self%sigmoid_slope(j)
+                raw_dot = raw_dot + raw(i, j)*raw_bar
+                scores_bar(i, j) = raw(i, j)*raw_bar
+            end do
+            scores_bar(i, :) = scores_bar(i, :)-raw(i, :)*raw_dot
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine multiclass_sigmoid_vjp
 
     subroutine multiclass_probability_calibration_predict_proba_parameter_jvp(self, &
             scores, parameters_dot, probabilities, probabilities_dot, status)
@@ -768,6 +1130,11 @@ contains
                 "multiclass probability calibration parameter JVP: isotonic active-set derivatives are not implemented")
             return
         end if
+        if (self%calibration_method == CALIBRATION_SIGMOID) then
+            call multiclass_sigmoid_parameter_jvp(self, scores, parameters_dot, probabilities, &
+                probabilities_dot, status)
+            return
+        end if
         call multiclass_softmax(self, scores, probabilities, status)
         if (status%code /= FORTNUM_OK) return
         alpha = 1.0_dp/self%temperature
@@ -780,6 +1147,48 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine multiclass_probability_calibration_predict_proba_parameter_jvp
+
+    subroutine multiclass_sigmoid_parameter_jvp(self, scores, parameters_dot, probabilities, &
+            probabilities_dot, status)
+        class(multiclass_probability_calibrator_t), intent(in) :: self
+        real(dp), intent(in) :: scores(:, :), parameters_dot(:)
+        real(dp), intent(out) :: probabilities(:, :), probabilities_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: raw(:, :), calibrated(:, :), calibrated_dot(:, :)
+        real(dp) :: normalizer, total_dot, eta_dot
+        integer :: i, j, offset
+
+        if (.not. allocated(self%sigmoid_slope) .or. &
+            size(self%sigmoid_slope) /= size(scores, 2)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multiclass sigmoid parameter JVP: fitted map metadata is absent")
+            return
+        end if
+        allocate(raw(size(scores, 1), size(scores, 2)), calibrated(size(scores, 1), size(scores, 2)), &
+            calibrated_dot(size(scores, 1), size(scores, 2)))
+        call raw_multiclass_softmax(scores, raw, status)
+        if (status%code /= FORTNUM_OK) return
+        do i = 1, size(scores, 1)
+            do j = 1, size(scores, 2)
+                offset = 2*j-1
+                calibrated(i, j) = sigmoid(self%sigmoid_slope(j)*raw(i, j) + &
+                    self%sigmoid_intercept(j))
+                eta_dot = raw(i, j)*parameters_dot(offset) + parameters_dot(offset+1)
+                calibrated_dot(i, j) = calibrated(i, j)*(1.0_dp-calibrated(i, j))*eta_dot
+            end do
+            normalizer = sum(calibrated(i, :))
+            total_dot = sum(calibrated_dot(i, :))
+            if (.not. ieee_is_finite(normalizer) .or. normalizer <= 0.0_dp) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "multiclass sigmoid parameter JVP: calibrated normalizer is invalid")
+                return
+            end if
+            probabilities(i, :) = calibrated(i, :)/normalizer
+            probabilities_dot(i, :) = (calibrated_dot(i, :)- &
+                probabilities(i, :)*total_dot)/normalizer
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine multiclass_sigmoid_parameter_jvp
 
     subroutine multiclass_probability_calibration_predict_proba_parameter_vjp(self, scores, &
             probabilities_bar, parameters_bar, status)
@@ -799,6 +1208,11 @@ contains
                 "multiclass probability calibration parameter VJP: isotonic active-set derivatives are not implemented")
             return
         end if
+        if (self%calibration_method == CALIBRATION_SIGMOID) then
+            call multiclass_sigmoid_parameter_vjp(self, scores, probabilities_bar, &
+                parameters_bar, status)
+            return
+        end if
         allocate(probabilities(size(scores, 1), size(scores, 2)))
         call multiclass_softmax(self, scores, probabilities, status)
         if (status%code /= FORTNUM_OK) return
@@ -813,6 +1227,50 @@ contains
         parameters_bar(1) = -alpha_bar/self%temperature**2
         call status_set(status, FORTNUM_OK, "")
     end subroutine multiclass_probability_calibration_predict_proba_parameter_vjp
+
+    subroutine multiclass_sigmoid_parameter_vjp(self, scores, probabilities_bar, &
+            parameters_bar, status)
+        class(multiclass_probability_calibrator_t), intent(in) :: self
+        real(dp), intent(in) :: scores(:, :), probabilities_bar(:, :)
+        real(dp), intent(out) :: parameters_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: raw(:, :), calibrated(:, :)
+        real(dp) :: normalizer, dot_product, q_bar, factor
+        integer :: i, j, offset
+
+        if (.not. allocated(self%sigmoid_slope) .or. &
+            size(self%sigmoid_slope) /= size(scores, 2)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multiclass sigmoid parameter VJP: fitted map metadata is absent")
+            return
+        end if
+        allocate(raw(size(scores, 1), size(scores, 2)), calibrated(size(scores, 1), size(scores, 2)))
+        call raw_multiclass_softmax(scores, raw, status)
+        if (status%code /= FORTNUM_OK) return
+        parameters_bar = 0.0_dp
+        do i = 1, size(scores, 1)
+            do j = 1, size(scores, 2)
+                calibrated(i, j) = sigmoid(self%sigmoid_slope(j)*raw(i, j) + &
+                    self%sigmoid_intercept(j))
+            end do
+            normalizer = sum(calibrated(i, :))
+            if (.not. ieee_is_finite(normalizer) .or. normalizer <= 0.0_dp) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "multiclass sigmoid parameter VJP: calibrated normalizer is invalid")
+                return
+            end if
+            dot_product = sum(probabilities_bar(i, :)* &
+                (calibrated(i, :)/normalizer))
+            do j = 1, size(scores, 2)
+                q_bar = (probabilities_bar(i, j)-dot_product)/normalizer
+                factor = q_bar*calibrated(i, j)*(1.0_dp-calibrated(i, j))
+                offset = 2*j-1
+                parameters_bar(offset) = parameters_bar(offset) + factor*raw(i, j)
+                parameters_bar(offset+1) = parameters_bar(offset+1) + factor
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine multiclass_sigmoid_parameter_vjp
 
     subroutine multiclass_probability_calibration_predict(self, scores, labels, status)
         class(multiclass_probability_calibrator_t), intent(in) :: self
@@ -854,6 +1312,7 @@ contains
         class(multiclass_probability_calibrator_t), intent(inout) :: self
         real(dp), intent(in) :: parameters(:)
         type(fortnum_status_t), intent(out) :: status
+        integer :: j
 
         if (.not. self%is_fitted) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -865,7 +1324,26 @@ contains
                 "multiclass probability calibration set_parameters: parameter shape is invalid")
             return
         end if
+        if (any(.not. ieee_is_finite(parameters))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multiclass probability calibration set_parameters: parameters must be finite")
+            return
+        end if
         if (self%calibration_method == CALIBRATION_ISOTONIC) then
+            call status_set(status, FORTNUM_OK, "")
+            return
+        end if
+        if (self%calibration_method == CALIBRATION_SIGMOID) then
+            if (.not. allocated(self%sigmoid_slope) .or. &
+                size(self%sigmoid_slope) /= size(self%class_label)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "multiclass probability calibration set_parameters: sigmoid state is absent")
+                return
+            end if
+            do j = 1, size(self%class_label)
+                self%sigmoid_slope(j) = parameters(2*j-1)
+                self%sigmoid_intercept(j) = parameters(2*j)
+            end do
             call status_set(status, FORTNUM_OK, "")
             return
         end if
@@ -885,6 +1363,11 @@ contains
         if (self%is_fitted .and. self%calibration_method == CALIBRATION_TEMPERATURE) then
             allocate(parameters(1))
             parameters = [self%temperature]
+        else if (self%is_fitted .and. self%calibration_method == CALIBRATION_SIGMOID .and. &
+            allocated(self%sigmoid_slope) .and. allocated(self%sigmoid_intercept)) then
+            allocate(parameters(2*size(self%sigmoid_slope)))
+            parameters(1:2*size(self%sigmoid_slope):2) = self%sigmoid_slope
+            parameters(2:2*size(self%sigmoid_intercept):2) = self%sigmoid_intercept
         else
             allocate(parameters(0))
         end if
@@ -895,6 +1378,9 @@ contains
 
         if (self%is_fitted .and. self%calibration_method == CALIBRATION_TEMPERATURE) then
             count = 1
+        else if (self%is_fitted .and. self%calibration_method == CALIBRATION_SIGMOID .and. &
+            allocated(self%sigmoid_slope)) then
+            count = 2*size(self%sigmoid_slope)
         else
             count = 0
         end if

@@ -113,8 +113,8 @@ program test_multiclass_probability_calibration
     call check(.not. status_ok(status), "nonpositive multiclass temperature refusal", failures)
     call invalid%fit(scores, labels, status, options=probability_calibration_options_t( &
         method=CALIBRATION_SIGMOID))
-    call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
-        "multiclass sigmoid policy refusal", failures)
+    call check(status_ok(status) .and. invalid%method() == CALIBRATION_SIGMOID .and. &
+        invalid%parameter_count() == 6, "multiclass sigmoid policy fit", failures)
     call invalid%fit(scores(:, :2), labels, status, options=options)
     call check(.not. status_ok(status), "logit-class shape refusal", failures)
     call invalid%fit(scores, labels, status, options=options, &

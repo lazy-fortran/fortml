@@ -95,7 +95,8 @@ program test_multiclass_isotonic_calibration
 
     call invalid%fit(scores, labels, status, options= &
         probability_calibration_options_t(method=CALIBRATION_SIGMOID))
-    call check(status%code == FORTNUM_NOT_IMPLEMENTED, "multiclass Platt policy refusal", failures)
+    call check(status_ok(status) .and. invalid%method() == CALIBRATION_SIGMOID .and. &
+        invalid%parameter_count() == 6, "multiclass Platt policy fit", failures)
     call unfitted%predict_proba(scores, probabilities, status)
     call check(.not. status_ok(status), "unfitted isotonic prediction refusal", failures)
 

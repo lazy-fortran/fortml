@@ -27,8 +27,10 @@ The options default to positive temperature scaling.  Labels are sorted and reta
 have at least `cv_folds` positive-weight rows; this prevents a training fold
 from losing a class and makes OOF calibration well-defined.  Sample weights
 are nonnegative and class weights follow the sorted class order.  The
-multiclass calibration policy is currently positive temperature scaling;
-sigmoid and isotonic policies return `FORTNUM_NOT_IMPLEMENTED` explicitly.
+This OOF wrapper currently routes positive temperature scaling.  The standalone
+`multiclass_probability_calibrator_t` additionally supports smooth weighted
+one-vs-rest Platt sigmoid maps and weighted isotonic maps; extending OOF
+routing to those policies remains a separate task.
 
 The packed parameter vector contains the fitted softmax coefficients and
 intercepts followed by the positive temperature.  `predict_proba_jvp` and
