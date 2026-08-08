@@ -48,7 +48,7 @@ parameter snapshots and transfer counters. NVIDIA
 compiler coverage remains an
 explicit older-build result.
 
-The companion benchmark harness is clean at FortML-bench revision `5d346c8`;
+The companion benchmark harness is clean at FortML-bench revision `c076a0a`;
 the trainer-checkpoint, unfactored-Adafactor, binary-objective,
 multiclass-calibration, variational-multiclass-GP, PINN/physics-objective,
 physics HVP, grouped K-fold, spectral-mixture, XGBoost-ranking,
@@ -2423,6 +2423,10 @@ peak memory, and batch-size scaling with the same correctness gate as training.
   preprocessing benchmark lanes. The NumPy oracles, FortML timings, and typed
   CUDA refusals are recorded in [`results/KMEANS.md`](../fortml-bench/results/KMEANS.md)
   and [`results/ROBUST_SCALER.md`](../fortml-bench/results/ROBUST_SCALER.md).
+- [x] Extend the dense RBF-SVM lane with CPU device dispatch for decision and
+  probability JVP/VJP products plus typed CUDA derivative refusals. The
+  independent score/label oracle and refreshed release record are in
+  [`results/RBF_SVM.md`](../fortml-bench/results/RBF_SVM.md).
 - [x] Add exact and weighted-histogram XGBoost monotonic-constraint benchmark
   rows. The independent NumPy harness parses complete query vectors, checks
   adjacent monotonicity, and records CPU fit/predict timings plus explicit
@@ -2782,6 +2786,9 @@ The maintained reports and their raw artifacts are in `../fortml-bench/results`:
 - [`KMEANS.md`](../fortml-bench/results/KMEANS.md), backed by `kmeans.csv` for
   deterministic seeded Lloyd fit/transform, inertia, and the typed CUDA
   refusal.
+- [`RBF_SVM.md`](../fortml-bench/results/RBF_SVM.md), backed by `rbf_svm.csv`
+  for the independent dense score/label oracle and CPU/CUDA derivative-device
+  contract.
 - [`LINEAR_SVM.md`](../fortml-bench/results/LINEAR_SVM.md), backed by
   `linear_svm.csv` for weighted arbitrary-label primal SVM fit/predict,
   signed-margin oracle checks, and the explicit CUDA refusal.
