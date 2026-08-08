@@ -120,9 +120,13 @@ contains
         real(dp), intent(in) :: validation_x(:, :), validation_target(:, :)
         type(mlp_adam_hypergradient_options_t), intent(in) :: options
         type(fortnum_status_t), intent(out) :: status
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(mlp_adam_hypergradient_metadata_t) :: mlp_adam_hypergradient_metadata_t_default
 
         self%initialized = .false.
-        self%layout = mlp_adam_hypergradient_metadata_t()
+        self%layout = mlp_adam_hypergradient_metadata_t_default
         if (.not. valid_options(options)) then
             if (options%optimizer /= MLP_OPTIMIZER_ADAM .or. &
                     options%device_kind /= FORTML_DEVICE_CPU) then
@@ -307,8 +311,12 @@ contains
         real(dp) :: lower(MLP_ADAM_HYPERPARAMETER_COUNT)
         real(dp) :: upper(MLP_ADAM_HYPERPARAMETER_COUNT)
         real(dp) :: gradient(MLP_ADAM_HYPERPARAMETER_COUNT)
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(mlp_adam_hypergradient_result_t) :: mlp_adam_hypergradient_result_t_default
 
-        result = mlp_adam_hypergradient_result_t()
+        result = mlp_adam_hypergradient_result_t_default
         if (.not. valid_options(options)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "MLP Adam hyperparameter optimization: options are invalid")

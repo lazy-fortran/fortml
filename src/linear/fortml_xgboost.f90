@@ -254,8 +254,12 @@ contains
         integer, intent(in), optional :: validation_group(:)
         real(dp), intent(in), optional :: validation_weight(:)
         type(xgboost_options_t) :: settings
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(xgboost_options_t) :: xgboost_options_t_default
 
-        settings = xgboost_options_t()
+        settings = xgboost_options_t_default
         if (present(options)) settings = options
         settings%objective = "rank:pairwise"
         call xgb_fit(self, x, y, status, settings, sample_weight, &
@@ -289,8 +293,12 @@ contains
         integer, allocatable :: sample_index(:)
         logical, allocatable :: feature_mask(:)
         logical :: have_validation, improved, is_ranking
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(xgboost_options_t) :: xgboost_options_t_default
 
-        settings = xgboost_options_t()
+        settings = xgboost_options_t_default
         if (present(options)) settings = options
         have_validation = present(validation_x) .or. present(validation_y) .or. &
             present(validation_weight)
@@ -1232,8 +1240,12 @@ contains
         real(dp), intent(in), optional :: validation_x(:, :), validation_y(:), &
             validation_weight(:)
         type(xgboost_options_t) :: settings
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(xgboost_options_t) :: xgboost_options_t_default
 
-        settings = xgboost_options_t()
+        settings = xgboost_options_t_default
         if (present(options)) settings = options
         settings%objective = "squared"
         if (present(validation_x) .or. present(validation_y)) then
@@ -1273,8 +1285,12 @@ contains
         real(dp), intent(in), optional :: validation_x(:, :), validation_y(:), &
             validation_weight(:)
         type(xgboost_options_t) :: settings
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(xgboost_options_t) :: xgboost_options_t_default
 
-        settings = xgboost_options_t()
+        settings = xgboost_options_t_default
         if (present(options)) settings = options
         settings%objective = "logistic"
         if (present(validation_x) .or. present(validation_y)) then
@@ -1321,8 +1337,12 @@ contains
         real(dp), intent(in), optional :: validation_x(:, :), validation_y(:), &
             validation_weight(:)
         type(xgboost_options_t) :: settings
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(xgboost_options_t) :: xgboost_options_t_default
 
-        settings = xgboost_options_t()
+        settings = xgboost_options_t_default
         if (present(options)) settings = options
         settings%objective = "poisson"
         if (present(validation_x) .or. present(validation_y)) then
@@ -1370,8 +1390,12 @@ contains
         real(dp), intent(in), optional :: validation_x(:, :), validation_y(:), &
             validation_weight(:)
         type(xgboost_options_t) :: settings
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(xgboost_options_t) :: xgboost_options_t_default
 
-        settings = xgboost_options_t()
+        settings = xgboost_options_t_default
         if (present(options)) settings = options
         settings%objective = "gamma"
         if (present(validation_x) .or. present(validation_y)) then
@@ -1419,8 +1443,12 @@ contains
         real(dp), intent(in), optional :: validation_x(:, :), validation_y(:), &
             validation_weight(:)
         type(xgboost_options_t) :: settings
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(xgboost_options_t) :: xgboost_options_t_default
 
-        settings = xgboost_options_t()
+        settings = xgboost_options_t_default
         if (present(options)) settings = options
         settings%objective = "tweedie"
         if (present(validation_x) .or. present(validation_y)) then
@@ -1467,8 +1495,12 @@ contains
         real(dp), intent(in), optional :: validation_x(:, :), validation_y(:), &
             validation_weight(:)
         type(xgboost_options_t) :: settings
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(xgboost_options_t) :: xgboost_options_t_default
 
-        settings = xgboost_options_t()
+        settings = xgboost_options_t_default
         if (present(options)) settings = options
         settings%objective = "squaredlog"
         if (present(validation_x) .or. present(validation_y)) then
@@ -1516,8 +1548,12 @@ contains
         real(dp), intent(in), optional :: validation_x(:, :), validation_y(:), &
             validation_weight(:)
         type(xgboost_options_t) :: settings
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(xgboost_options_t) :: xgboost_options_t_default
 
-        settings = xgboost_options_t()
+        settings = xgboost_options_t_default
         if (present(options)) settings = options
         settings%objective = "absolute"
         if (present(validation_x) .or. present(validation_y)) then
@@ -1560,8 +1596,12 @@ contains
         real(dp), intent(in), optional :: validation_x(:, :), validation_y(:), &
             validation_weight(:)
         type(xgboost_options_t) :: settings
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(xgboost_options_t) :: xgboost_options_t_default
 
-        settings = xgboost_options_t()
+        settings = xgboost_options_t_default
         if (present(options)) settings = options
         settings%objective = "huber"
         if (present(validation_x) .or. present(validation_y)) then
@@ -1604,8 +1644,12 @@ contains
         real(dp), intent(in), optional :: validation_x(:, :), validation_y(:), &
             validation_weight(:)
         type(xgboost_options_t) :: settings
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(xgboost_options_t) :: xgboost_options_t_default
 
-        settings = xgboost_options_t()
+        settings = xgboost_options_t_default
         if (present(options)) settings = options
         settings%objective = "quantile"
         if (present(validation_x) .or. present(validation_y)) then

@@ -564,6 +564,10 @@ contains
 
     subroutine mlp_checkpoint_clear(self)
         class(mlp_training_checkpoint_t), intent(inout) :: self
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(mlp_learning_rate_schedule_t) :: mlp_learning_rate_schedule_t_default
 
         if (allocated(self%parameters)) deallocate(self%parameters)
         if (allocated(self%optimizer_group_first)) deallocate(self%optimizer_group_first)
@@ -642,7 +646,7 @@ contains
         self%min_delta = 0.0_dp
         self%gradient_clip_norm = 0.0_dp
         self%ema_decay = 0.0_dp
-        self%typed_schedule = mlp_learning_rate_schedule_t()
+        self%typed_schedule = mlp_learning_rate_schedule_t_default
         self%last_learning_rate = 0.0_dp
         self%initial_loss = huge(1.0_dp)
         self%final_loss = huge(1.0_dp)
@@ -1262,8 +1266,12 @@ contains
         type(lbfgsb_result_t) :: optimizer_result
         real(dp), allocatable :: parameters(:), lower(:), upper(:), gradient(:)
         integer :: n_model, n_parameters
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(mlp_lbfgsb_result_t) :: mlp_lbfgsb_result_t_default
 
-        result = mlp_lbfgsb_result_t()
+        result = mlp_lbfgsb_result_t_default
         if (.not. valid_lbfgsb_options(options) .or. &
             .not. valid_data(model, x, target)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &

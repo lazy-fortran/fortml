@@ -135,10 +135,14 @@ contains
         integer :: n
         real(dp), allocatable :: initial_gradient(:)
         real(dp) :: initial_value
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(trainer_options_t) :: trainer_options_t_default
 
         self%ready = .false.
         call trainer_state_clear(self%state)
-        settings = trainer_options_t()
+        settings = trainer_options_t_default
         if (present(options)) settings = options
         call validate_options(settings, objective%n_parameters, status)
         if (status%code /= FORTNUM_OK) return

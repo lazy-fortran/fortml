@@ -51,15 +51,23 @@ contains
 
     function make_mlp_schedule_constant() result(schedule)
         type(mlp_learning_rate_schedule_t) :: schedule
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(mlp_learning_rate_schedule_t) :: mlp_learning_rate_schedule_t_default
 
-        schedule = mlp_learning_rate_schedule_t()
+        schedule = mlp_learning_rate_schedule_t_default
     end function make_mlp_schedule_constant
 
     function make_mlp_schedule_linear_warmup(warmup_updates) result(schedule)
         integer, intent(in) :: warmup_updates
         type(mlp_learning_rate_schedule_t) :: schedule
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(mlp_learning_rate_schedule_t) :: mlp_learning_rate_schedule_t_default
 
-        schedule = mlp_learning_rate_schedule_t()
+        schedule = mlp_learning_rate_schedule_t_default
         schedule%kind = MLP_SCHEDULE_LINEAR_WARMUP
         schedule%warmup_updates = warmup_updates
     end function make_mlp_schedule_linear_warmup
@@ -68,8 +76,12 @@ contains
         integer, intent(in) :: total_updates
         real(dp), intent(in) :: min_rate_fraction
         type(mlp_learning_rate_schedule_t) :: schedule
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(mlp_learning_rate_schedule_t) :: mlp_learning_rate_schedule_t_default
 
-        schedule = mlp_learning_rate_schedule_t()
+        schedule = mlp_learning_rate_schedule_t_default
         schedule%kind = MLP_SCHEDULE_COSINE_DECAY
         schedule%total_updates = total_updates
         schedule%min_rate_fraction = min_rate_fraction
@@ -80,8 +92,12 @@ contains
         integer, intent(in) :: warmup_updates, total_updates
         real(dp), intent(in) :: min_rate_fraction
         type(mlp_learning_rate_schedule_t) :: schedule
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(mlp_learning_rate_schedule_t) :: mlp_learning_rate_schedule_t_default
 
-        schedule = mlp_learning_rate_schedule_t()
+        schedule = mlp_learning_rate_schedule_t_default
         schedule%kind = MLP_SCHEDULE_WARMUP_COSINE
         schedule%warmup_updates = warmup_updates
         schedule%total_updates = total_updates
@@ -92,8 +108,12 @@ contains
         integer, intent(in) :: warmup_updates
         real(dp), intent(in) :: decay_factor
         type(mlp_learning_rate_schedule_t) :: schedule
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(mlp_learning_rate_schedule_t) :: mlp_learning_rate_schedule_t_default
 
-        schedule = mlp_learning_rate_schedule_t()
+        schedule = mlp_learning_rate_schedule_t_default
         schedule%kind = MLP_SCHEDULE_EXPONENTIAL_DECAY
         schedule%warmup_updates = warmup_updates
         schedule%decay_factor = decay_factor
@@ -111,8 +131,12 @@ contains
         integer, intent(in) :: warmup_updates, total_updates
         real(dp), intent(in) :: peak_rate_fraction, final_rate_fraction
         type(mlp_learning_rate_schedule_t) :: schedule
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(mlp_learning_rate_schedule_t) :: mlp_learning_rate_schedule_t_default
 
-        schedule = mlp_learning_rate_schedule_t()
+        schedule = mlp_learning_rate_schedule_t_default
         schedule%kind = MLP_SCHEDULE_ONE_CYCLE
         schedule%warmup_updates = warmup_updates
         schedule%total_updates = total_updates

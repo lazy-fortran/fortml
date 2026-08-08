@@ -191,10 +191,15 @@ contains
         type(fortnum_status_t) :: restore_status
         real(dp), allocatable :: parameters(:), initial_parameters(:), lower(:), upper(:), gradient(:)
         integer :: n_parameters
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(gp_variational_categorical_options_t) :: gp_variational_categorical_options_t_default
+        type(gp_variational_categorical_state_t) :: gp_variational_categorical_state_t_default
 
-        result = gp_variational_categorical_state_t()
+        result = gp_variational_categorical_state_t_default
         if (present(state)) state = result
-        requested = gp_variational_categorical_options_t()
+        requested = gp_variational_categorical_options_t_default
         if (present(options)) requested = options
         if (.not. valid_options(requested)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &

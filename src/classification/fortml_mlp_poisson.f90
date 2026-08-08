@@ -364,8 +364,12 @@ contains
         type(lbfgsb_result_t) :: optimizer_result
         real(dp), allocatable :: parameters(:), lower(:), upper(:), gradient(:)
         integer :: n_model, n_parameters
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(mlp_poisson_lbfgsb_result_t) :: mlp_poisson_lbfgsb_result_t_default
 
-        result = mlp_poisson_lbfgsb_result_t()
+        result = mlp_poisson_lbfgsb_result_t_default
         if (.not. valid_lbfgsb_options(options)) then
             if (options%device_kind /= FORTML_DEVICE_CPU) then
                 call status_set(status, FORTNUM_NOT_IMPLEMENTED, &

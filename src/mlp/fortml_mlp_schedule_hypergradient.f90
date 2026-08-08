@@ -127,9 +127,13 @@ contains
         type(mlp_schedule_hypergradient_options_t), intent(in) :: options
         type(fortnum_status_t), intent(out) :: status
         real(dp) :: min_fraction, decay_factor
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(mlp_schedule_hypergradient_metadata_t) :: mlp_schedule_hypergradient_metadata_t_default
 
         self%initialized = .false.
-        self%layout = mlp_schedule_hypergradient_metadata_t()
+        self%layout = mlp_schedule_hypergradient_metadata_t_default
         if (.not. valid_options(options)) then
             if (options%device_kind /= FORTML_DEVICE_CPU) then
                 call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
@@ -356,8 +360,12 @@ contains
         real(dp) :: lower(MLP_SCHEDULE_HYPERPARAMETER_COUNT)
         real(dp) :: upper(MLP_SCHEDULE_HYPERPARAMETER_COUNT)
         real(dp) :: gradient(MLP_SCHEDULE_HYPERPARAMETER_COUNT)
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(mlp_schedule_hypergradient_result_t) :: mlp_schedule_hypergradient_result_t_default
 
-        result = mlp_schedule_hypergradient_result_t()
+        result = mlp_schedule_hypergradient_result_t_default
         if (.not. valid_options(options)) then
             if (options%device_kind /= FORTML_DEVICE_CPU) then
                 call status_set(status, FORTNUM_NOT_IMPLEMENTED, &

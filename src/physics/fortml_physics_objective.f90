@@ -401,14 +401,18 @@ contains
         type(physics_constraint_t), intent(in), optional :: data, residual, boundary
         type(physics_constraint_t), intent(in), optional :: conservation
         type(fortnum_status_t), intent(out) :: status
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(physics_constraint_t) :: physics_constraint_t_default
 
         self%n_parameters = 0
         self%active_terms = 0
         self%ready = .false.
-        self%data = physics_constraint_t()
-        self%residual = physics_constraint_t()
-        self%boundary = physics_constraint_t()
-        self%conservation = physics_constraint_t()
+        self%data = physics_constraint_t_default
+        self%residual = physics_constraint_t_default
+        self%boundary = physics_constraint_t_default
+        self%conservation = physics_constraint_t_default
         if (n_parameters < 1) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "physics objective: parameter count must be positive")

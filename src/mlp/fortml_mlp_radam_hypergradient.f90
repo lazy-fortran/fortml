@@ -127,9 +127,13 @@ contains
         real(dp), intent(in) :: validation_x(:, :), validation_target(:, :)
         type(mlp_radam_hypergradient_options_t), intent(in) :: options
         type(fortnum_status_t), intent(out) :: status
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(mlp_radam_hypergradient_metadata_t) :: mlp_radam_hypergradient_metadata_t_default
 
         self%initialized = .false.
-        self%layout = mlp_radam_hypergradient_metadata_t()
+        self%layout = mlp_radam_hypergradient_metadata_t_default
         if (.not. valid_options(options)) then
             if (options%optimizer /= MLP_OPTIMIZER_RADAM .or. &
                     options%device_kind /= FORTML_DEVICE_CPU) then
@@ -335,8 +339,12 @@ contains
         real(dp) :: lower(MLP_RADAM_HYPERPARAMETER_COUNT)
         real(dp) :: upper(MLP_RADAM_HYPERPARAMETER_COUNT)
         real(dp) :: gradient(MLP_RADAM_HYPERPARAMETER_COUNT)
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(mlp_radam_hypergradient_result_t) :: mlp_radam_hypergradient_result_t_default
 
-        result = mlp_radam_hypergradient_result_t()
+        result = mlp_radam_hypergradient_result_t_default
         if (.not. valid_options(options)) then
             if (options%optimizer /= MLP_OPTIMIZER_RADAM .or. &
                     options%device_kind /= FORTML_DEVICE_CPU) then

@@ -120,10 +120,15 @@ contains
         type(gp_multiclass_classification_state_t) :: result
         integer, allocatable :: unique_labels(:), binary_labels(:)
         integer :: i, class_count
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(gp_multiclass_classification_options_t) :: gp_multiclass_classification_options_t_default
+        type(gp_multiclass_classification_state_t) :: gp_multiclass_classification_state_t_default
 
-        result = gp_multiclass_classification_state_t()
+        result = gp_multiclass_classification_state_t_default
         if (present(state)) state = result
-        requested = gp_multiclass_classification_options_t()
+        requested = gp_multiclass_classification_options_t_default
         if (present(options)) requested = options
         if (.not. valid_options(requested)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &

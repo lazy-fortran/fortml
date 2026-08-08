@@ -122,13 +122,18 @@ contains
         real(dp), allocatable :: scores(:, :), margin(:), weights(:), calibration_parameters(:)
         integer, allocatable :: classes(:), encoded(:)
         integer :: n_classes
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(mlp_calibrated_classifier_options_t) :: mlp_calibrated_classifier_options_t_default
+        type(mlp_calibrated_classifier_state_t) :: mlp_calibrated_classifier_state_t_default
 
         self%is_fitted = .false.
         self%multiclass_temperature_fitted = .false.
         self%multiclass_temperature = 1.0_dp
-        config = mlp_calibrated_classifier_options_t()
+        config = mlp_calibrated_classifier_options_t_default
         if (present(options)) config = options
-        result = mlp_calibrated_classifier_state_t()
+        result = mlp_calibrated_classifier_state_t_default
         if (.not. valid_calibration_options(config%calibration)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "calibrated MLP fit: calibration options are invalid")

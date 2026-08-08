@@ -77,10 +77,14 @@ contains
         integer, allocatable :: classes(:), binary_labels(:), validation_binary(:)
         integer :: n_samples, n_features, n_validation
         logical :: have_validation
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(xgboost_options_t) :: xgboost_options_t_default
 
         call status_set(status, FORTNUM_DOMAIN_ERROR, &
             "XGBoost binary classifier fit: invalid input")
-        settings = xgboost_options_t()
+        settings = xgboost_options_t_default
         if (present(options)) settings = options
         n_samples = size(x, 1)
         n_features = size(x, 2)

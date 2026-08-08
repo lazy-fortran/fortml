@@ -104,8 +104,12 @@ contains
         type(lbfgsb_result_t) :: optimizer_result
         real(dp), allocatable :: parameters(:), lower(:), upper(:), gradient(:)
         integer :: n_parameters
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(gp_classification_hyperparameter_result_t) :: gp_classification_hyperparameter_result_t_default
 
-        result = gp_classification_hyperparameter_result_t()
+        result = gp_classification_hyperparameter_result_t_default
         if (.not. valid_binary_options(options)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "GP classification training: options are invalid")
@@ -182,8 +186,12 @@ contains
         type(lbfgsb_result_t) :: optimizer_result
         real(dp), allocatable :: parameters(:), lower(:), upper(:), gradient(:)
         integer :: n_parameters
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(gp_multiclass_hyperparameter_result_t) :: gp_multiclass_hyperparameter_result_t_default
 
-        result = gp_multiclass_hyperparameter_result_t()
+        result = gp_multiclass_hyperparameter_result_t_default
         if (.not. valid_multiclass_options(options)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "GP multiclass training: options are invalid")

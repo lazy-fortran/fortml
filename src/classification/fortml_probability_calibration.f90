@@ -149,13 +149,18 @@ contains
         real(dp), allocatable :: weights(:)
         real(dp) :: total_weight
         integer :: i, j
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(probability_calibration_options_t) :: probability_calibration_options_t_default
+        type(probability_calibration_state_t) :: probability_calibration_state_t_default
 
         self%is_fitted = .false.
         self%temperature = 1.0_dp
         if (allocated(self%class_label)) deallocate(self%class_label)
-        requested = probability_calibration_options_t()
+        requested = probability_calibration_options_t_default
         if (present(options)) requested = options
-        result = probability_calibration_state_t()
+        result = probability_calibration_state_t_default
         result%method = CALIBRATION_TEMPERATURE
         if (present(state)) state = result
         if (.not. valid_options(requested)) then
@@ -764,14 +769,19 @@ contains
         type(probability_calibration_state_t) :: result
         real(dp), allocatable :: weights(:)
         integer :: label_min, label_max
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(probability_calibration_options_t) :: probability_calibration_options_t_default
+        type(probability_calibration_state_t) :: probability_calibration_state_t_default
 
         self%is_fitted = .false.
         self%n_knots = 0
         if (allocated(self%knots)) deallocate(self%knots)
         if (allocated(self%knot_values)) deallocate(self%knot_values)
-        result = probability_calibration_state_t()
+        result = probability_calibration_state_t_default
         if (present(state)) state = result
-        requested = probability_calibration_options_t()
+        requested = probability_calibration_options_t_default
         if (present(options)) requested = options
         if (.not. valid_options(requested)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &

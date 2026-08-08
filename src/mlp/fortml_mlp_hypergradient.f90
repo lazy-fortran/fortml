@@ -391,9 +391,13 @@ contains
         real(dp), intent(in) :: validation_x(:, :), validation_target(:, :)
         type(mlp_hypergradient_options_t), intent(in) :: options
         type(fortnum_status_t), intent(out) :: status
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(mlp_hyperparameter_metadata_t) :: mlp_hyperparameter_metadata_t_default
 
         self%initialized = .false.
-        self%layout = mlp_hyperparameter_metadata_t()
+        self%layout = mlp_hyperparameter_metadata_t_default
         if (.not. valid_options(options)) then
             if (options%optimizer /= MLP_OPTIMIZER_SGD .or. &
                 options%momentum /= 0.0_dp .or. options%nesterov .or. &
@@ -577,8 +581,12 @@ contains
         real(dp) :: parameters(MLP_HYPERPARAMETER_COUNT)
         real(dp) :: lower(MLP_HYPERPARAMETER_COUNT), upper(MLP_HYPERPARAMETER_COUNT)
         real(dp) :: gradient(MLP_HYPERPARAMETER_COUNT)
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(mlp_hypergradient_result_t) :: mlp_hypergradient_result_t_default
 
-        result = mlp_hypergradient_result_t()
+        result = mlp_hypergradient_result_t_default
         if (.not. valid_options(options)) then
             if (options%optimizer /= MLP_OPTIMIZER_SGD .or. &
                 options%momentum /= 0.0_dp .or. options%nesterov .or. &
@@ -644,9 +652,13 @@ contains
         real(dp), intent(in) :: validation_x(:, :), validation_target(:, :)
         type(mlp_rmsprop_hypergradient_options_t), intent(in) :: options
         type(fortnum_status_t), intent(out) :: status
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(mlp_rmsprop_hypergradient_metadata_t) :: mlp_rmsprop_hypergradient_metadata_t_default
 
         self%initialized = .false.
-        self%layout = mlp_rmsprop_hypergradient_metadata_t()
+        self%layout = mlp_rmsprop_hypergradient_metadata_t_default
         if (.not. valid_rmsprop_options(options)) then
             if (options%optimizer /= MLP_OPTIMIZER_RMSPROP .or. &
                 options%device_kind /= FORTML_DEVICE_CPU) then
@@ -840,8 +852,12 @@ contains
         real(dp) :: lower(MLP_RMSPROP_HYPERPARAMETER_COUNT)
         real(dp) :: upper(MLP_RMSPROP_HYPERPARAMETER_COUNT)
         real(dp) :: gradient(MLP_RMSPROP_HYPERPARAMETER_COUNT)
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(mlp_rmsprop_hypergradient_result_t) :: mlp_rmsprop_hypergradient_result_t_default
 
-        result = mlp_rmsprop_hypergradient_result_t()
+        result = mlp_rmsprop_hypergradient_result_t_default
         if (.not. valid_rmsprop_options(options)) then
             if (options%optimizer /= MLP_OPTIMIZER_RMSPROP .or. &
                 options%device_kind /= FORTML_DEVICE_CPU) then
@@ -912,9 +928,13 @@ contains
         real(dp), intent(in) :: validation_x(:, :), validation_target(:, :)
         type(mlp_adamw_hypergradient_options_t), intent(in) :: options
         type(fortnum_status_t), intent(out) :: status
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(mlp_adamw_hypergradient_metadata_t) :: mlp_adamw_hypergradient_metadata_t_default
 
         self%initialized = .false.
-        self%layout = mlp_adamw_hypergradient_metadata_t()
+        self%layout = mlp_adamw_hypergradient_metadata_t_default
         if (.not. valid_adamw_options(options)) then
             if (options%optimizer /= MLP_OPTIMIZER_ADAMW .or. &
                 options%device_kind /= FORTML_DEVICE_CPU) then
@@ -1100,8 +1120,12 @@ contains
         real(dp) :: lower(MLP_ADAMW_HYPERPARAMETER_COUNT)
         real(dp) :: upper(MLP_ADAMW_HYPERPARAMETER_COUNT)
         real(dp) :: gradient(MLP_ADAMW_HYPERPARAMETER_COUNT)
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(mlp_adamw_hypergradient_result_t) :: mlp_adamw_hypergradient_result_t_default
 
-        result = mlp_adamw_hypergradient_result_t()
+        result = mlp_adamw_hypergradient_result_t_default
         if (.not. valid_adamw_options(options)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "MLP AdamW hyperparameter optimization: options are invalid")
@@ -1155,9 +1179,13 @@ contains
         type(mlp_adamw_full_hypergradient_options_t), intent(in) :: options
         type(fortnum_status_t), intent(out) :: status
         type(mlp_adamw_hypergradient_options_t) :: base_options
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(mlp_adamw_full_hypergradient_metadata_t) :: mlp_adamw_full_hypergradient_metadata_t_default
 
         self%initialized = .false.
-        self%layout = mlp_adamw_full_hypergradient_metadata_t()
+        self%layout = mlp_adamw_full_hypergradient_metadata_t_default
         if (.not. valid_adamw_full_options(options)) then
             if (options%optimizer /= MLP_OPTIMIZER_ADAMW .or. &
                 options%device_kind /= FORTML_DEVICE_CPU) then
@@ -1346,8 +1374,12 @@ contains
         real(dp) :: lower(MLP_ADAMW_FULL_HYPERPARAMETER_COUNT)
         real(dp) :: upper(MLP_ADAMW_FULL_HYPERPARAMETER_COUNT)
         real(dp) :: gradient(MLP_ADAMW_FULL_HYPERPARAMETER_COUNT)
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(mlp_adamw_full_hypergradient_result_t) :: mlp_adamw_full_hypergradient_result_t_default
 
-        result = mlp_adamw_full_hypergradient_result_t()
+        result = mlp_adamw_full_hypergradient_result_t_default
         if (.not. valid_adamw_full_options(options)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "MLP full AdamW hyperparameter optimization: options are invalid")

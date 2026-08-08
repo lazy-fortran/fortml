@@ -109,8 +109,12 @@ contains
         integer :: n_network, n_parameters, i, j, class_index, iterations
         real(dp) :: weight_sum, cumulative, requested_tolerance
         logical :: valid
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(mlp_ordinal_classifier_state_t) :: mlp_ordinal_classifier_state_t_default
 
-        result = mlp_ordinal_classifier_state_t()
+        result = mlp_ordinal_classifier_state_t_default
         self%is_fitted = .false.
         if (allocated(self%threshold)) deallocate(self%threshold)
         if (allocated(self%class_label)) deallocate(self%class_label)

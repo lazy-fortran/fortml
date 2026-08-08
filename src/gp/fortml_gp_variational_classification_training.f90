@@ -73,8 +73,12 @@ contains
         type(fortnum_status_t) :: restore_status
         real(dp), allocatable :: parameters(:), initial_parameters(:), lower(:), upper(:), gradient(:)
         integer :: n_parameters
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(gp_variational_classification_lbfgsb_result_t) :: gp_variational_classification_lbfgsb_result_t_default
 
-        result = gp_variational_classification_lbfgsb_result_t()
+        result = gp_variational_classification_lbfgsb_result_t_default
         if (present(device)) then
             if (.not. device%selected .or. .not. device%available) then
                 call status_set(status, FORTNUM_DOMAIN_ERROR, &

@@ -139,8 +139,12 @@ contains
         real(dp), intent(in), optional :: validation_x(:, :), validation_y(:), &
             validation_weight(:)
         type(lightgbm_options_t) :: settings
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(lightgbm_options_t) :: lightgbm_options_t_default
 
-        settings = lightgbm_options_t()
+        settings = lightgbm_options_t_default
         if (present(options)) settings = options
         settings%objective = "regression"
         call lgbm_fit(self, x, y, status, settings, sample_weight, validation_x, &
@@ -157,8 +161,12 @@ contains
         real(dp), intent(in), optional :: validation_x(:, :), validation_y(:), &
             validation_weight(:)
         type(lightgbm_options_t) :: settings
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(lightgbm_options_t) :: lightgbm_options_t_default
 
-        settings = lightgbm_options_t()
+        settings = lightgbm_options_t_default
         if (present(options)) settings = options
         settings%objective = "binary"
         call lgbm_fit(self, x, y, status, settings, sample_weight, validation_x, &
@@ -315,8 +323,12 @@ contains
         integer :: completed_estimators, best_iteration, stale_rounds
         real(dp) :: weight_sum, mean_target, validation_loss, best_validation_loss
         logical :: have_validation, improved
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(lightgbm_options_t) :: lightgbm_options_t_default
 
-        settings = lightgbm_options_t()
+        settings = lightgbm_options_t_default
         if (present(options)) settings = options
         have_validation = present(validation_x) .or. present(validation_y) .or. &
             present(validation_weight)

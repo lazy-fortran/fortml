@@ -705,8 +705,12 @@ contains
         type(lbfgsb_result_t) :: optimizer_result
         real(dp), allocatable :: parameters(:), lower(:), upper(:), gradient(:)
         integer :: n_model, n_parameters
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(mlp_chain_lbfgsb_result_t) :: mlp_chain_lbfgsb_result_t_default
 
-        result = mlp_chain_lbfgsb_result_t()
+        result = mlp_chain_lbfgsb_result_t_default
         if (options%device_kind /= FORTML_DEVICE_CPU .or. options%memory < 1 .or. &
                 options%max_iterations < 1 .or. options%max_line_search < 1 .or. &
                 options%lower_bound > options%upper_bound .or. options%l2 < 0.0_dp .or. &

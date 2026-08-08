@@ -127,9 +127,13 @@ contains
         type(mlp_optimizer_group_hypergradient_options_t), intent(in) :: options
         type(fortnum_status_t), intent(out) :: status
         integer :: i, j, n_model, n_groups
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(mlp_optimizer_group_hypergradient_metadata_t) :: mlp_optimizer_group_hypergradient_metadata_t_default
 
         self%initialized = .false.
-        self%layout = mlp_optimizer_group_hypergradient_metadata_t()
+        self%layout = mlp_optimizer_group_hypergradient_metadata_t_default
         if (.not. valid_options(options)) then
             if (options%optimizer /= MLP_OPTIMIZER_GROUP_OPTIMIZER .or. &
                 options%device_kind == FORTML_DEVICE_CUDA) then
@@ -425,8 +429,12 @@ contains
         type(lbfgsb_result_t) :: optimizer_result
         real(dp), allocatable :: parameters(:), lower(:), upper(:), gradient(:)
         integer :: n_parameters, n_groups, i
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(mlp_optimizer_group_hypergradient_result_t) :: mlp_optimizer_group_hypergradient_result_t_default
 
-        result = mlp_optimizer_group_hypergradient_result_t()
+        result = mlp_optimizer_group_hypergradient_result_t_default
         if (.not. valid_options(options)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "MLP optimizer-group hyperparameter optimization: options are invalid")

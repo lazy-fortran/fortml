@@ -32,8 +32,12 @@ contains
         type(lbfgsb_result_t) :: optimizer_result
         real(dp), allocatable :: parameters(:), lower(:), upper(:), gradient(:)
         integer :: n_parameters
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(gp_hyperparameter_result_t) :: gp_hyperparameter_result_t_default
 
-        result = gp_hyperparameter_result_t()
+        result = gp_hyperparameter_result_t_default
         if (.not. valid_options(options)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "derivative GP training: options are invalid")

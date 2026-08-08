@@ -62,8 +62,12 @@ contains
         type(xgboost_options_t) :: settings
         integer, allocatable :: classes(:), binary_labels(:)
         integer :: i, n_classes, n_samples
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(xgboost_options_t) :: xgboost_options_t_default
 
-        settings = xgboost_options_t()
+        settings = xgboost_options_t_default
         if (present(options)) settings = options
         n_samples = size(x, 1)
         if (n_samples < 2 .or. size(x, 2) < 1 .or. size(labels) /= n_samples) then

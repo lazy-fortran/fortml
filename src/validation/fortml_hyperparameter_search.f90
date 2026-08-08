@@ -63,10 +63,15 @@ contains
         integer(int64) :: total, linear, remaining
         integer :: i, n, count
         type(hyperparameter_search_options_t) :: settings
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(hyperparameter_search_options_t) :: hyperparameter_search_options_t_default
+        type(hyperparameter_search_result_t) :: hyperparameter_search_result_t_default
 
-        result = hyperparameter_search_result_t()
+        result = hyperparameter_search_result_t_default
         result%method = HYPERPARAMETER_SEARCH_GRID
-        settings = hyperparameter_search_options_t()
+        settings = hyperparameter_search_options_t_default
         if (present(options)) settings = options
         call validate_search_inputs(objective, lower, upper, status, device)
         if (status%code /= FORTNUM_OK) return
@@ -137,10 +142,15 @@ contains
         real(dp), allocatable :: candidate(:), gradient(:)
         real(dp) :: value, uniform
         integer :: i, j
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(hyperparameter_search_options_t) :: hyperparameter_search_options_t_default
+        type(hyperparameter_search_result_t) :: hyperparameter_search_result_t_default
 
-        result = hyperparameter_search_result_t()
+        result = hyperparameter_search_result_t_default
         result%method = HYPERPARAMETER_SEARCH_RANDOM
-        settings = hyperparameter_search_options_t()
+        settings = hyperparameter_search_options_t_default
         if (present(options)) settings = options
         call validate_search_inputs(objective, lower, upper, status, device)
         if (status%code /= FORTNUM_OK) return
@@ -190,10 +200,15 @@ contains
         type(hyperparameter_search_options_t) :: settings
         real(dp), allocatable :: x(:), gradient(:)
         real(dp) :: value
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(hyperparameter_search_options_t) :: hyperparameter_search_options_t_default
+        type(hyperparameter_search_result_t) :: hyperparameter_search_result_t_default
 
-        result = hyperparameter_search_result_t()
+        result = hyperparameter_search_result_t_default
         result%method = HYPERPARAMETER_SEARCH_LBFGSB
-        settings = hyperparameter_search_options_t()
+        settings = hyperparameter_search_options_t_default
         if (present(options)) settings = options
         call validate_search_inputs(objective, lower, upper, status, device)
         if (status%code /= FORTNUM_OK) return
@@ -251,11 +266,16 @@ contains
         real(dp), allocatable :: initial(:)
         real(dp) :: uniform
         integer :: i, j
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(hyperparameter_search_options_t) :: hyperparameter_search_options_t_default
+        type(hyperparameter_search_result_t) :: hyperparameter_search_result_t_default
 
-        result = hyperparameter_search_result_t()
+        result = hyperparameter_search_result_t_default
         result%method = HYPERPARAMETER_SEARCH_LBFGSB
         result%start_count = starts
-        settings = hyperparameter_search_options_t()
+        settings = hyperparameter_search_options_t_default
         if (present(options)) settings = options
         call validate_search_inputs(objective, lower, upper, status, device)
         if (status%code /= FORTNUM_OK) return

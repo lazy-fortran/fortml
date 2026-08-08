@@ -127,11 +127,16 @@ contains
         real(dp), allocatable :: oof_probabilities(:, :)
         logical :: has_split
         integer :: fold, n_classes
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(calibrated_softmax_classifier_options_t) :: calibrated_softmax_classifier_options_t_default
+        type(calibrated_softmax_classifier_state_t) :: calibrated_softmax_classifier_state_t_default
 
         self%is_fitted = .false.
-        config = calibrated_softmax_classifier_options_t()
+        config = calibrated_softmax_classifier_options_t_default
         if (present(options)) config = options
-        result = calibrated_softmax_classifier_state_t()
+        result = calibrated_softmax_classifier_state_t_default
         if (present(state)) state = result
         if (.not. valid_options(config)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &

@@ -217,6 +217,10 @@ contains
     subroutine fortml_device_clear(self, status)
         class(fortml_device_t), intent(inout) :: self
         type(fortnum_status_t), intent(out) :: status
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(fortml_device_capability_t) :: fortml_device_capability_t_default
 
         if (self%resident) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -229,7 +233,7 @@ contains
         self%stream_id = 0
         self%selected = .false.
         self%available = .false.
-        self%capability = fortml_device_capability_t()
+        self%capability = fortml_device_capability_t_default
         call fortml_device_reset_transfer_counters(self)
         call status_set(status, FORTNUM_OK, "")
     end subroutine fortml_device_clear
@@ -405,8 +409,12 @@ contains
 
         integer(c_int) :: cuda_kernel, cuda_rbf, cuda_knn, cuda_mse, cuda_forest, &
             cuda_dense
+            !! Default-initialized instances, standing in for empty
+            !! structure constructors: nvfortran rejects `T()` outright,
+            !! and a declared local carries the same default init.
+            type(fortml_device_capability_t) :: fortml_device_capability_t_default
 
-        capability = fortml_device_capability_t()
+        capability = fortml_device_capability_t_default
         select case (kind)
         case (FORTML_DEVICE_CPU)
             capability%available = .true.

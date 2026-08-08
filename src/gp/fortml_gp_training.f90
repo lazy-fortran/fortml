@@ -83,8 +83,12 @@ contains
         real(dp) :: local_value, local_gradient_norm, uniform
         integer :: n_parameters, start, j
         logical :: run_converged
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(gp_hyperparameter_result_t) :: gp_hyperparameter_result_t_default
 
-        result = gp_hyperparameter_result_t()
+        result = gp_hyperparameter_result_t_default
         result%start_count = options%starts
         if (present(device)) then
             if (.not. device%selected .or. .not. device%available) then

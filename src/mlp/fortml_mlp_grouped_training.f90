@@ -479,8 +479,12 @@ contains
         type(lbfgsb_result_t) :: optimizer_result
         real(dp), allocatable :: parameters(:), lower(:), upper(:), gradient(:)
         integer :: n_model, n_groups, n_parameters
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(mlp_grouped_lbfgsb_result_t) :: mlp_grouped_lbfgsb_result_t_default
 
-        result = mlp_grouped_lbfgsb_result_t()
+        result = mlp_grouped_lbfgsb_result_t_default
         if (.not. valid_lbfgsb_options(options)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "MLP grouped L-BFGS-B: options or bounds are invalid")
