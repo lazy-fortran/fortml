@@ -2918,7 +2918,10 @@ product silently copies arrays to the host.
 Value-only covariances and their variance-parameter products remain defined at
 coincidence. The refusal applies only when an input derivative is requested.
 For mixed value/first-derivative observations, `hyperparameter_hvp` is analytic
-for RBF, linear, constant, and sums/products built solely from those leaves.
+for RBF, linear, constant, polynomial, and sums/products built solely from
+those leaves. The polynomial path differentiates all four logarithmic kernel
+coordinates in closed form, including the degree-one limit, and returns a
+typed domain error when its positive base is invalid.
 Spectral-mixture value/first-derivative parameter gradients and query products
 are analytic, while its mixed parameter HVP remains a typed
 `FORTNUM_NOT_IMPLEMENTED` refusal until fourth input/parameter products are

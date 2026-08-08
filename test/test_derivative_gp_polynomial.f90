@@ -20,8 +20,9 @@ program test_derivative_gp_polynomial
     real(dp) :: mean_plus(2, 1), mean_minus(2, 1), variance_plus(2), variance_minus(2)
     real(dp) :: mean_bar(2, 1), variance_bar(2), x_bar(2, 2)
     real(dp) :: theta(5), gradient(5), finite_gradient(5), value, plus, minus
-    real(dp) :: h, query_h, lhs, rhs
-    integer :: i, failures
+    real(dp) :: parameter_direction(5), hvp(5), gradient_plus(5), gradient_minus(5)
+    real(dp) :: finite_hvp(5), h, query_h, hvp_h, lhs, rhs
+    integer :: i, j, failures
 
     failures = 0
     x = reshape([0.2_dp, 0.4_dp, 0.6_dp, 0.8_dp, 1.0_dp, 1.2_dp], shape(x))
@@ -46,6 +47,37 @@ program test_derivative_gp_polynomial
     end do
     call check(status_ok(status) .and. maxval(abs(gradient - finite_gradient)) < 3.0e-7_dp, &
         "polynomial derivative-GP hyperparameter gradient oracle", failures)
+
+    parameter_direction = [0.07_dp, -0.03_dp, 0.02_dp, -0.05_dp, 0.06_dp]
+    call model%hyperparameter_hvp(parameter_direction, hvp, status)
+    hvp_h = 2.0e-4_dp
+    gradient_plus = 0.0_dp
+    gradient_minus = 0.0_dp
+    do j = 1, size(theta)
+        gradient_plus(j) = (oracle_lml(theta + hvp_h*parameter_direction + &
+            h*unit_vector(size(theta), j), x, [0, 1, 2], y, 0.06_dp, 1.0e-10_dp) - &
+            oracle_lml(theta + hvp_h*parameter_direction - &
+            h*unit_vector(size(theta), j), x, [0, 1, 2], y, 0.06_dp, 1.0e-10_dp))/ &
+            (2.0_dp*h)
+        gradient_minus(j) = (oracle_lml(theta - hvp_h*parameter_direction + &
+            h*unit_vector(size(theta), j), x, [0, 1, 2], y, 0.06_dp, 1.0e-10_dp) - &
+            oracle_lml(theta - hvp_h*parameter_direction - &
+            h*unit_vector(size(theta), j), x, [0, 1, 2], y, 0.06_dp, 1.0e-10_dp))/ &
+            (2.0_dp*h)
+    end do
+    do i = 1, size(theta)
+        finite_hvp(i) = (gradient_plus(i) - gradient_minus(i))/(2.0_dp*hvp_h)
+    end do
+    call check(status_ok(status) .and. maxval(abs(hvp - finite_hvp)) < 5.0e-4_dp, &
+        "polynomial derivative-GP mixed HVP oracle", failures)
+    if (.not. status_ok(status) .or. maxval(abs(hvp - finite_hvp)) >= 5.0e-4_dp) then
+        write (error_unit, '(a,i0,2a)') "  polynomial HVP status=", status%code, ": ", trim(status%msg)
+        write (error_unit, '(a,es14.6)') "  polynomial HVP max error=", &
+            maxval(abs(hvp - finite_hvp))
+        write (error_unit, '(a,5es14.6)') "  hvp=", hvp
+        write (error_unit, '(a,5es14.6)') "  fd=", finite_hvp
+        write (error_unit, '(a,5es14.6)') "  theta=", theta
+    end if
 
     call model%predict_input_jvp(query, [0, 1], direction, mean, mean_dot, variance, &
         variance_dot, status)

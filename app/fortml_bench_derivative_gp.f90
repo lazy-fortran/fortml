@@ -151,6 +151,20 @@ contains
         seconds = real(end_clock - begin_clock, dp)/real(rate, dp)/real(repetitions, dp)
         write (*, '(a,a,a,es24.16,a,es24.16)') "derivative_gp,", trim(name), &
             ",joint_covariance_vjp,", seconds, ",", sum(parameter_bar)
+
+        if (trim(name) == "polynomial") then
+            call model%hyperparameter_hvp(parameter_direction, parameter_bar, final_status)
+            if (.not. status_ok(final_status)) return
+            call system_clock(begin_clock, rate)
+            do repetition = 1, repetitions
+                call model%hyperparameter_hvp(parameter_direction, parameter_bar, final_status)
+                if (.not. status_ok(final_status)) return
+            end do
+            call system_clock(end_clock)
+            seconds = real(end_clock - begin_clock, dp)/real(rate, dp)/real(repetitions, dp)
+            write (*, '(a,a,a,es24.16,a,es24.16)') "derivative_gp,", trim(name), &
+                ",hyperparameter_hvp,", seconds, ",", sum(parameter_bar)
+        end if
     end subroutine benchmark
 
 end program fortml_bench_derivative_gp

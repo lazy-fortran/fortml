@@ -21,7 +21,7 @@ the requested pair is smooth and finite. A refusal is a typed
 | Matérn 5/2 | Yes | Gradient/JVP/VJP; mixed HVP refusal | Yes | mixed HVP `FORTNUM_NOT_IMPLEMENTED` |
 | Periodic, rational-quadratic, cosine | Yes | Gradient/JVP/VJP; mixed HVP refusal | Yes | mixed HVP `FORTNUM_NOT_IMPLEMENTED` |
 | Linear, constant | Yes | Yes; mixed-observation HVPs are analytic | Yes | none |
-| Polynomial | Yes when the positive polynomial base is finite | Gradient/JVP/VJP (all four logarithmic parameters); mixed HVP refusal | Yes when the positive base is finite | `FORTNUM_DOMAIN_ERROR` for a nonpositive base |
+| Polynomial | Yes when the positive polynomial base is finite | Gradient/JVP/VJP and analytic mixed HVP (all four logarithmic parameters) | Yes when the positive base is finite | `FORTNUM_DOMAIN_ERROR` for a nonpositive base |
 | Spectral mixture | Yes | Gradient/JVP/VJP for packed log-weights, log-scales, and signed means; mixed HVP refusal | Yes | mixed HVP `FORTNUM_NOT_IMPLEMENTED` until fourth input/parameter products exist |
 | Sum/product composites | Yes when every child supports the requested product | Gradient/JVP/VJP for every supported child; mixed HVP analytic only for RBF/linear/constant-only trees | Yes when every child supports it | Unsupported mixed HVP child returns `FORTNUM_NOT_IMPLEMENTED` |
 | Validated user formula | Yes for formulas with defined input derivatives | Variance and formula input products where defined; mixed HVP refusal | Not implemented | `push_distance` additionally refuses at coincident points |
@@ -36,9 +36,12 @@ packed kernel/noise pullback. For value-only observation lists,
 Cholesky solve. For mixed value/first-derivative lists, the HVP is analytic for
 RBF, linear, constant, and sums/products built entirely from those leaves;
 the implementation differentiates the dense covariance, Cholesky solve, and
-each parameter covariance block in one direction. Matérn, periodic,
-rational-quadratic, cosine, polynomial, spectral-mixture, user-formula, and
-other leaves return `FORTNUM_NOT_IMPLEMENTED` for a mixed HVP until their required second
+each parameter covariance block in one direction. Polynomial mixed HVPs now
+use a closed-form positive-base expression, including the degree-log tangent
+at degree one, and are checked against an independent finite-difference
+likelihood oracle. Matérn, periodic, rational-quadratic, cosine,
+spectral-mixture, user-formula, and other leaves return
+`FORTNUM_NOT_IMPLEMENTED` for a mixed HVP until their required second
 input/parameter products have generated kernels and independent oracles. A
 mixed HVP never silently central-differences the likelihood gradient.
 Second-derivative observations, operator-valued outputs, sparse/variational
@@ -71,8 +74,8 @@ and adjoint identities against independent finite-difference oracles. The
 capability test checks the refusal statuses above and verifies that a refused
 query product does not invalidate a fitted value-only model.
 `test_derivative_gp_polynomial` additionally assembles polynomial covariance
-blocks independently and checks the likelihood gradient and query-input
-JVP/VJP products against finite differences and an adjoint identity.
+blocks independently and checks the likelihood gradient, mixed HVP, and
+query-input JVP/VJP products against finite differences and an adjoint identity.
 The polynomial path is intentionally kept as a short closed-form expression
 (`b = offset + scale*dot(x1,x2)`, `k = variance*b**degree`) rather than a
 generated FortSym leaf. The independent block oracle covers every packed

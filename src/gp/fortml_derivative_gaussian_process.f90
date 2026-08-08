@@ -1701,12 +1701,200 @@ contains
             covariance_parameter_dot = covariance_dot
             call status_set(status, FORTNUM_OK, "")
             return
+        case (KERNEL_POLYNOMIAL)
+            call polynomial_derivative_parameter_hvp(kernel, x1, component1, x2, component2, &
+                parameter, direction, covariance, covariance_dot, covariance_parameter, &
+                covariance_parameter_dot, status)
+            return
         case default
             call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
                 "derivative GP mixed HVP: kernel leaf lacks analytic second products")
             return
         end select
     end subroutine derivative_covariance_parameter_hvp
+
+    subroutine polynomial_derivative_parameter_hvp(kernel, x1, component1, x2, component2, &
+            parameter, direction, covariance, covariance_dot, covariance_parameter, &
+            covariance_parameter_dot, status)
+        !! Analytic mixed-observation polynomial parameter/HVP block.
+        !!
+        !! The packed polynomial coordinates are logarithms of variance,
+        !! scale, offset, and degree.  Working with the positive base
+        !! ``b = offset + scale*dot(x1,x2)`` keeps the degree-log derivative
+        !! finite at degree one; no ratios by ``degree-1`` are formed.
+        type(kernel_t), intent(in) :: kernel
+        real(dp), intent(in) :: x1(:), x2(:), direction(:)
+        integer, intent(in) :: component1, component2, parameter
+        real(dp), intent(out) :: covariance, covariance_dot
+        real(dp), intent(out) :: covariance_parameter, covariance_parameter_dot
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: variance, scale, offset, degree, inner_product, base, base_dot
+        real(dp) :: u_variance, u_scale, u_offset, u_degree, ratio_base
+        real(dp) :: ratio_scale, ratio_offset
+        real(dp) :: value, value_dot, value_parameter, value_parameter_dot
+        real(dp) :: coefficient, coefficient_dot, coefficient_parameter
+        real(dp) :: coefficient_parameter_dot, curvature, curvature_dot
+        real(dp) :: curvature_parameter, curvature_parameter_dot
+        real(dp) :: log_value_sensitivity, log_value_sensitivity_dot
+        real(dp) :: log_coefficient_sensitivity, log_coefficient_sensitivity_dot
+        real(dp) :: log_curvature_sensitivity, log_curvature_sensitivity_dot
+        real(dp) :: curvature_base, curvature_base_dot, degree_factor
+
+        covariance = 0.0_dp
+        covariance_dot = 0.0_dp
+        covariance_parameter = 0.0_dp
+        covariance_parameter_dot = 0.0_dp
+        if (size(direction) /= 4 .or. parameter < 1 .or. parameter > 4 .or. &
+            size(x1) /= size(x2) .or. any(.not. ieee_is_finite(direction)) .or. &
+            any(.not. ieee_is_finite(x1)) .or. any(.not. ieee_is_finite(x2))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "derivative GP polynomial HVP: shape, parameter, or value is invalid")
+            return
+        end if
+        if (component1 < 0 .or. component2 < 0 .or. component1 > size(x1) .or. &
+            component2 > size(x2)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "derivative GP polynomial HVP: component is invalid")
+            return
+        end if
+
+        if (kernel%kind /= KERNEL_POLYNOMIAL .or. kernel%parameter_count() /= 4) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "derivative GP polynomial HVP: kernel layout is invalid")
+            return
+        end if
+        variance = exp(kernel%log_parameters(1))
+        scale = exp(kernel%log_parameters(2))
+        offset = exp(kernel%log_parameters(3))
+        degree = exp(kernel%log_parameters(4))
+        inner_product = dot_product(x1, x2)
+        base = offset + scale*inner_product
+        if (base <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "derivative GP polynomial HVP: base must be positive")
+            return
+        end if
+
+        u_variance = direction(1)
+        u_scale = direction(2)
+        u_offset = direction(3)
+        u_degree = direction(4)
+        base_dot = scale*u_scale*inner_product + offset*u_offset
+        ratio_base = base_dot/base
+        ratio_scale = scale*inner_product/base
+        ratio_offset = offset/base
+
+        value = variance*base**degree
+        log_value_sensitivity = 0.0_dp
+        log_value_sensitivity_dot = 0.0_dp
+        select case (parameter)
+        case (1)
+            log_value_sensitivity = 1.0_dp
+        case (2)
+            log_value_sensitivity = degree*ratio_scale
+            log_value_sensitivity_dot = degree*ratio_scale*(u_degree + u_scale - ratio_base)
+        case (3)
+            log_value_sensitivity = degree*ratio_offset
+            log_value_sensitivity_dot = degree*ratio_offset*(u_degree + u_offset - ratio_base)
+        case (4)
+            log_value_sensitivity = degree*log(base)
+            log_value_sensitivity_dot = degree*(u_degree*log(base) + ratio_base)
+        end select
+        value_dot = value*(u_variance + degree*u_degree*log(base) + degree*ratio_base)
+        value_parameter = value*log_value_sensitivity
+        value_parameter_dot = value_dot*log_value_sensitivity + &
+            value*log_value_sensitivity_dot
+
+        coefficient = variance*degree*scale*base**(degree - 1.0_dp)
+        log_coefficient_sensitivity = 0.0_dp
+        log_coefficient_sensitivity_dot = 0.0_dp
+        select case (parameter)
+        case (1)
+            log_coefficient_sensitivity = 1.0_dp
+        case (2)
+            log_coefficient_sensitivity = 1.0_dp + (degree - 1.0_dp)*ratio_scale
+            log_coefficient_sensitivity_dot = degree*u_degree*ratio_scale + &
+                (degree - 1.0_dp)*ratio_scale*(u_scale - ratio_base)
+        case (3)
+            log_coefficient_sensitivity = (degree - 1.0_dp)*ratio_offset
+            log_coefficient_sensitivity_dot = degree*u_degree*ratio_offset + &
+                (degree - 1.0_dp)*ratio_offset*(u_offset - ratio_base)
+        case (4)
+            log_coefficient_sensitivity = 1.0_dp + degree*log(base)
+            log_coefficient_sensitivity_dot = degree*(u_degree*log(base) + ratio_base)
+        end select
+        coefficient_dot = coefficient*(u_variance + u_scale + u_degree + &
+            degree*u_degree*log(base) + (degree - 1.0_dp)*ratio_base)
+        coefficient_parameter = coefficient*log_coefficient_sensitivity
+        coefficient_parameter_dot = coefficient_dot*log_coefficient_sensitivity + &
+            coefficient*log_coefficient_sensitivity_dot
+
+        curvature_base = variance*scale*scale*base**(degree - 2.0_dp)
+        degree_factor = degree*(degree - 1.0_dp)
+        curvature = curvature_base*degree_factor
+        curvature_base_dot = curvature_base*(u_variance + 2.0_dp*u_scale + u_degree*degree* &
+            log(base) + (degree - 2.0_dp)*ratio_base)
+        curvature_dot = curvature_base*degree*(2.0_dp*degree - 1.0_dp)*u_degree + &
+            degree_factor*curvature_base_dot
+        log_curvature_sensitivity = 0.0_dp
+        log_curvature_sensitivity_dot = 0.0_dp
+        select case (parameter)
+        case (1)
+            log_curvature_sensitivity = 1.0_dp
+        case (2)
+            log_curvature_sensitivity = 2.0_dp + (degree - 2.0_dp)*ratio_scale
+            log_curvature_sensitivity_dot = degree*u_degree*ratio_scale + &
+                (degree - 2.0_dp)*ratio_scale*(u_scale - ratio_base)
+        case (3)
+            log_curvature_sensitivity = (degree - 2.0_dp)*ratio_offset
+            log_curvature_sensitivity_dot = degree*u_degree*ratio_offset + &
+                (degree - 2.0_dp)*ratio_offset*(u_offset - ratio_base)
+        case (4)
+            ! d/d(log degree) of d(d-1)b**(d-2), divided by the same
+            ! nonzero factor is avoided below so degree=1 remains regular.
+            curvature_parameter = curvature_base*degree*(2.0_dp*degree - 1.0_dp) + &
+                curvature_base*degree_factor*degree*log(base)
+            curvature_parameter_dot = curvature_base_dot*(degree*(2.0_dp*degree - 1.0_dp) + &
+                degree_factor*degree*log(base)) + &
+                curvature_base*(degree*(4.0_dp*degree - 1.0_dp)*u_degree + &
+                degree*degree*(2.0_dp*degree - 1.0_dp)*u_degree*log(base) + &
+                degree_factor*degree*u_degree*log(base) + &
+                degree_factor*degree*ratio_base)
+            log_curvature_sensitivity = 0.0_dp
+        end select
+        if (parameter /= 4) then
+            curvature_parameter = curvature*log_curvature_sensitivity
+            curvature_parameter_dot = curvature_dot*log_curvature_sensitivity + &
+                curvature*log_curvature_sensitivity_dot
+        end if
+
+        if (component1 == 0 .and. component2 == 0) then
+            covariance = value
+            covariance_dot = value_dot
+            covariance_parameter = value_parameter
+            covariance_parameter_dot = value_parameter_dot
+        else if (component1 > 0 .and. component2 == 0) then
+            covariance = coefficient*x2(component1)
+            covariance_dot = coefficient_dot*x2(component1)
+            covariance_parameter = coefficient_parameter*x2(component1)
+            covariance_parameter_dot = coefficient_parameter_dot*x2(component1)
+        else if (component1 == 0 .and. component2 > 0) then
+            covariance = coefficient*x1(component2)
+            covariance_dot = coefficient_dot*x1(component2)
+            covariance_parameter = coefficient_parameter*x1(component2)
+            covariance_parameter_dot = coefficient_parameter_dot*x1(component2)
+        else
+            covariance = coefficient*merge(1.0_dp, 0.0_dp, component1 == component2) + &
+                curvature*x2(component1)*x1(component2)
+            covariance_dot = coefficient_dot*merge(1.0_dp, 0.0_dp, component1 == component2) + &
+                curvature_dot*x2(component1)*x1(component2)
+            covariance_parameter = coefficient_parameter*merge(1.0_dp, 0.0_dp, &
+                component1 == component2) + curvature_parameter*x2(component1)*x1(component2)
+            covariance_parameter_dot = coefficient_parameter_dot*merge(1.0_dp, 0.0_dp, &
+                component1 == component2) + curvature_parameter_dot*x2(component1)*x1(component2)
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine polynomial_derivative_parameter_hvp
 
     recursive subroutine kernel_value_parameter_jvp(kernel, x1, x2, parameter, &
             value, value_dot, status)
