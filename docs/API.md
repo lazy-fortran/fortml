@@ -200,7 +200,7 @@ repeated resident-batch evidence.
 | `vae_t` | `elbo`, `reconstruct` | No | ELBO gradient | No |
 | `rnn_t` | `forward`, squared-error `loss` | No | Loss gradient by BPTT | No |
 | `kernel_t` | Scalar value and matrix | Parameter JVP | Parameter VJP | Parameter HVP |
-| `xgboost_t` | Squared/squared-log (RMSLE)/logistic/Poisson/Tweedie/Huber/quantile/absolute/rank:pairwise margins, predictions, additive tree contributions, fitted-prefix slicing, and bounded ordered-gradient integer categorical partitions | Fixed-tree input JVP away from split boundaries; categorical models refuse discrete tangents | Fixed-tree input VJP away from split boundaries; categorical models refuse discrete cotangents | No |
+| `xgboost_t` | Squared/squared-log (RMSLE)/logistic/Poisson/fixed-shape Gamma/Tweedie/Huber/quantile/absolute/rank:pairwise margins, predictions, additive tree contributions, fitted-prefix slicing, and bounded ordered-gradient integer categorical partitions | Fixed-tree input JVP away from split boundaries; categorical models refuse discrete tangents | Fixed-tree input VJP away from split boundaries; categorical models refuse discrete cotangents | No |
 | `xgboost_classifier_t` | Binary integer labels, logistic `(n,2)` probabilities, staged margins, and feature diagnostics | Fixed-tree probability/input JVP away from split boundaries | Fixed-tree probability/input VJP away from split boundaries | No |
 | `lightgbm_t` | Weighted numeric regression/binary logistic histogram boosting with deterministic globally best-leaf growth | Fixed-tree input JVP away from split boundaries | Fixed-tree input VJP away from split boundaries | No |
 | `random_forest_classifier_t` | Bootstrap-ensemble probabilities and labels | Refused: split routing is discrete | Refused: split routing is discrete | No |
@@ -2647,12 +2647,13 @@ are linked; there is no hidden host fallback.
 `fit_regression` for a squared objective, `fit_binary` for a logistic
 objective, `fit_poisson` for nonnegative count targets with a log link,
 `fit_tweedie` for a compound-Poisson Tweedie objective with a log link,
+`fit_gamma` for the fixed-shape Gamma log-link objective,
 `fit_huber` for robust Huber regression, or `fit_quantile` for pinball
 regression. Use `fit_squared_log` for XGBoost's `reg:squaredlogerror`
 (RMSLE) objective, or `fit_ranking` for the `rank:pairwise` objective.
 The generic `fit` accepts `objective="squared"`,
 `"squaredlog"`/`"reg:squaredlogerror"`/`"rmsle"`, `"logistic"`,
-`"poisson"`, `"tweedie"`/`"reg:tweedie"`, `"huber"`/`"pseudohuber"`,
+`"poisson"`, `"gamma"`/`"reg:gamma"`, `"tweedie"`/`"reg:tweedie"`, `"huber"`/`"pseudohuber"`,
 `"quantile"`/`"pinball"`, or
 `"rank:pairwise"`.
 All fit methods accept an optional positive `sample_weight(:)`;
@@ -2664,7 +2665,8 @@ number of finite bins per node; every NaN remains an explicit missing bin and
 is routed by `missing_policy` (`error`, `learn`, `left`, or `right`). The
 histogram policy remains weighted-quantile even when `max_bin` is large; use
 `tree_method="exact"` when exhaustive split equivalence is required. The
-`huber_delta`, `quantile_alpha`, and `tweedie_variance_power` options
+`huber_delta`, `quantile_alpha`, `gamma_shape`, and
+`tweedie_variance_power` options
 control the robust and Tweedie objectives; `tweedie_variance_power` must
 satisfy `1 < tweedie_variance_power < 2`. The fitted value is available
 through `objective_parameter_value()`.
@@ -2725,6 +2727,15 @@ Nonfinite inputs, negative targets, powers at either endpoint, and nonfinite
 objective products are rejected. The tree fit and CPU prediction are
 deterministic; CUDA prediction returns `FORTNUM_NOT_IMPLEMENTED` rather than
 silently falling back to the host.
+
+The fixed-shape Gamma lane uses a positive `gamma_shape` and strictly positive
+targets. In log-mean margin `eta`, its weighted objective (up to a
+target-only constant) is `shape*(eta + y*exp(-eta))`, with exact products
+`gradient=shape*(1-y*exp(-eta))` and `hessian=shape*y*exp(-eta)`. Predictions
+use `exp(eta)`, objective metadata survives text persistence and warm starts,
+and invalid shape/target values are typed domain errors. Exact and weighted
+histogram CPU growth are supported; CUDA prediction remains an explicit
+`FORTNUM_NOT_IMPLEMENTED` refusal until a resident tree kernel is linked.
 
 The
 `missing_policy` option is `error` by default and rejects IEEE NaNs. `learn`

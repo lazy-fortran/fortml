@@ -13,19 +13,19 @@ The GitHub `v0.1.0` tag currently points to the earlier release-verification
 commit `a387cc5`; the trainer, calibration, variational-GP, transform, and CUDA
 VJP closure slices documented below are post-tag additions. The broad parity
 gate is still open, so this work does not move or recreate that tag.
-The checklist currently records 288 completed and 132 open items; open rows are
+The checklist currently records 289 completed and 132 open items; open rows are
 retained until their implementation, independent oracle, device/refusal
 behavior, and benchmark evidence land together.
 
 | Compiler | Command | Result |
 | --- | --- | --- |
-| GNU Fortran | `fo` | Static build, all 220 behavioral tests, and lint passed at the current FortML/FortAD-main revisions. The compiler still emits non-fatal array-temporary warnings; see [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
+| GNU Fortran | `fo` | Static build, all 224 behavioral tests, and lint passed at the current FortML/FortAD-main revisions. The compiler still emits non-fatal array-temporary warnings; see [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
 | NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded older compiler lane. The checked-in NVIDIA log predates the current 220-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
 The checked-in GNU compiler log is the fresh 2026-08-08 run against FortML code
-revision `11ab2317618994ef6b1ea24ef1de8cbd8fe104a3`, FortAD `origin/main` at
-`0e9a38ebb8c382530272aa3e51f44255e87c41d7`, and FortNum at
+revision `5b1ff3170a93b8865225c764f9ab498799ead59f`, FortAD `origin/main` at
+`3046712912d1fe1d9f252fd4bbec29afe6174e26`, and FortNum at
 `38bc0e578ec5c6c0e636e8fdd3844f54f9e3e473`, run from the clean checkout
 under `/mnt/storage/code/lazy-fortran/fortml`. The run includes the
   kernel-catalog, weighted LDA/QDA, robust/absolute XGBoost, neural NLL, random-forest,
@@ -50,7 +50,7 @@ variational-GP objective, multiclass variational-GP prediction/JVPs/VJPs, positi
 The build emits non-fatal GNU
 array-temporary warnings in FortFront query/generator calls, existing GP
 benchmark boundaries, variational-GP batch conversions, and basis-pipeline
-shape conversions. They are isolated to array construction; all 220 behavioral
+shape conversions. They are isolated to array construction; all 224 behavioral
 tests pass. Lint has zero unused-import findings and the full `fo` lint stage
 passes despite the non-fatal compiler warning corpus. The independent CUDA gate additionally covers the
 resident dense-affine value/JVP/VJP path and its single-layer MSE update with
@@ -2021,6 +2021,14 @@ hyperparameter block. A deliberate train/validation leakage fixture must fail.
   growth, validation/early stopping, and typed CUDA refusal. The independent
   `test_xgboost_tweedie` oracle and `fortml-bench/results/XGBOOST_TWEEDIE.md`
   report record zero CPU oracle error and the unavailable CUDA row.
+- [x] Add a fixed-shape Gamma log-link objective to `xgboost_t`. `fit_gamma`
+  and the generic `gamma`/`reg:gamma` aliases validate strictly positive
+  targets and `gamma_shape`, expose exact weighted value/gradient/Hessian
+  products, use positive `exp(margin)` predictions, preserve objective
+  metadata through warm starts and text snapshots, and support exact and
+  weighted-histogram CPU growth. `test_xgboost_gamma` and
+  `fortml-bench/results/XGBOOST_GAMMA.md` provide independent Newton oracles;
+  tree CUDA remains a typed refusal until a resident kernel is linked.
 - [x] Add binary and deterministic one-vs-rest multiclass gradient-boosted
   classification with stable logistic objectives, staged margins, normalized
   probabilities, feature diagnostics, and typed CUDA refusals.
