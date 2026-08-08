@@ -13,7 +13,7 @@ The GitHub `v0.1.0` tag currently points to the earlier release-verification
 commit `a387cc5`; the trainer, calibration, variational-GP, transform, and CUDA
 VJP closure slices documented below are post-tag additions. The broad parity
 gate is still open, so this work does not move or recreate that tag.
-The checklist currently records 314 completed and 128 open items; open rows are
+The checklist currently records 315 completed and 128 open items; open rows are
 retained until their implementation, independent oracle, device/refusal
 behavior, and benchmark evidence land together.
 
@@ -427,6 +427,15 @@ derivative products, typed device behavior, persistence seam, independent
 oracle, and benchmark row agree. The clean-break pre-1.0 policy permits
 replacing an incomplete interface; callers and fixtures are updated in the
 same change instead of preserving a misleading compatibility layer.
+
+- [x] Record the clean-break object graph and ownership rules for data views,
+  transform graphs, parameter registries, derivative providers, FortOpt
+  objectives/trainers, resident device plans, state dictionaries, and
+  benchmark records in [`docs/ML_ARCHITECTURE.md`](docs/ML_ARCHITECTURE.md).
+  The document makes the common value/JVP/VJP/HVP contract, typed device
+  boundaries, transactional checkpoints, FortSym/FortAD provenance, and the
+  migration order explicit. Estimator and backend implementation rows remain
+  open until they satisfy that contract with independent evidence.
 
 The current parallel closure order is:
 
