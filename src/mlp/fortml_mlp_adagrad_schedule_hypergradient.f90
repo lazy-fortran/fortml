@@ -13,7 +13,9 @@ module fortml_mlp_adagrad_schedule_hypergradient
         FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED, FORTNUM_CONVERGENCE_ERROR
     use fortml_device, only: FORTML_DEVICE_CPU
     use fortml_mlp, only: mlp_t
-    use fortml_mlp_schedules, only: mlp_learning_rate_schedule_t
+    use fortml_mlp_schedules, only: mlp_learning_rate_schedule_t, &
+        MLP_SCHEDULE_COSINE_DECAY, MLP_SCHEDULE_WARMUP_COSINE, &
+        MLP_SCHEDULE_EXPONENTIAL_DECAY
     use fortml_mlp_training, only: mlp_loss_value_gradient, mlp_loss_hvp, &
         MLP_OPTIMIZER_ADAGRAD
     use fortopt_objective, only: objective_t
@@ -160,8 +162,12 @@ contains
         self%initial_log_base_rate = log(options%base_rate)
         self%initial_log_l2 = log(options%l2)
         self%initial_log_epsilon = log(options%epsilon)
-        self%initial_logit_min_fraction = logit(interior_probability(options%schedule%min_rate_fraction))
-        self%initial_logit_decay_factor = logit(interior_probability(options%schedule%decay_factor))
+        self%initial_logit_min_fraction = bounded_logit( &
+            interior_probability(options%schedule%min_rate_fraction), &
+            options%lower_logit_min_fraction, options%upper_logit_min_fraction)
+        self%initial_logit_decay_factor = bounded_logit( &
+            interior_probability(options%schedule%decay_factor), &
+            options%lower_logit_decay_factor, options%upper_logit_decay_factor)
         self%initialized = .true.
         call status_set(status, FORTNUM_OK, "")
     end subroutine mlp_adagrad_schedule_hypergradient_initialize
@@ -578,6 +584,12 @@ contains
         y = log(x/(1.0_dp-x))
     end function logit
 
+    pure real(dp) function bounded_logit(x, lower, upper) result(y)
+        real(dp), intent(in) :: x, lower, upper
+
+        y = min(upper, max(lower, logit(x)))
+    end function bounded_logit
+
     logical function valid_options(options) result(valid)
         type(mlp_adagrad_schedule_hypergradient_options_t), intent(in) :: options
 
@@ -608,11 +620,18 @@ contains
             log(options%base_rate) <= options%upper_log_base_rate .and. &
             log(options%l2) >= options%lower_log_l2 .and. log(options%l2) <= options%upper_log_l2 .and. &
             log(options%epsilon) >= options%lower_log_epsilon .and. &
-            log(options%epsilon) <= options%upper_log_epsilon .and. &
-            logit(interior_probability(options%schedule%min_rate_fraction)) >= options%lower_logit_min_fraction .and. &
-            logit(interior_probability(options%schedule%min_rate_fraction)) <= options%upper_logit_min_fraction .and. &
-            logit(interior_probability(options%schedule%decay_factor)) >= options%lower_logit_decay_factor .and. &
-            logit(interior_probability(options%schedule%decay_factor)) <= options%upper_logit_decay_factor
+            log(options%epsilon) <= options%upper_log_epsilon
+        if (options%schedule%kind == MLP_SCHEDULE_COSINE_DECAY .or. &
+                options%schedule%kind == MLP_SCHEDULE_WARMUP_COSINE) then
+            valid = valid .and. &
+                logit(interior_probability(options%schedule%min_rate_fraction)) >= options%lower_logit_min_fraction .and. &
+                logit(interior_probability(options%schedule%min_rate_fraction)) <= options%upper_logit_min_fraction
+        end if
+        if (options%schedule%kind == MLP_SCHEDULE_EXPONENTIAL_DECAY) then
+            valid = valid .and. &
+                logit(interior_probability(options%schedule%decay_factor)) >= options%lower_logit_decay_factor .and. &
+                logit(interior_probability(options%schedule%decay_factor)) <= options%upper_logit_decay_factor
+        end if
         if (.not. valid) return
         valid = options%memory >= 1 .and. options%max_iterations >= 1 .and. &
             options%max_line_search >= 1 .and. ieee_is_finite(options%gradient_tolerance) .and. &
