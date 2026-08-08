@@ -164,6 +164,7 @@ repeated resident-batch evidence.
 | `lda_classifier_t` | Gaussian log probabilities, probabilities, and labels | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
 | `qda_classifier_t` | Class-specific Gaussian log probabilities, probabilities, and labels | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
 | `multilabel_logistic_classifier_t` | Independent positive probabilities for an indicator matrix | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
+| `classifier_chain_t` | Sequential binary logistic heads with soft chain probabilities and arbitrary per-output label pairs | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
 | `ordinal_logistic_classifier_t` | Ordered cumulative-logit probabilities and labels | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
 | `basis_map_t` | `evaluate` | Parameters and inputs | Parameters and inputs | Analytic for polynomial/Fourier/radial/spline; callback maps refuse |
 | `one_hot_encoder_t` | Dense one-hot `transform` | Refused: integer categories have no canonical tangent space | Refused: integer categories have no canonical cotangent space | No |
@@ -1130,6 +1131,34 @@ support in the current build. `decision_function_device`,
 `predict_proba_device`, and `predict_device` dispatch selected CPU contexts;
 CUDA requests return `FORTNUM_NOT_IMPLEMENTED` until a resident multi-head
 kernel is linked, with no hidden host fallback.
+
+### `fortml_classifier_chain`
+
+`classifier_chain_t%fit(x,labels,status[,l2,fit_intercept,max_iterations,
+tolerance,sample_weight,class_weight,thresholds])` fits one binary logistic
+head per output column. `labels(n_samples,n_outputs)` may use any two distinct
+integer labels in each column; `classes()` returns each pair in sorted order.
+Head `j` is trained on the original features followed by the observed positive
+indicators for outputs `1:j-1`. `sample_weight` is shared, while
+`class_weight(2,n_outputs)` and `thresholds(n_outputs)` are in each output's
+sorted negative/positive order.
+
+`decision_function` returns the sequential logits and `predict_proba` returns
+the positive probability matrix `(n_samples,n_outputs)`. At prediction time
+the chain uses prior positive probabilities as continuous features; `predict`
+applies the per-output thresholds and maps back to the stored integer labels.
+`parameters()` concatenates head coefficient/intercept blocks in output order,
+so later heads have one additional packed feature parameter each. The input and
+packed-parameter `predict_proba_jvp`/`predict_proba_vjp` products propagate the
+same forward and reverse chain rules exactly. Hard labels and fit-time optimizer
+paths are discrete and are not differentiated.
+
+`device_supported(FORTML_DEVICE_CPU)` is true for fitted models. The selected
+CPU device methods dispatch to the host implementation; selected CUDA requests
+return `FORTNUM_NOT_IMPLEMENTED` until a resident classifier-chain kernel is
+linked, with no hidden host fallback. `fortml_classifier_chain_logistic_classifier`
+re-exports the type under the longer compatibility name
+`classifier_chain_logistic_classifier_t`.
 
 ### `fortml_ordinal_logistic_classifier`
 
