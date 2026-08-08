@@ -4,8 +4,7 @@ program test_lightgbm_warm_start
     !! controls must leave every staged prefix unchanged.
     use, intrinsic :: iso_fortran_env, only: real64, error_unit
     use fortml_lightgbm, only: lightgbm_t, lightgbm_options_t
-    use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_DOMAIN_ERROR, &
-        FORTNUM_NOT_IMPLEMENTED
+    use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_DOMAIN_ERROR
     implicit none
 
     type(lightgbm_t) :: prefix, warm, full, invalid
@@ -75,11 +74,11 @@ program test_lightgbm_warm_start
     bad_options = full_options
     bad_options%early_stopping_rounds = 1
     call invalid%fit_warm_start(x, target, status, bad_options, weights)
-    call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
-        "validation early-stopping boundary", failures)
+    call check(status%code == FORTNUM_DOMAIN_ERROR, &
+        "validation data required boundary", failures)
     call invalid%predict_staged_margin(x, after_invalid, status)
     call check(status_ok(status) .and. maxval(abs(after_invalid-before_invalid)) < &
-        2.0e-13_real64, "early-stopping refusal is transactional", failures)
+        2.0e-13_real64, "missing validation is transactional", failures)
 
     if (failures /= 0) then
         write (error_unit, '(i0,a)') failures, " LightGBM warm-start test(s) failed"
