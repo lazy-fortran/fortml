@@ -3419,6 +3419,27 @@ softmax reductions, and reverse kernels are linked. See
 `docs/GP_VARIATIONAL_CATEGORICAL.md` and the independent oracle
 `test_gp_variational_categorical_classification`.
 
+### `fortml_gp_ordinal_classification`
+
+`gp_ordinal_classification_t` is an ordered latent-Gaussian GP baseline. `fit`
+sorts integer labels, maps them to ranks, and fits one zero-mean
+`gp_regression_t`; fixed mid-rank cut points map the predictive Gaussian to
+adjacent normal-CDF class probabilities. `classes()`, `thresholds()`,
+`predict_latent`, `predict_proba`, and `predict` expose the ordered state while
+preserving the caller's integer labels. `gp_ordinal_classification_options_t`
+controls positive latent noise variance and jitter.
+
+Packed kernel/noise products are available through
+`predict_latent_parameter_jvp/vjp` and
+`predict_proba_parameter_jvp/vjp`. Input JVP/VJP products differentiate the
+kernel cross-covariance and posterior variance analytically. CPU is the exact
+reference; prediction and reverse-product CUDA methods return
+`FORTNUM_NOT_IMPLEMENTED` until resident ordinal kernels are linked. This is a
+latent-Gaussian ordered surrogate, not a native cumulative-likelihood fit;
+optimized cut points and ordinal likelihood hyperparameters remain open. The
+independent oracle is `test_gp_ordinal_classification` and the design note is
+[`docs/GP_ORDINAL_CLASSIFICATION.md`](GP_ORDINAL_CLASSIFICATION.md).
+
 ### `fortml_sparse_prior_gp`
 
 `sparse_prior_gp_t` implements `SPARSE_SOR`, `SPARSE_DTC`, `SPARSE_FITC`, and

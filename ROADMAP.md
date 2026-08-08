@@ -1048,6 +1048,15 @@ when a lower-level primitive already exists.
   refusals are covered by `test_gp_variational_categorical_classification` and
   `docs/GP_VARIATIONAL_CATEGORICAL.md`. HVP, kernel-hyperparameter, natural
   gradient, and resident-GPU products remain open.
+- [x] Add `gp_ordinal_classification_t`, a latent-Gaussian ordered GP baseline.
+  Sorted integer labels map to rank targets for a zero-mean Gaussian GP;
+  fixed mid-rank cut points convert predictive mean/variance to adjacent
+  normal-CDF probabilities. Packed kernel/noise parameter products and
+  analytic input JVP/VJP products include the Cholesky solve and uncertainty
+  chain. `test_gp_ordinal_classification` independently checks simplex rows,
+  class order, parameter/input finite differences, JVP/VJP duality, and typed
+  CUDA refusals; see `docs/GP_ORDINAL_CLASSIFICATION.md`. Native cumulative
+  likelihoods, optimized cut points, and resident GPU inference remain open.
 - [ ] Derivative observations for every supported smooth kernel, mixed orders,
   vector fields, Hessian observations, operator-valued outputs, analytic
   third-order query products, and covariance products over value/derivative
