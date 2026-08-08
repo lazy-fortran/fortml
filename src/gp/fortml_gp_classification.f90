@@ -13,7 +13,7 @@ module fortml_gp_classification
         FORTNUM_OK, FORTNUM_DOMAIN_ERROR, FORTNUM_CONVERGENCE_ERROR, &
         FORTNUM_NOT_IMPLEMENTED
     use fortnum_cholesky, only: cholesky_factorization_t
-    use fortml_kernels, only: kernel_t
+    use fortml_kernels, only: kernel_t, clone_kernel
     use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU, &
         FORTML_DEVICE_CUDA
     implicit none
@@ -1201,6 +1201,8 @@ contains
         class(gp_classification_t), intent(inout) :: self
         real(dp), intent(in) :: parameters(:)
         type(fortnum_status_t), intent(out) :: status
+        type(kernel_t) :: candidate
+        type(cholesky_factorization_t) :: prior_candidate, posterior_candidate
         real(dp), allocatable :: covariance(:, :), matrix(:, :)
         integer :: i
 
@@ -1215,21 +1217,25 @@ contains
                 "GP classification set_parameters: parameter shape or values are invalid")
             return
         end if
-        call self%kernel%set_parameters(parameters, status)
+        candidate = clone_kernel(self%kernel)
+        call candidate%set_parameters(parameters, status)
         if (status%code /= FORTNUM_OK) return
         allocate(covariance(self%n_samples, self%n_samples))
-        call self%kernel%matrix(self%x_train, self%x_train, covariance, status)
+        call candidate%matrix(self%x_train, self%x_train, covariance, status)
         if (status%code /= FORTNUM_OK) return
         do i = 1, self%n_samples
             covariance(i, i) = covariance(i, i) + self%jitter
         end do
-        call self%prior_factorization%factorize(covariance, status)
+        call prior_candidate%factorize(covariance, status)
         if (status%code /= FORTNUM_OK) return
         allocate(matrix(self%n_samples, self%n_samples))
         call posterior_system(covariance, self%sqrt_w, matrix)
-        call self%posterior_factorization%factorize(matrix, status)
+        call posterior_candidate%factorize(matrix, status)
         if (status%code /= FORTNUM_OK) return
+        self%kernel = candidate
         self%covariance = covariance
+        self%prior_factorization = prior_candidate
+        self%posterior_factorization = posterior_candidate
         call status_set(status, FORTNUM_OK, "")
     end subroutine gp_classification_set_parameters
 

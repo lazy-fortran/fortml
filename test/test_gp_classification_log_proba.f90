@@ -80,6 +80,15 @@ program test_gp_classification_log_proba
     call check(status_ok(status) .and. abs(lhs - rhs) < 2.0e-5_dp, &
         "log probability input VJP duality", failures)
 
+    ! Malformed fixed-state updates are transactional: the previous prediction
+    ! remains usable after a refused parameter pack.
+    call model%predict_log_proba(query, log_plus, status)
+    call model%set_parameters(parameters(:1), status)
+    call check(.not. status_ok(status), "malformed parameter refusal", failures)
+    call model%predict_log_proba(query, log_minus, status)
+    call check(status_ok(status) .and. maxval(abs(log_plus - log_minus)) < 2.0e-14_dp, &
+        "transactional parameter refusal", failures)
+
     cuda%kind = FORTML_DEVICE_CUDA
     cuda%selected = .true.
     cuda%available = .true.
