@@ -21,8 +21,8 @@ gate is still open, so this work does not move or recreate that tag.
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
 The checked-in GNU compiler log is the fresh 2026-08-08 run against FortML code
-revision `f6456e68ba019cb92c1cbd01095fb5b8ce76e2b4`, FortAD `origin/main` at
-`9cbfb0ef46cf7f6c57488b311c2ff3144193a34e`, and FortNum at
+revision `fe69990b1d2a762c9b8022343307c42c4097508d`, FortAD `origin/main` at
+`10c0e46f2833ac1bebbca9468718e36c2a513a2a`, and FortNum at
 `38bc0e578ec5c6c0e636e8fdd3844f54f9e3e473`, run from the clean checkout
 under `/mnt/storage/code/lazy-fortran/fortml`. The run includes the
   kernel-catalog, weighted LDA/QDA, robust/absolute XGBoost, neural NLL, random-forest,
@@ -536,7 +536,7 @@ only listed as gaps:
 
 The FortBO and FortMC companion pins were rechecked against their remote
 `main` branches on 2026-08-08: FortBO
-`3743edba131d5760725dc38dd9f54156d475f569` and FortMC
+`04528f00bb522e6c9a40172da9def778f09d4524` and FortMC
 `4dde0ccdc37b4c331126605406b08e1f3bda4f59`. Their roadmaps remain authoritative
 for acquisition and sampling algorithms; FortML owns the posterior/log-density
 protocols and does not embed sampler or acquisition state. FortBO additionally
@@ -549,13 +549,14 @@ acquisition search end to end with Sobol multistarts and FortOpt L-BFGS-B,
 beating random search on the Branin fixture at equal budget. The current pin
 also supplies preference learning and noisy-dominance probabilities with
 FortSym-generated Gaussian-comparison derivatives, exact posterior mean and
-standard-deviation Hessians from derivative predictions, and a tested TuRBO-1/
-TuRBO-m driver with deterministic region updates and posterior sampling, an
+standard-deviation Hessians from derivative predictions, and tested TuRBO-1/
+TuRBO-m and DTuRBO mode-2 drivers with deterministic region updates,
+posterior sampling, and posterior-derivative local models, an
 indefinite-curvature bound-constrained quadratic subproblem, multi-objective
 Pareto archives with exact hypervolume and scalarizations, and stopping rules
 that report a machine-readable reason. Posterior-
-derivative DTuRBO mode 2, full batch and knowledge/entropy/noisy acquisitions,
-device execution, and wider sparse, variational, and multi-output adapters
+full batch and knowledge/entropy/noisy acquisitions, device execution, and
+wider sparse, variational, and multi-output adapters
 remain open. Any future adapter must add
 a focused oracle, typed GPU/refusal row, and a benchmark record in the companion
 harness.
@@ -594,8 +595,8 @@ gradient-aware history, and normalized continuous/integer/categorical/mixed/
 conditional search spaces, analytic EI/PI/UCB/log-EI, and marginal Monte-Carlo
 EI/PI with CRN, antithetic, and pathwise-gradient products. It also supplies
 Sobol TuRBO candidates, discrete Thompson selection, a tested FortML
-value-only/derivative-observation GP adapter, and a tested gradient-based
-DTuRBO in-region optimizer. Posterior-derivative DTuRBO mode 2, full batch and
+value-only/derivative-observation GP adapter, and tested gradient-based
+DTuRBO mode-2 local models and in-region optimization. Full batch and
 knowledge/entropy/noisy acquisitions, device execution, and sparse/variational/
 multi-output adapters remain in its roadmap. Adapters map FortML posterior
 moments and derivative observations into those contracts without adding sampler
@@ -613,7 +614,7 @@ the complete operation graph resident or return a typed refusal; OpenACC is the
 first choice when it preserves semantics, and native CUDA is reserved for
 fixed no-autodiff hot loops where OpenACC cannot.
 
-The dependency pins used by the current GNU verification are FortAD `9cbfb0e`,
+The dependency pins used by the current GNU verification are FortAD `10c0e46`,
 FortSym `92fa62b`, and FortOpt `bfbf1fc`, all checked against their remote
 `main` branches on 2026-08-08. Generated derivatives record the exact FortSym
 revision and source hash; model-level autodiff uses the same FortAD `main` pin.
@@ -626,14 +627,15 @@ acquisition work packages:
 
 The companion repositories were checked on 2026-08-08 at FortMC
 `4dde0ccdc37b4c331126605406b08e1f3bda4f59` and FortBO
-`3743edba131d5760725dc38dd9f54156d475f569`, both on their `main` branches. The
+`04528f00bb522e6c9a40172da9def778f09d4524`, both on their `main` branches. The
 FortBO pin now includes a versioned capability-gated posterior contract,
 gradient-aware observation history/checkpointing, normalized continuous/integer/
 categorical/mixed/conditional search spaces, a differentiable-coordinate mask,
 analytic EI/PI/UCB/log-EI, marginal Monte-Carlo EI/PI with CRN, antithetic
 draws and pathwise gradients, Sobol TuRBO candidates, Thompson selection,
 gradient-based DTuRBO in-region acquisition search, exact posterior mean and
-standard-deviation Hessians, a tested TuRBO-1/TuRBO-m driver, an
+standard-deviation Hessians, tested TuRBO-1/TuRBO-m and DTuRBO mode-2 drivers,
+an
 indefinite-curvature quadratic subproblem, Pareto archives with
 exact hypervolume, scalarizations, machine-readable stopping reasons,
 preference learning, noisy dominance, the FortML derivative-GP input-HVP
@@ -2997,7 +2999,7 @@ results as an external literature claim.
   count, and fallback reason in generated-kernel provenance.
 
 The repository snapshot used for this roadmap resolves `fortad` `main` at
-`9cbfb0ef46cf7f6c57488b311c2ff3144193a34e` and `fortsym` `main` at
+`10c0e46f2833ac1bebbca9468718e36c2a513a2a` and `fortsym` `main` at
 `92fa62bb60bf5b74b0e7b2e8b891c1b13e39b18d`. The checked-in RBF HVP/product
 module was generated by FortAD `5e1bfe0`; the RBF primal and first-order leaf
 was generated by FortSym `f71a1aa` (the earlier primal-only leaf remains
