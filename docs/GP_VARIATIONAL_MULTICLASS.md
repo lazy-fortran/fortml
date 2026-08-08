@@ -12,9 +12,11 @@ Bernoulli logistic or probit ELBO for the one-vs-rest targets;
 `elbo_gradient` and `elbo_jvp` return matching packed products.  The packed
 vector is the concatenation of each binary model's inducing mean and
 log-Cholesky covariance coordinates, in sorted class order.  It can be passed
-directly to FortOpt L-BFGS-B or the generic FortML trainer.  `scale` scales
-only each likelihood term, which allows minibatch callers to apply their own
-sample-count correction.
+directly to FortOpt L-BFGS-B or the generic FortML trainer. Optional
+nonnegative `sample_weight` values are shared by all one-vs-rest heads and
+weight each row's expected likelihood; a positive total mass is required.
+`scale` scales only each weighted likelihood term, which allows minibatch
+callers to apply their own sample-count correction without scaling any KL.
 
 `predict_latent` returns one latent mean and variance column per class.
 `predict_proba` takes the positive Bernoulli column from each class and
@@ -37,6 +39,8 @@ likelihood tables, and reductions are resident.  There is no hidden host
 fallback.  The independent finite-difference, simplex, packed-JVP, label-order,
 and device-refusal oracle is
 [`test_gp_variational_multiclass_classification`](../test/test_gp_variational_multiclass_classification.f90).
+Weighted ELBO routing and its independent binary-composition oracle are in
+[`test_gp_variational_classification_weights`](../test/test_gp_variational_classification_weights.f90).
 The kernel-product finite-difference and adjoint oracle is
 [`test_gp_variational_kernel_products`](../test/test_gp_variational_kernel_products.f90);
 its CUDA device wrapper is an explicit typed refusal until resident OVR

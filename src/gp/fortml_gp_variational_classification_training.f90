@@ -43,6 +43,7 @@ module fortml_gp_variational_classification_training
         type(gp_variational_classification_t), pointer :: model => null()
         real(dp), allocatable :: x(:, :)
         integer, allocatable :: labels(:)
+        real(dp), allocatable :: sample_weight(:)
     end type variational_context_t
 
     public :: gp_variational_classification_optimize
@@ -50,7 +51,7 @@ module fortml_gp_variational_classification_training
 contains
 
     subroutine gp_variational_classification_optimize(model, x, labels, options, &
-            result, status, device)
+            result, status, device, sample_weight)
         !! Maximize the deterministic variational ELBO with FortOpt L-BFGS-B.
         !!
         !! The packed vector follows `model%parameters()`: inducing means,
@@ -63,6 +64,7 @@ contains
         type(gp_variational_classification_lbfgsb_result_t), intent(out) :: result
         type(fortnum_status_t), intent(out) :: status
         type(fortml_device_t), intent(in), optional :: device
+        real(dp), intent(in), optional :: sample_weight(:)
         type(variational_context_t), target :: context
         type(objective_t) :: objective
         type(lbfgsb_t) :: optimizer
@@ -97,7 +99,7 @@ contains
                 "variational GP training: options are invalid")
             return
         end if
-        if (.not. valid_data(model, x, labels)) then
+        if (.not. valid_data(model, x, labels, sample_weight)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "variational GP training: data or labels are invalid")
             return
@@ -112,6 +114,7 @@ contains
         context%model => model
         allocate(context%x, source=x)
         allocate(context%labels, source=labels)
+        if (present(sample_weight)) allocate(context%sample_weight, source=sample_weight)
         parameters = model%parameters()
         initial_parameters = parameters
         allocate(lower(n_parameters), upper(n_parameters), gradient(n_parameters))
@@ -175,8 +178,13 @@ contains
             end if
             call context%model%set_parameters(parameters, status)
             if (status%code /= FORTNUM_OK) return
-            call context%model%elbo_gradient(context%x, context%labels, elbo, &
-                gradient, status)
+            if (allocated(context%sample_weight)) then
+                call context%model%elbo_gradient(context%x, context%labels, elbo, &
+                    gradient, status, sample_weight=context%sample_weight)
+            else
+                call context%model%elbo_gradient(context%x, context%labels, elbo, &
+                    gradient, status)
+            end if
             if (status%code /= FORTNUM_OK) return
             value = -elbo
             gradient = -gradient
@@ -215,11 +223,13 @@ contains
             options%objective_tolerance >= 0.0_dp .and. options%lower_bound <= options%upper_bound
     end function valid_options
 
-    logical function valid_data(model, x, labels) result(valid)
+    logical function valid_data(model, x, labels, sample_weight) result(valid)
         type(gp_variational_classification_t), intent(in) :: model
         real(dp), intent(in) :: x(:, :)
         integer, intent(in) :: labels(:)
+        real(dp), intent(in), optional :: sample_weight(:)
         integer :: i, n_positive, n_negative
+        real(dp) :: weight_mass
 
         n_positive = 0
         n_negative = 0
@@ -234,6 +244,17 @@ contains
             size(x, 2) >= 1 .and. size(labels) == size(x, 1) .and. &
             model%parameter_count() >= 1 .and. all(ieee_is_finite(x)) .and. &
             n_positive > 0 .and. n_negative > 0
+        if (.not. valid) return
+        if (present(sample_weight)) then
+            if (size(sample_weight) /= size(labels) .or. &
+                any(.not. ieee_is_finite(sample_weight)) .or. &
+                any(sample_weight < 0.0_dp)) then
+                valid = .false.
+                return
+            end if
+            weight_mass = sum(sample_weight)
+            valid = ieee_is_finite(weight_mass) .and. weight_mass > 0.0_dp
+        end if
     end function valid_data
 
 end module fortml_gp_variational_classification_training
