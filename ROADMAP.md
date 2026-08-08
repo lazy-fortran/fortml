@@ -313,7 +313,8 @@ only listed as gaps:
   callback through bounded FortOpt L-BFGS-B. The independent
   `test_mlp_classifier_objective` checks weighted value, JVP/VJP duality, HVP
   central differences, and bounded optimization; resident CUDA classifier
-  training remains an explicit typed refusal.
+  training remains an explicit typed refusal. Release evidence is
+  `results/MLP_CLASSIFIER_OBJECTIVE.md` in `fortml-bench`.
 - `gp_variational_classification_t` now exposes latent/probability prediction
   and packed parameter JVPs, and
   `gp_variational_multiclass_classification_t` composes sorted-label OVR
