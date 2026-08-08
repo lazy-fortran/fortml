@@ -13,22 +13,22 @@ The GitHub `v0.1.0` tag currently points to the earlier release-verification
 commit `a387cc5`; the trainer, calibration, variational-GP, transform, and CUDA
 VJP closure slices documented below are post-tag additions. The broad parity
 gate is still open, so this work does not move or recreate that tag.
-The checklist currently records 315 completed and 128 open items; open rows are
+The checklist currently records 318 completed and 128 open items; open rows are
 retained until their implementation, independent oracle, device/refusal
 behavior, and benchmark evidence land together.
 
 | Compiler | Command | Result |
 | --- | --- | --- |
-| GNU Fortran | `fo` | Static build, all 242 behavioral tests, and lint passed at the current FortML/FortAD-main revisions. The compiler still emits non-fatal array-temporary warnings; see [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
-| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded older compiler lane. The checked-in NVIDIA log predates the current 242-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
+| GNU Fortran | `fo` | Static build, all 243 behavioral tests, and lint passed at the current FortML/FortAD-main revisions. The compiler still emits non-fatal array-temporary warnings; see [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
+| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded older compiler lane. The checked-in NVIDIA log predates the current 243-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
 The checked-in GNU compiler log is the fresh 2026-08-08 run against FortML code
-revision `5c70b1b` (including multiclass Platt calibration, bounded LightGBM
-DART, and weighted validation hypergradients), FortAD `origin/main` at
+revision `85cadc3` (including calibrated-softmax OOF policies, affine schedule
+outer HVPs, and seeded XGBoost DART), FortAD `origin/main` at
 `5f77c47b1f5027a777e16e2bf1cf9a8958942a83`, and FortNum at
 `396c8f202ba45e97eecceaba2e6bf848a206b4d0`, run from the clean checkout
-under `/mnt/storage/code/lazy-fortran/fortml`. The run includes the
+under the detached clean checkout `/mnt/storage/compile/fortml`. The run includes the
   kernel-catalog, weighted LDA/QDA, robust/absolute XGBoost, neural NLL, random-forest,
 Extra-Trees, grouped MLP HVP and L-BFGS-B, basis/pipeline HVP, cosine
 derivative-GP, multilabel/ROC-AUC/PR-AUC/F-beta ranking, derivative-GP
@@ -48,11 +48,14 @@ variational-GP objective, multiclass variational-GP prediction/JVPs/VJPs, positi
  RBF second-derivative GP observations, sparse-GP kernel hyperparameter products,
  classifier-chain logistic products, MLP optimizer groups/checkpoint metadata,
  and differentiable basis-pipeline
- training objective, and fixed-active-set optimizer-group clipping products.
+training objective, fixed-active-set optimizer-group clipping products, affine
+constant-schedule outer HVPs with the FortOpt callback seam, seeded XGBoost DART
+tree scales with transactional warm-start controls, and calibrated-softmax OOF
+temperature, weighted Platt, and isotonic policies.
 The build emits non-fatal GNU
 array-temporary warnings in FortFront query/generator calls, existing GP
 benchmark boundaries, variational-GP batch conversions, and basis-pipeline
-shape conversions. They are isolated to array construction; all 242 behavioral
+shape conversions. They are isolated to array construction; all 243 behavioral
 tests pass. Lint has zero unused-import findings and the full `fo` lint stage
 passes despite the non-fatal compiler warning corpus. The independent CUDA gate additionally covers the
 resident dense-affine value/JVP/VJP path and its single-layer MSE update with
@@ -61,7 +64,7 @@ compiler coverage remains an
 explicit older-build result.
 
 The checked-in evidence is maintained on the clean FortML-bench revision
-`8f0fec3`; each CSV records the exact clean benchmark revision used to produce
+`4614527`; each CSV records the exact clean benchmark revision used to produce
 its rows,
 the trainer-checkpoint, unfactored-Adafactor, binary-objective,
 multiclass-calibration, variational-multiclass-GP, PINN/physics-objective,
@@ -194,6 +197,22 @@ active-set products remain typed refusals. The wrapper state records the
 calibration method, packed calibration count, knot count, and derivative
 availability.
 
+The affine constant-schedule HVP closure adds an exact outer HVP for the
+one-layer affine MLP objective, with central finite-difference, JVP/VJP,
+Hessian-symmetry, and FortOpt callback checks. The contract requires a linear
+output; the hidden activation is ignored for a one-layer model, while
+nonconstant schedules, nonlinear outputs, and CUDA remain typed boundaries.
+Its independent NumPy lane is recorded in
+`fortml-bench/results/MLP_CONSTANT_SCHEDULE_HVP.md` and
+`mlp_constant_schedule_hvp.csv` (maximum oracle error `2.2693e-8`).
+
+The seeded XGBoost DART closure propagates deterministic prior-tree dropout
+and per-tree normalization through staged predictions, contributions, slicing,
+schema-5 persistence, and transactional warm-start control matching. The
+independent NumPy lane is recorded in `fortml-bench/results/xgboost_dart.csv`;
+prediction error is `8.88e-16`, replay/persistence/warm-start errors are zero,
+and the resident-CUDA path is an explicit typed refusal.
+
 ### 2026-08-08 parity and provenance slice
 
 This verification records the current bounded production contracts without
@@ -225,7 +244,7 @@ optimizer-group execution, mixed precision, distributed state, and migration
 remain open. The source and benchmark pins for this earlier optimizer-group
 slice were FortML `05632ce8fa95268417c7a2d979fa1461a202abaa` and
 FortML-bench `0fb8ac7`; the current aggregate verification is the newer
-`5c70b1b`/`8f0fec3` pair recorded above.
+`85cadc3`/`4614527` pair recorded above.
 
 The variational-GP classification and OVR wrappers now expose fixed-state
 kernel-log-parameter JVP/VJP products for latent margins and normalized
@@ -3813,7 +3832,16 @@ The maintained reports and their raw artifacts are in `../fortml-bench/results`:
   refusal.
 - [`CALIBRATED_SOFTMAX_CV.md`](../fortml-bench/results/CALIBRATED_SOFTMAX_CV.md),
   backed by `calibrated_softmax_cv.csv` for stratified OOF logits, positive
-  temperature replay, fold log-loss diagnostics, and the typed CUDA refusal.
+  temperature, weighted Platt, and isotonic replay, fold log-loss diagnostics,
+  packed-product metadata, and the typed CUDA/refusal boundaries.
+- [`MLP_CONSTANT_SCHEDULE_HVP.md`](../fortml-bench/results/MLP_CONSTANT_SCHEDULE_HVP.md),
+  backed by `mlp_constant_schedule_hvp.csv` for affine value/gradient/JVP/HVP
+  products, Hessian symmetry, FortOpt callback parity, and typed schedule or
+  CUDA boundaries.
+- [`XGBOOST_DART.md`](../fortml-bench/results/XGBOOST_DART.md), backed by
+  `xgboost_dart.csv` for seeded dropout replay, persisted tree scales,
+  staged/contribution/slice parity, transactional warm starts, and the typed
+  CUDA boundary.
 - [`DISCRIMINANT_ANALYSIS.md`](../fortml-bench/results/DISCRIMINANT_ANALYSIS.md),
   backed by `discriminant_analysis.csv` for weighted LDA/QDA probabilities,
   predictions, fitted-state diagnostics, input JVPs, and CUDA refusals.
