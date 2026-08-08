@@ -175,6 +175,7 @@ repeated resident-batch evidence.
 | `basis_map_t` | `evaluate` | Parameters and inputs | Parameters and inputs | Analytic for polynomial/Fourier/radial/spline; callback maps refuse |
 | `one_hot_encoder_t` | Dense one-hot `transform` | Refused: integer categories have no canonical tangent space | Refused: integer categories have no canonical cotangent space | No |
 | `mlp_t` | `predict` | Parameters and inputs | Parameters and inputs | Weighted-output HVP |
+| `mlp_last_layer_gp_initializer_t` | Finite-feature GP/NTK last-layer `fit`, `fit_apply`, and `predict` | Fixed-feature regularization JVP; named hyperparameter metadata | No VJP (the exposed product is a scalar regularization JVP) | Resident CUDA fit/predict/apply/JVP are typed `FORTNUM_NOT_IMPLEMENTED` refusals |
 | `mlp_classifier_t` | Logits, probabilities, and labels | Parameter/input JVP, probability JVP, fixed-input probability-parameter JVP | Parameter/input VJP, probability VJP, fixed-input probability-parameter VJP | No |
 | `mlp_classifier_training_objective_t` | Weighted multiclass cross-entropy + optional L2 | Packed network/L2 JVP | Packed network/L2 gradient and scalar VJP | Exact joint network/L2 HVP |
 | `mlp_calibrated_classifier_t` | MLP logits with binary sigmoid/temperature/isotonic or multiclass temperature probabilities and labels | Exact joint network/input plus smooth calibration JVP; isotonic active-set refusal | Exact joint network/input plus smooth calibration VJP; isotonic active-set refusal | No |
@@ -1744,6 +1745,29 @@ at the kink; leaky ReLU uses its fixed negative-side slope and zero second
 derivative away from the kink. The resident CUDA dense plan currently accepts
 only the original eight activation codes and returns a typed refusal for
 sigmoid or Mish.
+
+### `fortml_mlp_last_layer_gp`
+
+`mlp_last_layer_gp_initializer_t` is a finite-feature kernel-ridge posterior
+mean and last-layer NTK warm-start adapter. `fit(model,x,target,status,
+[regularization])` evaluates `model%feature_map`, appends an intercept, and
+solves `(Z^T Z + lambda I) C = Z^T target` for a positive `lambda`. Hidden
+layers remain fixed. `apply(model,status)` validates an affine output topology
+and replaces only its final weight and bias; `fit_apply` combines both steps.
+`predict(model,x,y,status)` evaluates the fitted posterior mean without
+mutating the model.
+
+The initializer exposes `metadata`, `parameters`, `parameter_metadata`, and a
+single `regularization` coordinate for search/optimizer adapters. `jvp(model,
+x,regularization_direction,y,dy,status)` differentiates the posterior mean
+with respect to that coordinate while holding the finite feature map and
+targets fixed. The metadata explicitly reports
+`exact_infinite_width=.false.` and `derivative_scope="fixed-feature-map"`:
+this is not an exact NNGP, infinite-width NTK, or full GP-posterior weight map.
+`predict_cuda`, `apply_cuda`, and `jvp_cuda` return
+`FORTNUM_NOT_IMPLEMENTED` without mutating model or outputs until a resident
+feature-map and solve path exists. See
+[`MLP_LAST_LAYER_GP.md`](MLP_LAST_LAYER_GP.md).
 
 ### `fortml_mlp_chain`
 
