@@ -56,11 +56,14 @@ The CPU reference exposes analytic products for the complete coupled path:
 * `predict_proba_input_jvp` and `predict_proba_input_vjp` differentiate query
   coordinates through the kernel projection, predictive variance, correction,
   and softmax.
+* `elbo_likelihood_parameter_hvp` returns the exact fixed-state curvature of
+  the positive log-temperature coordinate, including sample weights and the
+  optional likelihood scale. `predict_proba_likelihood_parameter_hvp` returns
+  the directional derivative of a fixed probability VJP for the same
+  coordinate.
 
-An HVP entry point is not declared for this slice. A caller that needs a
-second product can differentiate the analytic JVP with FortAD, or use a
-finite-difference oracle around `elbo_gradient`. Kernel hyperparameter and
-inducing-point products are also outside this bounded state contract.
+Kernel hyperparameter and inducing-point products are outside this bounded
+state contract.
 
 The device methods dispatch CPU exactly. CUDA returns `FORTNUM_NOT_IMPLEMENTED`
 until resident inducing solves, categorical reductions, and reverse products
@@ -68,4 +71,6 @@ are linked. No host fallback is hidden behind a CUDA request.
 
 `test_gp_variational_categorical_classification` checks sorted labels, the
 hand-computed softmax, ELBO and prediction JVP/VJP finite differences, JVP/VJP
-duality, input products, fitting, and typed CUDA refusals.
+duality, input products, fitting, and typed CUDA refusals. The companion
+`test_gp_variational_categorical_likelihood` checks the temperature JVP/VJP/HVP
+products, transactional state preservation, and typed CUDA HVP refusals.
