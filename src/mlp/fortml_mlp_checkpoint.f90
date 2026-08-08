@@ -19,7 +19,7 @@ module fortml_mlp_checkpoint
 
     character(*), parameter, public :: MLP_CHECKPOINT_MAGIC = &
         "FORTML_MLP_CHECKPOINT_TEXT"
-    integer, parameter, public :: MLP_CHECKPOINT_SCHEMA_VERSION = 4
+    integer, parameter, public :: MLP_CHECKPOINT_SCHEMA_VERSION = 5
 
     public :: mlp_checkpoint_save
     public :: mlp_checkpoint_load
@@ -151,6 +151,8 @@ contains
             checkpoint%optimizer_group_learning_rate_multiplier, ios)
         if (ios == 0) call write_r_array(unit, "first_moment", checkpoint%first_moment, ios)
         if (ios == 0) call write_r_array(unit, "second_moment", checkpoint%second_moment, ios)
+        if (ios == 0) call write_optional_r_array(unit, "max_second_moment", &
+            checkpoint%max_second_moment, ios)
         if (ios == 0) call write_optional_r_array(unit, "rmsprop_buffer", &
             checkpoint%rmsprop_buffer, ios)
         if (ios == 0) call write_r_array(unit, "best_parameters", &
@@ -313,6 +315,9 @@ contains
             "first_moment_item", candidate%n_parameters, candidate%first_moment, ios)
         if (ios == 0) call read_r_array(unit, "second_moment_count", &
             "second_moment_item", candidate%n_parameters, candidate%second_moment, ios)
+        if (ios == 0) call read_optional_r_array(unit, "max_second_moment_present", &
+            "max_second_moment_count", "max_second_moment_item", &
+            candidate%n_parameters, candidate%max_second_moment, ios)
         if (ios == 0) call read_optional_r_array(unit, "rmsprop_buffer_present", &
             "rmsprop_buffer_count", "rmsprop_buffer_item", &
             candidate%n_parameters, candidate%rmsprop_buffer, ios)
