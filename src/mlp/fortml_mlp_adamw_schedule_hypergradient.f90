@@ -24,7 +24,7 @@ module fortml_mlp_adamw_schedule_hypergradient
         MLP_SCHEDULE_CONSTANT, MLP_SCHEDULE_COSINE_DECAY, &
         MLP_SCHEDULE_WARMUP_COSINE, MLP_SCHEDULE_EXPONENTIAL_DECAY
     use fortml_mlp_training, only: mlp_loss_value_gradient, mlp_loss_hvp, &
-        MLP_OPTIMIZER_ADAMW
+        MLP_OPTIMIZER_ADAMW, MLP_PRECISION_FP64
     use fortopt_objective, only: objective_t
     use fortopt_lbfgsb, only: lbfgsb_t, lbfgsb_options_t, lbfgsb_result_t
     implicit none
@@ -82,6 +82,7 @@ module fortml_mlp_adamw_schedule_hypergradient
         real(dp) :: lower_logit_decay_factor = -12.0_dp
         real(dp) :: upper_logit_decay_factor = 12.0_dp
         integer :: optimizer = MLP_OPTIMIZER_ADAMW
+        integer :: precision_kind = MLP_PRECISION_FP64
         integer :: device_kind = FORTML_DEVICE_CPU
         integer :: memory = 8
         integer :: max_iterations = 100
@@ -163,6 +164,7 @@ contains
         self%layout = default_layout
         if (.not. valid_options(options)) then
             if (options%optimizer /= MLP_OPTIMIZER_ADAMW .or. &
+                options%precision_kind /= MLP_PRECISION_FP64 .or. &
                 options%device_kind /= FORTML_DEVICE_CPU) then
                 call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
                     "MLP scheduled AdamW hypergradient: optimizer or device is unsupported")
@@ -383,6 +385,7 @@ contains
         result = default_result
         if (.not. valid_options(options)) then
             if (options%optimizer /= MLP_OPTIMIZER_ADAMW .or. &
+                options%precision_kind /= MLP_PRECISION_FP64 .or. &
                 options%device_kind /= FORTML_DEVICE_CPU) then
                 call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
                     "MLP scheduled AdamW optimization: optimizer or device is unsupported")
@@ -665,6 +668,7 @@ contains
         type(mlp_adamw_schedule_hypergradient_options_t), intent(in) :: options
 
         valid = options%steps >= 1 .and. options%optimizer == MLP_OPTIMIZER_ADAMW .and. &
+            options%precision_kind == MLP_PRECISION_FP64 .and. &
             options%device_kind == FORTML_DEVICE_CPU .and. options%base_rate > 0.0_dp .and. &
             options%l2 > 0.0_dp .and. options%weight_decay > 0.0_dp .and. &
             options%beta1 > 0.0_dp .and. options%beta1 < 1.0_dp .and. &

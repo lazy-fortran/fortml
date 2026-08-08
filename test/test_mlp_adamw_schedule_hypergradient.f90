@@ -4,7 +4,7 @@ program test_mlp_adamw_schedule_hypergradient
     use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_NOT_IMPLEMENTED
     use fortml_device, only: FORTML_DEVICE_CUDA
     use fortml_mlp, only: mlp_t
-    use fortml_mlp_training, only: MLP_OPTIMIZER_ADAM
+    use fortml_mlp_training, only: MLP_OPTIMIZER_ADAM, MLP_PRECISION_FP32
     use fortml_mlp_schedules, only: make_mlp_schedule_cosine_decay, &
         make_mlp_schedule_exponential_decay
     use fortml_mlp_adamw_schedule_hypergradient, only: &
@@ -118,6 +118,12 @@ program test_mlp_adamw_schedule_hypergradient
         validation_target, bad_options, status)
     call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
         "CUDA AdamW hypergradient refusal", failures)
+    bad_options = options
+    bad_options%precision_kind = MLP_PRECISION_FP32
+    call objective%initialize(model, train_x, train_target, validation_x, &
+        validation_target, bad_options, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
+        "mixed-precision AdamW hypergradient refusal", failures)
 
     options%steps = 3
     options%max_iterations = 80
