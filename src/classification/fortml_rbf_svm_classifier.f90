@@ -49,6 +49,10 @@ module fortml_rbf_svm_classifier
         procedure, public :: decision_function_device => rbf_svm_decision_device
         procedure, public :: predict_device => rbf_svm_predict_device
         procedure, public :: predict_proba_device => rbf_svm_predict_proba_device
+        procedure, public :: decision_function_jvp_device => rbf_svm_decision_jvp_device
+        procedure, public :: decision_function_vjp_device => rbf_svm_decision_vjp_device
+        procedure, public :: predict_proba_jvp_device => rbf_svm_predict_proba_jvp_device
+        procedure, public :: predict_proba_vjp_device => rbf_svm_predict_proba_vjp_device
         procedure, public :: device_supported => rbf_svm_device_supported
         procedure, public :: decision_function_jvp => rbf_svm_decision_jvp
         procedure, public :: decision_function_vjp => rbf_svm_decision_vjp
@@ -410,6 +414,114 @@ contains
                 "RBF SVM device probability: device kind is invalid")
         end select
     end subroutine rbf_svm_predict_proba_device
+
+    subroutine rbf_svm_decision_jvp_device(self, device, x, theta_dot, x_dot, &
+            scores, scores_dot, status)
+        class(rbf_svm_classifier_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :), theta_dot(:), x_dot(:, :)
+        real(dp), intent(out) :: scores(:), scores_dot(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        scores = 0.0_dp
+        scores_dot = 0.0_dp
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "RBF SVM device decision JVP: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%decision_function_jvp(x, theta_dot, x_dot, scores, scores_dot, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "RBF SVM device decision JVP: resident CUDA derivative kernel is not linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "RBF SVM device decision JVP: device kind is invalid")
+        end select
+    end subroutine rbf_svm_decision_jvp_device
+
+    subroutine rbf_svm_decision_vjp_device(self, device, x, scores_bar, theta_bar, &
+            x_bar, status)
+        class(rbf_svm_classifier_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :), scores_bar(:)
+        real(dp), intent(out) :: theta_bar(:), x_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        theta_bar = 0.0_dp
+        x_bar = 0.0_dp
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "RBF SVM device decision VJP: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%decision_function_vjp(x, scores_bar, theta_bar, x_bar, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "RBF SVM device decision VJP: resident CUDA derivative kernel is not linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "RBF SVM device decision VJP: device kind is invalid")
+        end select
+    end subroutine rbf_svm_decision_vjp_device
+
+    subroutine rbf_svm_predict_proba_jvp_device(self, device, x, theta_dot, x_dot, &
+            probabilities, probabilities_dot, status)
+        class(rbf_svm_classifier_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :), theta_dot(:), x_dot(:, :)
+        real(dp), intent(out) :: probabilities(:, :), probabilities_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        probabilities = 0.0_dp
+        probabilities_dot = 0.0_dp
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "RBF SVM device probability JVP: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_proba_jvp(x, theta_dot, x_dot, probabilities, probabilities_dot, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "RBF SVM device probability JVP: resident CUDA derivative kernel is not linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "RBF SVM device probability JVP: device kind is invalid")
+        end select
+    end subroutine rbf_svm_predict_proba_jvp_device
+
+    subroutine rbf_svm_predict_proba_vjp_device(self, device, x, probabilities_bar, &
+            theta_bar, x_bar, status)
+        class(rbf_svm_classifier_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :), probabilities_bar(:, :)
+        real(dp), intent(out) :: theta_bar(:), x_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        theta_bar = 0.0_dp
+        x_bar = 0.0_dp
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "RBF SVM device probability VJP: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_proba_vjp(x, probabilities_bar, theta_bar, x_bar, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "RBF SVM device probability VJP: resident CUDA derivative kernel is not linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "RBF SVM device probability VJP: device kind is invalid")
+        end select
+    end subroutine rbf_svm_predict_proba_vjp_device
 
     subroutine rbf_svm_decision_jvp(self, x, theta_dot, x_dot, scores, scores_dot, status)
         class(rbf_svm_classifier_t), intent(in) :: self

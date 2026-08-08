@@ -582,9 +582,12 @@ intercept, log-gamma, and query inputs. `predict_proba_jvp` and
 `predict_proba_vjp` apply the same map through the sigmoid. Fit-state,
 active-set, hyperparameter-search, and hard-label derivatives are not exposed:
 the squared-hinge margin changes curvature at one and hard prediction is
-discrete. No finite-difference fallback is used. `device_supported(CPU)` is
-true for a fitted model; CUDA score, label, and probability calls return
-`FORTNUM_NOT_IMPLEMENTED` until a resident RBF-SVM kernel is linked.
+discrete. No finite-difference fallback is used. The four corresponding
+`*_device` product methods dispatch exactly on CPU and return
+`FORTNUM_NOT_IMPLEMENTED` for CUDA until resident RBF-SVM derivative kernels
+are linked. `device_supported(CPU)` is true for a fitted model; all CUDA score,
+label, probability, and derivative requests refuse explicitly with no host
+fallback.
 
 ### `fortml_linear_svr`
 

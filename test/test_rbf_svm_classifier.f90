@@ -109,7 +109,27 @@ program test_rbf_svm_classifier
     call check(status%code == FORTNUM_NOT_IMPLEMENTED, "CUDA prediction refusal", failures)
     call model%predict_proba_device(cuda, query, probabilities, status)
     call check(status%code == FORTNUM_NOT_IMPLEMENTED, "CUDA probability refusal", failures)
+    call model%decision_function_jvp_device(cuda, query, theta_dot, query_dot, scores, &
+        scores_dot, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED, "CUDA decision JVP refusal", failures)
+    call model%decision_function_vjp_device(cuda, query, scores_bar, theta_bar, x_bar, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED, "CUDA decision VJP refusal", failures)
+    call model%predict_proba_jvp_device(cuda, query, theta_dot, query_dot, probabilities, &
+        probabilities_dot, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED, "CUDA probability JVP refusal", failures)
+    call model%predict_proba_vjp_device(cuda, query, probability_bar, theta_bar, x_bar, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED, "CUDA probability VJP refusal", failures)
     call cpu%select(FORTML_DEVICE_CPU, status)
+    call model%decision_function_jvp_device(cpu, query, theta_dot, query_dot, scores, &
+        scores_dot, status)
+    call check(status_ok(status), "CPU decision JVP dispatch", failures)
+    call model%predict_proba_jvp_device(cpu, query, theta_dot, query_dot, probabilities, &
+        probabilities_dot, status)
+    call check(status_ok(status), "CPU probability JVP dispatch", failures)
+    call model%decision_function_vjp_device(cpu, query, scores_bar, theta_bar, x_bar, status)
+    call check(status_ok(status), "CPU decision VJP dispatch", failures)
+    call model%predict_proba_vjp_device(cpu, query, probability_bar, theta_bar, x_bar, status)
+    call check(status_ok(status), "CPU probability VJP dispatch", failures)
     call model%predict_device(cpu, query, predictions, status)
     call check(status_ok(status) .and. all(predictions == [-3, 7, 7]), &
         "CPU device prediction", failures)
