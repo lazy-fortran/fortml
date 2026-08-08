@@ -14,12 +14,12 @@ gate is still open, so this work does not move or recreate that tag.
 
 | Compiler | Command | Result |
 | --- | --- | --- |
-| GNU Fortran | `fo` | Static, clean first/second builds, and all 178 behavioral tests passed at the current FortML/FortAD-main revisions. `fo lint` reports compiler warnings and exits nonzero, but no unused imports remain after the checked cleanup; see [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
-| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded older compiler lane. The checked-in NVIDIA log predates the current 178-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
+| GNU Fortran | `fo` | Static, clean first/second builds, and all 179 behavioral tests passed at the current FortML/FortAD-main revisions. `fo lint` reports compiler warnings and exits nonzero, but no unused imports remain after the checked cleanup; see [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
+| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded older compiler lane. The checked-in NVIDIA log predates the current 179-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
 The checked-in GNU compiler log is the fresh 2026-08-08 run against FortML code
-revision `cdb204b`, FortAD `origin/main` at
+revision `512d742`, FortAD `origin/main` at
 `6a33d314c5b1a8adf8b9ed989741612fe09ab6b0`, and FortNum at
 `38bc0e578ec5c6c0e636e8fdd3844f54f9e3e473`, run from the clean checkout
 under `/mnt/storage/code/lazy-fortran/fortml`. The run includes the
@@ -48,13 +48,14 @@ parameter snapshots and transfer counters. NVIDIA
 compiler coverage remains an
 explicit older-build result.
 
-The companion benchmark harness is clean at FortML-bench revision `5f0c768`;
+The companion benchmark harness is clean at FortML-bench revision `45dbf85`;
 the trainer-checkpoint, unfactored-Adafactor, binary-objective,
 multiclass-calibration, variational-multiclass-GP, PINN/physics-objective,
 physics HVP, grouped K-fold, spectral-mixture, XGBoost-ranking,
 resident dense-MSE CUDA, binary XGBoost classifier, calibrated neural classifier,
-SGD-momentum, sparse preprocessing, derivative-GP covariance, and mini-batch hypergradient CSV
-rows record their FortML source revisions and independent NumPy or analytic
+SGD-momentum, sparse preprocessing, derivative-GP covariance and polynomial HVP,
+weighted multiclass MLP objective, resident Adagrad, and mini-batch hypergradient
+CSV rows record their FortML source revisions and independent NumPy or analytic
 behavioral oracles. CUDA rows are explicit `unavailable`/typed-refusal records
 rather than host timings.
 
@@ -2406,8 +2407,9 @@ peak memory, and batch-size scaling with the same correctness gate as training.
   [`results/XGBOOST.md`](../fortml-bench/results/XGBOOST.md) and
   [`results/CLASSIFICATION_EXTENSIONS.md`](../fortml-bench/results/CLASSIFICATION_EXTENSIONS.md).
 - [x] Extend the derivative-observation GP benchmark and independent covariance
-  oracle to the cosine kernel. Query JVP/VJP, joint covariance, and explicit
-  CUDA refusal rows are recorded in
+  oracle to the cosine kernel and polynomial mixed-observation HVP. Query
+  JVP/VJP, joint covariance, hyperparameter HVP, and explicit CUDA refusal rows
+  are recorded in
   [`results/DERIVATIVE_GP.md`](../fortml-bench/results/DERIVATIVE_GP.md).
 - [x] Add ComplementNB and integer one-hot benchmark lanes with independent
   NumPy oracles, contextual scikit-learn rows, explicit categorical derivative
