@@ -553,8 +553,8 @@ only listed as gaps:
 
 The FortBO and FortMC companion pins were rechecked against their remote
 `main` branches on 2026-08-08: FortBO
-`54fb74ce2c8206111fe8c97bc5ea8ea6c6f9d22e` and FortMC
-`4dde0ccdc37b4c331126605406b08e1f3bda4f59`. Their roadmaps remain authoritative
+`7b08571866c780a5a03b544216704ec2e674418e` and FortMC
+`a75fc6bd952c6dacbcb3bd958e6386405f9fd58d`. Their roadmaps remain authoritative
 for acquisition and sampling algorithms; FortML owns the posterior/log-density
 protocols and does not embed sampler or acquisition state. FortBO additionally
 provides analytic EI/PI/UCB/log-EI products and marginal Monte-Carlo EI/PI with
@@ -585,7 +585,8 @@ policies, predictive-entropy search, device execution, and wider sparse,
 variational, and multi-output adapters
 remain open. Any future adapter must add
 a focused oracle, typed GPU/refusal row, and a benchmark record in the companion
-harness.
+harness. The current FortBO pin also adds the 60-dimensional rover trajectory
+fixture and its independent oracle.
 
 ## Bayesian ecosystem split
 
@@ -614,9 +615,11 @@ FortNum + FortAD + FortSym + FortOpt
 ```
 
 FortML must not depend on FortMC or FortBO. The current FortMC boundary accepts
-only a position-valued `value` and a position-gradient `gradient`; packed
-parameter registries, transforms, HVPs, samplers, and chain state remain in its
-roadmap. FortBO now exposes a capability-gated posterior protocol, durable
+only a position-valued `value` and a position-gradient `gradient`; its current
+pin additionally provides a gradient-free univariate coordinate-sweep slice
+sampler with chain sampling, reproducibility, and typed input/support refusals.
+Packed parameter registries, transforms, HVPs, the other samplers, and durable
+chain state remain in its roadmap. FortBO now exposes a capability-gated posterior protocol, durable
 gradient-aware history, and normalized continuous/integer/categorical/mixed/
 conditional search spaces, analytic EI/PI/UCB/log-EI, exact-envelope knowledge
 gradient, noisy expected improvement, and marginal Monte-Carlo EI/PI with CRN,
@@ -653,8 +656,8 @@ acquisition work packages:
 - [`fortbo/ROADMAP.md`](https://github.com/lazy-fortran/fortbo/blob/main/ROADMAP.md)
 
 The companion repositories were checked on 2026-08-08 at FortMC
-`4dde0ccdc37b4c331126605406b08e1f3bda4f59` and FortBO
-`54fb74ce2c8206111fe8c97bc5ea8ea6c6f9d22e`, both on their `main` branches. The
+`a75fc6bd952c6dacbcb3bd958e6386405f9fd58d` and FortBO
+`7b08571866c780a5a03b544216704ec2e674418e`, both on their `main` branches. The
 FortBO pin now includes a versioned capability-gated posterior contract,
 gradient-aware observation history/checkpointing, normalized continuous/integer/
 categorical/mixed/conditional search spaces, a differentiable-coordinate mask,
@@ -682,18 +685,16 @@ their protocol or device contracts change.
 The preceding FortBO `4266ce6` pin built and ran 20/20 tests, including
 knowledge-gradient and qEI/qNEI/qUCB batch acquisitions, TuRBO/DTuRBO drivers,
 trust-region trace/rescaling, preference-learning, and noisy-dominance oracles.
-The current `54fb74c` remote registers 35 test sources; a clean `fo test` run
-discovers 34 test targets, passes 20, and reports 14 generated-leaf link
-failures in the upstream acquisition, trust-region, adapter, and generated-
-kernel fixtures. FortMC's current
-checkout builds cleanly and reports zero registered
-tests, so its sampler and diagnostics claims remain roadmap items rather than
-FortML verification evidence.
+The current `7b08571` remote registers 38 test targets; a clean
+`FO_SCAN_FALLBACK=regex fo check --json=compact` passes all 38/38. FortMC's
+current checkout builds cleanly and passes its one registered slice-sampler
+test (normal and correlated moments, bounded support, reproducibility, and
+refusal cases); the remaining samplers, diagnostics, and checkpoint claims
+remain roadmap items rather than FortML verification evidence.
 
 This companion check was repeated from clean source trees on 2026-08-08:
 `origin/main` resolves exactly to the two pins above; FortBO's current clean
-run is the 20-pass/14-link-failure result above, while FortMC has 0 registered
-tests, and neither repository has a
+run is 38/38 and FortMC's is 1/1, and neither repository has a
 runtime dependency on the FortSym executable. These are boundary checks, not a
 claim that FortMC samplers or the remaining FortBO policy catalog are shipped.
 
