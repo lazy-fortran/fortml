@@ -414,7 +414,9 @@ contains
         real(dp), intent(in) :: x(:, :), direction(:)
         real(dp), intent(out) :: mean(:), mean_dot(:), variance(:), variance_dot(:)
         type(fortnum_status_t), intent(out) :: status
-        real(dp), allocatable :: cross(:, :), cross_dot(:, :), prior(:, :), prior_dot(:, :)
+        integer :: i
+        real(dp) :: single_prior(1, 1), single_prior_dot(1, 1)
+        real(dp), allocatable :: cross(:, :), cross_dot(:, :), prior_diagonal(:), prior_dot_diagonal(:)
         real(dp), allocatable :: train(:, :), train_dot(:, :), matrix_dot(:, :)
         real(dp), allocatable :: work(:, :), work_dot(:, :)
         if (.not. prediction_shapes(self, x, mean, variance, status)) return
@@ -427,15 +429,22 @@ contains
         end if
         allocate(cross(self%n_samples, size(x, 1)))
         allocate(cross_dot(self%n_samples, size(x, 1)))
-        allocate(prior(size(x, 1), size(x, 1)))
-        allocate(prior_dot(size(x, 1), size(x, 1)))
+        allocate(prior_diagonal(size(x, 1)), prior_dot_diagonal(size(x, 1)))
         allocate(train(self%n_samples, self%n_samples))
         allocate(train_dot(self%n_samples, self%n_samples))
         allocate(matrix_dot(self%n_samples, self%n_samples))
         call self%kernel%matrix_jvp(self%x_train, x, direction, cross, cross_dot, status)
         if (status%code /= FORTNUM_OK) return
-        call self%kernel%matrix_jvp(x, x, direction, prior, prior_dot, status)
-        if (status%code /= FORTNUM_OK) return
+        ! Diagonal only: forming the full query-by-query prior and its tangent
+        ! to read two diagonals costs `m**2` kernel evaluations for `2m`
+        ! numbers.
+        do i = 1, size(x, 1)
+            call self%kernel%matrix_jvp(x(i:i, :), x(i:i, :), direction, &
+                single_prior, single_prior_dot, status)
+            if (status%code /= FORTNUM_OK) return
+            prior_diagonal(i) = single_prior(1, 1)
+            prior_dot_diagonal(i) = single_prior_dot(1, 1)
+        end do
         call self%kernel%matrix_jvp(self%x_train, self%x_train, direction, train, &
             train_dot, status)
         if (status%code /= FORTNUM_OK) return
@@ -452,8 +461,8 @@ contains
         if (status%code /= FORTNUM_OK) return
         mean = matmul(transpose(cross), self%alpha)
         mean_dot = matmul(transpose(cross_dot), self%alpha)
-        variance = diagonal_matrix(prior) - sum(work*work, dim=1)
-        variance_dot = diagonal_matrix(prior_dot) - 2.0_dp*sum(work*work_dot, dim=1)
+        variance = prior_diagonal - sum(work*work, dim=1)
+        variance_dot = prior_dot_diagonal - 2.0_dp*sum(work*work_dot, dim=1)
         call clamp_variance(variance, status)
         if (status%code /= FORTNUM_OK) return
         if (any(.not. ieee_is_finite(mean_dot)) .or. &

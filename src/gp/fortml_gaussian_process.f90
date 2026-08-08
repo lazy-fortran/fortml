@@ -236,7 +236,8 @@ contains
         real(dp), intent(in) :: x(:, :), direction(:)
         real(dp), intent(out) :: mean(:, :), mean_dot(:, :), variance(:), variance_dot(:)
         type(fortnum_status_t), intent(out) :: status
-        real(dp), allocatable :: cross(:, :), cross_dot(:, :), prior(:, :), prior_dot(:, :)
+        real(dp) :: single_prior(1, 1), single_prior_dot(1, 1)
+        real(dp), allocatable :: cross(:, :), cross_dot(:, :), prior_diagonal(:), prior_dot_diagonal(:)
         real(dp), allocatable :: train_dot(:, :), train_matrix_dot(:, :)
         real(dp), allocatable :: alpha_dot(:, :), work(:, :)
         real(dp), allocatable :: work_dot(:, :)
@@ -262,8 +263,7 @@ contains
         mean_count = self%mean_parameter_count()
         allocate(cross(self%n_samples, size(x, 1)))
         allocate(cross_dot, mold=cross)
-        allocate(prior(size(x, 1), size(x, 1)))
-        allocate(prior_dot, mold=prior)
+        allocate(prior_diagonal(size(x, 1)), prior_dot_diagonal(size(x, 1)))
         allocate(train_dot(self%n_samples, self%n_samples))
         allocate(train_matrix_dot, mold=train_dot)
         allocate(alpha_dot, mold=self%alpha)
@@ -302,16 +302,26 @@ contains
         mean = mean_query + matmul(transpose(cross), self%alpha)
         mean_dot = mean_query_dot + matmul(transpose(cross_dot), self%alpha) + &
             matmul(transpose(cross), alpha_dot)
-        call self%kernel%matrix_jvp(x, x, direction(:kernel_count), prior, prior_dot, status)
-        if (status%code /= FORTNUM_OK) return
+        ! Diagonal only, one query point at a time. Forming the full `m` by
+        ! `m` prior and its tangent to read two diagonals costs `m**2` kernel
+        ! evaluations and two `m**2` allocations; at Bayesian-optimization
+        ! candidate counts that is twenty-five million evaluations and 400 MB
+        ! for `2m` numbers.
+        do i = 1, size(x, 1)
+            call self%kernel%matrix_jvp(x(i:i, :), x(i:i, :), &
+                direction(:kernel_count), single_prior, single_prior_dot, status)
+            if (status%code /= FORTNUM_OK) return
+            prior_diagonal(i) = single_prior(1, 1)
+            prior_dot_diagonal(i) = single_prior_dot(1, 1)
+        end do
         work = cross
         call self%factorization%solve(work, status)
         if (status%code /= FORTNUM_OK) return
         work_dot = cross_dot - matmul(train_matrix_dot, work)
         call self%factorization%solve(work_dot, status)
         if (status%code /= FORTNUM_OK) return
-        variance = diagonal(prior) - sum(cross*work, dim=1)
-        variance_dot = diagonal(prior_dot) - sum(cross_dot*work + &
+        variance = prior_diagonal - sum(cross*work, dim=1)
+        variance_dot = prior_dot_diagonal - sum(cross_dot*work + &
             cross*work_dot, dim=1)
         call status_set(status, FORTNUM_OK, "")
     end subroutine gp_predict_jvp

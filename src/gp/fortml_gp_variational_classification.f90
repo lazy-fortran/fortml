@@ -768,7 +768,8 @@ contains
         type(fortnum_status_t), intent(out) :: status
         real(dp), allocatable :: projection(:, :), local_mean(:), local_variance(:)
         real(dp), allocatable :: k_ux(:, :), k_ux_dot(:, :)
-        real(dp), allocatable :: k_uu(:, :), k_uu_dot(:, :), k_xx(:, :), k_xx_dot(:, :)
+        real(dp) :: single_k(1, 1), single_k_dot(1, 1)
+        real(dp), allocatable :: k_uu(:, :), k_uu_dot(:, :), k_xx_diagonal(:), k_xx_dot_diagonal(:)
         real(dp), allocatable :: projection_dot(:, :), factor(:), factor_dot(:)
         integer :: i
 
@@ -787,14 +788,21 @@ contains
         allocate(k_ux(self%n_inducing, size(x, 1)), k_ux_dot(self%n_inducing, size(x, 1)))
         allocate(k_uu(self%n_inducing, self%n_inducing), &
             k_uu_dot(self%n_inducing, self%n_inducing))
-        allocate(k_xx(size(x, 1), size(x, 1)), k_xx_dot(size(x, 1), size(x, 1)))
+        allocate(k_xx_diagonal(size(x, 1)), k_xx_dot_diagonal(size(x, 1)))
         call self%kernel%matrix_jvp(self%inducing_points, x, direction, k_ux, k_ux_dot, status)
         if (status%code /= FORTNUM_OK) return
         call self%kernel%matrix_jvp(self%inducing_points, self%inducing_points, direction, &
             k_uu, k_uu_dot, status)
         if (status%code /= FORTNUM_OK) return
-        call self%kernel%matrix_jvp(x, x, direction, k_xx, k_xx_dot, status)
-        if (status%code /= FORTNUM_OK) return
+        ! Diagonal only: the full query-by-query block is `m**2` kernel
+        ! evaluations for `2m` numbers.
+        do i = 1, size(x, 1)
+            call self%kernel%matrix_jvp(x(i:i, :), x(i:i, :), direction, &
+                single_k, single_k_dot, status)
+            if (status%code /= FORTNUM_OK) return
+            k_xx_diagonal(i) = single_k(1, 1)
+            k_xx_dot_diagonal(i) = single_k_dot(1, 1)
+        end do
         allocate(projection_dot(self%n_inducing, size(x, 1)))
         projection_dot = k_ux_dot - matmul(k_uu_dot, projection)
         call self%prior_factorization%solve(projection_dot, status)
@@ -804,7 +812,7 @@ contains
         do i = 1, size(x, 1)
             factor = matmul(transpose(self%variational_factor), projection(:, i))
             factor_dot = matmul(transpose(self%variational_factor), projection_dot(:, i))
-            variance_dot(i) = k_xx_dot(i, i) - dot_product(projection_dot(:, i), k_ux(:, i)) - &
+            variance_dot(i) = k_xx_dot_diagonal(i) - dot_product(projection_dot(:, i), k_ux(:, i)) - &
                 dot_product(projection(:, i), k_ux_dot(:, i)) + 2.0_dp*dot_product(factor, factor_dot)
         end do
         if (any(.not. ieee_is_finite(mean_dot)) .or. any(.not. ieee_is_finite(variance_dot))) then
