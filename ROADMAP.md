@@ -1815,7 +1815,7 @@ hyperparameter block. A deliberate train/validation leakage fixture must fail.
   integer-coded feature indices with `categorical_policy="ordered"` and an
   explicit 2--64 `categorical_max_categories` bound. Per-node category prefixes
   are ordered by gradient/Hessian score with code tie-breaks; metadata survives
-  warm starts, slices, and version-3 text snapshots. The independent
+  warm starts, slices, and version-4 text snapshots. The independent
   `test_xgboost_categorical` fixture covers the hand partition, cardinality
   refusal, save/load metadata, discrete derivative refusal, and CPU/CUDA
   behavior; `xgboost_categorical.csv` is the release oracle lane.
