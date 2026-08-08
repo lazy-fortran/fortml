@@ -9,7 +9,8 @@ module fortml_mlp_classifier
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, status_ok, &
-        FORTNUM_OK, FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED
+        FORTNUM_OK, FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED, &
+        FORTNUM_CONVERGENCE_ERROR
     use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU, &
         FORTML_DEVICE_CUDA
     use fortml_mlp, only: mlp_t, MLP_TANH
@@ -611,7 +612,7 @@ contains
             return
         end if
         if (.not. result%converged) then
-            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
                 "MLP classifier L-BFGS-B: iteration limit reached")
             return
         end if
