@@ -6,7 +6,12 @@ with respect to feature `j`. `fit`, `predict`, and `joint_covariance` are CPU
 reference paths. `predict_jvp`/`predict_vjp` differentiate with respect to the
 packed log-kernel and log-noise parameters.  `predict_input_jvp` and
 `predict_input_vjp` differentiate a fixed query batch and therefore require a
-third input derivative of each covariance block.
+third input derivative of each covariance block. `predict_input_hvp` is the
+value-query second-order companion: for one query point and direction it
+returns Hessian-vector products of the posterior mean and variance. It uses
+exact third-input covariance contractions and the quadratic-form solve;
+derivative-component queries are refused because they would require fourth
+input derivatives.
 
 The table is deliberately narrower than the full kernel catalog. “Mixed
 blocks” means value/first-derivative covariance blocks are available wherever
@@ -79,7 +84,9 @@ blocks independently and checks the likelihood gradient, mixed HVP, and
 query-input JVP/VJP products against finite differences and an adjoint identity.
 `test_derivative_gp_ard` independently assembles anisotropic RBF value,
 first-derivative, and mixed-Hessian covariance blocks, then checks the packed
-kernel/noise likelihood gradient and mixed HVP against central differences.
+kernel/noise likelihood gradient and mixed HVP against central differences. It
+also reconstructs a value-query mean/variance Hessian-vector product from
+coordinate JVP finite differences.
 The polynomial path is intentionally kept as a short closed-form expression
 (`b = offset + scale*dot(x1,x2)`, `k = variance*b**degree`) rather than a
 generated FortSym leaf. The independent block oracle covers every packed
