@@ -22,6 +22,16 @@ coregionalization and log-noise blocks are assembled analytically.  These are
 fixed-data products: training inputs, targets, and output count are held
 fixed, while the fitted solve state is differentiated exactly.
 
+`joint_covariance_parameter_jvp(inputs,direction,matrix,matrix_dot,status)`
+and `joint_covariance_parameter_vjp(inputs,matrix_bar,parameter_bar,status)`
+provide the matching products for the prior `B (x) K` covariance.  The packed
+kernel, output-weight, and independent-variance coordinates are differentiated
+exactly; the log-noise coordinate is intentionally zero because
+`joint_covariance` excludes observation noise.  The VJP accepts a full (not
+necessarily symmetric) cotangent and contracts it without silently symmetrizing
+the caller's data.  CPU-only device wrappers return a typed CUDA refusal until
+resident coregionalization and covariance kernels are available.
+
 `predict_input_jvp(query,direction,mean,mean_dot,status)` and
 `predict_input_vjp(query,mean_bar,query_bar,status)` hold the fitted model
 state fixed and differentiate only query locations using
@@ -40,6 +50,7 @@ The four existing `*_device` wrappers and the three batch `*_device` wrappers
 accept CPU execution and return
 `FORTNUM_NOT_IMPLEMENTED` for CUDA until resident coregionalized covariance,
 factorization, and derivative kernels are available.  They never silently
-copy to a host fallback.  `test_multi_output_gp_products` checks query and
-parameter JVPs against independent central-difference refits, checks both
-VJP adjoint identities, and checks the typed CUDA refusals.
+copy to a host fallback.  `test_multi_output_gp_products` checks query,
+posterior-mean parameter, and prior-covariance parameter JVPs against
+independent central-difference oracles, checks all corresponding VJP adjoint
+identities, and checks the typed CUDA refusals.

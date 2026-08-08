@@ -212,7 +212,7 @@ repeated resident-batch evidence.
 | `second_derivative_gp_t` | Exact scalar 1-D RBF/Matérn-5/2 GP over mixed value/first/second-derivative rows; latent joint covariance | Query-coordinate JVP; selected-CPU device dispatch | Query-coordinate VJP for mean and latent variance; selected-CPU device dispatch | Other kernels, non-scalar, order >2, Matérn-5/2 fifth derivative at coincidence, and CUDA prediction/covariance/product requests are typed refusals |
 | `gp_classification_t` | Latent and observed probabilities | Input and fixed-state kernel-parameter JVP | Input and fixed-state kernel-parameter VJP; Laplace-mode kernel hyperparameter gradient | No |
 | `gp_multiclass_classification_t` | Latent one-vs-rest margins and normalized observed probabilities | Input and packed fixed-state kernel-parameter JVPs for margins and probabilities | Input and packed fixed-state kernel-parameter VJPs for margins and probabilities; packed one-vs-rest Laplace-mode kernel hyperparameter gradient | No |
-| `multi_output_gp_t` | Correlated mean and LML; batched `(batch,query,output)` prediction | Packed kernel/log-noise/output-major W/independent JVP; query-input and batch-query JVP | Fitted posterior-mean parameter VJP; query-input and batch-query VJP | No |
+| `multi_output_gp_t` | Correlated mean and LML; prior covariance; batched `(batch,query,output)` prediction | Packed kernel/log-noise/output-major W/independent posterior-mean and prior-covariance JVP; query-input and batch-query JVP | Fitted posterior-mean and prior-covariance parameter VJP; query-input and batch-query VJP | No |
 | Approximate GP types | Mean, variance, or ELBO as listed below | No | No | No |
 
 `xgboost_t%save_text(path,status)` and `load_text(path,status)` provide the
@@ -3528,7 +3528,11 @@ cross-covariance and the Cholesky solve. The independent
 adjoints, and the typed CUDA refusals. See
 [docs/MULTI_OUTPUT_GP_PRODUCTS.md](MULTI_OUTPUT_GP_PRODUCTS.md). Posterior
 variance, parameter HVPs, and resident CUDA covariance/derivative kernels remain
-open. The `predict_batch` family accepts `(batch,query,feature)` inputs and
+open. `joint_covariance_parameter_jvp`/`joint_covariance_parameter_vjp` expose
+exact prior-covariance products over the same packed coordinates; the
+log-noise coordinate is zero because the prior excludes observation noise.
+Their CPU device wrappers are exact and CUDA dispatch is a typed refusal. The
+`predict_batch` family accepts `(batch,query,feature)` inputs and
 returns `(batch,query,output)` means; `predict_batch_input_jvp` and
 `predict_batch_input_vjp` apply the same fixed-fit query products independently
 to each batch member. CPU device wrappers are exact, while the batch CUDA

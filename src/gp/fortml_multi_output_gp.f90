@@ -52,6 +52,10 @@ module fortml_multi_output_gp
             multi_output_predict_batch_input_vjp
         procedure, public :: predict_parameter_jvp => multi_output_predict_parameter_jvp
         procedure, public :: predict_parameter_vjp => multi_output_predict_parameter_vjp
+        procedure, public :: joint_covariance_parameter_jvp => &
+            multi_output_joint_covariance_parameter_jvp
+        procedure, public :: joint_covariance_parameter_vjp => &
+            multi_output_joint_covariance_parameter_vjp
         procedure, public :: predict_input_jvp_device => &
             multi_output_predict_input_jvp_device
         procedure, public :: predict_input_vjp_device => &
@@ -65,6 +69,10 @@ module fortml_multi_output_gp
             multi_output_predict_parameter_jvp_device
         procedure, public :: predict_parameter_vjp_device => &
             multi_output_predict_parameter_vjp_device
+        procedure, public :: joint_covariance_parameter_jvp_device => &
+            multi_output_joint_covariance_parameter_jvp_device
+        procedure, public :: joint_covariance_parameter_vjp_device => &
+            multi_output_joint_covariance_parameter_vjp_device
         procedure, public :: log_marginal_likelihood => multi_output_lml
         procedure, public :: joint_covariance => multi_output_joint_covariance
         procedure, public :: predict_covariance => multi_output_predict_covariance
@@ -263,6 +271,175 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine multi_output_joint_covariance
+
+    subroutine multi_output_joint_covariance_parameter_jvp(self, inputs, direction, &
+            matrix, matrix_dot, status)
+        !! Directional product of the prior ICM covariance.
+        !!
+        !! The packed direction follows `parameters()`.  The log-noise
+        !! coordinate has an exactly zero product because `joint_covariance`
+        !! deliberately excludes observation noise; retaining that coordinate
+        !! keeps this product composable with posterior-mean products.
+        class(multi_output_gp_t), intent(in) :: self
+        real(dp), intent(in) :: inputs(:, :), direction(:)
+        real(dp), intent(inout) :: matrix(:, :), matrix_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: block(:, :), block_dot(:, :), local(:, :)
+        real(dp), allocatable :: local_dot(:, :), b_dot(:, :), kernel_direction(:)
+        integer :: n, p, kc, rank, a, b, i, j, out_i, out_j, weight_start
+
+        n = size(inputs, 1)
+        p = self%n_outputs
+        if (n < 1 .or. size(inputs, 2) /= self%kernel%input_dim .or. p < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multi-output GP covariance parameter JVP: input shape is invalid")
+            return
+        end if
+        if (.not. allocated(self%weights) .or. .not. allocated(self%independent)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multi-output GP covariance parameter JVP: model is not initialized")
+            return
+        end if
+        if (any(.not. ieee_is_finite(inputs))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multi-output GP covariance parameter JVP: inputs are not finite")
+            return
+        end if
+        if (any(shape(matrix) /= [n*p, n*p]) .or. &
+            any(shape(matrix_dot) /= [n*p, n*p])) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multi-output GP covariance parameter JVP: output shape is invalid")
+            return
+        end if
+        if (size(direction) /= self%parameter_count() .or. &
+            any(.not. ieee_is_finite(direction))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multi-output GP covariance parameter JVP: direction shape is invalid")
+            return
+        end if
+
+        kc = self%kernel%parameter_count()
+        rank = size(self%weights, 2)
+        weight_start = kc + 2
+        allocate(kernel_direction(kc), b_dot(p, p))
+        if (kc > 0) kernel_direction = direction(:kc)
+        call multi_output_coreg_direction(self, direction(weight_start:), b_dot)
+        allocate(block(n, n), block_dot(n, n), local(n*p, n*p), local_dot(n*p, n*p))
+        call self%kernel%matrix_jvp(inputs, inputs, kernel_direction, block, block_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        do b = 1, p
+            do a = 1, p
+                do j = 1, n
+                    do i = 1, n
+                        out_i = (a - 1)*n + i
+                        out_j = (b - 1)*n + j
+                        local(out_i, out_j) = self%coregionalization(a, b)*block(i, j)
+                        local_dot(out_i, out_j) = b_dot(a, b)*block(i, j) + &
+                            self%coregionalization(a, b)*block_dot(i, j)
+                    end do
+                end do
+            end do
+        end do
+        if (any(.not. ieee_is_finite(local_dot))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "multi-output GP covariance parameter JVP: nonfinite product")
+            return
+        end if
+        matrix = local
+        matrix_dot = local_dot
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine multi_output_joint_covariance_parameter_jvp
+
+    subroutine multi_output_joint_covariance_parameter_vjp(self, inputs, matrix_bar, &
+            parameter_bar, status)
+        !! Reverse product of the prior ICM covariance.
+        !!
+        !! `matrix_bar` need not be symmetric: the full matrix adjoint is
+        !! contracted exactly, while the returned covariance parameter tangent
+        !! is symmetric because both `B` and `K` are symmetric.
+        class(multi_output_gp_t), intent(in) :: self
+        real(dp), intent(in) :: inputs(:, :), matrix_bar(:, :)
+        real(dp), intent(inout) :: parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: block(:, :), kbar(:, :), b_bar(:, :), local(:)
+        real(dp), allocatable :: parameter_local(:)
+        integer :: n, p, kc, rank, a, b, i, j, out_i, out_j
+        integer :: weight_start, independent_start
+
+        n = size(inputs, 1)
+        p = self%n_outputs
+        if (n < 1 .or. size(inputs, 2) /= self%kernel%input_dim .or. p < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multi-output GP covariance parameter VJP: input shape is invalid")
+            return
+        end if
+        if (.not. allocated(self%weights) .or. .not. allocated(self%independent)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multi-output GP covariance parameter VJP: model is not initialized")
+            return
+        end if
+        if (any(.not. ieee_is_finite(inputs)) .or. &
+            any(shape(matrix_bar) /= [n*p, n*p]) .or. &
+            any(.not. ieee_is_finite(matrix_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multi-output GP covariance parameter VJP: input or cotangent shape is invalid")
+            return
+        end if
+        if (size(parameter_bar) /= self%parameter_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multi-output GP covariance parameter VJP: output shape is invalid")
+            return
+        end if
+
+        allocate(parameter_local(self%parameter_count()))
+        parameter_local = 0.0_dp
+
+        kc = self%kernel%parameter_count()
+        rank = size(self%weights, 2)
+        weight_start = kc + 2
+        independent_start = weight_start + p*rank
+        allocate(block(n, n), kbar(n, n), b_bar(p, p))
+        call self%kernel%matrix(inputs, inputs, block, status)
+        if (status%code /= FORTNUM_OK) return
+        kbar = 0.0_dp
+        b_bar = 0.0_dp
+        do b = 1, p
+            do a = 1, p
+                do j = 1, n
+                    do i = 1, n
+                        out_i = (a - 1)*n + i
+                        out_j = (b - 1)*n + j
+                        kbar(i, j) = kbar(i, j) + self%coregionalization(a, b)* &
+                            matrix_bar(out_i, out_j)
+                        b_bar(a, b) = b_bar(a, b) + matrix_bar(out_i, out_j)*block(i, j)
+                    end do
+                end do
+            end do
+        end do
+        if (kc > 0) then
+            allocate(local(kc))
+            call self%kernel%parameter_vjp(inputs, inputs, kbar, local, status)
+            if (status%code /= FORTNUM_OK) return
+            parameter_local(:kc) = local
+        end if
+        ! Observation noise is absent from joint_covariance, hence the packed
+        ! log-noise coordinate remains zero.
+        parameter_local(kc + 1) = 0.0_dp
+        do a = 1, p
+            do rank = 1, size(self%weights, 2)
+                parameter_local(weight_start + (a - 1)*size(self%weights, 2) + rank - 1) = &
+                    sum((b_bar(a, :) + b_bar(:, a))*self%weights(:, rank))
+            end do
+            parameter_local(independent_start + a - 1) = b_bar(a, a)
+        end do
+        if (any(.not. ieee_is_finite(parameter_local))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "multi-output GP covariance parameter VJP: nonfinite product")
+            return
+        end if
+        parameter_bar = parameter_local
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine multi_output_joint_covariance_parameter_vjp
 
     subroutine multi_output_fit(self, inputs, targets, status)
         !! `targets(i, j)` is output `j` at input `i`.
@@ -1006,6 +1183,59 @@ contains
         end if
         call self%predict_parameter_vjp(query, mean_bar, parameter_bar, status)
     end subroutine multi_output_predict_parameter_vjp_device
+
+    subroutine multi_output_joint_covariance_parameter_jvp_device(self, device, inputs, &
+            direction, matrix, matrix_dot, status)
+        !! Explicit backend boundary for prior covariance parameter products.
+        class(multi_output_gp_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: inputs(:, :), direction(:)
+        real(dp), intent(inout) :: matrix(:, :), matrix_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multi-output GP covariance parameter JVP: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%joint_covariance_parameter_jvp(inputs, direction, matrix, &
+                matrix_dot, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "multi-output GP covariance parameter JVP: CUDA residency is not implemented")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multi-output GP covariance parameter JVP: device kind is invalid")
+        end select
+    end subroutine multi_output_joint_covariance_parameter_jvp_device
+
+    subroutine multi_output_joint_covariance_parameter_vjp_device(self, device, inputs, &
+            matrix_bar, parameter_bar, status)
+        !! Explicit backend boundary for prior covariance parameter adjoints.
+        class(multi_output_gp_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: inputs(:, :), matrix_bar(:, :)
+        real(dp), intent(inout) :: parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multi-output GP covariance parameter VJP: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%joint_covariance_parameter_vjp(inputs, matrix_bar, parameter_bar, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "multi-output GP covariance parameter VJP: CUDA residency is not implemented")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multi-output GP covariance parameter VJP: device kind is invalid")
+        end select
+    end subroutine multi_output_joint_covariance_parameter_vjp_device
 
     subroutine multi_output_lml(self, targets, value, status)
         class(multi_output_gp_t), intent(inout) :: self
