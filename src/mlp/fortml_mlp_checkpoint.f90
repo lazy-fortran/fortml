@@ -19,7 +19,7 @@ module fortml_mlp_checkpoint
 
     character(*), parameter, public :: MLP_CHECKPOINT_MAGIC = &
         "FORTML_MLP_CHECKPOINT_TEXT"
-    integer, parameter, public :: MLP_CHECKPOINT_SCHEMA_VERSION = 6
+    integer, parameter, public :: MLP_CHECKPOINT_SCHEMA_VERSION = 7
 
     public :: mlp_checkpoint_save
     public :: mlp_checkpoint_load
@@ -80,6 +80,7 @@ contains
         if (ios == 0) call write_i(unit, "adam_step_count", &
             checkpoint%adam_step_count, ios)
         if (ios == 0) call write_i(unit, "optimizer", checkpoint%optimizer, ios)
+        if (ios == 0) call write_i(unit, "precision_kind", checkpoint%precision_kind, ios)
         if (ios == 0) call write_i(unit, "stale_epochs", checkpoint%stale_epochs, ios)
         if (ios == 0) call write_i(unit, "gradient_clipped_updates", &
             checkpoint%gradient_clipped_updates, ios)
@@ -235,6 +236,7 @@ contains
         if (ios == 0) call read_i(unit, "adam_step_count", &
             candidate%adam_step_count, ios)
         if (ios == 0) call read_i(unit, "optimizer", candidate%optimizer, ios)
+        if (ios == 0) call read_i(unit, "precision_kind", candidate%precision_kind, ios)
         if (ios == 0) call read_i(unit, "stale_epochs", candidate%stale_epochs, ios)
         if (ios == 0) call read_i(unit, "gradient_clipped_updates", &
             candidate%gradient_clipped_updates, ios)

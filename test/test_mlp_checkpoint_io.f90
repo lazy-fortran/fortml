@@ -155,7 +155,8 @@ contains
             a%iterator_epoch == b%iterator_epoch .and. a%iterator_position == b%iterator_position .and. &
             a%batch_size == b%batch_size .and. a%accumulation_steps == b%accumulation_steps .and. &
             a%shuffle_seed == b%shuffle_seed .and. a%adam_step_count == b%adam_step_count .and. &
-            a%optimizer == b%optimizer .and. a%stale_epochs == b%stale_epochs .and. &
+            a%optimizer == b%optimizer .and. a%precision_kind == b%precision_kind .and. &
+            a%stale_epochs == b%stale_epochs .and. &
             a%gradient_clipped_updates == b%gradient_clipped_updates .and. &
             a%validation_interval == b%validation_interval .and. a%patience == b%patience .and. &
             a%shuffle .eqv. b%shuffle .and. a%has_validation .eqv. b%has_validation .and. &
