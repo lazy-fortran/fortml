@@ -17,7 +17,8 @@ program test_gp_variational_categorical_likelihood
     type(fortml_device_t) :: cuda
     real(dp) :: x(6, 1), inducing(3, 1), probabilities(6, 3), probabilities_dot(6, 3)
     real(dp) :: probabilities_plus(6, 3), probabilities_minus(6, 3), probabilities_bar(6, 3)
-    real(dp) :: parameter_bar(1), parameter_bar_fd(1), labels_value, value_plus, value_minus
+    real(dp) :: parameter_bar(1), parameter_bar_fd(1), parameter_bar_plus(1), parameter_bar_minus(1)
+    real(dp) :: hvp(1), labels_value, value_plus, value_minus
     real(dp) :: value, tangent, h, log_scale, expected_scale, expected(6, 3), logits(3), total
     real(dp), allocatable :: likelihood_parameters(:)
     integer :: labels(6), classes(3), failures, i, j
@@ -100,6 +101,33 @@ program test_gp_variational_categorical_likelihood
     call check(abs(tangent - parameter_bar(1)) < 2.0e-12_dp, &
         "likelihood ELBO JVP equals gradient", failures)
 
+    call model%elbo_likelihood_parameter_hvp(x, labels, [1.0_dp], hvp, status)
+    call check(status_ok(status), "likelihood ELBO HVP", failures)
+    call model%set_likelihood_parameters([log_scale + h], status)
+    call model%elbo_likelihood_parameter_gradient(x, labels, value_plus, parameter_bar_plus, status)
+    call model%set_likelihood_parameters([log_scale - h], status)
+    call model%elbo_likelihood_parameter_gradient(x, labels, value_minus, parameter_bar_minus, status)
+    call model%set_likelihood_parameters([log_scale], status)
+    call check(abs(hvp(1) - (parameter_bar_plus(1) - parameter_bar_minus(1))/(2.0_dp*h)) < 3.0e-4_dp, &
+        "likelihood ELBO HVP finite difference", failures)
+
+    call model%predict_proba_likelihood_parameter_hvp(x, probabilities_bar, [1.0_dp], hvp, status)
+    call check(status_ok(status), "likelihood probability HVP", failures)
+    call model%set_likelihood_parameters([log_scale + h], status)
+    call model%predict_proba_likelihood_parameter_vjp(x, probabilities_bar, parameter_bar_plus, status)
+    call model%set_likelihood_parameters([log_scale - h], status)
+    call model%predict_proba_likelihood_parameter_vjp(x, probabilities_bar, parameter_bar_minus, status)
+    call model%set_likelihood_parameters([log_scale], status)
+    call check(abs(hvp(1) - (parameter_bar_plus(1) - parameter_bar_minus(1))/(2.0_dp*h)) < 3.0e-4_dp, &
+        "likelihood probability HVP finite difference", failures)
+
+    ! HVP products and rejected updates must leave the transformed state intact.
+    likelihood_parameters = model%likelihood_parameters()
+    call model%set_likelihood_parameters([log_scale, log_scale], status)
+    call check(.not. status_ok(status), "malformed likelihood HVP state update refused", failures)
+    call check(maxval(abs(model%likelihood_parameters() - likelihood_parameters)) < 1.0e-14_dp, &
+        "malformed likelihood HVP update preserves state", failures)
+
     cuda%kind = FORTML_DEVICE_CUDA
     cuda%selected = .true.
     cuda%available = .true.
@@ -109,6 +137,11 @@ program test_gp_variational_categorical_likelihood
     call model%predict_proba_likelihood_parameter_vjp_device(cuda, x, probabilities_bar, &
         parameter_bar, status)
     call check(status%code == FORTNUM_NOT_IMPLEMENTED, "CUDA likelihood VJP refusal", failures)
+    call model%predict_proba_likelihood_parameter_hvp_device(cuda, x, probabilities_bar, [1.0_dp], &
+        hvp, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED, "CUDA likelihood probability HVP refusal", failures)
+    call model%elbo_likelihood_parameter_hvp_device(cuda, x, labels, [1.0_dp], hvp, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED, "CUDA likelihood ELBO HVP refusal", failures)
 
     call fit_model%initialize(inducing, classes, kernel, 8, 20260808, status)
     options%max_iterations = 80

@@ -18,6 +18,7 @@ program fortml_bench_gp_categorical_likelihood
     real(dp) :: x(6, 1), inducing(3, 1), probabilities(6, 3), probabilities_dot(6, 3)
     real(dp) :: means(6, 3), variances(6, 3)
     real(dp) :: probabilities_bar(6, 3), parameter_bar(1), likelihood_gradient(1), value, tangent
+    real(dp) :: likelihood_hvp(1), probability_hvp(1)
     real(dp) :: fit_seconds, t0, t1
     real(dp), allocatable :: packed(:)
     integer :: labels(6), classes(3), clock_rate, clock_start, clock_stop, cuda_code, i, j
@@ -55,17 +56,24 @@ program fortml_bench_gp_categorical_likelihood
     likelihood_gradient = parameter_bar
     call model%elbo_likelihood_parameter_jvp(x, labels, [1.0_dp], value, tangent, status)
     if (.not. status_ok(status)) error stop "categorical likelihood JVP failed"
+    call model%elbo_likelihood_parameter_hvp(x, labels, [1.0_dp], likelihood_hvp, status)
+    if (.not. status_ok(status)) error stop "categorical likelihood ELBO HVP failed"
     call model%predict_proba_likelihood_parameter_jvp(x, [1.0_dp], probabilities, &
         probabilities_dot, status)
     if (.not. status_ok(status)) error stop "categorical likelihood probability JVP failed"
     call model%predict_proba_likelihood_parameter_vjp(x, probabilities_bar, parameter_bar, status)
     if (.not. status_ok(status)) error stop "categorical likelihood probability VJP failed"
+    call model%predict_proba_likelihood_parameter_hvp(x, probabilities_bar, [1.0_dp], &
+        probability_hvp, status)
+    if (.not. status_ok(status)) error stop "categorical likelihood probability HVP failed"
     write (*, '(a,es24.16)') "gp_categorical_likelihood_scale,", model%likelihood_scale()
     write (*, '(a,es24.16)') "gp_categorical_likelihood_fit_seconds,", fit_seconds
     write (*, '(a,i0)') "gp_categorical_likelihood_iterations,", fit_state%iterations
     write (*, '(a,es24.16)') "gp_categorical_likelihood_elbo,", value
     write (*, '(a,es24.16)') "gp_categorical_likelihood_gradient,", likelihood_gradient(1)
     write (*, '(a,es24.16)') "gp_categorical_likelihood_jvp,", tangent
+    write (*, '(a,es24.16)') "gp_categorical_likelihood_elbo_hvp,", likelihood_hvp(1)
+    write (*, '(a,es24.16)') "gp_categorical_likelihood_probability_hvp,", probability_hvp(1)
     do i = 1, size(x, 1)
         do j = 1, 3
             write (*, '(a,i0,a,i0,a,es24.16,a,es24.16)') "gp_categorical_likelihood_latent,", &
@@ -81,4 +89,11 @@ program fortml_bench_gp_categorical_likelihood
         probabilities_dot, status)
     cuda_code = status%code
     write (*, '(a,i0)') "gp_categorical_likelihood_cuda_jvp,", cuda_code
+    call model%predict_proba_likelihood_parameter_hvp_device(cuda, x, probabilities_bar, [1.0_dp], &
+        probability_hvp, status)
+    cuda_code = status%code
+    write (*, '(a,i0)') "gp_categorical_likelihood_cuda_probability_hvp,", cuda_code
+    call model%elbo_likelihood_parameter_hvp_device(cuda, x, labels, [1.0_dp], likelihood_hvp, status)
+    cuda_code = status%code
+    write (*, '(a,i0)') "gp_categorical_likelihood_cuda_elbo_hvp,", cuda_code
 end program fortml_bench_gp_categorical_likelihood

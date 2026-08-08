@@ -3854,10 +3854,14 @@ coupled simplex probabilities and `predict` uses sorted-class first-max ties.
 `predict_proba_parameter_jvp`/`predict_proba_parameter_vjp` and
 `predict_proba_input_jvp`/`predict_proba_input_vjp` differentiate the complete
 softmax, variance correction, and inducing projection. `parameters()` packs
-the per-class mean/log-Cholesky vectors in sorted-class order. HVP and kernel
-hyperparameter products are outside this bounded slice. CPU dispatch is exact;
+the per-class mean/log-Cholesky vectors in sorted-class order. The fixed-state
+temperature coordinate additionally exposes
+`predict_proba_likelihood_parameter_hvp`, the forward-over-reverse product of
+the probability VJP, and `elbo_likelihood_parameter_hvp`, the exact weighted
+ELBO curvature product. Kernel hyperparameter products remain outside this
+bounded slice. CPU dispatch is exact;
 CUDA methods return `FORTNUM_NOT_IMPLEMENTED` until resident inducing solves,
-softmax reductions, and reverse kernels are linked. See
+softmax reductions, reverse kernels, and HVP reductions are linked. See
 `docs/GP_VARIATIONAL_CATEGORICAL.md` and the independent oracle
 `test_gp_variational_categorical_classification`.
 

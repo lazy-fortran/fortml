@@ -99,6 +99,8 @@ module fortml_gp_variational_categorical_classification
             gvcc_elbo_likelihood_parameter_gradient
         procedure, public :: elbo_likelihood_parameter_jvp => &
             gvcc_elbo_likelihood_parameter_jvp
+        procedure, public :: elbo_likelihood_parameter_hvp => &
+            gvcc_elbo_likelihood_parameter_hvp
         procedure, public :: predict_latent => gvcc_predict_latent
         procedure, public :: predict_proba => gvcc_predict_proba
         procedure, public :: predict => gvcc_predict
@@ -113,6 +115,8 @@ module fortml_gp_variational_categorical_classification
             gvcc_predict_proba_likelihood_parameter_jvp
         procedure, public :: predict_proba_likelihood_parameter_vjp => &
             gvcc_predict_proba_likelihood_parameter_vjp
+        procedure, public :: predict_proba_likelihood_parameter_hvp => &
+            gvcc_predict_proba_likelihood_parameter_hvp
         procedure, public :: predict_proba_input_jvp => &
             gvcc_predict_proba_input_jvp
         procedure, public :: predict_proba_input_vjp => &
@@ -124,9 +128,13 @@ module fortml_gp_variational_categorical_classification
             gvcc_predict_proba_likelihood_parameter_jvp_device
         procedure, public :: predict_proba_likelihood_parameter_vjp_device => &
             gvcc_predict_proba_likelihood_parameter_vjp_device
+        procedure, public :: predict_proba_likelihood_parameter_hvp_device => &
+            gvcc_predict_proba_likelihood_parameter_hvp_device
         procedure, public :: predict_proba_input_vjp_device => &
             gvcc_predict_proba_input_vjp_device
         procedure, public :: elbo_device => gvcc_elbo_device
+        procedure, public :: elbo_likelihood_parameter_hvp_device => &
+            gvcc_elbo_likelihood_parameter_hvp_device
         procedure, public :: classes => gvcc_classes
         procedure, public :: class_count => gvcc_class_count
         procedure, public :: feature_count => gvcc_feature_count
@@ -790,6 +798,71 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine gvcc_elbo_likelihood_parameter_jvp
 
+    subroutine gvcc_elbo_likelihood_parameter_hvp(self, x, labels, direction, &
+            parameter_hvp, status, scale, sample_weight)
+        !! Fixed-state Hessian-vector product for the log softmax temperature.
+        !!
+        !! The inducing posteriors, inducing locations, and kernel are held
+        !! fixed.  The product differentiates the ELBO likelihood gradient in
+        !! the supplied one-dimensional direction; the analytic KL is
+        !! independent of this coordinate and contributes no curvature.
+        class(gp_variational_categorical_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), direction(:)
+        integer, intent(in) :: labels(:)
+        real(dp), intent(out) :: parameter_hvp(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: scale
+        real(dp), intent(in), optional :: sample_weight(:)
+        real(dp), allocatable :: means(:, :), variances(:, :), logits(:, :)
+        real(dp), allocatable :: probabilities(:, :), logits_dot(:, :)
+        real(dp), allocatable :: probabilities_dot(:, :), weights(:)
+        real(dp) :: multiplier, mean_logit_dot, curvature
+        integer :: i, class_index
+
+        parameter_hvp = 0.0_dp
+        if (.not. valid_data(self, x, labels, status, sample_weight)) return
+        if (size(direction) /= 1 .or. size(parameter_hvp) /= 1 .or. &
+                .not. ieee_is_finite(direction(1))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "categorical variational GP likelihood HVP: direction or output shape is invalid")
+            return
+        end if
+        multiplier = 1.0_dp
+        if (present(scale)) multiplier = scale
+        if (multiplier <= 0.0_dp .or. .not. ieee_is_finite(multiplier)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "categorical variational GP likelihood HVP: scale is invalid")
+            return
+        end if
+        allocate(means(size(x, 1), self%n_classes), variances(size(x, 1), self%n_classes), &
+            logits(size(x, 1), self%n_classes), probabilities(size(x, 1), self%n_classes), &
+            logits_dot(size(x, 1), self%n_classes), &
+            probabilities_dot(size(x, 1), self%n_classes))
+        call self%predict_latent(x, means, variances, status)
+        if (status%code /= FORTNUM_OK) return
+        call logits_and_probabilities(self, means, variances, logits, probabilities, status)
+        if (status%code /= FORTNUM_OK) return
+        call observation_weights(size(labels), sample_weight, weights, status)
+        if (status%code /= FORTNUM_OK) return
+        logits_dot = direction(1)*logits
+        call softmax_jvp(logits, logits_dot, probabilities, probabilities_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        curvature = 0.0_dp
+        do i = 1, size(labels)
+            class_index = find_class(self%class_label, labels(i))
+            mean_logit_dot = dot_product(probabilities_dot(i, :), logits(i, :)) + &
+                dot_product(probabilities(i, :), logits_dot(i, :))
+            curvature = curvature + weights(i)*(logits_dot(i, class_index) - mean_logit_dot)
+        end do
+        parameter_hvp(1) = multiplier*curvature
+        if (.not. ieee_is_finite(parameter_hvp(1))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "categorical variational GP likelihood HVP: result is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gvcc_elbo_likelihood_parameter_hvp
+
     subroutine gvcc_predict_latent(self, x, means, variances, status)
         class(gp_variational_categorical_classification_t), intent(in) :: self
         real(dp), intent(in) :: x(:, :)
@@ -1003,6 +1076,66 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine gvcc_predict_proba_likelihood_parameter_vjp
 
+    subroutine gvcc_predict_proba_likelihood_parameter_hvp(self, x, probabilities_bar, &
+            direction, parameter_hvp, status)
+        !! Fixed-state Hessian-vector product of a probability VJP.
+        !!
+        !! `probabilities_bar` is held fixed while the log-temperature moves
+        !! in `direction`.  The returned scalar is the directional derivative
+        !! of `predict_proba_likelihood_parameter_vjp`, so this is the exact
+        !! forward-over-reverse product for the coupled softmax reduction.
+        class(gp_variational_categorical_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), probabilities_bar(:, :), direction(:)
+        real(dp), intent(out) :: parameter_hvp(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: means(:, :), variances(:, :), logits(:, :)
+        real(dp), allocatable :: probabilities(:, :), logits_dot(:, :)
+        real(dp), allocatable :: probabilities_dot(:, :), logits_bar(:, :)
+        real(dp), allocatable :: logits_bar_dot(:, :)
+        real(dp) :: mean_bar, mean_bar_dot
+        integer :: i
+
+        parameter_hvp = 0.0_dp
+        if (.not. probability_valid(self, x, probabilities_bar, status)) return
+        if (size(direction) /= 1 .or. size(parameter_hvp) /= 1 .or. &
+                .not. ieee_is_finite(direction(1)) .or. &
+                any(.not. ieee_is_finite(probabilities_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "categorical variational GP likelihood HVP: direction or output shape is invalid")
+            return
+        end if
+        allocate(means(size(x, 1), self%n_classes), variances(size(x, 1), self%n_classes), &
+            logits(size(x, 1), self%n_classes), probabilities(size(x, 1), self%n_classes), &
+            logits_dot(size(x, 1), self%n_classes), &
+            probabilities_dot(size(x, 1), self%n_classes), &
+            logits_bar(size(x, 1), self%n_classes), &
+            logits_bar_dot(size(x, 1), self%n_classes))
+        call self%predict_latent(x, means, variances, status)
+        if (status%code /= FORTNUM_OK) return
+        call logits_and_probabilities(self, means, variances, logits, probabilities, status)
+        if (status%code /= FORTNUM_OK) return
+        logits_dot = direction(1)*logits
+        call softmax_jvp(logits, logits_dot, probabilities, probabilities_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        call softmax_vjp(probabilities, probabilities_bar, logits_bar)
+        parameter_hvp(1) = 0.0_dp
+        do i = 1, size(x, 1)
+            mean_bar = dot_product(probabilities(i, :), probabilities_bar(i, :))
+            mean_bar_dot = dot_product(probabilities_dot(i, :), probabilities_bar(i, :))
+            logits_bar_dot(i, :) = probabilities_dot(i, :)* &
+                (probabilities_bar(i, :) - mean_bar) - probabilities(i, :)*mean_bar_dot
+            parameter_hvp(1) = parameter_hvp(1) + &
+                dot_product(logits_bar_dot(i, :), logits(i, :)) + &
+                dot_product(logits_bar(i, :), logits_dot(i, :))
+        end do
+        if (.not. ieee_is_finite(parameter_hvp(1))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "categorical variational GP likelihood HVP: result is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gvcc_predict_proba_likelihood_parameter_hvp
+
     subroutine gvcc_predict_proba_input_jvp(self, x, x_dot, probabilities, &
             probabilities_dot, status)
         class(gp_variational_categorical_classification_t), intent(in) :: self
@@ -1195,6 +1328,34 @@ contains
         end select
     end subroutine gvcc_predict_proba_likelihood_parameter_vjp_device
 
+    subroutine gvcc_predict_proba_likelihood_parameter_hvp_device(self, device, x, &
+            probabilities_bar, direction, parameter_hvp, status)
+        !! Device boundary for the fixed-state categorical likelihood HVP.
+        class(gp_variational_categorical_classification_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :), probabilities_bar(:, :), direction(:)
+        real(dp), intent(out) :: parameter_hvp(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        parameter_hvp = 0.0_dp
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "categorical variational GP likelihood HVP device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_proba_likelihood_parameter_hvp(x, probabilities_bar, direction, &
+                parameter_hvp, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "categorical variational GP likelihood HVP device: resident CUDA graph is not linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "categorical variational GP likelihood HVP device: device kind is invalid")
+        end select
+    end subroutine gvcc_predict_proba_likelihood_parameter_hvp_device
+
     subroutine gvcc_predict_proba_input_vjp_device(self, device, x, probabilities_bar, x_bar, status)
         class(gp_variational_categorical_classification_t), intent(in) :: self
         type(fortml_device_t), intent(in) :: device
@@ -1255,6 +1416,47 @@ contains
                 "categorical variational GP device: device kind is invalid")
         end select
     end subroutine gvcc_elbo_device
+
+    subroutine gvcc_elbo_likelihood_parameter_hvp_device(self, device, x, labels, direction, &
+            parameter_hvp, status, scale, sample_weight)
+        !! Device boundary for the fixed-state categorical ELBO HVP.
+        class(gp_variational_categorical_classification_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :), direction(:)
+        integer, intent(in) :: labels(:)
+        real(dp), intent(out) :: parameter_hvp(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: scale
+        real(dp), intent(in), optional :: sample_weight(:)
+
+        parameter_hvp = 0.0_dp
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "categorical variational GP likelihood HVP device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            if (present(scale) .and. present(sample_weight)) then
+                call self%elbo_likelihood_parameter_hvp(x, labels, direction, parameter_hvp, &
+                    status, scale=scale, sample_weight=sample_weight)
+            else if (present(scale)) then
+                call self%elbo_likelihood_parameter_hvp(x, labels, direction, parameter_hvp, &
+                    status, scale=scale)
+            else if (present(sample_weight)) then
+                call self%elbo_likelihood_parameter_hvp(x, labels, direction, parameter_hvp, &
+                    status, sample_weight=sample_weight)
+            else
+                call self%elbo_likelihood_parameter_hvp(x, labels, direction, parameter_hvp, status)
+            end if
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "categorical variational GP likelihood HVP device: resident CUDA graph is not linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "categorical variational GP likelihood HVP device: device kind is invalid")
+        end select
+    end subroutine gvcc_elbo_likelihood_parameter_hvp_device
 
     integer function gvcc_class_count(self) result(count)
         class(gp_variational_categorical_classification_t), intent(in) :: self

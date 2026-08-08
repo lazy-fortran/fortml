@@ -229,9 +229,9 @@ typed refusals, and malformed refits preserve a deployed candidate. It also incl
 it fits a variance-corrected shared-softmax ELBO with bounded FortOpt and exposes
 packed/input JVP/VJP products plus typed CUDA refusal. Its positive softmax
 likelihood temperature is a separate log-scale coordinate with exact
-probability/ELBO JVP/VJP products and a transactional FortOpt likelihood-only
-fit; CUDA likelihood products remain typed refusals until the inducing graph is
-resident. The independent release lane is
+probability/ELBO JVP/VJP products, fixed-state probability and ELBO HVPs, and a
+transactional FortOpt likelihood-only fit; CUDA likelihood products remain
+typed refusals until the inducing graph is resident. The independent release lane is
 `results/GP_CATEGORICAL_LIKELIHOOD.md` in `../fortml-bench`.
 
 The standalone `multiclass_probability_calibrator_t` also supports weighted

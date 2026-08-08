@@ -20,10 +20,15 @@ coordinate has exact CPU products:
 
 - `predict_proba_likelihood_parameter_jvp` and
   `predict_proba_likelihood_parameter_vjp` differentiate the complete
-  temperature-scaled softmax;
+  temperature-scaled softmax, and
+  `predict_proba_likelihood_parameter_hvp` differentiates the fixed-output
+  VJP in a log-temperature direction;
 - `elbo_likelihood_parameter_gradient` and
   `elbo_likelihood_parameter_jvp` differentiate the weighted categorical ELBO,
-  including the optional likelihood `scale` and sample weights; and
+  including the optional likelihood `scale` and sample weights;
+- `elbo_likelihood_parameter_hvp` returns the exact fixed-state curvature
+  product in a log-temperature direction, with the KL correctly contributing
+  no curvature; and
 - `fit_likelihood` sends the same analytic value/gradient callback through
   bounded FortOpt L-BFGS-B without changing the inducing posterior.
 
@@ -34,10 +39,11 @@ final gradient.  Bounds are on the log coordinate, so the physical scale is
 always positive.
 
 The CPU implementation is the reference path.  The explicit device wrappers
-for likelihood JVP/VJP return `FORTNUM_NOT_IMPLEMENTED` for CUDA until the
+for likelihood JVP/VJP/HVP return `FORTNUM_NOT_IMPLEMENTED` for CUDA until the
 inducing solves and softmax reduction are resident; no host fallback is hidden
-behind a CUDA request.  The independent finite-difference and adjoint oracle
-is [`test_gp_variational_categorical_likelihood`](../test/test_gp_variational_categorical_likelihood.f90).
+behind a CUDA request.  The independent finite-difference, adjoint, and
+directional-Hessian oracle is
+[`test_gp_variational_categorical_likelihood`](../test/test_gp_variational_categorical_likelihood.f90).
 The release probe is [`fortml_bench_gp_categorical_likelihood.f90`](../app/fortml_bench_gp_categorical_likelihood.f90),
 with the NumPy comparison recorded in
 `fortml-bench/results/GP_CATEGORICAL_LIKELIHOOD.md`.
