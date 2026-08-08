@@ -212,7 +212,7 @@ repeated resident-batch evidence.
 | `gp_regression_t` | Mean, variance, LML | Prediction and LML parameters | Prediction and LML parameters | Mean and LML parameters |
 | `gp_derivative_regression_t` | Mean, variance, and LML | Prediction and LML parameter JVP | Prediction parameter VJP and analytic LML hyperparameter gradient | Directional HVP (finite difference of the analytic gradient) |
 | `second_derivative_gp_t` | Exact scalar 1-D RBF/Matérn-5/2 GP over mixed value/first/second-derivative rows, plus RBF third-derivative rows; latent joint covariance and packed likelihood state | Query-coordinate JVP; RBF likelihood JVP; selected-CPU device dispatch | Query-coordinate VJP; likelihood VJP; selected-CPU device dispatch | RBF order >3, Matérn-5/2 order >2, Matérn-5/2 fifth derivative at coincidence, Matérn parameter products, and CUDA prediction/covariance/product requests are typed refusals |
-| `gp_classification_t` | Latent, observed, and log-observed probabilities; fixed-state kernel parameter setter | Input and fixed-state kernel-parameter JVP for probabilities and log probabilities | Input and fixed-state kernel-parameter VJP for probabilities and log probabilities; Laplace-mode kernel hyperparameter gradient | No |
+| `gp_classification_t` | Latent, observed, and log-observed probabilities; fixed-state kernel parameter setter; implicit-mode kernel hyperparameter HVP | Input and fixed-state kernel-parameter JVP for probabilities and log probabilities | Input and fixed-state kernel-parameter VJP for probabilities and log probabilities; Laplace-mode kernel hyperparameter gradient | Implicit-mode hyperparameter HVP on CPU; typed CUDA refusal |
 | `gp_multiclass_classification_t` | Latent one-vs-rest margins and normalized observed probabilities | Input and packed fixed-state kernel-parameter JVPs for margins and probabilities | Input and packed fixed-state kernel-parameter VJPs for margins and probabilities; packed one-vs-rest Laplace-mode kernel hyperparameter gradient | No |
 | `gp_multilabel_classification_t` | Independent binary Laplace-GP probabilities and indicator labels | Input and packed per-label fixed-state kernel-parameter JVPs for latent/probability outputs | Input and packed per-label fixed-state kernel-parameter VJPs; concatenated Laplace-mode kernel hyperparameter gradient | No |
 | `multi_output_gp_t` | Correlated mean and LML; prior covariance; batched `(batch,query,output)` prediction | Packed kernel/log-noise/output-major W/independent posterior-mean and prior-covariance JVP; query-input and batch-query JVP | Fitted posterior-mean and prior-covariance parameter VJP; query-input and batch-query VJP | No |
@@ -3563,10 +3563,16 @@ metadata in the fitted model. `hyperparameter_gradient` returns the exact
 envelope gradient of the fitted Laplace-mode log posterior (without the
 optional evidence correction). At a converged mode this is the kernel-VJP
 contraction `0.5 * alpha * alpha^T : dK/dtheta`, so sums, products, and other
-kernels implementing the parameter-VJP contract are supported. Differentiating
-the full Laplace evidence, including mode-curvature terms, is a separate
-contract. Variational likelihoods, shared multiclass coupling, and
-derivative-observation classifier paths remain explicit roadmap work.
+kernels implementing the parameter-VJP contract are supported.
+`hyperparameter_hvp(direction,product,status)` differentiates this envelope
+through the converged Newton mode using the posterior factorization and the
+kernel parameter-HVP/VJP primitives. It is an implicit-optimum HVP, not the
+fixed-mode transaction used by `set_parameters`; `hyperparameter_hvp_device`
+dispatches CPU and returns `FORTNUM_NOT_IMPLEMENTED` for selected CUDA.
+Differentiating the full Laplace evidence, including mode-curvature terms, is
+a separate contract. Variational likelihoods, shared multiclass coupling, and
+derivative-observation classifier paths remain explicit roadmap work. See
+[`GP_CLASSIFICATION_HYPERPARAMETER_HVP.md`](GP_CLASSIFICATION_HYPERPARAMETER_HVP.md).
 
 `gp_multiclass_classification_t` provides deterministic one-vs-rest multiclass
 GP classification over the same binary Laplace models. It fits one model per

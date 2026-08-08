@@ -15,7 +15,7 @@ attribution, binary-GP log-probability, fixed-leaf-product, plateau-trainer,
 and CUDA VJP closure slices documented below are post-tag additions.
 The broad parity
 gate is still open, so this work does not move or recreate that tag.
-The checklist currently records 337 completed and 127 open items; open rows are
+The checklist currently records 338 completed and 127 open items; open rows are
 retained until their implementation, independent oracle, device/refusal
 behavior, and benchmark evidence land together.
 
@@ -56,10 +56,20 @@ schema-2 metadata validation, and staged probability records. Each slice has a
 CPU oracle, a typed CUDA boundary, and a benchmark record in
 `fortml-bench`.
 
+The binary Laplace-GP derivative slice now adds an implicit-mode kernel
+hyperparameter HVP. `gp_classification_t%hyperparameter_hvp` differentiates the
+converged Newton mode through the resident posterior factorization, then uses
+the analytic kernel parameter HVP/VJP primitives; `hyperparameter_hvp_device`
+keeps CPU dispatch explicit and returns typed CUDA status `3`. Logistic and
+probit refit finite differences, transactional parameter refusal, and the
+release app are independently checked by `test_gp_classification_hvp` and
+`fortml-bench/results/GP_CLASSIFICATION_HYPERPARAMETER_HVP.md`. Full evidence,
+likelihood-parameter, coupled multiclass, and resident-GPU HVPs remain open.
+
 | Compiler | Command | Result |
 | --- | --- | --- |
-| GNU Fortran | `fo` | Static build, all 258 behavioral tests, and lint passed at the current integrated FortML/FortAD-main revisions. The compiler still emits non-fatal array-temporary warnings; see [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
-| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded older compiler lane. The checked-in NVIDIA log predates the current 258-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
+| GNU Fortran | `fo` | Static build, all 259 behavioral tests, and lint passed at the current integrated FortML/FortAD-main revisions. The compiler still emits non-fatal array-temporary warnings; see [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
+| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded older compiler lane. The checked-in NVIDIA log predates the current 259-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
 The checked-in GNU compiler log is the fresh 2026-08-09 run against FortML code
@@ -106,7 +116,7 @@ attributions, and model-agnostic trainer validation diagnostics.
 The build emits non-fatal GNU
 array-temporary warnings in FortFront query/generator calls, existing GP
 benchmark boundaries, variational-GP batch conversions, and basis-pipeline
-shape conversions. They are isolated to array construction; all 258 behavioral
+shape conversions. They are isolated to array construction; all 259 behavioral
 tests pass. Lint has zero unused-import findings and the full `fo` lint stage
 passes despite the non-fatal compiler warning corpus. The independent CUDA gate additionally covers the
 resident dense-affine value/JVP/VJP path and its single-layer MSE update with
@@ -1532,6 +1542,15 @@ when a lower-level primitive already exists.
   configurable thresholds, CPU dispatch, and typed CUDA refusals are covered
   by `test_gp_multilabel_classification` and the independent NumPy release
   lane `fortml-bench/results/GP_MULTILABEL.md`.
+- [x] Add the implicit-mode binary Laplace-GP kernel hyperparameter HVP.
+  `gp_classification_t%hyperparameter_hvp` differentiates the converged mode
+  tangent through the posterior factorization and contracts analytic kernel
+  `parameter_hvp`/`parameter_vjp` products for the full fitted envelope
+  gradient. The selected-CPU device method is explicit and CUDA returns
+  `FORTNUM_NOT_IMPLEMENTED`. `test_gp_classification_hvp` independently
+  refits logistic and probit probes, checks transactional setter refusal, and
+  checks the device boundary; see
+  `docs/GP_CLASSIFICATION_HYPERPARAMETER_HVP.md` and the companion benchmark.
 - [x] Add `second_derivative_gp_t` as a bounded exact scalar 1-D RBF/Matérn-5/2
   reference for mixed value/first/second-derivative observations and
   predictions. The explicit order vector uses `0:2` for both kernels and `3`

@@ -92,6 +92,9 @@ module fortml_gp_classification
         procedure, public :: set_parameters => gp_classification_set_parameters
         procedure, public :: hyperparameter_gradient => &
             gp_classification_hyperparameter_gradient
+        procedure, public :: hyperparameter_hvp => gp_classification_hyperparameter_hvp
+        procedure, public :: hyperparameter_hvp_device => &
+            gp_classification_hyperparameter_hvp_device
         procedure, public :: fitted => gp_classification_fitted
         procedure, public :: likelihood_kind => gp_classification_likelihood
         procedure, public :: device_supported => gp_classification_device_supported
@@ -121,6 +124,9 @@ module fortml_gp_classification
     public :: gp_classification_log_likelihood_value
     public :: gp_classification_log_likelihood_jvp
     public :: gp_classification_log_likelihood_vjp
+    public :: gp_classification_hyperparameter_gradient
+    public :: gp_classification_hyperparameter_hvp
+    public :: gp_classification_hyperparameter_hvp_device
     public :: gp_classification_likelihood_device_supported
 
 contains
@@ -1273,6 +1279,118 @@ contains
         call self%kernel%parameter_vjp(self%x_train, self%x_train, matrix_bar, &
             gradient, status)
     end subroutine gp_classification_hyperparameter_gradient
+
+    !> Directional hyperparameter Hessian product of the fitted Laplace
+    !! mode-posterior envelope.  Unlike `set_parameters`, which is a
+    !! fixed-state transaction for prediction products, this operation
+    !! differentiates the converged mode implicitly.  The mode tangent is
+    !! obtained from `(K^{-1}+W) f_dot = K^{-1} K_dot alpha` using the already
+    !! factored posterior system, and the kernel HVP/VJP primitives then form
+    !! the exact smooth product for every kernel with generated products.
+    subroutine gp_classification_hyperparameter_hvp(self, direction, parameter_hvp, status)
+        class(gp_classification_t), intent(in) :: self
+        real(dp), intent(in) :: direction(:)
+        real(dp), intent(out) :: parameter_hvp(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: covariance_dot(:, :), matrix_bar(:, :), matrix_bar_dot(:, :)
+        real(dp), allocatable :: alpha_dot(:), mode_dot(:), kernel_direction(:)
+        real(dp), allocatable :: tangent_rhs(:), tangent_solution(:)
+        real(dp), allocatable :: local_bar(:), local_bar_dot(:)
+
+        parameter_hvp = 0.0_dp
+        if (.not. self%fitted()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP classification hyperparameter HVP: model is not fitted")
+            return
+        end if
+        if (size(direction) /= self%parameter_count() .or. &
+                size(parameter_hvp) /= self%parameter_count() .or. &
+                any(.not. ieee_is_finite(direction))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP classification hyperparameter HVP: parameter shape is invalid")
+            return
+        end if
+
+        allocate(covariance_dot(self%n_samples, self%n_samples))
+        allocate(mode_dot(self%n_samples), alpha_dot(self%n_samples))
+        allocate(tangent_rhs(self%n_samples), tangent_solution(self%n_samples))
+        allocate(matrix_bar(self%n_samples, self%n_samples))
+        allocate(matrix_bar_dot(self%n_samples, self%n_samples))
+        allocate(local_bar(self%parameter_count()), local_bar_dot(self%parameter_count()))
+        allocate(kernel_direction(size(direction)))
+        kernel_direction = direction
+
+        ! `matrix_jvp` returns the value and directional derivative.  The
+        ! value is intentionally discarded here; the fitted covariance,
+        ! including jitter, is already the transactional state used by the
+        ! Cholesky factors.
+        block
+            real(dp), allocatable :: covariance(:, :)
+            allocate(covariance(self%n_samples, self%n_samples))
+            call self%kernel%matrix_jvp(self%x_train, self%x_train, kernel_direction, &
+                covariance, covariance_dot, status)
+        end block
+        if (status%code /= FORTNUM_OK) return
+
+        ! Let t = K_dot alpha.  The implicit mode equation can be solved
+        ! without forming K^{-1}+W explicitly: with u = sqrt(W) f_dot,
+        ! (I + sqrt(W) K sqrt(W)) u = sqrt(W) t and
+        ! f_dot = t - K sqrt(W) u.
+        tangent_rhs = matmul(covariance_dot, self%alpha)
+        tangent_solution = self%sqrt_w*tangent_rhs
+        call self%posterior_factorization%solve(tangent_solution, status)
+        if (status%code /= FORTNUM_OK) return
+        mode_dot = tangent_rhs - matmul(self%covariance, self%sqrt_w*tangent_solution)
+
+        ! alpha = K^{-1} f_mode, so alpha_dot = K^{-1}(f_dot-K_dot alpha).
+        alpha_dot = mode_dot - tangent_rhs
+        call self%prior_factorization%solve(alpha_dot, status)
+        if (status%code /= FORTNUM_OK) return
+
+        matrix_bar = 0.5_dp*outer_product(self%alpha, self%alpha)
+        matrix_bar_dot = 0.5_dp*(outer_product(alpha_dot, self%alpha) + &
+            outer_product(self%alpha, alpha_dot))
+        call self%kernel%parameter_hvp(self%x_train, self%x_train, matrix_bar, &
+            direction, local_bar, local_bar_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        call self%kernel%parameter_vjp(self%x_train, self%x_train, matrix_bar_dot, &
+            local_bar, status)
+        if (status%code /= FORTNUM_OK) return
+        parameter_hvp = local_bar + local_bar_dot
+        if (any(.not. ieee_is_finite(parameter_hvp))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "GP classification hyperparameter HVP: result is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_classification_hyperparameter_hvp
+
+    !> Device-dispatched hyperparameter HVP with no hidden host fallback.
+    subroutine gp_classification_hyperparameter_hvp_device(self, device, direction, &
+            parameter_hvp, status)
+        class(gp_classification_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: direction(:)
+        real(dp), intent(out) :: parameter_hvp(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        parameter_hvp = 0.0_dp
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP classification hyperparameter HVP device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%hyperparameter_hvp(direction, parameter_hvp, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "GP classification hyperparameter HVP device: no resident CUDA Laplace kernel is linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP classification hyperparameter HVP device: device kind is invalid")
+        end select
+    end subroutine gp_classification_hyperparameter_hvp_device
 
     logical function gp_classification_fitted(self) result(fitted)
         class(gp_classification_t), intent(in) :: self
