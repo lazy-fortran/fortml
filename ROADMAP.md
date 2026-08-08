@@ -15,7 +15,7 @@ gate is still open, so this work does not move or recreate that tag.
 | Compiler | Command | Result |
 | --- | --- | --- |
 | GNU Fortran | `fo` | Static, clean first/second builds, and all 178 behavioral tests passed at the current FortML/FortAD-main revisions. `fo lint` reports compiler warnings and exits nonzero, but no unused imports remain after the checked cleanup; see [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
-| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded older compiler lane. The checked-in NVIDIA log predates the current 176-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
+| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded older compiler lane. The checked-in NVIDIA log predates the current 178-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
 The checked-in GNU compiler log is the fresh 2026-08-08 run against FortML code
