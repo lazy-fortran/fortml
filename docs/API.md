@@ -213,6 +213,7 @@ repeated resident-batch evidence.
 | `second_derivative_gp_t` | Exact scalar 1-D RBF/Matérn-5/2 GP over mixed value/first/second-derivative rows; latent joint covariance | Query-coordinate JVP; selected-CPU device dispatch | Query-coordinate VJP for mean and latent variance; selected-CPU device dispatch | Other kernels, non-scalar, order >2, Matérn-5/2 fifth derivative at coincidence, and CUDA prediction/covariance/product requests are typed refusals |
 | `gp_classification_t` | Latent and observed probabilities | Input and fixed-state kernel-parameter JVP | Input and fixed-state kernel-parameter VJP; Laplace-mode kernel hyperparameter gradient | No |
 | `gp_multiclass_classification_t` | Latent one-vs-rest margins and normalized observed probabilities | Input and packed fixed-state kernel-parameter JVPs for margins and probabilities | Input and packed fixed-state kernel-parameter VJPs for margins and probabilities; packed one-vs-rest Laplace-mode kernel hyperparameter gradient | No |
+| `gp_multilabel_classification_t` | Independent binary Laplace-GP probabilities and indicator labels | Input and packed per-label fixed-state kernel-parameter JVPs for latent/probability outputs | Input and packed per-label fixed-state kernel-parameter VJPs; concatenated Laplace-mode kernel hyperparameter gradient | No |
 | `multi_output_gp_t` | Correlated mean and LML; prior covariance; batched `(batch,query,output)` prediction | Packed kernel/log-noise/output-major W/independent posterior-mean and prior-covariance JVP; query-input and batch-query JVP | Fitted posterior-mean and prior-covariance parameter VJP; query-input and batch-query VJP | No |
 | Approximate GP types | Mean, variance, or ELBO as listed below | No | No | No |
 
@@ -3464,6 +3465,32 @@ CPU-only support for fitted models, and `predict_latent_device`/
 resident covariance/Laplace kernel exists. The likelihood helper's
 `gp_classification_likelihood_device_supported` function likewise refuses
 CUDA value/JVP/VJP products, preserving the no-hidden-host-fallback contract.
+
+### `fortml_gp_multilabel_classification`
+
+`gp_multilabel_classification_t%fit(x,indicators,kernel,status[,options,state,
+sample_weight,thresholds])` fits one independent binary Laplace GP per
+indicator column.  The indicator matrix must contain only zero and one, each
+column must contain both values, and finite nonnegative sample weights must
+have positive mass.  The selected logistic or probit likelihood and Newton
+settings are copied to every head.  `predict_proba` returns positive
+probabilities without cross-label normalization; `predict` applies the stored
+per-label thresholds and returns an indicator matrix.
+
+`predict_latent` and `predict_proba` expose query-input JVP/VJP products, while
+their `*_parameter_jvp`/`*_parameter_vjp` variants use the concatenated fixed-
+state kernel-log parameter vector in label order.  `parameters()`,
+`parameter_count()`, and `hyperparameter_gradient()` expose the same packed
+layout; the gradient is the concatenation of the binary Laplace envelope
+gradients for the independent mode posteriors.  `set_thresholds` updates only
+the prediction policy and validates every threshold in `(0,1)`.
+
+Selected CPU device calls dispatch to the reference path.  CUDA probability
+and label requests return `FORTNUM_NOT_IMPLEMENTED` until resident binary
+Laplace states, solves, and the multilabel reduction are linked; no host
+fallback is implied.  The independent behavioral oracle is
+`test_gp_multilabel_classification`, and the cross-engine correctness record
+is `fortml-bench/results/GP_MULTILABEL.md`.
 
 ### `fortml_gp_classification_training`
 
