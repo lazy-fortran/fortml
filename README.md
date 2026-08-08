@@ -120,12 +120,18 @@ current surface is:
 
 | Surface | Products | Boundary |
 | --- | --- | --- |
-| Linear regression, ridge/elastic-net estimators, scalers, basis maps, and basis pipelines | Value, input/parameter JVPs and VJPs; analytic HVPs for polynomial/Fourier/radial/spline maps and horizontal/column/sequential pipelines | General DAG transforms, callback HVPs, and fit-time derivatives remain open |
+| Linear regression, ridge/elastic-net estimators, scalers, basis maps, and basis pipelines | Value, input/parameter JVPs and VJPs; analytic HVPs for polynomial/Fourier/radial/spline maps and horizontal/column/sequential/fan-out pipelines | Conditional/residual DAG transforms, callback HVPs, and fit-time derivatives remain open |
 | Poisson/Gamma GLM regression | Analytic weighted log-link objective/gradient, alpha/dispersion hypergradients, prediction, input/parameter JVPs and VJPs | Fit-time optimizer differentiation remains an explicit boundary; resident CUDA kernels remain planned |
 | Dense MLP and MSE training objective | Parameter/input JVPs, VJPs, exact MSE+L2 HVPs, L2 hyperparameter derivative, Adam/AdamW/Adagrad/RMSprop/AMSGrad/RAdam/SGD momentum/Nesterov training, typed constant/warmup/cosine/exponential schedules with analytic rate products, exact fixed-trajectory learning-rate/L2, AdamW (including beta logits), RMSprop hypergradients, AMSGrad/RAdam recurrence/checkpoints, and exact in-memory optimizer checkpoints | Mini-batch/schedule optimizer-trajectory hypergradients and neural module families are partial |
 | Exact GP regression | Kernel-parameter products, input derivatives, prediction products, and differentiated-solve HVPs; RBF, Matérn 1/2 and 3/2, periodic, and rational-quadratic products use analytic leaves, with the RBF and Matérn products cross-checked against FortSym-generated forms | Approximate and matrix-free training products are partial; Matérn 5/2 HVPs retain the FortAD product |
 | Derivative-observation GP | Mixed value/first-derivative observations, dense joint latent covariance, analytic parameter JVP/VJP products, exact query-input JVP/VJP products for RBF, Matérn 3/2 and 5/2, periodic, rational-quadratic, cosine, linear, constant, and supported sum/product leaves; validated user formulas carry analytic value/gradient/Hessian products; bounded scalar 1-D RBF `second_derivative_gp_t` supports mixed value/gradient/Hessian observations, order-four covariance blocks, order-five query JVP/VJP products, and latent joint covariance | The likelihood hyperparameter HVP is a documented deterministic central difference. Matérn 1/2 coincident derivative blocks, user-formula third-input products, polynomial derivative-GP parameter/query products, higher-order observations beyond the RBF `0:2` reference, and resident CUDA covariance/solve kernels remain typed refusals |
 | Trees, boosting, and classifiers | Piecewise JVPs where declared, with split-boundary refusals; weighted LDA/QDA exposes smooth Gaussian probability products | Classifier HVPs, smooth split derivatives, and resident classifier GPU kernels remain open |
+
+`basis_fanout_pipeline_t` now supplies a bounded named DAG composition: each
+branch is an arbitrary sequential basis pipeline, forward features concatenate
+in branch order, and reverse input cotangents are summed. Its packed branch
+parameter layout and analytic JVP/VJP/HVP products are CPU exact; CUDA dispatch
+returns a typed refusal until resident branch executors exist.
 | BNN, VAE, RNN, and most approximate GP paths | Value or model-specific gradient surfaces | Full JVP/VJP/HVP coverage is a roadmap item |
 
 `fortsym` is used when it proves a smaller or more stable closed form for a

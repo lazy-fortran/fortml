@@ -478,6 +478,13 @@ only listed as gaps:
   mixed ridge/coefficient HVP blocks. The independent fixtures are
   `test_basis_pipeline_training`; release evidence is
   `results/BASIS_PIPELINE_TRAINING.md` in `fortml-bench`.
+- `basis_fanout_pipeline_t` now composes named sequential basis branches in a
+  bounded fan-out/fan-in DAG. Forward blocks concatenate, reverse input
+  cotangents sum, and branch-local parameters retain stable packed names and
+  offsets through exact CPU JVP/VJP/HVP products. The independent oracle is
+  `test_basis_fanout_pipeline`; the benchmark records the same value and
+  derivative identities plus the typed CUDA refusal. Residual, conditional,
+  cyclic, and resident-GPU graph execution remain open.
 - `gp_classification_t` now exposes fixed-state kernel-parameter JVP/VJP
   products for latent predictions and observed probabilities for both logistic
   and probit Laplace models. The covariance solve, cross-covariance, and prior
@@ -1775,12 +1782,22 @@ return status errors.
   analytic value/gradient/JVP/VJP/HVP products, an L2 ridge block, a FortOpt
   callback, and an explicit CUDA refusal. Its independent test checks a
   Fourier basis against coordinate and directional finite differences.
+- [x] Add `basis_fanout_pipeline_t` as a bounded named DAG layer. Each branch
+  is a validated `sequential_basis_pipeline_t`; forward features concatenate
+  in branch order, reverse input cotangents sum across branches, and packed
+  branch parameters expose stable names and one-based offsets. CPU JVP/VJP/HVP
+  products are exact and independent finite-difference/adjoint checks cover a
+  nontrivial two-branch composition. Device-dispatch methods delegate only to
+  selected CPU execution and return `FORTNUM_NOT_IMPLEMENTED` for CUDA. The
+  graph is deliberately acyclic with no residual or conditional edges;
+  `test_basis_fanout_pipeline` and the companion correctness-gated benchmark
+  record this bounded contract.
 - [ ] Add parallel feature-union execution, device-resident transforms, and
   general column-wise transformer graphs beyond fixed basis maps.
-- [ ] Add named DAG composition with fan-out/fan-in, residual branches,
-  conditional stages, and a cycle refusal. Pipeline nodes expose local
-  parameter blocks so hyperparameter derivatives and optimizer routing remain
-  composable through the graph.
+- [ ] Extend the bounded named fan-out/fan-in layer with residual branches,
+  conditional stages, explicit cycle detection, and parallel/device-resident
+  execution. Pipeline nodes expose local parameter blocks so hyperparameter
+  derivatives and optimizer routing remain composable through the full graph.
 - [ ] Add feature-name propagation, schema validation, metadata routing,
   train-only fitting, `fit_transform`, `transform`, `inverse_transform` where
   mathematically defined, and partial-fit propagation for streaming data.

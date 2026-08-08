@@ -56,10 +56,10 @@ defaults, then set additional products supplied by a concrete model. Query
 with `has_role`, `supports_input`, `supports_derivative`, and
 `supports_device`; call `validate` before publishing a record. A requested
 record can be checked with `satisfies` or `require_estimator_capability`.
-The horizontal, sequential, and column-selecting basis pipelines expose
-`%capabilities(report,status)` and report their fitted state, feature shape,
-analytic input/parameter products, dense CPU support, and explicit sparse,
-missing, sample-weight, and CUDA refusals. `fortml_validation` re-exports
+The horizontal, sequential, column-selecting, and fan-out basis pipelines
+expose `%capabilities(report,status)` and report their fitted state, feature
+shape, analytic input/parameter products, dense CPU support, and explicit
+sparse, missing, sample-weight, and CUDA refusals. `fortml_validation` re-exports
 `validate_estimator_capability` and its requirement check so split/search code
 can reject an incompatible estimator before consuming a fold.
 
@@ -1485,6 +1485,25 @@ products, while CUDA returns `FORTNUM_NOT_IMPLEMENTED` without touching output
 arrays until a resident basis executor is linked. `device_supported` reports
 the same contract (fitted CPU unions only). This explicit boundary prevents a
 feature-union call from hiding host transfers behind an accelerator request.
+
+`basis_fanout_pipeline_t` is a one-layer named DAG that composes arbitrary
+`sequential_basis_pipeline_t` branches. Construct it with
+`make_basis_fanout_pipeline(n_inputs,status)`, append nonempty sequential
+branches with `append(branch,status[,name])`, and call `fit` before
+`transform`. The input is fanned out to every branch and their outputs are
+concatenated in append order (the fan-in). Branch parameters are packed in
+branch order; `branch_name`, `branch_feature_offset`, and
+`branch_parameter_offset` expose stable routing metadata, while
+`feature_name` and `parameter_name` prefix each branch's local names. Reverse
+VJPs sum the input cotangents from all branches, and JVP/HVP products use the
+same packed direction, giving the exact chain rule for this acyclic graph.
+Empty or invalid branches, input-count mismatches, duplicate names, malformed
+packs, and shape errors return `FORTNUM_DOMAIN_ERROR`. The device-dispatch
+methods (`transform_device`, `jvp_device`, `vjp_device`, `hvp_device`) delegate
+to the CPU implementation only for a selected available CPU; CUDA returns
+`FORTNUM_NOT_IMPLEMENTED` without a host fallback. This deliberately bounded
+graph has no cross-branch edges, conditional routing, residual addition, or
+cycle representation; those remain separate graph contracts.
 
 ### `fortml_basis_linear_regression`
 
