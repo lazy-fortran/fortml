@@ -1,6 +1,7 @@
 !> A bounded LightGBM-style leaf-wise histogram boosting estimator.
 module fortml_lightgbm
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+    use, intrinsic :: iso_fortran_env, only: iostat_end
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
         FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED
@@ -12,6 +13,10 @@ module fortml_lightgbm
 
     integer, parameter, public :: LIGHTGBM_OBJECTIVE_REGRESSION = 1
     integer, parameter, public :: LIGHTGBM_OBJECTIVE_BINARY = 2
+    character(*), parameter, public :: LIGHTGBM_MODEL_TEXT_MAGIC = &
+        "FORTML_LIGHTGBM_TEXT"
+    integer, parameter, public :: LIGHTGBM_MODEL_TEXT_SCHEMA_VERSION = 1
+    integer, parameter :: LIGHTGBM_MAX_SERIALIZED_NODES = 1000000
 
     !> Options for the deterministic numeric LightGBM-style path.  The
     !> estimator intentionally exposes only the supported CPU core: weighted
@@ -101,6 +106,8 @@ module fortml_lightgbm
         procedure, public :: predict_staged_margin => lgbm_predict_staged_margin
         procedure, public :: predict_contributions => lgbm_predict_contributions
         procedure, public :: slice => lgbm_slice
+        procedure, public :: save_text => lgbm_save_text
+        procedure, public :: load_text => lgbm_load_text
         procedure, public :: predict_proba => lgbm_predict_proba
         procedure, public :: predict_device => lgbm_predict_device
         procedure, public :: predict_jvp => lgbm_predict_jvp
@@ -585,6 +592,217 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine lgbm_slice
 
+    !> Save a fitted LightGBM ensemble as a versioned, compiler-independent
+    !> formatted text snapshot.  Training-row membership is intentionally not
+    !> serialized: prediction and all staged/contribution products depend only
+    !> on the learned node arrays.
+    subroutine lgbm_save_text(self, path, status)
+        class(lightgbm_t), intent(in) :: self
+        character(*), intent(in) :: path
+        type(fortnum_status_t), intent(out) :: status
+        integer :: unit, ios, close_ios, i, j
+
+        if (.not. self%initialized) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm save_text: model is not fitted")
+            return
+        end if
+        if (.not. valid_lgbm_scalars(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm save_text: model metadata is invalid")
+            return
+        end if
+        if (.not. allocated(self%estimator) .or. size(self%estimator) /= self%n_estimators) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm save_text: tree storage is invalid")
+            return
+        end if
+        do i = 1, self%n_estimators
+            if (.not. valid_lgbm_tree(self%estimator(i), self%n_inputs)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "lightgbm save_text: model contains an invalid tree")
+                return
+            end if
+        end do
+        open(newunit=unit, file=path, status="replace", action="write", &
+            form="formatted", access="sequential", iostat=ios)
+        if (ios /= 0) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm save_text: cannot open destination")
+            return
+        end if
+        write(unit, "(A)", iostat=ios) LIGHTGBM_MODEL_TEXT_MAGIC
+        if (ios == 0) call lgbm_write_i(unit, "schema_version", &
+            LIGHTGBM_MODEL_TEXT_SCHEMA_VERSION, ios)
+        if (ios == 0) call lgbm_write_i(unit, "n_inputs", self%n_inputs, ios)
+        if (ios == 0) call lgbm_write_i(unit, "n_estimators", self%n_estimators, ios)
+        if (ios == 0) call lgbm_write_i(unit, "requested_estimators", &
+            self%requested_estimators, ios)
+        if (ios == 0) call lgbm_write_i(unit, "objective_code", self%objective_code, ios)
+        if (ios == 0) call lgbm_write_i(unit, "num_leaves", self%num_leaves_value, ios)
+        if (ios == 0) call lgbm_write_i(unit, "max_bin", self%max_bin_value, ios)
+        if (ios == 0) call lgbm_write_i(unit, "max_depth", self%max_depth_value, ios)
+        if (ios == 0) call lgbm_write_i(unit, "min_data_in_leaf", &
+            self%min_data_in_leaf_value, ios)
+        if (ios == 0) call lgbm_write_r(unit, "learning_rate", self%learning_rate, ios)
+        if (ios == 0) call lgbm_write_r(unit, "l2", self%l2_value, ios)
+        if (ios == 0) call lgbm_write_r(unit, "min_gain_to_split", self%min_gain_value, ios)
+        if (ios == 0) call lgbm_write_r(unit, "base_score", self%base_score, ios)
+        if (ios == 0) call lgbm_write_i(unit, "early_stopping_rounds", &
+            self%early_stopping_rounds_value, ios)
+        if (ios == 0) call lgbm_write_r(unit, "early_stopping_min_delta", &
+            self%early_stopping_min_delta_value, ios)
+        if (ios == 0) call lgbm_write_l(unit, "restore_best", self%restore_best_value, ios)
+        if (ios == 0) call lgbm_write_i(unit, "best_iteration", self%best_iteration_value, ios)
+        if (ios == 0) call lgbm_write_r(unit, "best_validation_loss", &
+            self%best_validation_loss_value, ios)
+        if (ios == 0) call lgbm_write_l(unit, "early_stopped", self%early_stopped_flag, ios)
+        if (ios == 0) call lgbm_write_i(unit, "tree_count", self%n_estimators, ios)
+        do i = 1, self%n_estimators
+            if (ios /= 0) exit
+            call lgbm_write_i(unit, "tree_begin", i, ios)
+            if (ios == 0) call lgbm_write_i(unit, "n_nodes", self%estimator(i)%n_nodes, ios)
+            if (ios == 0) call lgbm_write_i(unit, "depth", self%estimator(i)%depth, ios)
+            do j = 1, self%estimator(i)%n_nodes
+                if (ios /= 0) exit
+                call lgbm_write_i(unit, "node_begin", j, ios)
+                if (ios == 0) call lgbm_write_i(unit, "feature", &
+                    self%estimator(i)%node(j)%feature, ios)
+                if (ios == 0) call lgbm_write_i(unit, "left_child", &
+                    self%estimator(i)%node(j)%left_child, ios)
+                if (ios == 0) call lgbm_write_i(unit, "right_child", &
+                    self%estimator(i)%node(j)%right_child, ios)
+                if (ios == 0) call lgbm_write_i(unit, "node_depth", &
+                    self%estimator(i)%node(j)%depth, ios)
+                if (ios == 0) call lgbm_write_r(unit, "threshold", &
+                    self%estimator(i)%node(j)%threshold, ios)
+                if (ios == 0) call lgbm_write_r(unit, "weight", &
+                    self%estimator(i)%node(j)%weight, ios)
+                if (ios == 0) call lgbm_write_r(unit, "gain", &
+                    self%estimator(i)%node(j)%gain, ios)
+                if (ios == 0) call lgbm_write_l(unit, "leaf", &
+                    self%estimator(i)%node(j)%leaf, ios)
+            end do
+        end do
+        if (ios == 0) write(unit, "(A)", iostat=ios) "end"
+        close_ios = 0
+        close(unit, iostat=close_ios)
+        if (ios /= 0 .or. close_ios /= 0) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm save_text: formatted write failed")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine lgbm_save_text
+
+    !> Load a complete LightGBM text snapshot transactionally.  Every named
+    !> record, tree index, node index, scalar bound, and EOF marker is checked;
+    !> unknown, truncated, duplicate, or trailing records refuse without
+    !> mutating the destination model.
+    subroutine lgbm_load_text(self, path, status)
+        class(lightgbm_t), intent(inout) :: self
+        character(*), intent(in) :: path
+        type(fortnum_status_t), intent(out) :: status
+        type(lightgbm_t) :: candidate
+        character(len=256) :: line
+        integer :: unit, ios, close_ios, schema, i, j, tree_count
+
+        open(newunit=unit, file=path, status="old", action="read", &
+            form="formatted", access="sequential", iostat=ios)
+        if (ios /= 0) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm load_text: cannot open source")
+            return
+        end if
+        read(unit, "(A)", iostat=ios) line
+        if (ios /= 0 .or. trim(line) /= LIGHTGBM_MODEL_TEXT_MAGIC) goto 900
+        call lgbm_read_i(unit, "schema_version", schema, ios)
+        if (ios /= 0 .or. schema /= LIGHTGBM_MODEL_TEXT_SCHEMA_VERSION) goto 900
+        call lgbm_read_i(unit, "n_inputs", candidate%n_inputs, ios)
+        if (ios == 0) call lgbm_read_i(unit, "n_estimators", candidate%n_estimators, ios)
+        if (ios == 0) call lgbm_read_i(unit, "requested_estimators", &
+            candidate%requested_estimators, ios)
+        if (ios == 0) call lgbm_read_i(unit, "objective_code", candidate%objective_code, ios)
+        if (ios == 0) call lgbm_read_i(unit, "num_leaves", candidate%num_leaves_value, ios)
+        if (ios == 0) call lgbm_read_i(unit, "max_bin", candidate%max_bin_value, ios)
+        if (ios == 0) call lgbm_read_i(unit, "max_depth", candidate%max_depth_value, ios)
+        if (ios == 0) call lgbm_read_i(unit, "min_data_in_leaf", &
+            candidate%min_data_in_leaf_value, ios)
+        if (ios == 0) call lgbm_read_r(unit, "learning_rate", candidate%learning_rate, ios)
+        if (ios == 0) call lgbm_read_r(unit, "l2", candidate%l2_value, ios)
+        if (ios == 0) call lgbm_read_r(unit, "min_gain_to_split", candidate%min_gain_value, ios)
+        if (ios == 0) call lgbm_read_r(unit, "base_score", candidate%base_score, ios)
+        if (ios == 0) call lgbm_read_i(unit, "early_stopping_rounds", &
+            candidate%early_stopping_rounds_value, ios)
+        if (ios == 0) call lgbm_read_r(unit, "early_stopping_min_delta", &
+            candidate%early_stopping_min_delta_value, ios)
+        if (ios == 0) call lgbm_read_l(unit, "restore_best", candidate%restore_best_value, ios)
+        if (ios == 0) call lgbm_read_i(unit, "best_iteration", candidate%best_iteration_value, ios)
+        if (ios == 0) call lgbm_read_r(unit, "best_validation_loss", &
+            candidate%best_validation_loss_value, ios)
+        if (ios == 0) call lgbm_read_l(unit, "early_stopped", candidate%early_stopped_flag, ios)
+        if (ios /= 0 .or. .not. valid_lgbm_scalars(candidate)) goto 900
+        call lgbm_read_i(unit, "tree_count", tree_count, ios)
+        if (ios /= 0 .or. tree_count /= candidate%n_estimators) goto 900
+        allocate(candidate%estimator(tree_count), stat=ios)
+        if (ios /= 0) goto 900
+        do i = 1, tree_count
+            call lgbm_read_i(unit, "tree_begin", j, ios)
+            if (ios /= 0 .or. j /= i) goto 900
+            call lgbm_read_i(unit, "n_nodes", candidate%estimator(i)%n_nodes, ios)
+            if (ios == 0) call lgbm_read_i(unit, "depth", candidate%estimator(i)%depth, ios)
+            if (ios /= 0 .or. candidate%estimator(i)%n_nodes < 1 .or. &
+                candidate%estimator(i)%n_nodes > LIGHTGBM_MAX_SERIALIZED_NODES) goto 900
+            allocate(candidate%estimator(i)%node(candidate%estimator(i)%n_nodes), stat=ios)
+            if (ios /= 0) goto 900
+            do j = 1, candidate%estimator(i)%n_nodes
+                call lgbm_read_i(unit, "node_begin", tree_count, ios)
+                if (ios /= 0 .or. tree_count /= j) goto 900
+                call lgbm_read_i(unit, "feature", candidate%estimator(i)%node(j)%feature, ios)
+                if (ios == 0) call lgbm_read_i(unit, "left_child", &
+                    candidate%estimator(i)%node(j)%left_child, ios)
+                if (ios == 0) call lgbm_read_i(unit, "right_child", &
+                    candidate%estimator(i)%node(j)%right_child, ios)
+                if (ios == 0) call lgbm_read_i(unit, "node_depth", &
+                    candidate%estimator(i)%node(j)%depth, ios)
+                if (ios == 0) call lgbm_read_r(unit, "threshold", &
+                    candidate%estimator(i)%node(j)%threshold, ios)
+                if (ios == 0) call lgbm_read_r(unit, "weight", &
+                    candidate%estimator(i)%node(j)%weight, ios)
+                if (ios == 0) call lgbm_read_r(unit, "gain", &
+                    candidate%estimator(i)%node(j)%gain, ios)
+                if (ios == 0) call lgbm_read_l(unit, "leaf", &
+                    candidate%estimator(i)%node(j)%leaf, ios)
+                if (ios /= 0) goto 900
+            end do
+            if (.not. valid_lgbm_tree(candidate%estimator(i), candidate%n_inputs)) goto 900
+        end do
+        read(unit, "(A)", iostat=ios) line
+        if (ios /= 0 .or. trim(line) /= "end") goto 900
+        read(unit, "(A)", iostat=ios) line
+        if (ios /= iostat_end) goto 900
+        close_ios = 0
+        close(unit, iostat=close_ios)
+        if (close_ios /= 0) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm load_text: close failed")
+            return
+        end if
+        candidate%initialized = .true.
+        select type (self)
+        type is (lightgbm_t)
+            self = candidate
+        class default
+            goto 900
+        end select
+        call status_set(status, FORTNUM_OK, "")
+        return
+900     close_ios = 0
+        close(unit, iostat=close_ios)
+        call status_set(status, FORTNUM_DOMAIN_ERROR, &
+            "lightgbm load_text: malformed, truncated, or trailing record")
+    end subroutine lgbm_load_text
+
     subroutine lgbm_predict_proba(self, x, probabilities, status)
         class(lightgbm_t), intent(in) :: self
         real(dp), intent(in) :: x(:, :)
@@ -1038,6 +1256,133 @@ contains
             end do
         end do
     end function leaf_boundary_hit
+
+    logical function valid_lgbm_scalars(model) result(valid)
+        class(lightgbm_t), intent(in) :: model
+
+        valid = model%n_inputs >= 1
+        if (.not. valid) return
+        valid = model%n_estimators >= 1 .and. model%requested_estimators >= model%n_estimators
+        if (.not. valid) return
+        valid = model%objective_code == LIGHTGBM_OBJECTIVE_REGRESSION .or. &
+            model%objective_code == LIGHTGBM_OBJECTIVE_BINARY
+        if (.not. valid) return
+        valid = model%num_leaves_value >= 2 .and. model%max_bin_value >= 2 .and. &
+            model%max_depth_value >= 0 .and. model%min_data_in_leaf_value >= 1
+        if (.not. valid) return
+        valid = ieee_is_finite(model%learning_rate) .and. model%learning_rate > 0.0_dp .and. &
+            model%learning_rate <= 1.0_dp .and. ieee_is_finite(model%l2_value) .and. &
+            model%l2_value >= 0.0_dp .and. ieee_is_finite(model%min_gain_value) .and. &
+            model%min_gain_value >= 0.0_dp .and. ieee_is_finite(model%base_score)
+        if (.not. valid) return
+        valid = model%early_stopping_rounds_value >= 0 .and. &
+            ieee_is_finite(model%early_stopping_min_delta_value) .and. &
+            model%early_stopping_min_delta_value >= 0.0_dp .and. &
+            model%best_iteration_value >= 0 .and. &
+            model%best_iteration_value <= model%requested_estimators .and. &
+            ieee_is_finite(model%best_validation_loss_value)
+    end function valid_lgbm_scalars
+
+    logical function valid_lgbm_tree(tree, n_inputs) result(valid)
+        type(lgbm_tree_t), intent(in) :: tree
+        integer, intent(in) :: n_inputs
+        integer :: i
+
+        valid = tree%n_nodes >= 1 .and. tree%n_nodes <= LIGHTGBM_MAX_SERIALIZED_NODES .and. &
+            tree%depth >= 0 .and. allocated(tree%node)
+        if (.not. valid) return
+        if (size(tree%node) < tree%n_nodes) then
+            valid = .false.
+            return
+        end if
+        do i = 1, tree%n_nodes
+            if (.not. ieee_is_finite(tree%node(i)%threshold) .or. &
+                .not. ieee_is_finite(tree%node(i)%weight) .or. &
+                .not. ieee_is_finite(tree%node(i)%gain) .or. &
+                tree%node(i)%depth < 0) then
+                valid = .false.
+                return
+            end if
+            if (tree%node(i)%leaf) then
+                if (tree%node(i)%feature /= 0 .or. tree%node(i)%left_child /= 0 .or. &
+                    tree%node(i)%right_child /= 0) then
+                    valid = .false.
+                    return
+                end if
+            else
+                if (tree%node(i)%feature < 1 .or. tree%node(i)%feature > n_inputs .or. &
+                    tree%node(i)%left_child <= i .or. tree%node(i)%left_child > tree%n_nodes .or. &
+                    tree%node(i)%right_child <= i .or. tree%node(i)%right_child > tree%n_nodes) then
+                    valid = .false.
+                    return
+                end if
+            end if
+        end do
+        valid = .not. tree%node(1)%leaf .or. tree%n_nodes == 1
+    end function valid_lgbm_tree
+
+    subroutine lgbm_write_i(unit, key, value, ios)
+        integer, intent(in) :: unit, value
+        character(*), intent(in) :: key
+        integer, intent(out) :: ios
+
+        write(unit, "(A,1X,I0)", iostat=ios) trim(key), value
+    end subroutine lgbm_write_i
+
+    subroutine lgbm_write_l(unit, key, value, ios)
+        integer, intent(in) :: unit
+        character(*), intent(in) :: key
+        logical, intent(in) :: value
+        integer, intent(out) :: ios
+
+        write(unit, "(A,1X,I0)", iostat=ios) trim(key), merge(1, 0, value)
+    end subroutine lgbm_write_l
+
+    subroutine lgbm_write_r(unit, key, value, ios)
+        integer, intent(in) :: unit
+        character(*), intent(in) :: key
+        real(dp), intent(in) :: value
+        integer, intent(out) :: ios
+
+        write(unit, "(A,1X,ES26.17E3)", iostat=ios) trim(key), value
+    end subroutine lgbm_write_r
+
+    subroutine lgbm_read_i(unit, expected, value, ios)
+        integer, intent(in) :: unit
+        character(*), intent(in) :: expected
+        integer, intent(out) :: value
+        integer, intent(out) :: ios
+        character(len=80) :: key
+
+        read(unit, *, iostat=ios) key, value
+        if (ios == 0 .and. trim(key) /= trim(expected)) ios = 1
+    end subroutine lgbm_read_i
+
+    subroutine lgbm_read_l(unit, expected, value, ios)
+        integer, intent(in) :: unit
+        character(*), intent(in) :: expected
+        logical, intent(out) :: value
+        integer, intent(out) :: ios
+        character(len=80) :: key
+        integer :: encoded
+
+        encoded = 0
+        read(unit, *, iostat=ios) key, encoded
+        if (ios == 0 .and. trim(key) /= trim(expected)) ios = 1
+        if (ios == 0 .and. encoded /= 0 .and. encoded /= 1) ios = 1
+        value = encoded == 1
+    end subroutine lgbm_read_l
+
+    subroutine lgbm_read_r(unit, expected, value, ios)
+        integer, intent(in) :: unit
+        character(*), intent(in) :: expected
+        real(dp), intent(out) :: value
+        integer, intent(out) :: ios
+        character(len=80) :: key
+
+        read(unit, *, iostat=ios) key, value
+        if (ios == 0 .and. trim(key) /= trim(expected)) ios = 1
+    end subroutine lgbm_read_r
 
     integer function parse_lgbm_objective(name) result(code)
         character(len=*), intent(in) :: name
