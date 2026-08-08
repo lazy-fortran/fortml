@@ -720,6 +720,13 @@ when a lower-level primitive already exists.
   `test_gp_variational_classification_input` checks central differences,
   adjoints, logistic/probit branches, CPU dispatch, and typed CUDA refusal.
   Hyperparameter products and resident GPU inference remain open.
+- [x] Add a bounded FortOpt L-BFGS-B adapter over the packed Bernoulli
+  variational-GP ELBO. `gp_variational_classification_optimize` exposes
+  explicit bounds/tolerances, commits the packed state on convergence, reports
+  ELBO/gradient/iteration diagnostics, and refuses CUDA until resident
+  inducing solves and reductions exist. The independent convergence,
+  finite-difference-gradient, and typed-refusal oracle is
+  `test_gp_variational_classification_training`.
 - [ ] Derivative observations for every supported smooth kernel, mixed orders,
   vector fields, Hessian observations, operator-valued outputs, analytic
   third-order query products, and covariance products over value/derivative

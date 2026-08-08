@@ -2953,9 +2953,15 @@ central differences and the adjoint identity. CPU dispatch executes these
 products exactly; CUDA prediction and reverse-product paths return
 `FORTNUM_NOT_IMPLEMENTED`
 until the inducing solve, likelihood evaluation, and reduction are resident.
-No hidden host fallback is used. Kernel and inducing-point hyperparameter
-products, natural-gradient updates, and resident GPU inference remain separate
-roadmap work.
+No hidden host fallback is used. `gp_variational_classification_optimize`
+provides a bounded FortOpt L-BFGS-B adapter over the packed ELBO state, with
+`gp_variational_classification_lbfgsb_options_t` bounds/tolerances and a
+`gp_variational_classification_lbfgsb_result_t` convergence/ELBO/gradient
+diagnostic. The adapter maximizes the deterministic ELBO through its negative
+objective, commits the packed state only on convergence, and returns a typed
+CUDA refusal. Kernel and inducing-point hyperparameter products,
+natural-gradient updates, and resident GPU inference remain separate roadmap
+work.
 
 ### `fortml_gp_variational_multiclass_classification`
 
