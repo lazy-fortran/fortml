@@ -14,12 +14,12 @@ gate is still open, so this work does not move or recreate that tag.
 
 | Compiler | Command | Result |
 | --- | --- | --- |
-| GNU Fortran | `fo` | Static, clean first/second builds, and all 176 behavioral tests passed at the current FortML/FortAD-main revisions. `fo lint` reports compiler warnings and exits nonzero, but no unused imports remain after the checked cleanup; see [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
+| GNU Fortran | `fo` | Static, clean first/second builds, and all 178 behavioral tests passed at the current FortML/FortAD-main revisions. `fo lint` reports compiler warnings and exits nonzero, but no unused imports remain after the checked cleanup; see [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
 | NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded older compiler lane. The checked-in NVIDIA log predates the current 176-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
-The checked-in GNU compiler log is the fresh 2026-08-08 run against FortML
-`a7fea2b2e58dbf27e87043a7bb6ab70a44cf5c1f`, FortAD `origin/main` at
+The checked-in GNU compiler log is the fresh 2026-08-08 run against FortML code
+revision `d204223`, FortAD `origin/main` at
 `10f47795924e189a273143681353daaa4b0591fe`, and FortNum at
 `38bc0e578ec5c6c0e636e8fdd3844f54f9e3e473`, run from the clean checkout
 under `/mnt/storage/code/lazy-fortran/fortml`. The run includes the
@@ -48,7 +48,7 @@ parameter snapshots and transfer counters. NVIDIA
 compiler coverage remains an
 explicit older-build result.
 
-The companion benchmark harness is clean at FortML-bench revision `07dd703`;
+The companion benchmark harness is clean at FortML-bench revision `fdab7e7`;
 the trainer-checkpoint, unfactored-Adafactor, binary-objective,
 multiclass-calibration, variational-multiclass-GP, PINN/physics-objective,
 physics HVP, grouped K-fold, spectral-mixture, XGBoost-ranking,
@@ -2419,6 +2419,10 @@ peak memory, and batch-size scaling with the same correctness gate as training.
   records are [`results/KNN.md`](../fortml-bench/results/KNN.md),
   [`results/RMSPROP.md`](../fortml-bench/results/RMSPROP.md), and
   [`results/XGBOOST.md`](../fortml-bench/results/XGBOOST.md).
+- [x] Add correctness-gated deterministic k-means and robust median-IQR
+  preprocessing benchmark lanes. The NumPy oracles, FortML timings, and typed
+  CUDA refusals are recorded in [`results/KMEANS.md`](../fortml-bench/results/KMEANS.md)
+  and [`results/ROBUST_SCALER.md`](../fortml-bench/results/ROBUST_SCALER.md).
 - [x] Add exact and weighted-histogram XGBoost monotonic-constraint benchmark
   rows. The independent NumPy harness parses complete query vectors, checks
   adjacent monotonicity, and records CPU fit/predict timings plus explicit
@@ -2772,6 +2776,12 @@ The maintained reports and their raw artifacts are in `../fortml-bench/results`:
 - [`ONE_HOT_ENCODER.md`](../fortml-bench/results/ONE_HOT_ENCODER.md), backed by
   `one_hot_encoder.csv` for sorted categories, packed one-based offsets,
   dense transforms, and explicit categorical derivative refusals.
+- [`ROBUST_SCALER.md`](../fortml-bench/results/ROBUST_SCALER.md), backed by
+  `robust_scaler.csv` for median-IQR fit/transform/inverse/JVP products and
+  the typed CUDA refusal.
+- [`KMEANS.md`](../fortml-bench/results/KMEANS.md), backed by `kmeans.csv` for
+  deterministic seeded Lloyd fit/transform, inertia, and the typed CUDA
+  refusal.
 - [`LINEAR_SVM.md`](../fortml-bench/results/LINEAR_SVM.md), backed by
   `linear_svm.csv` for weighted arbitrary-label primal SVM fit/predict,
   signed-margin oracle checks, and the explicit CUDA refusal.
