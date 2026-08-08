@@ -204,7 +204,7 @@ repeated resident-batch evidence.
 | `xgboost_t` | Squared/squared-log (RMSLE)/logistic/Poisson/fixed-shape Gamma/Tweedie/Huber/quantile/absolute/rank:pairwise margins, predictions, additive tree contributions, fitted-prefix slicing, and bounded ordered-gradient integer categorical partitions | Fixed-tree input JVP away from split boundaries; categorical models refuse discrete tangents | Fixed-tree input VJP away from split boundaries; categorical models refuse discrete cotangents | No |
 | `xgboost_classifier_t` | Binary integer labels, logistic `(n,2)` probabilities, staged margins, and feature diagnostics | Fixed-tree probability/input JVP away from split boundaries | Fixed-tree probability/input VJP away from split boundaries | No |
 | `lightgbm_t` | Weighted numeric regression/binary logistic histogram boosting with deterministic globally best-leaf growth | Fixed-tree input JVP away from split boundaries | Fixed-tree input VJP away from split boundaries | No |
-| `random_forest_classifier_t` | Bootstrap-ensemble probabilities/labels plus transactional OOB decision probabilities, OOB accuracy, coverage, and bootstrap-inclusion audit state | Refused: split routing is discrete | Refused: split routing is discrete | CPU OOB products; CUDA returns typed `FORTNUM_NOT_IMPLEMENTED` |
+| `random_forest_classifier_t` | Bootstrap-ensemble probabilities/labels plus transactional OOB decision probabilities, OOB accuracy, coverage, bootstrap-inclusion audit state, and deterministic fixed-state accuracy permutation importance | Refused: split routing and permutation membership are discrete | Refused: split routing and permutation membership are discrete | CPU OOB/permutation diagnostics; CUDA returns typed `FORTNUM_NOT_IMPLEMENTED` |
 | `extra_trees_classifier_t` | Randomized-threshold ensemble probabilities and labels | Refused: split routing is discrete | Refused: split routing is discrete | No |
 | `bagging_classifier_t` | Seeded bootstrap or without-replacement CART probabilities and labels | Refused: split routing is discrete | Refused: split routing is discrete | No |
 | `gp_regression_t` | Mean, variance, LML | Prediction and LML parameters | Prediction and LML parameters | Mean and LML parameters |
@@ -2601,6 +2601,23 @@ buffers. Class columns are mapped by the sorted global `classes()` labels even
 when an individual bootstrap CART omits a class. See
 `docs/RANDOM_FOREST_OOB.md` and the independent benchmark report for the
 coverage, score, and CUDA evidence.
+
+`permutation_importance(x,labels,importance,status[,n_repeats,seed,
+importance_std,baseline_score])` computes fixed-state accuracy decrease for
+each feature.  It validates the fitted classes and finite query rows, then
+uses a deterministic Park--Miller Fisher--Yates stream to permute one column
+at a time.  `importance` is the baseline accuracy minus the mean permuted
+accuracy; the optional `importance_std` is the population standard deviation
+over repeats and `baseline_score` receives the unpermuted accuracy.  Defaults
+are five repeats, a fixed positive seed, and a maximum of
+`RANDOM_FOREST_MAX_PERMUTATION_REPEATS` (1024).  The operation reads fitted
+trees only: no tree is refit and split routing is not differentiated.  All
+outputs are transactional on invalid state, dimensions, labels, options, or
+prediction failure.  `permutation_importance_device` runs the same CPU
+operation for `FORTML_DEVICE_CPU`; selected CUDA contexts return
+`FORTNUM_NOT_IMPLEMENTED` and preserve every supplied output.  See
+`docs/RANDOM_FOREST_PERMUTATION.md` and the independent NumPy benchmark for
+the exact stream and oracle.
 
 Tree routing is piecewise constant, so this estimator intentionally exposes no
 derivative products. `device_supported`, `predict_proba_device`, and

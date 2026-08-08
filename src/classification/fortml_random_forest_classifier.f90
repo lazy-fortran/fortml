@@ -22,6 +22,7 @@ module fortml_random_forest_classifier
     integer, parameter, public :: RANDOM_FOREST_MAX_TREES = 256
     integer, parameter, public :: RANDOM_FOREST_DEFAULT_SEED = 5489
     integer, parameter, public :: RANDOM_FOREST_CUDA_PLAN_ABI_VERSION = 1
+    integer, parameter, public :: RANDOM_FOREST_MAX_PERMUTATION_REPEATS = 1024
     ! The generic status vocabulary has no separate coverage code.  A forest
     ! with a row that was never out-of-bag reports convergence failure rather
     ! than returning an in-bag substitute.
@@ -59,6 +60,10 @@ module fortml_random_forest_classifier
             random_forest_classifier_oob_decision_function_device
         procedure, public :: oob_score => random_forest_classifier_oob_score
         procedure, public :: oob_score_device => random_forest_classifier_oob_score_device
+        procedure, public :: permutation_importance => &
+            random_forest_classifier_permutation_importance
+        procedure, public :: permutation_importance_device => &
+            random_forest_classifier_permutation_importance_device
         procedure, public :: predict_proba_device => &
             random_forest_classifier_predict_proba_device
         procedure, public :: predict => random_forest_classifier_predict
@@ -112,6 +117,8 @@ module fortml_random_forest_classifier
     public :: random_forest_classifier_predict_proba_device
     public :: random_forest_classifier_predict
     public :: random_forest_classifier_predict_device
+    public :: random_forest_classifier_permutation_importance
+    public :: random_forest_classifier_permutation_importance_device
 
 contains
 
@@ -413,6 +420,136 @@ contains
                 "random forest OOB score device: device kind is invalid")
         end select
     end subroutine random_forest_classifier_oob_score_device
+
+    !> Estimate fixed-state permutation importance from classification accuracy.
+    !>
+    !> The fitted trees and their split routing remain unchanged.  For each
+    !> feature and repeat, only the query column is permuted with a
+    !> deterministic Fisher--Yates stream.  The reported value is the baseline
+    !> accuracy minus the accuracy after permutation; `importance_std`, when
+    !> supplied, is the population standard deviation across repeats.  This is
+    !> a diagnostic over a fitted, discrete forest and intentionally has no
+    !> input, parameter, or routing derivative product.
+    subroutine random_forest_classifier_permutation_importance(self, x, labels, importance, &
+            status, n_repeats, seed, importance_std, baseline_score)
+        class(random_forest_classifier_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        integer, intent(in) :: labels(:)
+        real(dp), intent(inout) :: importance(:)
+        type(fortnum_status_t), intent(out) :: status
+        integer, intent(in), optional :: n_repeats, seed
+        real(dp), intent(inout), optional :: importance_std(:), baseline_score
+        integer :: requested_repeats, requested_seed, n_samples, n_features
+        integer :: i, j, repeat
+        integer(int64) :: rng_state
+        real(dp) :: baseline, score, mean_value
+        real(dp), allocatable :: permuted(:, :), values(:), local_importance(:), local_std(:)
+        integer, allocatable :: permutation(:), predicted(:)
+        logical :: valid_labels
+
+        requested_repeats = 5
+        if (present(n_repeats)) requested_repeats = n_repeats
+        requested_seed = RANDOM_FOREST_DEFAULT_SEED + 7919
+        if (present(seed)) requested_seed = seed
+        n_samples = size(x, 1)
+        n_features = size(x, 2)
+        if (.not. self%initialized .or. n_samples < 1 .or. n_features /= self%n_inputs .or. &
+            size(labels) /= n_samples .or. size(importance) /= n_features .or. &
+            requested_repeats < 1 .or. requested_repeats > RANDOM_FOREST_MAX_PERMUTATION_REPEATS .or. &
+            requested_seed < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "random forest permutation importance: model, input, option, or shape is invalid")
+            return
+        end if
+        if (present(importance_std)) then
+            if (size(importance_std) /= n_features) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "random forest permutation importance: standard-deviation shape is invalid")
+                return
+            end if
+        end if
+        if (any(.not. ieee_is_finite(x))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "random forest permutation importance: inputs must be finite")
+            return
+        end if
+        valid_labels = .true.
+        do i = 1, n_samples
+            if (.not. any(self%class_label == labels(i))) then
+                valid_labels = .false.
+                exit
+            end if
+        end do
+        if (.not. valid_labels) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "random forest permutation importance: labels are outside fitted classes")
+            return
+        end if
+
+        allocate(permuted(n_samples, n_features), permutation(n_samples), predicted(n_samples), &
+            values(requested_repeats), local_importance(n_features), local_std(n_features))
+        call self%predict(x, predicted, status)
+        if (status%code /= FORTNUM_OK) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "random forest permutation importance: baseline prediction failed")
+            return
+        end if
+        baseline = real(count(predicted == labels), dp)/real(n_samples, dp)
+        rng_state = int(requested_seed, int64)
+        do i = 1, n_features
+            permuted = x
+            do repeat = 1, requested_repeats
+                call permutation_indices(n_samples, rng_state, permutation)
+                do j = 1, n_samples
+                    permuted(j, i) = x(permutation(j), i)
+                end do
+                call self%predict(permuted, predicted, status)
+                if (status%code /= FORTNUM_OK) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "random forest permutation importance: permuted prediction failed")
+                    return
+                end if
+                score = real(count(predicted == labels), dp)/real(n_samples, dp)
+                values(repeat) = baseline - score
+            end do
+            mean_value = sum(values)/real(requested_repeats, dp)
+            local_importance(i) = mean_value
+            local_std(i) = sqrt(sum((values - mean_value)**2)/real(requested_repeats, dp))
+        end do
+        importance = local_importance
+        if (present(importance_std)) importance_std = local_std
+        if (present(baseline_score)) baseline_score = baseline
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine random_forest_classifier_permutation_importance
+
+    subroutine random_forest_classifier_permutation_importance_device(self, device, x, labels, &
+            importance, status, n_repeats, seed, importance_std, baseline_score)
+        class(random_forest_classifier_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :)
+        integer, intent(in) :: labels(:)
+        real(dp), intent(inout) :: importance(:)
+        type(fortnum_status_t), intent(out) :: status
+        integer, intent(in), optional :: n_repeats, seed
+        real(dp), intent(inout), optional :: importance_std(:), baseline_score
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "random forest permutation device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%permutation_importance(x, labels, importance, status, n_repeats, seed, &
+                importance_std, baseline_score)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "random forest permutation device: resident CUDA permutation kernel is not linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "random forest permutation device: device kind is invalid")
+        end select
+    end subroutine random_forest_classifier_permutation_importance_device
 
     subroutine random_forest_classifier_predict_proba_device(self, device, x, &
             probabilities, status)
@@ -731,5 +868,23 @@ contains
         end do
         if (count < size(classes)) classes = classes(:count)
     end subroutine unique_sorted_labels
+
+    subroutine permutation_indices(n, state, indices)
+        integer, intent(in) :: n
+        integer(int64), intent(inout) :: state
+        integer, intent(out) :: indices(:)
+        integer :: i, j, temporary
+
+        do i = 1, n
+            indices(i) = i
+        end do
+        do i = n, 2, -1
+            state = modulo(48271_int64*state, 2147483647_int64)
+            j = 1 + int(modulo(state, int(i, int64)))
+            temporary = indices(i)
+            indices(i) = indices(j)
+            indices(j) = temporary
+        end do
+    end subroutine permutation_indices
 
 end module fortml_random_forest_classifier
