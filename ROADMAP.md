@@ -24,7 +24,7 @@ behavior, and benchmark evidence land together.
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
 The checked-in GNU compiler log is the fresh 2026-08-08 run against FortML code
-revision `436664a`, FortAD `origin/main` at
+revision `3f28d9e`, FortAD `origin/main` at
 `931dac5f39eb6ea5ab3854d5af49b346bea950af`, and FortNum at
 `396c8f202ba45e97eecceaba2e6bf848a206b4d0`, run from the clean checkout
 under `/mnt/storage/code/lazy-fortran/fortml`. The run includes the
@@ -59,7 +59,7 @@ compiler coverage remains an
 explicit older-build result.
 
 The companion benchmark harness is clean at FortML-bench revision
-`e0efc4e`,
+`308872a`,
 the trainer-checkpoint, unfactored-Adafactor, binary-objective,
 multiclass-calibration, variational-multiclass-GP, PINN/physics-objective,
 physics HVP, grouped K-fold, spectral-mixture, XGBoost-ranking,
@@ -150,7 +150,7 @@ optimizer-group execution, mixed precision, distributed state, and migration
 remain open. The source and benchmark pins for this earlier optimizer-group
 slice were FortML `05632ce8fa95268417c7a2d979fa1461a202abaa` and
 FortML-bench `0fb8ac7`; the current aggregate verification is the newer
-`436664a`/`e0efc4e` pair recorded above.
+`3f28d9e`/`308872a` pair recorded above.
 
 The variational-GP classification and OVR wrappers now expose fixed-state
 kernel-log-parameter JVP/VJP products for latent margins and normalized
