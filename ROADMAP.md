@@ -561,6 +561,11 @@ the complete operation graph resident or return a typed refusal; OpenACC is the
 first choice when it preserves semantics, and native CUDA is reserved for
 fixed no-autodiff hot loops where OpenACC cannot.
 
+The dependency pins used by the current GNU verification are FortAD `5f879a6`,
+FortSym `1477a6d`, and FortOpt `bfbf1fc`, all checked against their remote
+`main` branches on 2026-08-08. Generated derivatives record the exact FortSym
+revision and source hash; model-level autodiff uses the same FortAD `main` pin.
+
 The companion implementation roadmaps are authoritative for their sampler and
 acquisition work packages:
 
