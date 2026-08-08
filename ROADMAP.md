@@ -92,7 +92,7 @@ compiler coverage remains an
 explicit older-build result.
 
 The checked-in evidence is maintained on the clean FortML-bench revision
-`8e5a181`; each CSV records the exact clean benchmark revision used to produce
+`dadc7a1`; each CSV records the exact clean benchmark revision used to produce
 its rows,
 the trainer-checkpoint, unfactored-Adafactor, binary-objective,
 multiclass-calibration, variational-multiclass-GP, PINN/physics-objective,
@@ -138,7 +138,7 @@ fixed-structure XGBoost/LightGBM leaf-coordinate JVP/VJP products, and
 metric-aware plateau training with persisted diagnostics and deterministic
 split/resume recurrence. Their independent NumPy or hand oracles and typed
 CUDA-unavailable rows are pinned in the benchmark data and documentation head
-`8e5a181`.
+`dadc7a1`.
 The ARD derivative-GP lane adds dense mixed-observation input JVP/VJP and
 parameter HVP rows in `results/DERIVATIVE_GP.md`; the RAdam trajectory lane is
 `results/MLP_RADAM_HYPERGRADIENT.md`, and the Tweedie tree lane is

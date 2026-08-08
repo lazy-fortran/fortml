@@ -6,7 +6,7 @@ FortSym dependency: origin/main 26250ce24e3890711343a2f18d5feae2be832508 (genera
 FortOpt dependency: origin/main 883aa7ee0a3f2b3a508d0309b907adccc30a0f29
 FortNum dependency: origin/main 7ced2f7aa272920916789fa82a35bfcb2e792d45
 FortSparse dependency: origin/main 7ad20738b3f888a3bbec37324eff3117c630221d
-FortML-bench revision: origin/main 8e5a1812a507855eb2638116420f3e10f0a0d3aa (clean benchmark data head)
+FortML-bench revision: origin/main dadc7a17f9d993311b6fe80979fe9791b1f7cd6c (clean benchmark data and documentation head)
 Command: FO_SCAN_FALLBACK=regex fo
 Worktree: clean isolated checkout at /mnt/storage/worktrees/final-gate/fortml; dependencies are sibling clean worktrees under final-gate
 Static: OK (551 modules, 551 changed, 551 affected)
