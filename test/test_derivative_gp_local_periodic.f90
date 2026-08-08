@@ -34,6 +34,8 @@ contains
         real(dp) :: mean_plus(3, 1), mean_minus(3, 1)
         real(dp) :: variance_plus(3), variance_minus(3), query_error
         real(dp) :: query_step
+        real(dp) :: mean_bar(3, 1), variance_bar(3), x_bar(3, 2)
+        real(dp) :: lhs, rhs
         integer :: components(5), query_components(3), i
 
         x_train = reshape([ &
@@ -124,6 +126,17 @@ contains
         if (.not. status_ok(status) .or. query_error > 3.0e-7_dp) then
             write (error_unit, '(a,es12.4)') &
                 "FAIL [local-periodic derivative GP] query-input JVP oracle ", query_error
+            failures = failures + 1
+        end if
+
+        mean_bar(:, 1) = [0.23_dp, -0.41_dp, 0.17_dp]
+        variance_bar = [-0.19_dp, 0.28_dp, 0.36_dp]
+        call model%predict_input_vjp(x_query, query_components, mean_bar, variance_bar, x_bar, status)
+        lhs = sum(mean_dot*mean_bar) + dot_product(variance_dot, variance_bar)
+        rhs = sum(x_direction*x_bar)
+        if (.not. status_ok(status) .or. abs(lhs - rhs) > 2.0e-8_dp) then
+            write (error_unit, '(a,es12.4)') &
+                "FAIL [local-periodic derivative GP] query-input VJP adjoint ", abs(lhs - rhs)
             failures = failures + 1
         end if
     end subroutine test_local_periodic_products
