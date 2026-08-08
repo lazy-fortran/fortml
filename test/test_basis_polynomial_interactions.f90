@@ -4,12 +4,13 @@ program test_basis_polynomial_interactions
     use fortnum_status, only: fortnum_status_t, status_ok
     implicit none
 
-    type(basis_map_t) :: basis
+    type(basis_map_t) :: basis, basis3
     type(fortnum_status_t) :: status
     real(dp) :: x(3, 2), x_dot(3, 2), phi(3, 6), phi_dot(3, 6)
     real(dp) :: phi_plus(3, 6), phi_minus(3, 6), u(3, 6)
     real(dp) :: theta_dot(0), theta_hvp(0), x_bar(3, 2), x_hvp(3, 2)
     real(dp) :: x_bar_plus(3, 2), x_bar_minus(3, 2), h, lhs, rhs
+    real(dp) :: x3(2, 3), phi3(2, 9)
     integer :: failures
 
     failures = 0
@@ -33,6 +34,20 @@ program test_basis_polynomial_interactions
             maxval(abs(phi(:, 5) - x(:, 1)*x(:, 2))) > 1.0e-14_dp .or. &
             maxval(abs(phi(:, 6) - x(:, 2)**2)) > 1.0e-14_dp) then
         write (error_unit, '(a)') "FAIL [polynomial interactions] monomial ordering"
+        failures = failures + 1
+    end if
+
+    x3 = reshape([0.2_dp, -0.4_dp, 0.7_dp, 0.1_dp, -0.5_dp, 0.8_dp], shape(x3))
+    basis3 = make_polynomial_interaction_basis(3, 2, status)
+    call basis3%evaluate(x3, phi3, status)
+    if (.not. status_ok(status) .or. basis3%feature_count() /= 9 .or. &
+            maxval(abs(phi3(:, 1) - x3(:, 1))) > 1.0e-14_dp .or. &
+            maxval(abs(phi3(:, 2) - x3(:, 2))) > 1.0e-14_dp .or. &
+            maxval(abs(phi3(:, 3) - x3(:, 3))) > 1.0e-14_dp .or. &
+            maxval(abs(phi3(:, 5) - x3(:, 1)*x3(:, 2))) > 1.0e-14_dp .or. &
+            maxval(abs(phi3(:, 6) - x3(:, 1)*x3(:, 3))) > 1.0e-14_dp .or. &
+            maxval(abs(phi3(:, 8) - x3(:, 2)*x3(:, 3))) > 1.0e-14_dp) then
+        write (error_unit, '(a)') "FAIL [polynomial interactions] 3D enumeration"
         failures = failures + 1
     end if
 

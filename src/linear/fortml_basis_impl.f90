@@ -257,7 +257,7 @@ contains
     subroutine build_polynomial_exponents(self, status)
         type(polynomial_basis_impl_t), intent(inout) :: self
         type(fortnum_status_t), intent(out) :: status
-        integer :: d, n_terms, next
+        integer :: d, n_terms, next, prefix(self%n_inputs)
 
         n_terms = 0
         do d = 1, self%degree
@@ -270,10 +270,11 @@ contains
         end if
         allocate(self%exponents(n_terms, self%n_inputs))
         self%exponents = 0
+        prefix = 0
         next = 0
         do d = 1, self%degree
             call enumerate_polynomial_degree(self%exponents, next, 1, d, &
-                self%n_inputs)
+                self%n_inputs, prefix)
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine build_polynomial_exponents
@@ -291,20 +292,22 @@ contains
     end function polynomial_compositions
 
     recursive subroutine enumerate_polynomial_degree(exponents, next, position, &
-            remaining, n_inputs)
+            remaining, n_inputs, prefix)
         integer, intent(inout) :: exponents(:, :), next
+        integer, intent(inout) :: prefix(:)
         integer, intent(in) :: position, remaining, n_inputs
         integer :: value
 
         if (position == n_inputs) then
             next = next + 1
-            exponents(next, position) = remaining
+            prefix(position) = remaining
+            exponents(next, :) = prefix
             return
         end if
         do value = remaining, 0, -1
-            exponents(next + 1, position) = value
+            prefix(position) = value
             call enumerate_polynomial_degree(exponents, next, position + 1, &
-                remaining - value, n_inputs)
+                remaining - value, n_inputs, prefix)
         end do
     end subroutine enumerate_polynomial_degree
 
