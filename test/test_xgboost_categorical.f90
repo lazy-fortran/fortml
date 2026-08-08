@@ -11,7 +11,7 @@ program test_xgboost_categorical
     implicit none
 
     type(xgboost_t) :: model, restored
-    type(xgboost_options_t) :: options, too_many
+    type(xgboost_options_t) :: options, too_many, changed_metadata
     type(fortml_device_t) :: cpu, cuda
     type(fortnum_status_t) :: status
     real(dp) :: x(8, 2), y(8), prediction(8), restored_prediction(8)
@@ -50,6 +50,19 @@ program test_xgboost_categorical
         maxval(abs(restored_prediction - prediction)) < 2.0e-13_dp, &
         "categorical metadata round trip", failures)
     call delete_file(path)
+
+    changed_metadata = options
+    changed_metadata%n_estimators = 2
+    changed_metadata%categorical_features = [2]
+    call model%fit_warm_start(x, y, status, changed_metadata)
+    call check(status%code == FORTNUM_DOMAIN_ERROR, &
+        "warm-start categorical metadata refusal", failures)
+
+    x(1, 1) = 0.25_dp
+    call model%predict(x, prediction, status)
+    call check(status%code == FORTNUM_DOMAIN_ERROR, &
+        "non-integer categorical query refusal", failures)
+    x(1, 1) = 0.0_dp
 
     tangent = 1.0_dp
     call model%predict_jvp(x, tangent, prediction, y_dot, status)
