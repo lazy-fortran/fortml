@@ -989,6 +989,17 @@ when a lower-level primitive already exists.
   by `test_gp_spectral_mixture_kernel`. CUDA remains an explicit typed refusal
   until a resident spectral-mixture kernel is linked; see
   `docs/GP_SPECTRAL_MIXTURE.md`.
+- [x] Add bounded dense probabilistic-process reference paths. The
+  `student_t_process_t` contract keeps the GP mean while scaling predictive
+  covariance by the observed Mahalanobis distance and is checked against the
+  large-`nu` Gaussian limit, data-dependent variance contrast, and typed
+  `nu<=2` refusal in `test_student_t_process` and
+  `fortml-bench/results/STUDENT_T_PROCESS.md`. The
+  `heteroskedastic_gp_t` contract accepts known positive per-row noise,
+  interpolates log-noise with a second kernel, reduces exactly to an ordinary
+  GP for constant noise, and has the independent
+  `fortml-bench/results/HETEROSKEDASTIC_GP.md` lane. Derivative, variational,
+  joint-noise-inference, and resident-GPU products remain open.
 - [ ] Complete kernel catalog: locally
   periodic, change-point, neural-network, graph,
   string, and operator-valued kernels with compositional parameter metadata.
