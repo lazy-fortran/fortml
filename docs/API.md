@@ -1813,6 +1813,20 @@ after the last optimizer state and therefore marks that snapshot
 `checkpoint%valid()` validates allocation, dimensions, finite values, and the
 format version, while `checkpoint%clear()` releases its arrays.
 
+### `fortml_mlp_optimizer_group_hypergradient`
+
+`mlp_optimizer_group_hypergradient_options_t` exposes a fixed full-batch SGD
+trajectory whose packed FortOpt coordinates are
+`[log_learning_rate,log_l2,log(multiplier_i)]`. Group ranges and names are
+validated as contiguous, non-overlapping metadata. Each multiplier is applied
+to the post-optimizer parameter delta used by `mlp_train`; uncovered
+parameters use multiplier one. `value_gradient`, `jvp`, `vjp`, and the bounded
+FortOpt adapter share the same analytic MLP HVP products. Momentum,
+Adam-family state, schedules, minibatch cursors, and resident CUDA groups are
+explicitly outside this adapter and return typed refusals where requested.
+See [`docs/MLP_OPTIMIZER_GROUP_HYPERGRADIENT.md`](MLP_OPTIMIZER_GROUP_HYPERGRADIENT.md)
+and `test_mlp_optimizer_group_hypergradient` for the independent oracle.
+
 Set `mlp_training_options_t%ema_decay` to a finite value in `[0,1)` to track
 an exponential moving average of post-update network parameters. Zero (the
 default) disables the extra state. The initialized average starts at the
