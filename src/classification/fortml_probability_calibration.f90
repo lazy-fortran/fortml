@@ -78,15 +78,21 @@ module fortml_probability_calibration
     end type probability_calibrator_t
 
     type, public :: multiclass_probability_calibrator_t
-        !! Multiclass positive-temperature calibration for logit matrices.
+        !! Multiclass calibration for logit matrices.
         !!
         !! The input rows are logits in ascending sorted-class column order.
-        !! Fit learns one positive scalar temperature from a weighted softmax
-        !! NLL.  All products are analytic for fixed fitted state; Platt and
-        !! isotonic multiclass policies remain explicit capability refusals.
+        !! Temperature scaling learns one positive scalar from a weighted
+        !! softmax NLL.  Isotonic scaling fits one weighted one-vs-rest PAVA
+        !! map to each raw softmax column and renormalizes the calibrated
+        !! columns to a simplex.  Isotonic active-set derivatives are an
+        !! explicit refusal; values and labels remain deterministic.
         private
         real(dp) :: temperature = 1.0_dp
+        integer :: calibration_method = CALIBRATION_TEMPERATURE
         integer, allocatable :: class_label(:)
+        real(dp), allocatable :: isotonic_knots(:, :)
+        real(dp), allocatable :: isotonic_values(:, :)
+        integer, allocatable :: isotonic_counts(:)
         logical :: is_fitted = .false.
     contains
         procedure, public :: fit => multiclass_probability_calibration_fit
@@ -157,20 +163,24 @@ contains
 
         self%is_fitted = .false.
         self%temperature = 1.0_dp
+        self%calibration_method = CALIBRATION_TEMPERATURE
         if (allocated(self%class_label)) deallocate(self%class_label)
+        if (allocated(self%isotonic_knots)) deallocate(self%isotonic_knots)
+        if (allocated(self%isotonic_values)) deallocate(self%isotonic_values)
+        if (allocated(self%isotonic_counts)) deallocate(self%isotonic_counts)
         requested = probability_calibration_options_t_default
         if (present(options)) requested = options
         result = probability_calibration_state_t_default
-        result%method = CALIBRATION_TEMPERATURE
+        result%method = requested%method
         if (present(state)) state = result
         if (.not. valid_options(requested)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "multiclass probability calibration fit: options are invalid")
             return
         end if
-        if (requested%method /= CALIBRATION_TEMPERATURE) then
+        if (requested%method == CALIBRATION_SIGMOID) then
             call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
-                "multiclass probability calibration fit: only temperature scaling is implemented")
+                "multiclass probability calibration fit: multiclass Platt scaling is not implemented")
             return
         end if
         if (size(scores, 1) < 1 .or. size(scores, 2) < 2 .or. &
@@ -230,8 +240,18 @@ contains
         end do
         allocate(self%class_label(size(classes)))
         self%class_label = classes
-        call fit_multiclass_temperature(self, scores, encoded, weights, total_weight, &
-            requested, result, status)
+        self%calibration_method = requested%method
+        select case (requested%method)
+        case (CALIBRATION_TEMPERATURE)
+            call fit_multiclass_temperature(self, scores, encoded, weights, total_weight, &
+                requested, result, status)
+        case (CALIBRATION_ISOTONIC)
+            call fit_multiclass_isotonic(self, scores, encoded, weights, total_weight, &
+                result, status)
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multiclass probability calibration fit: calibration method is invalid")
+        end select
         if (status%code /= FORTNUM_OK) then
             if (present(state)) state = result
             return
@@ -309,6 +329,166 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine fit_multiclass_temperature
 
+    subroutine fit_multiclass_isotonic(self, scores, encoded, weights, total_weight, &
+            state, status)
+        !! Fit one weighted one-vs-rest PAVA map per raw softmax column.
+        class(multiclass_probability_calibrator_t), intent(inout) :: self
+        real(dp), intent(in) :: scores(:, :), weights(:), total_weight
+        integer, intent(in) :: encoded(:)
+        type(probability_calibration_state_t), intent(inout) :: state
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: raw(:, :)
+        real(dp) :: objective, class_objective
+        integer :: j, total_knots
+
+        allocate(raw(size(scores, 1), size(scores, 2)))
+        call raw_multiclass_softmax(scores, raw, status)
+        if (status%code /= FORTNUM_OK) return
+        allocate(self%isotonic_knots(size(scores, 1), size(scores, 2)), &
+            self%isotonic_values(size(scores, 1), size(scores, 2)), &
+            self%isotonic_counts(size(scores, 2)))
+        self%isotonic_knots = 0.0_dp
+        self%isotonic_values = 0.0_dp
+        self%isotonic_counts = 0
+        objective = 0.0_dp
+        do j = 1, size(scores, 2)
+            call fit_multiclass_isotonic_column(raw(:, j), encoded, weights, j, &
+                self%isotonic_knots(:, j), self%isotonic_values(:, j), &
+                self%isotonic_counts(j), class_objective, status)
+            if (status%code /= FORTNUM_OK) return
+            objective = objective + class_objective
+        end do
+        total_knots = sum(self%isotonic_counts)
+        state%iterations = 1
+        state%final_step_norm = 0.0_dp
+        state%converged = .true.
+        state%objective = objective/total_weight
+        state%method = CALIBRATION_ISOTONIC
+        state%knot_count = total_knots
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine fit_multiclass_isotonic
+
+    subroutine fit_multiclass_isotonic_column(scores, encoded, weights, class_index, &
+            knots, values, knot_count, objective, status)
+        !! Weighted PAVA for one class indicator against raw softmax scores.
+        real(dp), intent(in) :: scores(:), weights(:)
+        integer, intent(in) :: encoded(:), class_index
+        real(dp), intent(out) :: knots(:), values(:), objective
+        integer, intent(out) :: knot_count
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: sorted_scores(:), unique_scores(:), unique_weights(:)
+        real(dp), allocatable :: unique_positive(:), block_x(:), block_w(:), block_y(:)
+        integer, allocatable :: order(:)
+        integer :: i, j, m, n_blocks, key, n
+        real(dp) :: previous_mean, current_mean, label_value, fitted
+
+        n = size(scores)
+        knots = 0.0_dp
+        values = 0.0_dp
+        knot_count = 0
+        objective = 0.0_dp
+        if (size(weights) /= n .or. size(encoded) /= n .or. n < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multiclass isotonic calibration: column shapes are invalid")
+            return
+        end if
+        allocate(order(n), sorted_scores(n), unique_scores(n), unique_weights(n), &
+            unique_positive(n))
+        order = [(i, i=1, n)]
+        do i = 2, n
+            key = order(i)
+            j = i - 1
+            do while (j >= 1)
+                if (scores(order(j)) <= scores(key)) exit
+                order(j + 1) = order(j)
+                j = j - 1
+            end do
+            order(j + 1) = key
+        end do
+        sorted_scores = scores(order)
+        m = 0
+        do i = 1, n
+            if (weights(order(i)) <= 0.0_dp) cycle
+            if (m == 0) then
+                m = m + 1
+                unique_scores(m) = sorted_scores(i)
+                unique_weights(m) = weights(order(i))
+                unique_positive(m) = weights(order(i))* &
+                    merge(1.0_dp, 0.0_dp, encoded(order(i)) == class_index)
+            else if (sorted_scores(i) /= unique_scores(m)) then
+                m = m + 1
+                unique_scores(m) = sorted_scores(i)
+                unique_weights(m) = weights(order(i))
+                unique_positive(m) = weights(order(i))* &
+                    merge(1.0_dp, 0.0_dp, encoded(order(i)) == class_index)
+            else
+                unique_weights(m) = unique_weights(m) + weights(order(i))
+                unique_positive(m) = unique_positive(m) + weights(order(i))* &
+                    merge(1.0_dp, 0.0_dp, encoded(order(i)) == class_index)
+            end if
+        end do
+        if (m < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multiclass isotonic calibration: no positive-weight scores")
+            return
+        end if
+        allocate(block_x(m), block_w(m), block_y(m))
+        n_blocks = 0
+        do i = 1, m
+            n_blocks = n_blocks + 1
+            block_x(n_blocks) = unique_scores(i)
+            block_w(n_blocks) = unique_weights(i)
+            block_y(n_blocks) = unique_positive(i)
+            do while (n_blocks >= 2)
+                previous_mean = block_y(n_blocks - 1)/block_w(n_blocks - 1)
+                current_mean = block_y(n_blocks)/block_w(n_blocks)
+                if (previous_mean <= current_mean) exit
+                block_x(n_blocks - 1) = (block_w(n_blocks - 1)*block_x(n_blocks - 1) + &
+                    block_w(n_blocks)*block_x(n_blocks))/ &
+                    (block_w(n_blocks - 1) + block_w(n_blocks))
+                block_y(n_blocks - 1) = block_y(n_blocks - 1) + block_y(n_blocks)
+                block_w(n_blocks - 1) = block_w(n_blocks - 1) + block_w(n_blocks)
+                n_blocks = n_blocks - 1
+            end do
+        end do
+        knot_count = n_blocks
+        knots(:n_blocks) = block_x(:n_blocks)
+        values(:n_blocks) = block_y(:n_blocks)/block_w(:n_blocks)
+        do i = 1, n
+            if (weights(i) <= 0.0_dp) cycle
+            fitted = multiclass_isotonic_value(knots, values, knot_count, scores(i))
+            label_value = merge(1.0_dp, 0.0_dp, encoded(i) == class_index)
+            objective = objective + weights(i)*(label_value - fitted)**2
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine fit_multiclass_isotonic_column
+
+    subroutine raw_multiclass_softmax(scores, probabilities, status)
+        real(dp), intent(in) :: scores(:, :)
+        real(dp), intent(out) :: probabilities(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: maximum, normalizer
+        integer :: i
+
+        if (any(shape(probabilities) /= shape(scores))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multiclass isotonic calibration: softmax shape is invalid")
+            return
+        end if
+        do i = 1, size(scores, 1)
+            maximum = maxval(scores(i, :))
+            probabilities(i, :) = exp(scores(i, :) - maximum)
+            normalizer = sum(probabilities(i, :))
+            if (.not. ieee_is_finite(normalizer) .or. normalizer <= 0.0_dp) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "multiclass isotonic calibration: softmax normalizer is invalid")
+                return
+            end if
+            probabilities(i, :) = probabilities(i, :)/normalizer
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine raw_multiclass_softmax
+
     subroutine multiclass_temperature_objective(scores, encoded, weights, total_weight, &
             alpha, l2, probabilities, value, status)
         real(dp), intent(in) :: scores(:, :), weights(:), total_weight, alpha, l2
@@ -369,7 +549,15 @@ contains
         type(fortnum_status_t), intent(out) :: status
 
         if (.not. multiclass_prediction_valid(self, scores, probabilities, status)) return
-        call multiclass_softmax(self, scores, probabilities, status)
+        select case (self%calibration_method)
+        case (CALIBRATION_TEMPERATURE)
+            call multiclass_softmax(self, scores, probabilities, status)
+        case (CALIBRATION_ISOTONIC)
+            call multiclass_isotonic(self, scores, probabilities, status)
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multiclass probability calibration prediction: method is invalid")
+        end select
     end subroutine multiclass_probability_calibration_predict_proba
 
     subroutine multiclass_softmax(self, scores, probabilities, status)
@@ -393,6 +581,69 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine multiclass_softmax
+
+    subroutine multiclass_isotonic(self, scores, probabilities, status)
+        class(multiclass_probability_calibrator_t), intent(in) :: self
+        real(dp), intent(in) :: scores(:, :)
+        real(dp), intent(out) :: probabilities(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: raw(:, :)
+        real(dp) :: normalizer
+        integer :: i, j
+
+        allocate(raw(size(scores, 1), size(scores, 2)))
+        call raw_multiclass_softmax(scores, raw, status)
+        if (status%code /= FORTNUM_OK) return
+        do i = 1, size(scores, 1)
+            do j = 1, size(scores, 2)
+                probabilities(i, j) = multiclass_isotonic_value( &
+                    self%isotonic_knots(:, j), self%isotonic_values(:, j), &
+                    self%isotonic_counts(j), raw(i, j))
+            end do
+            normalizer = sum(probabilities(i, :))
+            if (.not. ieee_is_finite(normalizer)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "multiclass isotonic prediction: calibrated mass is nonfinite")
+                return
+            else if (normalizer <= tiny(1.0_dp)) then
+                probabilities(i, :) = 1.0_dp/real(size(scores, 2), dp)
+            else
+                probabilities(i, :) = probabilities(i, :)/normalizer
+            end if
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine multiclass_isotonic
+
+    real(dp) function multiclass_isotonic_value(knots, values, count, score) result(value)
+        real(dp), intent(in) :: knots(:), values(:), score
+        integer, intent(in) :: count
+        integer :: i
+        real(dp) :: denominator, fraction
+
+        if (count <= 0) then
+            value = 0.0_dp
+        else if (count == 1) then
+            value = values(1)
+        else if (score <= knots(1)) then
+            value = values(1)
+        else if (score >= knots(count)) then
+            value = values(count)
+        else
+            i = 1
+            do while (i < count - 1)
+                if (score <= knots(i + 1)) exit
+                i = i + 1
+            end do
+            denominator = knots(i + 1) - knots(i)
+            if (denominator <= tiny(1.0_dp)) then
+                value = values(i + 1)
+            else
+                fraction = (score - knots(i))/denominator
+                value = values(i) + fraction*(values(i + 1) - values(i))
+            end if
+        end if
+        value = min(max(value, 0.0_dp), 1.0_dp)
+    end function multiclass_isotonic_value
 
     subroutine multiclass_probability_calibration_predict_proba_device(self, device, &
             scores, probabilities, status)
@@ -436,6 +687,13 @@ contains
                 "multiclass probability calibration JVP: tangent or output shape is invalid")
             return
         end if
+        if (self%calibration_method == CALIBRATION_ISOTONIC) then
+            probabilities = 0.0_dp
+            probabilities_dot = 0.0_dp
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "multiclass probability calibration JVP: isotonic active-set derivatives are not implemented")
+            return
+        end if
         call multiclass_softmax(self, scores, probabilities, status)
         if (status%code /= FORTNUM_OK) return
         alpha = 1.0_dp/self%temperature
@@ -465,6 +723,12 @@ contains
         integer :: i, j
 
         if (.not. multiclass_vjp_valid(self, scores, probabilities_bar, scores_bar, status)) return
+        if (self%calibration_method == CALIBRATION_ISOTONIC) then
+            scores_bar = 0.0_dp
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "multiclass probability calibration VJP: isotonic active-set derivatives are not implemented")
+            return
+        end if
         allocate(probabilities(size(scores, 1), size(scores, 2)))
         call multiclass_softmax(self, scores, probabilities, status)
         if (status%code /= FORTNUM_OK) return
@@ -490,10 +754,18 @@ contains
         integer :: i
 
         if (.not. multiclass_prediction_valid(self, scores, probabilities, status)) return
-        if (size(parameters_dot) /= 1 .or. any(.not. ieee_is_finite(parameters_dot)) .or. &
+        if (size(parameters_dot) /= self%parameter_count() .or. &
+            any(.not. ieee_is_finite(parameters_dot)) .or. &
             any(shape(probabilities_dot) /= shape(probabilities))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "multiclass probability calibration parameter JVP: tangent or output shape is invalid")
+            return
+        end if
+        if (self%calibration_method == CALIBRATION_ISOTONIC) then
+            probabilities = 0.0_dp
+            probabilities_dot = 0.0_dp
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "multiclass probability calibration parameter JVP: isotonic active-set derivatives are not implemented")
             return
         end if
         call multiclass_softmax(self, scores, probabilities, status)
@@ -522,6 +794,11 @@ contains
         if (size(parameters_bar) > 0) parameters_bar = 0.0_dp
         if (.not. multiclass_parameter_vjp_valid(self, scores, probabilities_bar, &
             parameters_bar, status)) return
+        if (self%calibration_method == CALIBRATION_ISOTONIC) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "multiclass probability calibration parameter VJP: isotonic active-set derivatives are not implemented")
+            return
+        end if
         allocate(probabilities(size(scores, 1), size(scores, 2)))
         call multiclass_softmax(self, scores, probabilities, status)
         if (status%code /= FORTNUM_OK) return
@@ -583,9 +860,13 @@ contains
                 "multiclass probability calibration set_parameters: model is not fitted")
             return
         end if
-        if (size(parameters) /= 1) then
+        if (size(parameters) /= self%parameter_count()) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
-                "multiclass probability calibration set_parameters: temperature must be positive")
+                "multiclass probability calibration set_parameters: parameter shape is invalid")
+            return
+        end if
+        if (self%calibration_method == CALIBRATION_ISOTONIC) then
+            call status_set(status, FORTNUM_OK, "")
             return
         end if
         if (.not. ieee_is_finite(parameters(1)) .or. parameters(1) <= 0.0_dp) then
@@ -601,7 +882,7 @@ contains
         class(multiclass_probability_calibrator_t), intent(in) :: self
         real(dp), allocatable :: parameters(:)
 
-        if (self%is_fitted) then
+        if (self%is_fitted .and. self%calibration_method == CALIBRATION_TEMPERATURE) then
             allocate(parameters(1))
             parameters = [self%temperature]
         else
@@ -612,7 +893,7 @@ contains
     integer function multiclass_probability_calibration_parameter_count(self) result(count)
         class(multiclass_probability_calibrator_t), intent(in) :: self
 
-        if (self%is_fitted) then
+        if (self%is_fitted .and. self%calibration_method == CALIBRATION_TEMPERATURE) then
             count = 1
         else
             count = 0
@@ -634,7 +915,7 @@ contains
     integer function multiclass_probability_calibration_method(self) result(method)
         class(multiclass_probability_calibrator_t), intent(in) :: self
 
-        method = CALIBRATION_TEMPERATURE
+        method = self%calibration_method
     end function multiclass_probability_calibration_method
 
     logical function multiclass_probability_calibration_fitted(self) result(fitted)
@@ -714,7 +995,8 @@ contains
 
         valid = .false.
         if (.not. multiclass_prediction_valid(self, scores, probabilities_bar, status)) return
-        if (size(parameters_bar) /= 1 .or. any(.not. ieee_is_finite(probabilities_bar))) then
+        if (size(parameters_bar) /= self%parameter_count() .or. &
+            any(.not. ieee_is_finite(probabilities_bar))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "multiclass probability calibration parameter VJP: shape or cotangent is invalid")
             return
