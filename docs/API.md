@@ -1723,14 +1723,15 @@ adapter is CPU-only in this slice: CUDA initialization and selection return
 ### `fortml_mlp_training`
 
 `mlp_train(model,x,target,status,options,state[,validation_x,validation_target,checkpoint])`
-trains an existing `mlp_t` with deterministic Adam, AMSGrad, RAdam, AdamW, Adagrad, RMSprop,
+trains an existing `mlp_t` with deterministic Adam, AMSGrad, RAdam, Lion, AdamW, Adagrad, RMSprop,
 unfactored Adafactor, or FortOpt-backed SGD. A zero `batch_size`
 selects full-batch updates.
 Mini-batch shuffling uses an explicit Park-Miller stream controlled by
 `shuffle_seed`, and does not mutate process-global random state. The options
 also provide optimizer selection (`MLP_OPTIMIZER_ADAM`, `MLP_OPTIMIZER_SGD`,
 `MLP_OPTIMIZER_ADAMW`, `MLP_OPTIMIZER_ADAGRAD`, `MLP_OPTIMIZER_RMSPROP`,
-`MLP_OPTIMIZER_ADAFACTOR`, `MLP_OPTIMIZER_AMSGRAD`, or `MLP_OPTIMIZER_RADAM`),
+`MLP_OPTIMIZER_ADAFACTOR`, `MLP_OPTIMIZER_AMSGRAD`, `MLP_OPTIMIZER_RADAM`,
+or `MLP_OPTIMIZER_LION`),
 learning-rate and Adam
 coefficients, optional SGD
 momentum/Nesterov acceleration, L2 regularization, gradient tolerance,
@@ -1785,6 +1786,15 @@ boundary. RAdam is CPU-only in this slice: `radam_t%step_device` returns
 `FORTNUM_NOT_IMPLEMENTED` for CUDA without modifying parameters. Optimizer-
 trajectory hypergradients, matrix/device state, and FortOpt RAdam adapters are
 deliberately not claimed yet.
+`MLP_OPTIMIZER_LION` uses the beta1 interpolation of the current gradient and
+the stored beta2 momentum for its sign update, then advances the momentum with
+the beta2 recurrence. `weight_decay` is decoupled from the loss gradient,
+gradient clipping is applied before the sign branch, and the momentum vector is
+stored in the checkpoint `first_moment` slot. The independent
+`test_mlp_lion_training` oracle checks the recurrence, EMA, and uninterrupted
+versus resumed trajectories. The production trainer is FP64 CPU; resident CUDA
+Lion state and differentiable sign-branch products remain typed follow-up
+capabilities. See [`MLP_LION_TRAINING.md`](MLP_LION_TRAINING.md).
 The separate `mlp_adagrad_hypergradient_objective_t` provides that fixed full-batch product
 over learning rate, L2, and epsilon; it is CPU-only and routes exact
 value/JVP/VJP products to FortOpt L-BFGS-B with explicit log bounds. Mini-batch,
