@@ -199,6 +199,7 @@ repeated resident-batch evidence.
 | `lightgbm_t` | Weighted numeric regression/binary logistic histogram boosting with deterministic globally best-leaf growth | Fixed-tree input JVP away from split boundaries | Fixed-tree input VJP away from split boundaries | No |
 | `random_forest_classifier_t` | Bootstrap-ensemble probabilities and labels | Refused: split routing is discrete | Refused: split routing is discrete | No |
 | `extra_trees_classifier_t` | Randomized-threshold ensemble probabilities and labels | Refused: split routing is discrete | Refused: split routing is discrete | No |
+| `bagging_classifier_t` | Seeded bootstrap or without-replacement CART probabilities and labels | Refused: split routing is discrete | Refused: split routing is discrete | No |
 | `gp_regression_t` | Mean, variance, LML | Prediction and LML parameters | Prediction and LML parameters | Mean and LML parameters |
 | `gp_derivative_regression_t` | Mean, variance, and LML | Prediction and LML parameter JVP | Prediction parameter VJP and analytic LML hyperparameter gradient | Directional HVP (finite difference of the analytic gradient) |
 | `gp_classification_t` | Latent and observed probabilities | Input and fixed-state kernel-parameter JVP | Input and fixed-state kernel-parameter VJP; Laplace-mode kernel hyperparameter gradient | No |
@@ -2412,6 +2413,31 @@ behavior tests cover empirical leaf probabilities, separated-cluster labels,
 seeded determinism, invalid options, and the no-fallback CUDA contract. The
 release benchmark is `../fortml-bench/scripts/bench_extra_trees.py` with report
 [`EXTRA_TREES.md`](../fortml-bench/results/EXTRA_TREES.md).
+
+### `fortml_bagging_classifier`
+
+`bagging_classifier_t%fit(x,labels,status[,n_trees,max_depth,min_samples_leaf,
+max_samples,bootstrap,criterion,seed,sample_weight,missing_policy])` builds a
+deterministic bagging ensemble of numeric CART classifiers. The seeded
+without-replacement or bootstrap sampler forces one observation from every
+sorted class into each subset, so every tree's probability columns remain
+aligned even for small `max_samples`. `BAGGING_MAX_ESTIMATORS` bounds the
+ensemble; defaults are 10 trees, depth three, and `max_samples=n_samples`.
+`criterion` accepts `CART_CRITERION_GINI` or `CART_CRITERION_ENTROPY`, and the
+`missing_policy` is passed through to each CART tree. Positive finite sample
+weights are copied along with sampled rows.
+
+`predict_proba` averages the aligned tree probabilities and `predict` maps the
+first maximum back to the original sorted integer `classes`. Accessors expose
+tree count, subset size, depth, leaf size, criterion, seed, bootstrap policy,
+and fitted state. Because routing is discrete, probability input JVP/VJP
+products return `FORTNUM_NOT_IMPLEMENTED` rather than claiming a smooth zero.
+Selected CPU device calls execute normally; selected CUDA calls return the same
+typed refusal without a hidden host fallback. The independent
+`test_bagging_classifier` fixture covers depth-zero empirical probabilities,
+weighted leaves, seeded bootstrap determinism, class-coverage validation,
+discrete derivative refusals, and output-preserving CUDA refusals. The release
+workload is `fortml_bench_bagging_classifier`.
 
 ### `fortml_adaboost_classifier`
 
