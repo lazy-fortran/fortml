@@ -68,7 +68,7 @@ can reject an incompatible estimator before consuming a fold.
 The companion repositories are optional consumers of FortML model and
 probability objects; FortML does not import either package. At the pinned
 2026-08-08 revisions (FortBO
-`598c956512a67e69d52e71fe3fc0073ce775b027`, FortMC
+`9f581ce8c4e4b220517da7a89eb2445014ae9db5`, FortMC
 `a75fc6bd952c6dacbcb3bd958e6386405f9fd58d`), their public modules contain
 versioned contracts, tested acquisition/candidate-search foundations, and a
 FortML GP adapter. FortMC additionally ships a gradient-free univariate slice
@@ -78,7 +78,7 @@ candidate policies remain a partial catalog rather than a complete BO suite:
 | Companion | Current public protocol | Not yet supplied by the companion boundary |
 | --- | --- | --- |
 | FortMC `fortmc` | `fortmc_log_density_t%value(position,status)` and `%gradient(position,gradient,status)`, plus version constants, a default divergence threshold, and `fortmc_slice_sample`/`fortmc_slice_chain` for coordinate-sweep slice sampling | Chain state, transforms, packed parameter registries, HVPs, HMC/NUTS/SMC and other samplers, checkpoints, diagnostics, and device execution |
-| FortBO `fortbo` | Versioned `fortbo_posterior_t` with capability-gated moments, covariance, joint/reparameterized samples, predictive log density, moment gradients/Hessians; `fortbo_history_t` gradient-observation/checkpoint state; `fortbo_space_t` normalized continuous/integer/categorical/mixed/conditional spaces with differentiable masks; analytic EI/PI/UCB/log-EI; exact-envelope knowledge gradient; noisy expected improvement; joint qEI/qNEI/qUCB batch acquisitions; risk-sensitive and multi-fidelity criteria; constrained/cost-aware acquisitions; active-learning and level-set design; max-value entropy search; mixed-integer/categorical candidate search; per-evaluation benchmark metrics; marginal Monte-Carlo EI/PI with CRN, antithetic draws, and pathwise gradients; Sobol TuRBO candidates and Thompson selection; gradient-based DTuRBO in-region acquisition search; FortSym-derived trust-region length rescaling; exact posterior mean Hessians from derivative predictions; DTuRBO mode-2 posterior-derivative local models; an indefinite-curvature bound-constrained quadratic subproblem; Pareto archives with exact hypervolume and scalarizations; machine-readable stopping rules; trust-region traces; `fortbo_fit_from_history` value-only/derivative-GP adapters; `fortbo_structured` multi-task/deep-kernel moments adapters; asynchronous worker bookkeeping with fantasies/retries; Bayesian-linear posterior provider; fixed-choice and quadratic/exact constraint penalties; constrained/noisy/multi-objective fixtures; paper-aligned predictive-entropy C3 conditioning with a variance safeguard; 60D rover and 14D robot-pushing fixtures; resident OpenACC candidate/TuRBO reductions; BoTorch/GPyTorch/JAX/NumPy cross-framework correctness and regret fixtures | C1/C2 predictive-entropy search, qKG and batch Thompson/fantasy policies, wider sparse/variational adapters, posterior-gradient device execution, and full surrogate moment-gradient coverage |
+| FortBO `fortbo` | Versioned `fortbo_posterior_t` with capability-gated moments, covariance, joint/reparameterized samples, predictive log density, moment gradients/Hessians; `fortbo_history_t` gradient-observation/checkpoint state; `fortbo_space_t` normalized continuous/integer/categorical/mixed/conditional spaces with differentiable masks; analytic EI/PI/UCB/log-EI; exact-envelope knowledge gradient; noisy expected improvement; joint qEI/qNEI/qUCB batch acquisitions; risk-sensitive and multi-fidelity criteria; constrained/cost-aware acquisitions; active-learning and level-set design; max-value entropy search; mixed-integer/categorical candidate search; per-evaluation benchmark metrics; marginal Monte-Carlo EI/PI with CRN, antithetic draws, and pathwise gradients; Sobol TuRBO candidates and Thompson selection; gradient-based DTuRBO in-region acquisition search; FortSym-derived trust-region length rescaling; exact posterior mean Hessians from derivative predictions; DTuRBO mode-2 posterior-derivative local models; an indefinite-curvature bound-constrained quadratic subproblem; Pareto archives with exact hypervolume and scalarizations; machine-readable stopping rules; trust-region traces; `fortbo_fit_from_history` value-only/derivative-GP adapters; `fortbo_structured` multi-task/deep-kernel moments adapters; asynchronous worker bookkeeping with fantasies/retries; Bayesian-linear posterior provider; fixed-choice and quadratic/exact constraint penalties; constrained/noisy/multi-objective fixtures; paper-aligned predictive-entropy C3 conditioning with a variance safeguard; 60D rover and 14D robot-pushing fixtures; the 14D multi-seed TuRBO-1/TuRBO-m versus quasi-random ordering harness; resident OpenACC candidate/TuRBO reductions; BoTorch/GPyTorch/JAX/NumPy cross-framework correctness and regret fixtures | C1/C2 predictive-entropy search, qKG and batch Thompson/fantasy policies, wider sparse/variational adapters, posterior-gradient device execution, and full surrogate moment-gradient coverage. Rover plumbing and the paper's rover/Ackley baseline comparisons remain open |
 
 FortML does not yet ship FortMC samplers or a direct FortML-side BO policy; FortBO
 now ships the tested value/derivative-GP, multi-task, and deep-kernel posterior
@@ -937,6 +937,22 @@ typed `FORTNUM_NOT_IMPLEMENTED` refusal until a resident logistic-plus-
 calibration kernel is linked. `test_calibrated_logistic_classifier` checks
 simplex and sorted-label behavior, OOF diagnostics, central finite differences,
 the JVP/VJP adjoint identity, isotonic refusal, and the CUDA boundary.
+
+### `fortml_calibrated_softmax_classifier`
+
+`calibrated_softmax_classifier_t%fit(x,labels,status[,options,state,
+sample_weight,class_weight])` implements the multiclass analogue. It performs
+deterministic stratified out-of-fold softmax fits, fits one positive
+temperature on held-out logits, and refits the deployment softmax model on all
+rows. Sorted integer classes, nonnegative sample weights, positive class
+weights, and a minimum positive-weight count per fold are validated before any
+state is replaced. The packed deployment vector contains the softmax
+coefficients, intercepts, and temperature. Prediction and packed input or
+parameter JVP/VJP products are exact on the smooth temperature path. The
+implementation is CPU-only and returns `FORTNUM_NOT_IMPLEMENTED` for CUDA or
+unsupported multiclass Platt/isotonic policies. `test_calibrated_softmax_classifier`
+checks OOF replay, temperature products, malformed weights, and transactional
+refusals.
 
 ### `fortml_regression_metrics`
 
@@ -2998,7 +3014,8 @@ The corresponding kind constants are `KERNEL_RBF`, `KERNEL_RBF_ARD`, `KERNEL_MAT
 `KERNEL_MATERN32`, `KERNEL_MATERN52`, `KERNEL_LINEAR`, `KERNEL_CONSTANT`,
 `KERNEL_WHITE_NOISE`, `KERNEL_PERIODIC`, `KERNEL_RATIONAL_QUADRATIC`,
 `KERNEL_COSINE`, `KERNEL_POLYNOMIAL`, `KERNEL_SPECTRAL_MIXTURE`,
-`KERNEL_LOCAL_PERIODIC`, `KERNEL_SUM`, `KERNEL_PRODUCT`, and `KERNEL_USER`.
+`KERNEL_LOCAL_PERIODIC`, `KERNEL_CHANGE_POINT`, `KERNEL_SUM`, `KERNEL_PRODUCT`,
+and `KERNEL_USER`.
 Combine initialized kernels with `kernel_add(left,right,status)` or
 `kernel_multiply(left,right,status)`.
 `clone_kernel(kernel)` makes an independent copy of the complete expression
@@ -3041,6 +3058,16 @@ likelihood integration are analytic. Coincident-point limits are evaluated
 without a radial division. `kernel_operator_t` reports a typed refusal because
 the static CUDA program does not yet carry this four-parameter leaf; host
 matrix and derivative products remain available.
+
+Change-point leaves use `make_change_point_kernel(left,right,feature,center,
+width,status)`. The covariance is
+`s(x)s(z)k_left(x,z)+(1-s(x))(1-s(z))k_right(x,z)` with a positive transition
+width and a smooth logistic gate on the selected feature. Child parameters
+are followed by `[log(width),center]` in the packed vector. Value, input
+gradients, mixed Hessians, parameter JVP/VJP/HVP products, and exact-GP
+integration are analytic and covered by `test_kernel_change_point`. The
+static operator and resident CUDA paths return typed refusals until the full
+gated expression is available on the device.
 
 Spectral-mixture leaves use `make_spectral_mixture_kernel` with positive
 `weights` and positive frequency-standard-deviation `scales` plus signed

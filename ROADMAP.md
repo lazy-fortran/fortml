@@ -13,18 +13,18 @@ The GitHub `v0.1.0` tag currently points to the earlier release-verification
 commit `a387cc5`; the trainer, calibration, variational-GP, transform, and CUDA
 VJP closure slices documented below are post-tag additions. The broad parity
 gate is still open, so this work does not move or recreate that tag.
-The checklist currently records 292 completed and 131 open items; open rows are
+The checklist currently records 295 completed and 130 open items; open rows are
 retained until their implementation, independent oracle, device/refusal
 behavior, and benchmark evidence land together.
 
 | Compiler | Command | Result |
 | --- | --- | --- |
-| GNU Fortran | `fo` | Static build, all 224 behavioral tests, and lint passed at the current FortML/FortAD-main revisions. The compiler still emits non-fatal array-temporary warnings; see [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
+| GNU Fortran | `fo` | Static build, all 227 behavioral tests, and lint passed at the current FortML/FortAD-main revisions. The compiler still emits non-fatal array-temporary warnings; see [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
 | NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded older compiler lane. The checked-in NVIDIA log predates the current 220-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
 The checked-in GNU compiler log is the fresh 2026-08-08 run against FortML code
-revision `9f218345ba0cc9a7fe0b76d99d498109f411f56d`, FortAD `origin/main` at
+revision `cd1659b`, FortAD `origin/main` at
 `3046712912d1fe1d9f252fd4bbec29afe6174e26`, and FortNum at
 `38bc0e578ec5c6c0e636e8fdd3844f54f9e3e473`, run from the clean checkout
 under `/mnt/storage/code/lazy-fortran/fortml`. The run includes the
@@ -50,7 +50,7 @@ variational-GP objective, multiclass variational-GP prediction/JVPs/VJPs, positi
 The build emits non-fatal GNU
 array-temporary warnings in FortFront query/generator calls, existing GP
 benchmark boundaries, variational-GP batch conversions, and basis-pipeline
-shape conversions. They are isolated to array construction; all 224 behavioral
+shape conversions. They are isolated to array construction; all 227 behavioral
 tests pass. Lint has zero unused-import findings and the full `fo` lint stage
 passes despite the non-fatal compiler warning corpus. The independent CUDA gate additionally covers the
 resident dense-affine value/JVP/VJP path and its single-layer MSE update with
@@ -59,7 +59,7 @@ compiler coverage remains an
 explicit older-build result.
 
 The companion benchmark harness is clean at FortML-bench revision
-`1ee7828`,
+`90d4e92`,
 the trainer-checkpoint, unfactored-Adafactor, binary-objective,
 multiclass-calibration, variational-multiclass-GP, PINN/physics-objective,
 physics HVP, grouped K-fold, spectral-mixture, XGBoost-ranking,
@@ -605,7 +605,7 @@ only listed as gaps:
 
 The FortBO and FortMC companion pins were rechecked against their remote
 `main` branches on 2026-08-08: FortBO
-`598c956512a67e69d52e71fe3fc0073ce775b027` and FortMC
+`9f581ce8c4e4b220517da7a89eb2445014ae9db5` and FortMC
 `a75fc6bd952c6dacbcb3bd958e6386405f9fd58d`. Their roadmaps remain authoritative
 for acquisition and sampling algorithms; FortML owns the posterior/log-density
 protocols and does not embed sampler or acquisition state. FortBO additionally
@@ -644,7 +644,12 @@ adoption requires an explicit `target_output`, and both adapters expose moments
 only, with named refusals for moment-gradient acquisition search. The pin also
 contains resident OpenACC candidate and TuRBO reductions with typed host/device
 provenance, a BoTorch/GPyTorch/JAX/NumPy cross-framework correctness and regret
-benchmark, and the 14D robot-pushing fixture.
+benchmark, and the 14D robot-pushing fixture. The current FortBO pin also
+adds a multi-seed 14D TuRBO-1/TuRBO-m versus quasi-random ordering harness.
+That harness records the early 14D ordering and its limits: it does not claim
+the paper's rover or Ackley-200 baselines, and the rover wiring still returns
+an invalid bit-identical comparison that must be fixed before it is used as
+evidence.
 
 ## Bayesian ecosystem split
 
@@ -718,7 +723,7 @@ acquisition work packages:
 
 The companion repositories were checked on 2026-08-08 at FortMC
 `a75fc6bd952c6dacbcb3bd958e6386405f9fd58d` and FortBO
-`598c956512a67e69d52e71fe3fc0073ce775b027`, both on their `main` branches. The
+`9f581ce8c4e4b220517da7a89eb2445014ae9db5`, both on their `main` branches. The
 FortBO pin now includes a versioned capability-gated posterior contract,
 gradient-aware observation history/checkpointing, normalized continuous/integer/
 categorical/mixed/conditional search spaces, a differentiable-coordinate mask,
@@ -746,9 +751,12 @@ fixtures, and the 14D robot-pushing fixture;
 refresh these pins when
 their protocol or device contracts change.
 
-The current `598c956` remote builds cleanly; a clean
-`FO_SCAN_FALLBACK=regex fo check --json=compact` passes all 44/44 test targets
-(86 modules).
+The current `9f581ce` remote builds cleanly, but a clean
+`FO_SCAN_FALLBACK=regex fo check --json=compact` discovers 44 test targets with
+22 passing and 22 link failures because the generated acquisition,
+trust-region, and preference leaves are not linked. The 14D ordering harness
+is a separate slow fixture and remains limited to the pushing arm. This is
+recorded as a FortBO boundary failure, not FortML verification evidence.
 FortMC's current checkout builds cleanly and passes its one registered
 slice-sampler test (normal and correlated moments, bounded support,
 reproducibility, and refusal cases); the remaining samplers, diagnostics, and
@@ -756,7 +764,7 @@ checkpoint claims remain roadmap items rather than FortML verification evidence.
 
 This companion check was repeated from clean source trees on 2026-08-08:
 `origin/main` resolves exactly to the two pins above; FortBO's current clean
-run is 44/44 and FortMC's is 1/1, and neither repository has a runtime
+run is 22/44 with generated-leaf link failures and FortMC's is 1/1, and neither repository has a runtime
 dependency on the FortSym executable. These are boundary checks, not a
 claim that FortMC samplers or the remaining FortBO policy catalog are shipped.
 
@@ -995,11 +1003,16 @@ when a lower-level primitive already exists.
   first-class tie handling, empty-bin zeros, and an independent metric oracle.
   `classification_reliability_diagram` is covered by
   `test_classification_metrics` and the companion reliability-diagram benchmark.
-- [ ] Complete multiclass and generic calibration workflows with class
-  weighting and estimator routing. Positive-temperature, Platt/sigmoid,
-  weighted isotonic fitting, and leakage-safe binary out-of-fold calibration
-  have independent derivative/refusal tests; multiclass calibrated
-  cross-validation and broader class-weight policies remain.
+- [x] Add leakage-safe multiclass calibrated softmax cross-validation. Each
+  deterministic stratified fold fits an independent softmax head, writes
+  held-out logits, fits one positive temperature on those OOF logits, and
+  refits the deployment head on all rows. The packed deployment state exposes
+  logits, intercepts, sorted classes, and temperature with exact JVP/VJP
+  products. `test_calibrated_softmax_classifier` checks weighted OOF replay,
+  temperature products, malformed weight shapes, and the typed CUDA refusal;
+  `fortml-bench/results/CALIBRATED_SOFTMAX_CV.md` supplies the independent
+  NumPy lane. Generic estimator routing and multiclass Platt/isotonic policies
+  remain open.
 - [x] Deterministic seeded random-forest and randomized-threshold Extra-Trees
   classifiers provide aligned probabilities, arbitrary integer labels, Gini or
   entropy criteria, depth/leaf controls, positive sample weights, seeded
@@ -1082,8 +1095,14 @@ when a lower-level primitive already exists.
 - [x] Add a locally-periodic kernel with a four-coordinate logarithmic
   parameter registry, analytic value/input/parameter products, exact-GP
   integration, coincident-point limits, an independent oracle, and typed
-  static-operator/CUDA refusal. Change-point, neural-network, graph, string,
-  and operator-valued kernels remain open.
+  static-operator/CUDA refusal.
+- [x] Add an analytic change-point kernel that gates a left child and a right
+  child by a smooth logistic transition. Value, input JVP, mixed Hessian,
+  packed parameter JVP/VJP/HVP products, and exact-GP integration are covered
+  by `test_kernel_change_point` and the independent NumPy lane in
+  `fortml-bench/results/CHANGE_POINT_GP.md`; static-operator and resident CUDA
+  requests return typed refusals. Neural-network, graph, string, and
+  operator-valued kernels remain open.
 - [ ] Likelihood catalog: Gaussian, Bernoulli, categorical, multinomial,
   Poisson, count, heteroscedastic, censored, ordinal, Student-t, and warped
   likelihoods with stable links, constraints, and declared derivative modes.
@@ -1551,7 +1570,9 @@ metadata and fixed-SGD multiplier hypergradients, weighted Laplace-GP
 kernel-log envelope products, fixed-state sparse-GP and
 variational-classification kernel-log-parameter products, the seeded CART
 bagging classifier, the classifier-chain logistic adapter, XGBoost interaction
-groups, and the weighted Poisson MLP objective. These slices are production evidence for
+groups, the weighted Poisson MLP objective, the change-point GP kernel, the
+multiclass calibrated-softmax OOF estimator, and layout-aware factored
+Adafactor. These slices are production evidence for
 their stated contracts. They do not close the broader GPU, stochastic,
 distributed, multitask, or architecture-family gates listed above.
 
@@ -3469,6 +3490,13 @@ The maintained reports and their raw artifacts are in `../fortml-bench/results`:
 - [`KERNEL_CATALOG.md`](../fortml-bench/results/KERNEL_CATALOG.md), backed by
   `kernel_catalog.csv` for periodic, rational-quadratic, cosine, and
   polynomial value/input/parameter products plus typed CUDA refusals.
+- [`CHANGE_POINT_GP.md`](../fortml-bench/results/CHANGE_POINT_GP.md), backed by
+  `change_point_gp.csv` for gated-child covariance, exact-GP prediction,
+  input/mixed and parameter products, and the typed static-operator/CUDA
+  refusal.
+- [`CALIBRATED_SOFTMAX_CV.md`](../fortml-bench/results/CALIBRATED_SOFTMAX_CV.md),
+  backed by `calibrated_softmax_cv.csv` for stratified OOF logits, positive
+  temperature replay, fold log-loss diagnostics, and the typed CUDA refusal.
 - [`DISCRIMINANT_ANALYSIS.md`](../fortml-bench/results/DISCRIMINANT_ANALYSIS.md),
   backed by `discriminant_analysis.csv` for weighted LDA/QDA probabilities,
   predictions, fitted-state diagnostics, input JVPs, and CUDA refusals.
@@ -3529,6 +3557,9 @@ The maintained reports and their raw artifacts are in `../fortml-bench/results`:
 - [`TRAINER_CHECKPOINT.md`](../fortml-bench/results/TRAINER_CHECKPOINT.md),
   backed by `trainer_checkpoint.csv` for uninterrupted-versus-resumed
   optimizer trajectories and malformed/truncated/extra-record refusals.
+- [`ADAFACTOR_FACTORED.md`](../fortml-bench/results/ADAFACTOR_FACTORED.md),
+  backed by `adafactor_factored.csv` for the independent row/column state,
+  vector fallback, split/resume recurrence, and typed CUDA boundary.
 - [`MLP_BINARY_OBJECTIVE.md`](../fortml-bench/results/MLP_BINARY_OBJECTIVE.md),
   backed by `mlp_binary_objective.csv` for weighted BCE objective products,
   mixed HVPs, and bounded L-BFGS-B behavior.
