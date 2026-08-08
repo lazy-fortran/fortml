@@ -8,6 +8,20 @@ variable is packed as
 [ log(base_rate), log(l2), logit(min_rate_fraction), logit(decay_factor) ]
 ```
 
+For `MLP_SCHEDULE_ONE_CYCLE`, the same four slots use positive logarithmic
+peak/final-rate coordinates instead:
+
+```text
+[ log(base_rate), log(l2), log(peak_rate_fraction), log(final_rate_fraction) ]
+```
+
+The `MLP_SCHEDULE_LOG_PEAK_FRACTION` and
+`MLP_SCHEDULE_LOG_FINAL_FRACTION` constants name these alternate slots, and
+`metadata%one_cycle_coordinates` identifies the layout. The one-cycle domain
+is `peak_rate_fraction >= 1` and `0 < final_rate_fraction <=
+peak_rate_fraction`; invalid trial points return a typed domain error rather
+than silently changing the schedule.
+
 The schedule kind, warm-up count, and total update count are fixed discrete
 configuration.  This keeps L-BFGS-B's search space smooth while still allowing
 the schedule's continuous fields to be tuned.  Unused fields have an exact
@@ -38,7 +52,9 @@ call objective%vjp(parameters, output_bar, gradient_bar, status)
 The reverse recurrence stores the parameter trajectory and applies the MLP
 analytic HVP at each update.  The forward recurrence applies the same HVP to
 the tangent state, including the exact chain rule through the schedule's
-base-rate, minimum-fraction, and decay-factor products.  Therefore the
+base-rate, minimum-fraction, and decay-factor products. For one-cycle
+trajectories those final two products are the exact peak- and final-fraction
+derivatives through the linear warm-up and cosine tail. Therefore the
 `value_gradient`, `jvp`, and `vjp` paths share one objective and do not use
 finite-difference or optimizer fallback code.
 
@@ -51,8 +67,11 @@ a hidden finite-difference approximation.
 `mlp_optimize_schedule_hyperparameters` wraps the objective in FortOpt's
 projected L-BFGS-B implementation.  Bounds are on the packed log/logit
 coordinates, so every accepted point has positive learning rate and L2 and
-schedule fractions in the open unit interval.  The integer schedule shape is
-not silently changed by the optimizer.
+schedule fractions in the open unit interval. For one-cycle schedules the
+existing `lower_logit_min_fraction`/`upper_logit_min_fraction` and
+`lower_logit_decay_factor`/`upper_logit_decay_factor` fields are interpreted
+as bounds on the peak/final logarithms. The integer schedule shape is not
+silently changed by the optimizer.
 
 CUDA is intentionally a typed `FORTNUM_NOT_IMPLEMENTED` refusal until a
 resident MLP trajectory kernel is linked.  The refusal is tested separately

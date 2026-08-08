@@ -1330,8 +1330,7 @@ when a lower-level primitive already exists.
   finite-difference, persistence, and refusal oracles are in
   `test_mlp_plateau_schedule` and `fortml-bench/results/MLP_PLATEAU_SCHEDULE.md`.
 - [ ] Remaining production optimizer gaps: cosine/one-cycle/warmup schedule
-  derivatives through
-  optimizer groups, validation policy, and device state.
+  derivatives through optimizer groups, validation policy, and device state.
   The deterministic mini-batch SGD trajectory objective now records a private
   batch cursor (including seeded epoch shuffles), exposes exact learning-rate
   and L2 hypergradients through validation MSE, and is consumable by FortOpt
@@ -2548,6 +2547,13 @@ trials remain visible in the result schema.
   NumPy benchmark, and explicit second-order hyper-HVP scope (third network
   derivatives are not approximated). L-BFGS-B consumes the same reverse
   products; unsupported device trajectories return typed refusal.
+- [x] Extend the scheduled trajectory objective with exact one-cycle
+  peak/final-rate derivatives. The shared four-vector uses logarithmic
+  peak/final coordinates for `MLP_SCHEDULE_ONE_CYCLE`, with exact products
+  through its linear warm-up and cosine tail, metadata identifying the layout,
+  typed domain checks, a FortOpt adapter, and independent central-difference,
+  JVP, VJP, and CUDA-refusal coverage. Optimizer-group, validation-policy, and
+  resident-device schedule derivatives remain open in the bounded row above.
 - [x] Add sample-weighted MLP gradient accumulation. `accumulation_steps`
   flushes a configurable number of consecutive microbatches into one Adam
   update, adds L2 exactly once, clips only the accumulated gradient, and flushes

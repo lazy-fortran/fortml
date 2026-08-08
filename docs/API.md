@@ -193,7 +193,7 @@ repeated resident-batch evidence.
 | `mlp_adagrad_hypergradient_objective_t` | Validation MSE after fixed full-batch Adagrad trajectory | Packed `[log(learning_rate),log(l2),log(epsilon)]` JVP | Exact trajectory value gradient and scalar VJP | Forward accumulated-square sensitivities; inner MLP HVP |
 | `mlp_adafactor_hypergradient_objective_t` | Validation MSE after fixed full-batch unfactored Adafactor trajectory | Packed `[log(learning_rate),log(l2),decay,log(epsilon),log(clip_threshold)]` JVP | Exact trajectory value gradient and scalar VJP | Forward second-moment, update-RMS clipping, and denominator sensitivities; active-set and discrete branches refuse |
 | `adafactor_factored_t` | Layout-aware matrix-factorized Adafactor with vector fallback | Parameter update | Dense second-moment inspection | Explicit row/column state for matrix blocks; CPU recurrence; formatted and in-memory schema-9 checkpoint migration; CUDA remains a typed refusal |
-| `mlp_schedule_hypergradient_objective_t` | Validation MSE after a typed scheduled full-batch trajectory | Packed `[log(base_rate),log(l2),logit(min_fraction),logit(decay_factor)]` JVP | Exact schedule/trajectory value gradient and scalar VJP | Inner MLP HVP; outer hyper-HVP is not approximated |
+| `mlp_schedule_hypergradient_objective_t` | Validation MSE after a typed scheduled full-batch trajectory | Packed `[log(base_rate),log(l2),logit(min_fraction),logit(decay_factor)]` JVP, or `[log(base_rate),log(l2),log(peak_fraction),log(final_fraction)]` for one-cycle | Exact schedule/trajectory value gradient and scalar VJP | Inner MLP HVP; outer hyper-HVP is not approximated |
 | `mlp_minibatch_hypergradient_objective_t` | Validation MSE after a fixed seeded mini-batch SGD trajectory | Packed `[log(learning_rate),log(l2)]` JVP | Exact batch-cursor trajectory value gradient and scalar VJP | Per-batch MLP HVP; outer hyper-HVP is a typed refusal |
 | `mlp_minibatch_adam_hypergradient_objective_t` | Validation MSE after a fixed seeded mini-batch coupled-L2 Adam trajectory | Packed `[log(learning_rate),log(l2)]` JVP | Exact batch-cursor trajectory value gradient and scalar VJP | Forward parameter/moment/bias-correction sensitivities; outer hyper-HVP is a typed refusal |
 | `trainer_t` | Any `fortopt_objective::objective_t` with explicit full-batch training state | Optimizer updates are stateful; the objective supplies exact products | The same objective value/gradient callback is used for every update | L-BFGS-B consumes the objective gradient; no hidden HVP or finite-difference fallback |
@@ -2301,19 +2301,26 @@ contracts.
 `mlp_schedule_hypergradient_objective_t` differentiates a fixed full-batch MLP
 trajectory using one of the stateless typed schedules from
 `fortml_mlp_schedules`. `mlp_schedule_hypergradient_options_t%schedule` fixes
-the schedule kind and integer warm-up/total-update shape. The packed outer
-vector is `[log(base_rate), log(l2), logit(min_rate_fraction),
-logit(decay_factor)]`; unused schedule fields have exact zero derivatives.
+the schedule kind and integer warm-up/total-update shape. For ordinary
+schedules the packed outer vector is `[log(base_rate), log(l2),
+logit(min_rate_fraction), logit(decay_factor)]`; for one-cycle it is
+`[log(base_rate), log(l2), log(peak_rate_fraction),
+log(final_rate_fraction)]`, identified by `metadata%one_cycle_coordinates`.
+The one-cycle peak/final products are exact through both the linear warm-up
+and cosine tail, while unused fields retain exact zero derivatives.
 `value_gradient`, `jvp`, and scalar `vjp` reverse or push through every update
 with the analytic MLP HVP. `mlp_optimize_schedule_hyperparameters` feeds the
-same reverse product to FortOpt L-BFGS-B under explicit log/logit bounds.
+same reverse product to FortOpt L-BFGS-B under explicit log/logit bounds
+(the two existing fraction-bound fields are logarithmic peak/final bounds for
+one-cycle).
 The `hvp` entry point is present as a capability boundary and returns
 `FORTNUM_NOT_IMPLEMENTED` until third network derivatives are available;
 finite-difference hyper-HVPs are not hidden behind the API.
 
 The independent `test_mlp_schedule_hypergradient` fixture checks all packed
 components with central differences, a directional JVP, the scalar adjoint,
-the FortOpt context callback, and the L-BFGS-B smoke solve. CUDA trajectory
+the one-cycle coordinate metadata and domain, the FortOpt context callback,
+and the L-BFGS-B smoke solve. CUDA trajectory
 requests return `FORTNUM_NOT_IMPLEMENTED` until a resident MLP trajectory
 kernel exists; the benchmark therefore records an explicit capability refusal.
 An outer hyper-HVP is not exposed: exact computation would require third
