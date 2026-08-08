@@ -231,6 +231,14 @@ positive class factors, stable underflow refusal, and typed CUDA refusal. Set
 through the multiclass MLP classifier; zero preserves ordinary cross-entropy.
 See [`docs/NEURAL_LOSS_PRODUCTS.md`](docs/NEURAL_LOSS_PRODUCTS.md).
 
+Pairwise metric-learning heads can use the shared contrastive loss directly:
+`contrastive_loss_value`, `contrastive_loss_jvp`, `contrastive_loss_vjp`, and
+`contrastive_loss_hvp` implement weighted mean/sum Euclidean pair products for
+matching/non-matching embeddings. Exact zero-distance non-match and margin-kink
+derivative requests return typed domain errors; CUDA value requests remain an
+explicit `FORTNUM_NOT_IMPLEMENTED` boundary. See
+[`docs/CONTRASTIVE_LOSS.md`](docs/CONTRASTIVE_LOSS.md).
+
 The classification surface also includes `fortml_gp_multilabel_classification`,
 which fits independent weighted logistic/probit Laplace-GP heads for dense
 indicator targets and exposes packed/input JVP/VJP products plus explicit CPU/

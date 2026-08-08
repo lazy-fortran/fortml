@@ -66,6 +66,16 @@ release app are independently checked by `test_gp_classification_hvp` and
 `fortml-bench/results/GP_CLASSIFICATION_HYPERPARAMETER_HVP.md`. Full evidence,
 likelihood-parameter, coupled multiclass, and resident-GPU HVPs remain open.
 
+The metric-learning loss slice adds a reusable weighted pairwise contrastive
+objective to `fortml_losses`: matching/non-matching Euclidean pairs expose
+value, JVP, VJP, and HVP products with mean/sum reductions.  Independent
+finite-difference and adjoint tests cover the products, while exact
+non-matching zero-distance and margin-kink requests return typed domain
+refusals.  The value device dispatcher keeps CUDA an explicit
+`FORTNUM_NOT_IMPLEMENTED` boundary until a resident pair-distance/reduction
+kernel exists.  Triplet, sequence/CTC, and resident CUDA loss contracts remain
+open; see [`docs/CONTRASTIVE_LOSS.md`](docs/CONTRASTIVE_LOSS.md).
+
 | Compiler | Command | Result |
 | --- | --- | --- |
 | GNU Fortran | `fo` | Static build, all 259 behavioral tests, and lint passed at the current integrated FortML/FortAD-main revisions. The compiler still emits non-fatal array-temporary warnings; see [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
@@ -3123,6 +3133,14 @@ trials remain visible in the result schema.
   Resident CUDA loss kernels remain open and unsupported device requests are
   typed refusals. Contrastive/triplet losses, KL terms, and sequence masking
   still need the same logits/probability and empty-batch contracts.
+- [x] Add a weighted pairwise contrastive metric-learning loss to the shared
+  neural-loss facade. Matching and non-matching Euclidean pairs expose value,
+  JVP, VJP, and HVP products under the common mean/sum reduction contract;
+  independent formula, finite-difference, and adjoint oracles cover both
+  embedding inputs. Non-matching zero distances and exact margin boundaries
+  refuse derivative products transactionally, and the value dispatcher returns
+  a typed CUDA refusal. Triplet/sequence losses and resident CUDA kernels remain
+  open.
 - [x] Add a deterministic batch iterator with seeded shuffling and final-batch
   behavior. Separate training and validation streams remain open.
 - [x] Add the model-agnostic `trainer_t` objective seam with explicit

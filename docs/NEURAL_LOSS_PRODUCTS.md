@@ -92,3 +92,22 @@ CUDA requests leave the caller's scalar untouched.
 The independent behavioral oracle is `test_neural_loss_products`; the release
 benchmark is `fortml-bench/scripts/bench_neural_losses.py` and records CPU
 softmax/log-softmax/focal products plus the typed CUDA capability row.
+
+## Pairwise contrastive metric loss
+
+`contrastive_loss_value`, `contrastive_loss_jvp`, `contrastive_loss_vjp`, and
+`contrastive_loss_hvp` provide a shared primitive for Siamese/metric-learning
+encoders. Matching rows use `0.5*d**2`; non-matching rows use
+`0.5*max(0, margin-d)**2`, with optional nonnegative row weights and the same
+mean/sum reduction convention. The two embedding matrices are differentiated
+simultaneously, so the VJP returns equal-and-opposite row cotangents and the
+HVP is the exact directional derivative of that VJP.
+
+Value evaluation accepts zero distances and margin boundaries. Product calls
+return a typed domain error for a non-matching zero distance (the Euclidean norm
+is singular) and for a pair exactly at the margin (active-set second products
+are not defined). Matching pairs remain smooth at zero because their branch is
+the squared distance. `contrastive_loss_value_device` exposes the same CPU
+path and a typed CUDA refusal until a resident pair-distance/reduction kernel is
+available. The independent `test_contrastive_loss` covers formula parity,
+JVP/VJP/HVP finite-difference oracles, reductions, boundaries, and dispatch.

@@ -64,6 +64,11 @@ module fortml_losses
     public :: ordinal_cumulative_logit_loss_jvp
     public :: ordinal_cumulative_logit_loss_vjp
     public :: ordinal_cumulative_logit_loss_hvp
+    public :: contrastive_loss_value
+    public :: contrastive_loss_jvp
+    public :: contrastive_loss_vjp
+    public :: contrastive_loss_hvp
+    public :: contrastive_loss_value_device
 
     integer, parameter, public :: LOSS_REDUCTION_MEAN = 1
     integer, parameter, public :: LOSS_REDUCTION_SUM = 2
@@ -1597,6 +1602,268 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine weighted_mse_loss_hvp
 
+    subroutine contrastive_loss_value(embedding_a, embedding_b, labels, margin, &
+            value, status, sample_weight, reduction)
+        !! Pairwise contrastive loss for row-wise embeddings.
+        !!
+        !! A label of one marks a matching pair and a label of zero marks a
+        !! non-matching pair.  The per-pair objective is
+        !! `0.5*d**2` for a match and `0.5*max(0, margin-d)**2` otherwise,
+        !! where `d` is the Euclidean distance between the two rows.  Row
+        !! weights and mean/sum reductions use the shared positive-weight-mass
+        !! contract used by the other neural losses.
+        real(dp), intent(in) :: embedding_a(:, :), embedding_b(:, :), margin
+        integer, intent(in) :: labels(:)
+        real(dp), intent(out) :: value
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
+        integer, intent(in), optional :: reduction
+        real(dp), allocatable :: weights(:)
+        real(dp) :: normalization, distance, pair_value
+        integer :: i
+
+        value = 0.0_dp
+        call prepare_contrastive_inputs(embedding_a, embedding_b, labels, margin, &
+            sample_weight, reduction, weights, normalization, status)
+        if (status%code /= FORTNUM_OK) return
+        do i = 1, size(labels)
+            distance = sqrt(sum((embedding_a(i, :) - embedding_b(i, :))**2))
+            call contrastive_pair_value(distance, labels(i), margin, pair_value, &
+                status)
+            if (status%code /= FORTNUM_OK) return
+            value = value + weights(i)*pair_value
+        end do
+        value = value/normalization
+        if (.not. ieee_is_finite(value)) then
+            value = 0.0_dp
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "contrastive loss: value is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine contrastive_loss_value
+
+    subroutine contrastive_loss_value_device(embedding_a, embedding_b, labels, &
+            margin, value, status, device_kind, sample_weight, reduction)
+        !! Device-dispatch boundary for the contrastive loss value.
+        !!
+        !! The CPU path is exact.  CUDA is a typed refusal until a resident
+        !! pair-distance/reduction kernel is linked; no host fallback is hidden
+        !! behind a CUDA request.
+        real(dp), intent(in) :: embedding_a(:, :), embedding_b(:, :), margin
+        integer, intent(in) :: labels(:)
+        real(dp), intent(inout) :: value
+        type(fortnum_status_t), intent(out) :: status
+        integer, intent(in), optional :: device_kind
+        real(dp), intent(in), optional :: sample_weight(:)
+        integer, intent(in), optional :: reduction
+        integer :: requested_device
+
+        value = 0.0_dp
+        requested_device = FORTML_DEVICE_CPU
+        if (present(device_kind)) requested_device = device_kind
+        if (requested_device == FORTML_DEVICE_CUDA) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "contrastive loss: resident CUDA kernel is not implemented")
+            return
+        end if
+        if (requested_device /= FORTML_DEVICE_CPU) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "contrastive loss: device kind is invalid")
+            return
+        end if
+        call contrastive_loss_value(embedding_a, embedding_b, labels, margin, &
+            value, status, sample_weight, reduction)
+    end subroutine contrastive_loss_value_device
+
+    subroutine contrastive_loss_jvp(embedding_a, embedding_b, labels, margin, &
+            embedding_a_dot, embedding_b_dot, value, value_dot, status, &
+            sample_weight, reduction)
+        !! Value/JVP of the contrastive loss with respect to both embeddings.
+        !!
+        !! Product requests refuse a non-matching pair at zero distance and a
+        !! pair exactly at the margin.  Those are the norm singularity and the
+        !! active-set kink respectively.  Matching pairs use the smooth
+        !! squared-distance branch at zero distance.
+        real(dp), intent(in) :: embedding_a(:, :), embedding_b(:, :), margin
+        integer, intent(in) :: labels(:)
+        real(dp), intent(in) :: embedding_a_dot(:, :), embedding_b_dot(:, :)
+        real(dp), intent(out) :: value, value_dot
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
+        integer, intent(in), optional :: reduction
+        real(dp), allocatable :: weights(:)
+        real(dp) :: normalization, distance, pair_value, pair_derivative
+        real(dp) :: direction, dot_distance
+        integer :: i
+
+        value = 0.0_dp
+        value_dot = 0.0_dp
+        if (any(shape(embedding_a_dot) /= shape(embedding_a)) .or. &
+            any(shape(embedding_b_dot) /= shape(embedding_b)) .or. &
+            any(.not. ieee_is_finite(embedding_a_dot)) .or. &
+            any(.not. ieee_is_finite(embedding_b_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "contrastive loss JVP: tangent shape or values are invalid")
+            return
+        end if
+        call prepare_contrastive_inputs(embedding_a, embedding_b, labels, margin, &
+            sample_weight, reduction, weights, normalization, status)
+        if (status%code /= FORTNUM_OK) return
+        do i = 1, size(labels)
+            distance = sqrt(sum((embedding_a(i, :) - embedding_b(i, :))**2))
+            call contrastive_pair_derivatives(distance, labels(i), margin, &
+                pair_value, pair_derivative, status)
+            if (status%code /= FORTNUM_OK) then
+                value = 0.0_dp
+                value_dot = 0.0_dp
+                return
+            end if
+            if (distance > 0.0_dp) then
+                dot_distance = sum((embedding_a(i, :) - embedding_b(i, :))* &
+                    (embedding_a_dot(i, :) - embedding_b_dot(i, :)))/distance
+            else
+                dot_distance = 0.0_dp
+            end if
+            direction = pair_derivative*dot_distance
+            value = value + weights(i)*pair_value
+            value_dot = value_dot + weights(i)*direction
+        end do
+        value = value/normalization
+        value_dot = value_dot/normalization
+        if (.not. ieee_is_finite(value) .or. .not. ieee_is_finite(value_dot)) then
+            value = 0.0_dp
+            value_dot = 0.0_dp
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "contrastive loss JVP: product is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine contrastive_loss_jvp
+
+    subroutine contrastive_loss_vjp(embedding_a, embedding_b, labels, margin, &
+            value_bar, embedding_a_bar, embedding_b_bar, status, sample_weight, &
+            reduction)
+        !! VJP of the contrastive loss with respect to both embeddings.
+        real(dp), intent(in) :: embedding_a(:, :), embedding_b(:, :), margin
+        integer, intent(in) :: labels(:)
+        real(dp), intent(in) :: value_bar
+        real(dp), intent(out) :: embedding_a_bar(:, :), embedding_b_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
+        integer, intent(in), optional :: reduction
+        real(dp), allocatable :: weights(:)
+        real(dp) :: normalization, distance, pair_value, pair_derivative
+        real(dp) :: scale
+        integer :: i
+
+        embedding_a_bar = 0.0_dp
+        embedding_b_bar = 0.0_dp
+        if (any(shape(embedding_a_bar) /= shape(embedding_a)) .or. &
+            any(shape(embedding_b_bar) /= shape(embedding_b)) .or. &
+            .not. ieee_is_finite(value_bar)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "contrastive loss VJP: cotangent or output shape is invalid")
+            return
+        end if
+        call prepare_contrastive_inputs(embedding_a, embedding_b, labels, margin, &
+            sample_weight, reduction, weights, normalization, status)
+        if (status%code /= FORTNUM_OK) return
+        do i = 1, size(labels)
+            distance = sqrt(sum((embedding_a(i, :) - embedding_b(i, :))**2))
+            call contrastive_pair_derivatives(distance, labels(i), margin, &
+                pair_value, pair_derivative, status)
+            if (status%code /= FORTNUM_OK) then
+                embedding_a_bar = 0.0_dp
+                embedding_b_bar = 0.0_dp
+                return
+            end if
+            scale = value_bar*weights(i)*pair_derivative/normalization
+            if (distance > 0.0_dp) then
+                embedding_a_bar(i, :) = scale*(embedding_a(i, :) - &
+                    embedding_b(i, :))/distance
+            end if
+            embedding_b_bar(i, :) = -embedding_a_bar(i, :)
+        end do
+        if (any(.not. ieee_is_finite(embedding_a_bar)) .or. &
+            any(.not. ieee_is_finite(embedding_b_bar))) then
+            embedding_a_bar = 0.0_dp
+            embedding_b_bar = 0.0_dp
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "contrastive loss VJP: product is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine contrastive_loss_vjp
+
+    subroutine contrastive_loss_hvp(embedding_a, embedding_b, labels, margin, &
+            embedding_a_dot, embedding_b_dot, embedding_a_hvp, embedding_b_hvp, &
+            status, sample_weight, reduction)
+        !! Hessian-vector product of the contrastive loss.
+        real(dp), intent(in) :: embedding_a(:, :), embedding_b(:, :), margin
+        integer, intent(in) :: labels(:)
+        real(dp), intent(in) :: embedding_a_dot(:, :), embedding_b_dot(:, :)
+        real(dp), intent(out) :: embedding_a_hvp(:, :), embedding_b_hvp(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
+        integer, intent(in), optional :: reduction
+        real(dp), allocatable :: weights(:)
+        real(dp) :: normalization, distance, pair_value, pair_derivative
+        real(dp) :: curvature, scale, dot_distance
+        real(dp), allocatable :: direction_dot(:)
+        integer :: i
+
+        embedding_a_hvp = 0.0_dp
+        embedding_b_hvp = 0.0_dp
+        if (any(shape(embedding_a_dot) /= shape(embedding_a)) .or. &
+            any(shape(embedding_b_dot) /= shape(embedding_b)) .or. &
+            any(shape(embedding_a_hvp) /= shape(embedding_a)) .or. &
+            any(shape(embedding_b_hvp) /= shape(embedding_b)) .or. &
+            any(.not. ieee_is_finite(embedding_a_dot)) .or. &
+            any(.not. ieee_is_finite(embedding_b_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "contrastive loss HVP: tangent or output shape is invalid")
+            return
+        end if
+        call prepare_contrastive_inputs(embedding_a, embedding_b, labels, margin, &
+            sample_weight, reduction, weights, normalization, status)
+        if (status%code /= FORTNUM_OK) return
+        allocate(direction_dot(size(embedding_a, 2)))
+        do i = 1, size(labels)
+            distance = sqrt(sum((embedding_a(i, :) - embedding_b(i, :))**2))
+            call contrastive_pair_hessian(distance, labels(i), margin, pair_value, &
+                pair_derivative, curvature, status)
+            if (status%code /= FORTNUM_OK) then
+                embedding_a_hvp = 0.0_dp
+                embedding_b_hvp = 0.0_dp
+                return
+            end if
+            direction_dot = embedding_a_dot(i, :) - embedding_b_dot(i, :)
+            if (distance > 0.0_dp) then
+                dot_distance = sum((embedding_a(i, :) - embedding_b(i, :))* &
+                    direction_dot)/distance
+                scale = pair_derivative/distance
+                ! `curvature` is the radial derivative of the distance
+                ! gradient coefficient.  This form avoids a dense temporary.
+                embedding_a_hvp(i, :) = weights(i)*(scale*direction_dot + &
+                    curvature*(embedding_a(i, :) - embedding_b(i, :))*dot_distance) &
+                    /normalization
+            else
+                embedding_a_hvp(i, :) = weights(i)*direction_dot/normalization
+            end if
+            embedding_b_hvp(i, :) = -embedding_a_hvp(i, :)
+        end do
+        if (any(.not. ieee_is_finite(embedding_a_hvp)) .or. &
+            any(.not. ieee_is_finite(embedding_b_hvp))) then
+            embedding_a_hvp = 0.0_dp
+            embedding_b_hvp = 0.0_dp
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "contrastive loss HVP: product is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine contrastive_loss_hvp
+
     subroutine mae_loss_value(prediction, targets, value, status, sample_weight, &
             reduction)
         !! Weighted mean/sum mean-absolute-error value.
@@ -2618,6 +2885,141 @@ contains
         normalization = 1.0_dp
         if (reduction_kind == LOSS_REDUCTION_MEAN) normalization = sum(sample_weight)
     end function weighted_mse_normalization
+
+    subroutine prepare_contrastive_inputs(embedding_a, embedding_b, labels, margin, &
+            sample_weight, reduction, weights, normalization, status)
+        real(dp), intent(in) :: embedding_a(:, :), embedding_b(:, :), margin
+        integer, intent(in) :: labels(:)
+        real(dp), intent(in), optional :: sample_weight(:)
+        integer, intent(in), optional :: reduction
+        real(dp), allocatable, intent(out) :: weights(:)
+        real(dp), intent(out) :: normalization
+        type(fortnum_status_t), intent(out) :: status
+        integer :: i
+
+        if (size(embedding_a, 1) < 1 .or. size(embedding_a, 2) < 1 .or. &
+            any(shape(embedding_b) /= shape(embedding_a)) .or. &
+            size(labels) /= size(embedding_a, 1) .or. &
+            any(.not. ieee_is_finite(embedding_a)) .or. &
+            any(.not. ieee_is_finite(embedding_b)) .or. &
+            .not. ieee_is_finite(margin) .or. margin <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "contrastive loss: embeddings, labels, or margin are invalid")
+            return
+        end if
+        do i = 1, size(labels)
+            if (labels(i) /= 0 .and. labels(i) /= 1) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "contrastive loss: labels must be zero or one")
+                return
+            end if
+        end do
+        call prepare_loss_weights(size(labels), sample_weight, reduction, weights, &
+            normalization, status)
+    end subroutine prepare_contrastive_inputs
+
+    subroutine contrastive_pair_value(distance, label, margin, value, status)
+        real(dp), intent(in) :: distance, margin
+        integer, intent(in) :: label
+        real(dp), intent(out) :: value
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: gap
+
+        value = 0.0_dp
+        if (.not. ieee_is_finite(distance) .or. distance < 0.0_dp .or. &
+            label < 0 .or. label > 1 .or. .not. ieee_is_finite(margin) .or. &
+            margin <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "contrastive loss: pair distance or margin is invalid")
+            return
+        end if
+        if (label == 1) then
+            value = 0.5_dp*distance*distance
+        else
+            gap = max(0.0_dp, margin - distance)
+            value = 0.5_dp*gap*gap
+        end if
+        if (.not. ieee_is_finite(value)) then
+            value = 0.0_dp
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "contrastive loss: pair value is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine contrastive_pair_value
+
+    subroutine contrastive_pair_derivatives(distance, label, margin, value, &
+            derivative, status)
+        real(dp), intent(in) :: distance, margin
+        integer, intent(in) :: label
+        real(dp), intent(out) :: value, derivative
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: gap
+
+        value = 0.0_dp
+        derivative = 0.0_dp
+        call contrastive_pair_value(distance, label, margin, value, status)
+        if (status%code /= FORTNUM_OK) return
+        if (label == 1) then
+            derivative = distance
+        else
+            if (distance == 0.0_dp) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "contrastive loss: non-matching zero distance is nondifferentiable")
+                value = 0.0_dp
+                return
+            end if
+            if (distance == margin) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "contrastive loss: derivative is undefined at the margin kink")
+                value = 0.0_dp
+                return
+            end if
+            gap = margin - distance
+            if (gap > 0.0_dp) derivative = -gap
+        end if
+        if (.not. ieee_is_finite(derivative)) then
+            value = 0.0_dp
+            derivative = 0.0_dp
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "contrastive loss: derivative is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine contrastive_pair_derivatives
+
+    subroutine contrastive_pair_hessian(distance, label, margin, value, derivative, &
+            curvature, status)
+        real(dp), intent(in) :: distance, margin
+        integer, intent(in) :: label
+        real(dp), intent(out) :: value, derivative, curvature
+        type(fortnum_status_t), intent(out) :: status
+
+        value = 0.0_dp
+        derivative = 0.0_dp
+        curvature = 0.0_dp
+        call contrastive_pair_derivatives(distance, label, margin, value, derivative, &
+            status)
+        if (status%code /= FORTNUM_OK) return
+        if (label == 1) then
+            ! f'(d)=d, so the radial derivative of f'(d)/d is zero.
+            curvature = 0.0_dp
+        else if (distance < margin) then
+            ! f'(d)=d-margin and d/d d (f'(d)/d)=margin/d**2.
+            curvature = margin/(distance*distance)
+        else
+            curvature = 0.0_dp
+        end if
+        if (.not. ieee_is_finite(curvature)) then
+            value = 0.0_dp
+            derivative = 0.0_dp
+            curvature = 0.0_dp
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "contrastive loss: Hessian is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine contrastive_pair_hessian
 
     subroutine validate_loss_matrix_inputs(prediction, targets, name, status)
         real(dp), intent(in) :: prediction(:, :), targets(:, :)
