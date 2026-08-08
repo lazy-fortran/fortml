@@ -132,6 +132,8 @@ program test_calibrated_softmax_classifier
     call invalid%fit(x, labels, status, options=calibrated_softmax_classifier_options_t( &
         cv_folds=5, calibration=options%calibration))
     call check(.not. status_ok(status), "insufficient per-class fold support refusal", failures)
+    call invalid%fit(x, labels, status, options=options, sample_weight=[1.0_dp, 1.0_dp])
+    call check(.not. status_ok(status), "sample-weight shape refusal", failures)
     invalid_options = options
     invalid_options%calibration = probability_calibration_options_t(method=CALIBRATION_SIGMOID)
     call invalid%fit(x, labels, status, options=invalid_options)

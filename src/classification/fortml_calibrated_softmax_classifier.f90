@@ -150,11 +150,6 @@ contains
                 "calibrated softmax fit: at least two classes are required")
             return
         end if
-        if (.not. enough_class_support(labels, classes, config%cv_folds, sample_weight)) then
-            call status_set(status, FORTNUM_DOMAIN_ERROR, &
-                "calibrated softmax fit: every class needs at least cv_folds positive rows")
-            return
-        end if
         if (present(sample_weight)) then
             if (size(sample_weight) /= size(labels) .or. &
                 any(.not. ieee_is_finite(sample_weight)) .or. &
@@ -164,6 +159,11 @@ contains
                     "calibrated softmax fit: sample weights are invalid")
                 return
             end if
+        end if
+        if (.not. enough_class_support(labels, classes, config%cv_folds, sample_weight)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "calibrated softmax fit: every class needs at least cv_folds positive rows")
+            return
         end if
         if (present(class_weight)) then
             if (size(class_weight) /= n_classes .or. &
