@@ -768,7 +768,7 @@ temperature scaling and calibration-aware cross-validation remain open.
 | Area | Current state | Production target |
 | --- | --- | --- |
 | Linear regression and generalized linear models | Linear regression, weighted ridge and weighted elastic-net/lasso coordinate descent, weighted Poisson/Gamma log-link GLMs with bounded FortOpt L-BFGS-B, and logistic/softmax sample and positive sorted-class weights are implemented | Robust, quantile/Tweedie, multinomial, calibrated and regularized classifiers with shared solver and derivative contracts; resident GLM GPU kernels |
-| Feature transforms and basis maps | Polynomial, Fourier, radial, B-spline, callback bases, standard/min-max/median-IQR scalers, sparse-safe CSC standard scaling, integer categorical one-hot encoding, horizontal/sequential/column pipelines, analytic basis/pipeline HVPs, a fitted basis-to-linear estimator, and a joint differentiable basis-pipeline training objective are implemented. The objective can also pack a nonnegative ridge coordinate with exact gradient and mixed HVP blocks | CSR/CSC categorical and indicator views, DAG pipelines, leakage-safe cross-validation, callback second derivatives, and resident GPU transforms |
+| Feature transforms and basis maps | Polynomial, interaction-polynomial, Fourier, fixed-state random Fourier, radial, B-spline, callback bases, standard/min-max/median-IQR scalers, sparse-safe CSC standard scaling, integer categorical one-hot encoding, horizontal/sequential/column pipelines, analytic basis/pipeline HVPs, a fitted basis-to-linear estimator, and a joint differentiable basis-pipeline training objective are implemented. The objective can also pack a nonnegative ridge coordinate with exact gradient and mixed HVP blocks | CSR/CSC categorical and indicator views, DAG pipelines, leakage-safe cross-validation, callback second derivatives, and resident GPU transforms |
 | Nearest-neighbor and margin methods | Dense exact kNN and closed-radius classification plus scalar and multi-output regression, weighted linear SVM/SVR, and dense RBF one-class SVM | KD-tree or ball-tree search, sparse inputs, kernel SVM/SVR, calibrated probabilities, resident GPU kernels, and differentiable soft-neighbor policies |
 | Trees and ensembles | Partial | Deterministic finite-only regression stumps, weighted depth-limited CART regression and classification, seeded bootstrap random-forest classification, seeded randomized-threshold Extra-Trees classification, seeded bootstrap bagging classification, binary and multiclass SAMME AdaBoost over weighted CART, squared-loss stump boosting, exact/histogram depth-limited second-order squared/logistic/Poisson/Tweedie/squared-log/Huber/quantile boosting, and bounded `rank:pairwise` boosting are implemented. XGBoost-style trees support weighted quantile cuts, bounded histograms, explicit NaN rejection, learned default directions, forced-left/right routing, per-feature monotonic and interaction-group constraints with recursive leaf bounds/masks, bounded ordered-gradient integer categorical partitions with explicit max-category refusal, staged predictions, contributions, serialization, and transactional fitted-prefix slicing; OOB/permutation/SHAP workflows, SAMME.R probability updates, categorical policies beyond ordered partitions, DART/GOSS/EFB, distributed growth, and resident GPU histograms remain planned |
 | Clustering and unsupervised learning | Centered dense `pca_t` is implemented with deterministic SVD signs, rank selection, whitening, reconstruction, variance metadata, and fixed-state input products; `linear_autoencoder_t` reuses fitted PCA as the tied linear optimum with exact encode/reconstruction JVPs; deterministic dense seeded `kmeans_t` provides fit/predict/transform, inertia, and fixed-center input products with explicit empty-cluster and device refusals | Incremental/randomized/sparse/kernel PCA, ICA, NMF, minibatch k-means, Gaussian mixtures/EM, density and graph clustering, manifold methods, outlier detection, matrix factorization, and density metrics |
@@ -1580,6 +1580,12 @@ return status errors.
 - [x] Provide polynomial, Fourier, radial, and B-spline basis maps with value,
   JVP, VJP, and analytic scalar-contraction HVP products. Callback maps retain
   value/JVP/VJP products and return a typed HVP refusal.
+- [x] Add a deterministic fixed-state random Fourier feature map,
+  `make_random_fourier_basis`, with explicit frequency/phase inputs, optional
+  intercept, analytic value/input JVP/VJP/HVP products, and an independent
+  oracle plus release row in `../fortml-bench`. Its zero-parameter contract
+  keeps sampled features reproducible across folds; resident CUDA execution
+  remains an explicit capability boundary.
 - [x] Provide a horizontal `basis_pipeline_t` that concatenates fixed basis
   stages, packs stage parameters, and routes value/JVP/VJP/HVP products with
   shape and stage-initialization refusal tests.
@@ -1940,9 +1946,10 @@ state, scoring, and refusal rules.
   extensions remain open.
 - [x] Add weighted dense linear SVM/SVR estimators with arbitrary labels or
   real targets, FortOpt L-BFGS-B fitting, packed affine products, and typed
-  nonsmooth/CUDA boundaries. Kernel SVM/SVR and kernel approximation (Nyström
-  and random Fourier features) remain open, with explicit solver/feature-memory
-  limits.
+  nonsmooth/CUDA boundaries. Kernel SVM/SVR and Nyström approximation remain
+  open, with explicit solver/feature-memory limits. Fixed random Fourier
+  features are available through `make_random_fourier_basis` and retain an
+  explicit CPU derivative contract and CUDA refusal.
 - [x] Add weighted Multinomial, Bernoulli, and Complement naive Bayes with
   stable log-probability products and declared input/parameter derivative
   boundaries.
@@ -2752,6 +2759,10 @@ peak memory, and batch-size scaling with the same correctness gate as training.
   oracle and timing row for polynomial/Fourier basis-pipeline HVPs. The raw
   record is [`results/features_workloads.csv`](../fortml-bench/results/features_workloads.csv)
   and the contract is documented in [`results/FEATURES.md`](../fortml-bench/results/FEATURES.md).
+- [x] Add the fixed-state random Fourier feature release lane with direct
+  trigonometric value and central-difference input-product oracles, explicit
+  zero-parameter metadata, and a typed CUDA capability row in
+  [`results/RANDOM_FOURIER.md`](../fortml-bench/results/RANDOM_FOURIER.md).
 - [ ] Add a release-app benchmark for joint basis-pipeline training, including
   linear and Fourier initializations, FortOpt convergence, and a typed CUDA
   refusal row.
