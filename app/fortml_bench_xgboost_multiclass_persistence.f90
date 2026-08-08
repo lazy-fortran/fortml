@@ -10,9 +10,10 @@ program fortml_bench_xgboost_multiclass_persistence
     integer, parameter :: n_estimators = 3
     real(dp) :: x(n_samples, n_features), query(3, n_features)
     real(dp) :: before(3, n_classes), after(3, n_classes)
-    integer :: labels(n_samples), classes(n_classes)
+    real(dp) :: margins(3, n_classes), expected(3, n_classes), totals(3)
+    integer :: labels(n_samples), classes(n_classes), i, j
     integer(int64) :: clock_start, clock_end, clock_rate
-    real(dp) :: elapsed, error, probability_sum
+    real(dp) :: elapsed, error, oracle_error, probability_sum
     type(xgboost_multiclass_t) :: model, restored
     type(xgboost_options_t) :: options
     type(fortnum_status_t) :: status
@@ -32,6 +33,16 @@ program fortml_bench_xgboost_multiclass_persistence
     if (.not. status_ok(status)) error stop "XGBoost multiclass persistence fit failed"
     call model%predict_proba(query, before, status)
     if (.not. status_ok(status)) error stop "XGBoost multiclass persistence prediction failed"
+    call model%decision_function(query, margins, status)
+    if (.not. status_ok(status)) error stop "XGBoost multiclass persistence margin failed"
+    do i = 1, size(query, 1)
+        totals(i) = 0.0_dp
+        do j = 1, n_classes
+            expected(i, j) = stable_sigmoid(margins(i, j))
+            totals(i) = totals(i) + expected(i, j)
+        end do
+        expected(i, :) = expected(i, :)/totals(i)
+    end do
     classes = model%classes()
 
     call system_clock(clock_start, clock_rate)
@@ -43,15 +54,26 @@ program fortml_bench_xgboost_multiclass_persistence
     if (.not. status_ok(status)) error stop "XGBoost multiclass restored prediction failed"
     elapsed = real(clock_end - clock_start, dp)/real(clock_rate, dp)
     error = maxval(abs(before - after))
+    oracle_error = maxval(abs(before - expected))
     probability_sum = sum(after)
 
-    write (*, '(a,i0,a,i0,a,i0,a,i0,a,es24.16,a,es24.16,a,es24.16,a,i0)') &
+    write (*, '(a,i0,a,i0,a,i0,a,i0,a,es24.16,a,es24.16,a,es24.16,a,es24.16,a,i0)') &
         "xgb_multiclass_persistence,round_trip,", n_samples, ",", n_features, &
         ",", n_classes, ",", n_estimators, ",", elapsed, ",", error, ",", &
-        probability_sum, ",", sum(classes)
+        oracle_error, ",", probability_sum, ",", sum(classes)
     call delete_file(path)
 
 contains
+
+    real(dp) function stable_sigmoid(value) result(probability)
+        real(dp), intent(in) :: value
+
+        if (value >= 0.0_dp) then
+            probability = 1.0_dp/(1.0_dp + exp(-value))
+        else
+            probability = exp(value)/(1.0_dp + exp(value))
+        end if
+    end function stable_sigmoid
 
     subroutine delete_file(name)
         character(*), intent(in) :: name
