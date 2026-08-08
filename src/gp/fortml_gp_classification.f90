@@ -56,6 +56,7 @@ module fortml_gp_classification
         integer :: n_samples = 0
         integer :: n_features = 0
         integer :: likelihood = GP_LIKELIHOOD_LOGISTIC
+        real(dp) :: jitter = 1.0e-8_dp
     contains
         procedure, public :: fit => gp_classification_fit
         procedure, public :: predict_latent => gp_classification_predict_latent
@@ -68,17 +69,27 @@ module fortml_gp_classification
             gp_classification_predict_latent_parameter_vjp
         procedure, public :: predict_proba => gp_classification_predict_proba
         procedure, public :: predict_proba_device => gp_classification_predict_proba_device
+        procedure, public :: predict_log_proba => gp_classification_predict_log_proba
+        procedure, public :: predict_log_proba_device => &
+            gp_classification_predict_log_proba_device
         procedure, public :: predict_proba_jvp => gp_classification_predict_proba_jvp
         procedure, public :: predict_proba_vjp => gp_classification_predict_proba_vjp
+        procedure, public :: predict_log_proba_jvp => gp_classification_predict_log_proba_jvp
+        procedure, public :: predict_log_proba_vjp => gp_classification_predict_log_proba_vjp
         procedure, public :: predict_proba_parameter_jvp => &
             gp_classification_predict_proba_parameter_jvp
         procedure, public :: predict_proba_parameter_vjp => &
             gp_classification_predict_proba_parameter_vjp
+        procedure, public :: predict_log_proba_parameter_jvp => &
+            gp_classification_predict_log_proba_parameter_jvp
+        procedure, public :: predict_log_proba_parameter_vjp => &
+            gp_classification_predict_log_proba_parameter_vjp
         procedure, public :: predict => gp_classification_predict
         procedure, public :: classes => gp_classification_classes
         procedure, public :: feature_count => gp_classification_feature_count
         procedure, public :: parameter_count => gp_classification_parameter_count
         procedure, public :: parameters => gp_classification_parameters
+        procedure, public :: set_parameters => gp_classification_set_parameters
         procedure, public :: hyperparameter_gradient => &
             gp_classification_hyperparameter_gradient
         procedure, public :: fitted => gp_classification_fitted
@@ -95,11 +106,18 @@ module fortml_gp_classification
     public :: gp_classification_predict_latent_parameter_vjp
     public :: gp_classification_predict_proba
     public :: gp_classification_predict_proba_device
+    public :: gp_classification_predict_log_proba
+    public :: gp_classification_predict_log_proba_device
     public :: gp_classification_predict_proba_jvp
     public :: gp_classification_predict_proba_vjp
+    public :: gp_classification_predict_log_proba_jvp
+    public :: gp_classification_predict_log_proba_vjp
     public :: gp_classification_predict_proba_parameter_jvp
     public :: gp_classification_predict_proba_parameter_vjp
+    public :: gp_classification_predict_log_proba_parameter_jvp
+    public :: gp_classification_predict_log_proba_parameter_vjp
     public :: gp_classification_predict
+    public :: gp_classification_set_parameters
     public :: gp_classification_log_likelihood_value
     public :: gp_classification_log_likelihood_jvp
     public :: gp_classification_log_likelihood_vjp
@@ -180,6 +198,7 @@ contains
         allocate(self%covariance(self%n_samples, self%n_samples))
         call self%kernel%matrix(self%x_train, self%x_train, self%covariance, status)
         if (status%code /= FORTNUM_OK) return
+        self%jitter = requested%jitter
         do i = 1, self%n_samples
             self%covariance(i, i) = self%covariance(i, i) + requested%jitter
         end do
@@ -599,6 +618,46 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine gp_classification_predict_proba_parameter_jvp
 
+    !> Forward kernel-hyperparameter product of ``predict_log_proba``.
+    subroutine gp_classification_predict_log_proba_parameter_jvp(self, x, direction, &
+            log_probabilities, log_probabilities_dot, status)
+        class(gp_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), direction(:)
+        real(dp), intent(out) :: log_probabilities(:, :), log_probabilities_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: probabilities(:, :), probabilities_dot(:, :)
+        integer :: i, j
+
+        if (.not. prediction_probability_shapes(self, x, log_probabilities, status)) return
+        if (size(direction) /= self%parameter_count() .or. &
+                any(.not. ieee_is_finite(direction)) .or. &
+                any(shape(log_probabilities_dot) /= shape(log_probabilities))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP classification log probability parameter JVP: direction or output shape is invalid")
+            return
+        end if
+        allocate(probabilities(size(x, 1), 2), probabilities_dot(size(x, 1), 2))
+        call self%predict_proba_parameter_jvp(x, direction, probabilities, probabilities_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        do j = 1, 2
+            do i = 1, size(x, 1)
+                log_probabilities(i, j) = log(max(probabilities(i, j), tiny(1.0_dp)))
+                if (probabilities(i, j) > tiny(1.0_dp)) then
+                    log_probabilities_dot(i, j) = probabilities_dot(i, j)/probabilities(i, j)
+                else
+                    log_probabilities_dot(i, j) = 0.0_dp
+                end if
+            end do
+        end do
+        if (any(.not. ieee_is_finite(log_probabilities)) .or. &
+                any(.not. ieee_is_finite(log_probabilities_dot))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "GP classification log probability parameter JVP: result is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_classification_predict_log_proba_parameter_jvp
+
     !> Reverse product of observed probabilities with respect to fixed-state
     !! kernel parameters.
     subroutine gp_classification_predict_proba_parameter_vjp(self, x, &
@@ -645,6 +704,41 @@ contains
             status)
     end subroutine gp_classification_predict_proba_parameter_vjp
 
+    !> Reverse kernel-hyperparameter product of ``predict_log_proba``.
+    subroutine gp_classification_predict_log_proba_parameter_vjp(self, x, &
+            log_probabilities_bar, parameter_bar, status)
+        class(gp_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), log_probabilities_bar(:, :)
+        real(dp), intent(out) :: parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: probabilities(:, :), probability_bar(:, :)
+        integer :: i, j
+
+        parameter_bar = 0.0_dp
+        if (.not. prediction_probability_shapes(self, x, log_probabilities_bar, status)) return
+        if (size(parameter_bar) /= self%parameter_count() .or. &
+                any(.not. ieee_is_finite(log_probabilities_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP classification log probability parameter VJP: input or cotangent is invalid")
+            return
+        end if
+        allocate(probabilities(size(x, 1), 2), probability_bar(size(x, 1), 2))
+        call self%predict_proba(x, probabilities, status)
+        if (status%code /= FORTNUM_OK) return
+        do j = 1, 2
+            do i = 1, size(x, 1)
+                probability_bar(i, j) = log_probabilities_bar(i, j) / &
+                    max(probabilities(i, j), tiny(1.0_dp))
+            end do
+        end do
+        if (any(.not. ieee_is_finite(probability_bar))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "GP classification log probability parameter VJP: cotangent is not finite")
+            return
+        end if
+        call self%predict_proba_parameter_vjp(x, probability_bar, parameter_bar, status)
+    end subroutine gp_classification_predict_log_proba_parameter_vjp
+
     subroutine gp_classification_predict_proba(self, x, probabilities, status)
         class(gp_classification_t), intent(in) :: self
         real(dp), intent(in) :: x(:, :)
@@ -690,6 +784,59 @@ contains
         end select
     end subroutine gp_classification_predict_proba_device
 
+    !> Return the natural logarithm of the two predictive probabilities.
+    !!
+    !! This is the scikit-learn ``predict_log_proba`` companion to
+    !! ``predict_proba``.  The returned columns retain ``classes()`` order;
+    !! the fitted Laplace state is held fixed just as for the probability
+    !! products.  A finite floor is used only at the floating-point boundary
+    !! where a probit tail rounds to zero, so callers never receive ``-Inf``.
+    subroutine gp_classification_predict_log_proba(self, x, log_probabilities, status)
+        class(gp_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: log_probabilities(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: probabilities(:, :)
+
+        if (.not. prediction_probability_shapes(self, x, log_probabilities, status)) return
+        allocate(probabilities(size(x, 1), 2))
+        call self%predict_proba(x, probabilities, status)
+        if (status%code /= FORTNUM_OK) return
+        log_probabilities = log(max(probabilities, tiny(1.0_dp)))
+        if (any(.not. ieee_is_finite(log_probabilities))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "GP classification log probability: result is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_classification_predict_log_proba
+
+    !> Device-dispatched log-probability prediction with no hidden host fallback.
+    subroutine gp_classification_predict_log_proba_device(self, device, x, &
+            log_probabilities, status)
+        class(gp_classification_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: log_probabilities(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP classification log probability device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_log_proba(x, log_probabilities, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "GP classification log probability device: no resident CUDA Laplace kernel is linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP classification log probability device: device kind is invalid")
+        end select
+    end subroutine gp_classification_predict_log_proba_device
+
     subroutine gp_classification_predict_proba_jvp( &
             self, x, x_dot, probabilities, probabilities_dot, status)
         class(gp_classification_t), intent(in) :: self
@@ -733,6 +880,46 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine gp_classification_predict_proba_jvp
+
+    !> Forward input product of ``predict_log_proba``.
+    subroutine gp_classification_predict_log_proba_jvp(self, x, x_dot, &
+            log_probabilities, log_probabilities_dot, status)
+        class(gp_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), x_dot(:, :)
+        real(dp), intent(out) :: log_probabilities(:, :), log_probabilities_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: probabilities(:, :), probabilities_dot(:, :)
+        integer :: i, j
+
+        if (.not. prediction_probability_shapes(self, x, log_probabilities, status)) return
+        if (any(shape(x_dot) /= shape(x)) .or. &
+                any(shape(log_probabilities_dot) /= shape(log_probabilities)) .or. &
+                any(.not. ieee_is_finite(x_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP classification log probability JVP: input or output shape is invalid")
+            return
+        end if
+        allocate(probabilities(size(x, 1), 2), probabilities_dot(size(x, 1), 2))
+        call self%predict_proba_jvp(x, x_dot, probabilities, probabilities_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        do j = 1, 2
+            do i = 1, size(x, 1)
+                log_probabilities(i, j) = log(max(probabilities(i, j), tiny(1.0_dp)))
+                if (probabilities(i, j) > tiny(1.0_dp)) then
+                    log_probabilities_dot(i, j) = probabilities_dot(i, j)/probabilities(i, j)
+                else
+                    log_probabilities_dot(i, j) = 0.0_dp
+                end if
+            end do
+        end do
+        if (any(.not. ieee_is_finite(log_probabilities)) .or. &
+                any(.not. ieee_is_finite(log_probabilities_dot))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "GP classification log probability JVP: result is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_classification_predict_log_proba_jvp
 
     !> Reverse-mode product of observed probabilities with respect to query
     !> features.  Probability columns are ordered as ``classes()``.
@@ -780,6 +967,41 @@ contains
         end do
         call self%predict_latent_vjp(x, mean_bar, variance_bar, x_bar, status)
     end subroutine gp_classification_predict_proba_vjp
+
+    !> Reverse input product of ``predict_log_proba``.
+    subroutine gp_classification_predict_log_proba_vjp(self, x, log_probabilities_bar, &
+            x_bar, status)
+        class(gp_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), log_probabilities_bar(:, :)
+        real(dp), intent(out) :: x_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: probabilities(:, :), probability_bar(:, :)
+        integer :: i, j
+
+        x_bar = 0.0_dp
+        if (.not. prediction_probability_shapes(self, x, log_probabilities_bar, status)) return
+        if (any(.not. ieee_is_finite(log_probabilities_bar)) .or. &
+                any(shape(x_bar) /= shape(x))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP classification log probability VJP: input or cotangent is invalid")
+            return
+        end if
+        allocate(probabilities(size(x, 1), 2), probability_bar(size(x, 1), 2))
+        call self%predict_proba(x, probabilities, status)
+        if (status%code /= FORTNUM_OK) return
+        do j = 1, 2
+            do i = 1, size(x, 1)
+                probability_bar(i, j) = log_probabilities_bar(i, j) / &
+                    max(probabilities(i, j), tiny(1.0_dp))
+            end do
+        end do
+        if (any(.not. ieee_is_finite(probability_bar))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "GP classification log probability VJP: cotangent is not finite")
+            return
+        end if
+        call self%predict_proba_vjp(x, probability_bar, x_bar, status)
+    end subroutine gp_classification_predict_log_proba_vjp
 
     subroutine gp_classification_predict(self, x, labels, status)
         class(gp_classification_t), intent(in) :: self
@@ -967,6 +1189,49 @@ contains
         end if
         parameters = self%kernel%parameters()
     end function gp_classification_parameters
+
+    !> Update kernel log parameters while holding the fitted Laplace mode fixed.
+    !!
+    !! Prediction JVP/VJP products use this same fixed-state contract.  The
+    !! covariance and both Cholesky factors are rebuilt transactionally for
+    !! the new kernel, making central-difference checks and outer HPO callers
+    !! agree on which state is differentiated.  ``fit`` remains the API that
+    !! recomputes the Newton mode.
+    subroutine gp_classification_set_parameters(self, parameters, status)
+        class(gp_classification_t), intent(inout) :: self
+        real(dp), intent(in) :: parameters(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: covariance(:, :), matrix(:, :)
+        integer :: i
+
+        if (.not. self%fitted()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP classification set_parameters: model is not fitted")
+            return
+        end if
+        if (size(parameters) /= self%kernel%parameter_count() .or. &
+                any(.not. ieee_is_finite(parameters))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP classification set_parameters: parameter shape or values are invalid")
+            return
+        end if
+        call self%kernel%set_parameters(parameters, status)
+        if (status%code /= FORTNUM_OK) return
+        allocate(covariance(self%n_samples, self%n_samples))
+        call self%kernel%matrix(self%x_train, self%x_train, covariance, status)
+        if (status%code /= FORTNUM_OK) return
+        do i = 1, self%n_samples
+            covariance(i, i) = covariance(i, i) + self%jitter
+        end do
+        call self%prior_factorization%factorize(covariance, status)
+        if (status%code /= FORTNUM_OK) return
+        allocate(matrix(self%n_samples, self%n_samples))
+        call posterior_system(covariance, self%sqrt_w, matrix)
+        call self%posterior_factorization%factorize(matrix, status)
+        if (status%code /= FORTNUM_OK) return
+        self%covariance = covariance
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_classification_set_parameters
 
     subroutine gp_classification_hyperparameter_gradient(self, gradient, status)
         class(gp_classification_t), intent(in) :: self

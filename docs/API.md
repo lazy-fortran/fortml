@@ -211,7 +211,7 @@ repeated resident-batch evidence.
 | `gp_regression_t` | Mean, variance, LML | Prediction and LML parameters | Prediction and LML parameters | Mean and LML parameters |
 | `gp_derivative_regression_t` | Mean, variance, and LML | Prediction and LML parameter JVP | Prediction parameter VJP and analytic LML hyperparameter gradient | Directional HVP (finite difference of the analytic gradient) |
 | `second_derivative_gp_t` | Exact scalar 1-D RBF/Matérn-5/2 GP over mixed value/first/second-derivative rows; latent joint covariance | Query-coordinate JVP; selected-CPU device dispatch | Query-coordinate VJP for mean and latent variance; selected-CPU device dispatch | Other kernels, non-scalar, order >2, Matérn-5/2 fifth derivative at coincidence, and CUDA prediction/covariance/product requests are typed refusals |
-| `gp_classification_t` | Latent and observed probabilities | Input and fixed-state kernel-parameter JVP | Input and fixed-state kernel-parameter VJP; Laplace-mode kernel hyperparameter gradient | No |
+| `gp_classification_t` | Latent, observed, and log-observed probabilities; fixed-state kernel parameter setter | Input and fixed-state kernel-parameter JVP for probabilities and log probabilities | Input and fixed-state kernel-parameter VJP for probabilities and log probabilities; Laplace-mode kernel hyperparameter gradient | No |
 | `gp_multiclass_classification_t` | Latent one-vs-rest margins and normalized observed probabilities | Input and packed fixed-state kernel-parameter JVPs for margins and probabilities | Input and packed fixed-state kernel-parameter VJPs for margins and probabilities; packed one-vs-rest Laplace-mode kernel hyperparameter gradient | No |
 | `gp_multilabel_classification_t` | Independent binary Laplace-GP probabilities and indicator labels | Input and packed per-label fixed-state kernel-parameter JVPs for latent/probability outputs | Input and packed per-label fixed-state kernel-parameter VJPs; concatenated Laplace-mode kernel hyperparameter gradient | No |
 | `multi_output_gp_t` | Correlated mean and LML; prior covariance; batched `(batch,query,output)` prediction | Packed kernel/log-noise/output-major W/independent posterior-mean and prior-covariance JVP; query-input and batch-query JVP | Fitted posterior-mean and prior-covariance parameter VJP; query-input and batch-query VJP | No |
@@ -3429,8 +3429,17 @@ weight each training likelihood contribution and require positive total mass;
 zero-weight rows contribute no likelihood curvature. The fitted state,
 envelope `hyperparameter_gradient`, and `state%log_posterior` all use those
 weights. `predict_latent` returns posterior latent mean and variance.
-`predict_proba` returns two observed-probability columns. Both have input-JVP
-and input-VJP variants, and `predict` returns the stored integer labels. The
+`predict_proba` returns two observed-probability columns. `predict_log_proba`
+returns their natural logarithms in the same stored class order, with a finite
+floor for floating-point probit tails. Both probability APIs have input-JVP
+and input-VJP variants; their fixed-state kernel-parameter JVP/VJP products
+are also available under matching `predict_log_proba_*` names. `set_parameters`
+updates kernel log parameters while keeping the converged Newton mode,
+`alpha`, and likelihood curvature fixed, rebuilding only the covariance
+factorizations needed by those products. This makes finite-difference checks
+and outer hyperparameter search agree on the fixed-state derivative contract.
+`predict_log_proba_device` dispatches CPU explicitly and returns a typed CUDA
+refusal. `predict` returns the stored integer labels. The
 `predict_latent_parameter_jvp`/`_vjp` and `predict_proba_parameter_jvp`/`_vjp`
 variants differentiate the fixed fitted Laplace prediction with respect to
 the packed kernel log parameters. They propagate `matrix_jvp` and

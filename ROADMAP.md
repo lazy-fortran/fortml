@@ -3187,6 +3187,13 @@ state phases are reported separately.
   with damped Newton state, latent/probability prediction, input JVP/VJP
   products over the kernel derivative contract, and an exact envelope gradient
   for the converged mode log posterior (without evidence correction).
+- [x] Add sklearn-style binary Laplace-GP `predict_log_proba` with finite
+  probit-tail clipping, input and fixed-state kernel-parameter JVP/VJP
+  products, and a transactional `set_parameters` seam that rebuilds
+  covariance factorizations while retaining the fitted Newton state. The
+  independent `test_gp_classification_log_proba` oracle checks value/log
+  round trips, central differences, adjoint identities, and the typed CUDA
+  refusal; see `docs/GP_CLASSIFICATION_LOG_PROBA.md` and the release benchmark.
 - [x] Expose the shared signed-margin binary GP likelihood as analytic
   `value`/`JVP`/`VJP` products for logistic and probit links, with a stable
   negative-tail log-CDF and independent scalar/finite-difference/adjoint
