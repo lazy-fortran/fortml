@@ -24,7 +24,7 @@ the requested pair is smooth and finite. A refusal is a typed
 | ARD RBF | Yes | Yes, including analytic mixed-observation HVPs for log variance and every log lengthscale | Yes | CUDA covariance/factorization remains `FORTNUM_NOT_IMPLEMENTED` |
 | Matérn 1/2 | Value-only, derivative blocks are singular at coincident points | Value-only and noncoincident gradient/JVP/VJP; mixed HVP refusal | No at coincident query blocks | `FORTNUM_DOMAIN_ERROR` at coincidence |
 | Matérn 3/2 | Yes | Gradient/JVP/VJP; mixed HVP refusal | Yes away from coincidence | Nonzero directional third derivative at coincidence is `FORTNUM_NOT_IMPLEMENTED` |
-| Matérn 5/2 | Yes | Gradient/JVP/VJP; mixed HVP refusal | Yes | mixed HVP `FORTNUM_NOT_IMPLEMENTED` |
+| Matérn 5/2 | Yes | Gradient/JVP/VJP; value-only HVP is a FortSym-generated leaf; mixed HVP refusal | Yes | mixed HVP `FORTNUM_NOT_IMPLEMENTED` |
 | Periodic, rational-quadratic, cosine | Yes | Gradient/JVP/VJP; mixed HVP refusal | Yes | mixed HVP `FORTNUM_NOT_IMPLEMENTED` |
 | Linear, constant | Yes | Yes; mixed-observation HVPs are analytic | Yes | none |
 | Polynomial | Yes when the positive polynomial base is finite | Gradient/JVP/VJP and analytic mixed HVP (all four logarithmic parameters) | Yes when the positive base is finite | `FORTNUM_DOMAIN_ERROR` for a nonpositive base |
@@ -92,6 +92,12 @@ The polynomial path is intentionally kept as a short closed-form expression
 generated FortSym leaf. The independent block oracle covers every packed
 parameter and the query third derivative, while the general FortSym kernel
 generation task remains tracked in the roadmap.
+`test_fortsym_matern52` independently checks the generated Matérn-5/2
+value/JVP/VJP/HVP leaf against closed-form values and central differences of
+the value gradient. The leaf records FortSym revision `873d33f` (80 IR nodes,
+65 compound operations) and is used by the ordinary kernel parameter-HVP path;
+mixed value/first-derivative likelihood HVPs still return the typed refusal
+until their fourth input/parameter products are generated.
 The spectral-mixture derivative-GP gate independently assembles its dense
 two-dimensional value/first-derivative covariance blocks and checks packed
 parameter gradients, posterior covariance, query JVP/VJP, and the typed HVP

@@ -3255,7 +3255,8 @@ compound operations). The Matérn 1/2 HVP now uses a FortSym-generated leaf
 (`9482261`, 37 IR nodes, 28 compound operations), and the Matérn 3/2 HVP now
 uses a FortSym-generated leaf (`b72a23a`, 60 IR nodes, 48 compound
 operations), each after an independent analytic/directional finite-difference
-test. Matérn 5/2 retains its FortAD product. User formulas use the validated forward
+test. Matérn 5/2 now uses the FortSym-generated leaf `873d33f` (80 IR nodes,
+65 compound operations), checked by `test_fortsym_matern52`. User formulas use the validated forward
 derivative stack and do not call a procedure pointer.
 
 `fortml_derivative_gp_training` provides
