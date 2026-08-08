@@ -1013,9 +1013,14 @@ when a lower-level primitive already exists.
   `docs/MLP_POISSON.md`.
 - [x] Production RMSprop with centered/uncentered running statistics, optional
   momentum, exact checkpoint/resume state, and an independent recurrence oracle.
+- [x] Production AMSGrad with bias-corrected first/second moments, an
+  elementwise max-second-moment state, exact in-memory and formatted
+  checkpoint/resume, and an independent NumPy recurrence/MLP oracle. The
+  trainer is CPU-only; fixed-trajectory derivatives through the max active set
+  and resident CUDA execution remain open.
 - [ ] Production optimizers and schedules: matrix-factored
   Adafactor,
-  Lion, RAdam, AMSGrad, cosine/one-cycle/warmup/plateau schedules, gradient
+  Lion, RAdam, cosine/one-cycle/warmup/plateau schedules, gradient
   accumulation, clipping, EMA, decoupled regularization, and parameter groups.
   The deterministic mini-batch SGD trajectory objective now records a private
   batch cursor (including seeded epoch shuffles), exposes exact learning-rate
