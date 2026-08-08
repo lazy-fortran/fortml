@@ -15,6 +15,8 @@ module fortml_mlp_classifier
     use fortml_mlp, only: mlp_t, MLP_TANH
     use fortml_losses, only: softmax_value, softmax_jvp, softmax_vjp
     use fortopt_adam, only: adam_t
+    use fortopt_objective, only: objective_t
+    use fortopt_lbfgsb, only: lbfgsb_t, lbfgsb_options_t, lbfgsb_result_t
     implicit none
     private
 
@@ -78,6 +80,60 @@ module fortml_mlp_classifier
         procedure, public :: device_supported => mlp_classifier_device_supported
     end type mlp_classifier_t
 
+    type, public :: mlp_classifier_training_objective_t
+        !! Weighted multiclass cross-entropy objective around a fitted MLP.
+        !!
+        !! The packed variable is the logits-network parameter vector.  With
+        !! `optimize_l2`, one final non-negative coordinate is appended for the
+        !! L2 coefficient.  Value/gradient, JVP, VJP, and analytic HVP products
+        !! all share the same weighted objective and update the live model, so
+        !! FortOpt and direct derivative checks cannot drift apart.
+        private
+        type(mlp_t), pointer :: model => null()
+        real(dp), allocatable :: features(:, :)
+        integer, allocatable :: targets(:)
+        real(dp), allocatable :: weights(:)
+        real(dp) :: l2 = 0.0_dp
+        logical :: optimize_l2 = .false.
+    contains
+        procedure, public :: initialize => mlp_classifier_objective_initialize
+        procedure, public :: parameter_count => &
+            mlp_classifier_objective_parameter_count
+        procedure, public :: parameters => mlp_classifier_objective_parameters
+        procedure, public :: value_gradient => &
+            mlp_classifier_objective_value_gradient
+        procedure, public :: jvp => mlp_classifier_objective_jvp
+        procedure, public :: vjp => mlp_classifier_objective_vjp
+        procedure, public :: hvp => mlp_classifier_objective_hvp
+        procedure, public :: fortopt => mlp_classifier_objective_fortopt
+    end type mlp_classifier_training_objective_t
+
+    type, public :: mlp_classifier_lbfgsb_options_t
+        !! Bounds and convergence controls for multiclass MLP L-BFGS-B.
+        integer :: memory = 10
+        integer :: max_iterations = 100
+        integer :: max_line_search = 40
+        real(dp) :: gradient_tolerance = 1.0e-8_dp
+        real(dp) :: step_tolerance = 1.0e-12_dp
+        real(dp) :: objective_tolerance = 1.0e-12_dp
+        real(dp) :: lower_bound = -20.0_dp
+        real(dp) :: upper_bound = 20.0_dp
+        real(dp) :: l2 = 0.0_dp
+        real(dp) :: l2_lower_bound = 0.0_dp
+        real(dp) :: l2_upper_bound = 20.0_dp
+        logical :: optimize_l2 = .false.
+    end type mlp_classifier_lbfgsb_options_t
+
+    type, public :: mlp_classifier_lbfgsb_result_t
+        !! Diagnostics returned by `mlp_classifier_optimize_lbfgsb`.
+        logical :: converged = .false.
+        integer :: iterations = 0
+        integer :: line_search_evaluations = 0
+        real(dp) :: objective = huge(1.0_dp)
+        real(dp) :: gradient_norm = huge(1.0_dp)
+        real(dp) :: l2 = 0.0_dp
+    end type mlp_classifier_lbfgsb_result_t
+
     public :: mlp_classifier_decision_device
     public :: mlp_classifier_decision_jvp
     public :: mlp_classifier_decision_vjp
@@ -85,8 +141,482 @@ module fortml_mlp_classifier
     public :: mlp_classifier_predict_proba_jvp
     public :: mlp_classifier_predict_proba_vjp
     public :: mlp_classifier_predict_device
+    public :: mlp_classifier_optimize_lbfgsb
 
 contains
+
+    subroutine mlp_classifier_objective_initialize(self, classifier, x, labels, &
+            l2, status, optimize_l2, sample_weight, class_weight)
+        !! Initialize a weighted multiclass cross-entropy objective.
+        class(mlp_classifier_training_objective_t), intent(out) :: self
+        class(mlp_classifier_t), target, intent(inout) :: classifier
+        real(dp), intent(in) :: x(:, :), l2
+        integer, intent(in) :: labels(:)
+        type(fortnum_status_t), intent(out) :: status
+        logical, intent(in), optional :: optimize_l2
+        real(dp), intent(in), optional :: sample_weight(:), class_weight(:)
+        integer, allocatable :: classes(:), encoded(:)
+        real(dp), allocatable :: effective_weight(:), class_factors(:)
+        real(dp) :: weight_sum
+        integer :: i
+
+        self%l2 = 0.0_dp
+        self%optimize_l2 = .false.
+        if (present(optimize_l2)) self%optimize_l2 = optimize_l2
+        if (.not. classifier%fitted()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier objective: model is not fitted")
+            return
+        end if
+        if (.not. ieee_is_finite(l2)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier objective: L2 value is not finite")
+            return
+        end if
+        if (l2 < 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier objective: L2 value must be non-negative")
+            return
+        end if
+        if (size(x, 1) < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier objective: feature rows are empty")
+            return
+        end if
+        if (size(x, 2) /= classifier%feature_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier objective: feature shape is invalid")
+            return
+        end if
+        if (size(labels) /= size(x, 1)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier objective: label shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(x))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier objective: features must be finite")
+            return
+        end if
+
+        classes = classifier%classes()
+        call encode_labels(labels, classes, encoded, status)
+        if (.not. status_ok(status)) return
+        allocate(effective_weight(size(labels)))
+        effective_weight = 1.0_dp
+        if (present(sample_weight)) then
+            if (size(sample_weight) /= size(labels)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP classifier objective: sample weights shape is invalid")
+                return
+            end if
+            if (any(.not. ieee_is_finite(sample_weight))) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP classifier objective: sample weights must be finite")
+                return
+            end if
+            if (any(sample_weight < 0.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP classifier objective: sample weights must be non-negative")
+                return
+            end if
+            effective_weight = sample_weight
+        end if
+        allocate(class_factors(size(classes)))
+        class_factors = 1.0_dp
+        if (present(class_weight)) then
+            if (size(class_weight) /= size(classes)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP classifier objective: class weights shape is invalid")
+                return
+            end if
+            if (any(.not. ieee_is_finite(class_weight))) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP classifier objective: class weights must be finite")
+                return
+            end if
+            if (any(class_weight <= 0.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP classifier objective: class weights must be positive")
+                return
+            end if
+            class_factors = class_weight
+        end if
+        do i = 1, size(effective_weight)
+            effective_weight(i) = effective_weight(i)*class_factors(encoded(i))
+        end do
+        weight_sum = sum(effective_weight)
+        if (.not. ieee_is_finite(weight_sum)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier objective: effective weights overflowed")
+            return
+        end if
+        if (weight_sum <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier objective: effective weights have no positive mass")
+            return
+        end if
+
+        self%model => classifier%logits
+        allocate(self%features, source=x)
+        allocate(self%targets, source=encoded)
+        allocate(self%weights, source=effective_weight)
+        self%l2 = l2
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine mlp_classifier_objective_initialize
+
+    integer function mlp_classifier_objective_parameter_count(self) result(count)
+        class(mlp_classifier_training_objective_t), intent(in) :: self
+
+        count = 0
+        if (.not. associated(self%model)) return
+        count = self%model%parameter_count()
+        if (self%optimize_l2) count = count + 1
+    end function mlp_classifier_objective_parameter_count
+
+    function mlp_classifier_objective_parameters(self) result(parameters)
+        class(mlp_classifier_training_objective_t), intent(in) :: self
+        real(dp), allocatable :: parameters(:)
+        integer :: n_model
+
+        allocate(parameters(self%parameter_count()))
+        parameters = 0.0_dp
+        if (.not. associated(self%model)) return
+        n_model = self%model%parameter_count()
+        parameters(:n_model) = self%model%parameters()
+        if (self%optimize_l2) parameters(n_model + 1) = self%l2
+    end function mlp_classifier_objective_parameters
+
+    subroutine mlp_classifier_objective_value_gradient(self, parameters, value, &
+            gradient, status)
+        class(mlp_classifier_training_objective_t), intent(inout) :: self
+        real(dp), intent(in) :: parameters(:)
+        real(dp), intent(out) :: value, gradient(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: l2
+        integer :: n_model
+
+        value = huge(1.0_dp)
+        gradient = 0.0_dp
+        if (.not. associated(self%model)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier objective: adapter is not initialized")
+            return
+        end if
+        n_model = self%model%parameter_count()
+        if (size(parameters) /= self%parameter_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier objective: parameter shape is invalid")
+            return
+        end if
+        if (size(gradient) /= size(parameters)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier objective: gradient shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(parameters))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier objective: parameters must be finite")
+            return
+        end if
+        l2 = self%l2
+        if (self%optimize_l2) then
+            l2 = parameters(n_model + 1)
+            if (l2 < 0.0_dp) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP classifier objective: optimized L2 must be non-negative")
+                return
+            end if
+        end if
+        call self%model%set_parameters(parameters(:n_model), status)
+        if (.not. status_ok(status)) return
+        call mlp_classifier_loss_gradient(self%model, self%features, self%targets, &
+            l2, value, gradient(:n_model), status, self%weights)
+        if (.not. status_ok(status)) return
+        if (self%optimize_l2) gradient(n_model + 1) = &
+            0.5_dp*sum(parameters(:n_model)*parameters(:n_model))
+        if (.not. ieee_is_finite(value)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier objective: value is not finite")
+            return
+        end if
+        if (any(.not. ieee_is_finite(gradient))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier objective: gradient is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine mlp_classifier_objective_value_gradient
+
+    subroutine mlp_classifier_objective_jvp(self, parameters, direction, value, &
+            tangent, status)
+        class(mlp_classifier_training_objective_t), intent(inout) :: self
+        real(dp), intent(in) :: parameters(:), direction(:)
+        real(dp), intent(out) :: value, tangent
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: gradient(:)
+
+        value = huge(1.0_dp)
+        tangent = 0.0_dp
+        if (size(direction) /= size(parameters)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier objective JVP: direction shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(direction))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier objective JVP: direction is not finite")
+            return
+        end if
+        allocate(gradient(size(parameters)))
+        call self%value_gradient(parameters, value, gradient, status)
+        if (.not. status_ok(status)) return
+        tangent = dot_product(gradient, direction)
+        if (.not. ieee_is_finite(tangent)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier objective JVP: product is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine mlp_classifier_objective_jvp
+
+    subroutine mlp_classifier_objective_vjp(self, parameters, output_bar, gradient, &
+            status)
+        class(mlp_classifier_training_objective_t), intent(inout) :: self
+        real(dp), intent(in) :: parameters(:), output_bar
+        real(dp), intent(out) :: gradient(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: value
+
+        gradient = 0.0_dp
+        if (.not. ieee_is_finite(output_bar)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier objective VJP: output cotangent is invalid")
+            return
+        end if
+        call self%value_gradient(parameters, value, gradient, status)
+        if (.not. status_ok(status)) return
+        gradient = output_bar*gradient
+        if (any(.not. ieee_is_finite(gradient))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier objective VJP: product is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine mlp_classifier_objective_vjp
+
+    subroutine mlp_classifier_objective_hvp(self, parameters, direction, product, &
+            status)
+        class(mlp_classifier_training_objective_t), intent(inout) :: self
+        real(dp), intent(in) :: parameters(:), direction(:)
+        real(dp), intent(out) :: product(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: scores(:, :), scores_dot(:, :), probabilities(:, :)
+        real(dp), allocatable :: probabilities_dot(:, :), logits_bar(:, :)
+        real(dp), allocatable :: logits_bar_dot(:, :), x_dot(:, :), x_hvp(:, :)
+        real(dp), allocatable :: theta_hvp(:), theta_extra(:), x_bar(:, :)
+        real(dp) :: l2, l2_direction, weight_sum
+        integer :: n_model, row, column
+
+        product = 0.0_dp
+        if (.not. associated(self%model)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier objective HVP: adapter is not initialized")
+            return
+        end if
+        n_model = self%model%parameter_count()
+        if (size(parameters) /= self%parameter_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier objective HVP: parameter shape is invalid")
+            return
+        end if
+        if (size(direction) /= size(parameters) .or. size(product) /= size(parameters)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier objective HVP: direction shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(parameters))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier objective HVP: parameters are not finite")
+            return
+        end if
+        if (any(.not. ieee_is_finite(direction))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier objective HVP: direction is not finite")
+            return
+        end if
+        l2 = self%l2
+        l2_direction = 0.0_dp
+        if (self%optimize_l2) then
+            l2 = parameters(n_model + 1)
+            l2_direction = direction(n_model + 1)
+            if (l2 < 0.0_dp) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP classifier objective HVP: optimized L2 is negative")
+                return
+            end if
+        end if
+        call self%model%set_parameters(parameters(:n_model), status)
+        if (.not. status_ok(status)) return
+
+        allocate(scores(size(self%features, 1), &
+            self%model%layer_sizes(size(self%model%layer_sizes))))
+        allocate(scores_dot, mold=scores)
+        allocate(probabilities, mold=scores)
+        allocate(probabilities_dot, mold=scores)
+        allocate(logits_bar, mold=scores)
+        allocate(logits_bar_dot, mold=scores)
+        allocate(x_dot, mold=self%features)
+        allocate(x_hvp, mold=self%features)
+        allocate(x_bar, mold=self%features)
+        allocate(theta_hvp(n_model), theta_extra(n_model))
+        x_dot = 0.0_dp
+        call self%model%predict(self%features, scores, status)
+        if (.not. status_ok(status)) return
+        call softmax_value(scores, probabilities, status)
+        if (.not. status_ok(status)) return
+        call self%model%jvp(self%features, direction(:n_model), x_dot, &
+            scores, scores_dot, status)
+        if (.not. status_ok(status)) return
+        call softmax_jvp(scores, scores_dot, probabilities, probabilities_dot, status)
+        if (.not. status_ok(status)) return
+        weight_sum = sum(self%weights)
+        logits_bar = 0.0_dp
+        logits_bar_dot = 0.0_dp
+        do row = 1, size(scores, 1)
+            do column = 1, size(scores, 2)
+                logits_bar(row, column) = self%weights(row)*probabilities(row, column)
+                logits_bar_dot(row, column) = &
+                    self%weights(row)*probabilities_dot(row, column)
+            end do
+            logits_bar(row, self%targets(row)) = &
+                logits_bar(row, self%targets(row)) - self%weights(row)
+        end do
+        logits_bar = logits_bar/weight_sum
+        logits_bar_dot = logits_bar_dot/weight_sum
+        call self%model%hvp(self%features, logits_bar, direction(:n_model), &
+            x_dot, theta_hvp, x_hvp, status)
+        if (.not. status_ok(status)) return
+        call self%model%vjp(self%features, logits_bar_dot, theta_extra, x_bar, status)
+        if (.not. status_ok(status)) return
+        product(:n_model) = theta_hvp + theta_extra + l2*direction(:n_model)
+        if (self%optimize_l2) then
+            product(:n_model) = product(:n_model) + l2_direction*parameters(:n_model)
+            product(n_model + 1) = dot_product(parameters(:n_model), direction(:n_model))
+        end if
+        if (any(.not. ieee_is_finite(product))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier objective HVP: product is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine mlp_classifier_objective_hvp
+
+    subroutine mlp_classifier_objective_fortopt(self, objective, status)
+        class(mlp_classifier_training_objective_t), target, intent(inout) :: self
+        type(objective_t), intent(out) :: objective
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. associated(self%model)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier objective: adapter is not initialized")
+            return
+        end if
+        call objective%initialize_context(self%parameter_count(), self, &
+            mlp_classifier_objective_context_callback, status)
+    end subroutine mlp_classifier_objective_fortopt
+
+    subroutine mlp_classifier_objective_context_callback(context, parameters, value, &
+            gradient, status)
+        class(*), intent(inout) :: context
+        real(dp), intent(in) :: parameters(:)
+        real(dp), intent(out) :: value, gradient(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        select type (adapter => context)
+            type is (mlp_classifier_training_objective_t)
+            call adapter%value_gradient(parameters, value, gradient, status)
+        class default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier objective: context has the wrong type")
+        end select
+    end subroutine mlp_classifier_objective_context_callback
+
+    subroutine mlp_classifier_optimize_lbfgsb(model, x, labels, options, result, &
+            status, sample_weight, class_weight)
+        !! Optimize multiclass cross-entropy with FortOpt L-BFGS-B.
+        class(mlp_classifier_t), target, intent(inout) :: model
+        real(dp), intent(in) :: x(:, :)
+        integer, intent(in) :: labels(:)
+        type(mlp_classifier_lbfgsb_options_t), intent(in) :: options
+        type(mlp_classifier_lbfgsb_result_t), intent(out) :: result
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:), class_weight(:)
+        type(mlp_classifier_training_objective_t), target :: adapter
+        type(objective_t) :: objective
+        type(lbfgsb_t) :: optimizer
+        type(lbfgsb_options_t) :: optimizer_options
+        type(lbfgsb_result_t) :: optimizer_result
+        real(dp), allocatable :: parameters(:), lower(:), upper(:), gradient(:)
+        integer :: n_model, n_parameters
+
+        result = mlp_classifier_lbfgsb_result_t()
+        if (.not. valid_lbfgsb_options(options)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier L-BFGS-B: options are invalid")
+            return
+        end if
+        call adapter%initialize(model, x, labels, options%l2, status, &
+            optimize_l2=options%optimize_l2, sample_weight=sample_weight, &
+            class_weight=class_weight)
+        if (.not. status_ok(status)) return
+        n_model = model%parameter_count()
+        n_parameters = adapter%parameter_count()
+        parameters = adapter%parameters()
+        allocate(lower(n_parameters), upper(n_parameters), gradient(n_parameters))
+        lower(:n_model) = options%lower_bound
+        upper(:n_model) = options%upper_bound
+        if (options%optimize_l2) then
+            lower(n_model + 1) = options%l2_lower_bound
+            upper(n_model + 1) = options%l2_upper_bound
+            parameters(n_model + 1) = min(max(options%l2, lower(n_model + 1)), &
+                upper(n_model + 1))
+        end if
+        call adapter%fortopt(objective, status)
+        if (.not. status_ok(status)) return
+        optimizer_options%memory = options%memory
+        optimizer_options%max_iterations = options%max_iterations
+        optimizer_options%max_line_search = options%max_line_search
+        optimizer_options%gradient_tolerance = options%gradient_tolerance
+        optimizer_options%step_tolerance = options%step_tolerance
+        optimizer_options%objective_tolerance = options%objective_tolerance
+        call optimizer%minimize(objective, parameters, lower, upper, &
+            optimizer_options, optimizer_result, status)
+        if (.not. status_ok(status)) return
+        call model%set_parameters(parameters(:n_model), status)
+        if (.not. status_ok(status)) return
+        call adapter%value_gradient(parameters, result%objective, gradient, status)
+        if (.not. status_ok(status)) return
+        result%converged = optimizer_result%state%converged
+        result%iterations = optimizer_result%state%iteration
+        result%line_search_evaluations = optimizer_result%line_search_evaluations
+        result%gradient_norm = sqrt(sum(gradient*gradient))
+        result%l2 = options%l2
+        if (options%optimize_l2) result%l2 = parameters(n_model + 1)
+        if (.not. ieee_is_finite(result%objective) .or. &
+            .not. ieee_is_finite(result%gradient_norm) .or. &
+            .not. ieee_is_finite(result%l2)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier L-BFGS-B: result is not finite")
+            return
+        end if
+        if (.not. result%converged) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier L-BFGS-B: iteration limit reached")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine mlp_classifier_optimize_lbfgsb
 
     subroutine mlp_classifier_fit(self, x, labels, status, hidden_layer_sizes, &
             options, state, sample_weight, class_weight)
@@ -865,6 +1395,23 @@ contains
             ieee_is_finite(options%epsilon) .and. ieee_is_finite(options%l2) .and. &
             ieee_is_finite(options%tolerance) .and. ieee_is_finite(options%min_delta)
     end function valid_options
+
+    logical function valid_lbfgsb_options(options) result(valid)
+        type(mlp_classifier_lbfgsb_options_t), intent(in) :: options
+
+        valid = options%memory >= 1 .and. options%max_iterations >= 1 .and. &
+            options%max_line_search >= 1 .and. options%gradient_tolerance >= 0.0_dp .and. &
+            options%step_tolerance >= 0.0_dp .and. options%objective_tolerance >= 0.0_dp .and. &
+            options%lower_bound < options%upper_bound .and. options%l2 >= 0.0_dp .and. &
+            options%l2_lower_bound >= 0.0_dp .and. &
+            options%l2_lower_bound < options%l2_upper_bound
+        valid = valid .and. ieee_is_finite(options%gradient_tolerance) .and. &
+            ieee_is_finite(options%step_tolerance) .and. &
+            ieee_is_finite(options%objective_tolerance) .and. &
+            ieee_is_finite(options%lower_bound) .and. ieee_is_finite(options%upper_bound) .and. &
+            ieee_is_finite(options%l2) .and. ieee_is_finite(options%l2_lower_bound) .and. &
+            ieee_is_finite(options%l2_upper_bound)
+    end function valid_lbfgsb_options
 
     subroutine encode_labels(labels, classes, encoded, status)
         integer, intent(in) :: labels(:), classes(:)

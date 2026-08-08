@@ -306,6 +306,14 @@ only listed as gaps:
   `mlp_binary_optimize_lbfgsb` FortOpt path. The independent fixture
   `test_mlp_binary_objective` covers contractions, finite-difference products,
   and convergence/refusal behavior; resident CUDA training remains refused.
+- `mlp_classifier_training_objective_t` now provides the corresponding
+  multiclass weighted softmax cross-entropy contract. It packs logits-network
+  parameters with an optional L2 coordinate, differentiates the softmax and
+  MLP second-order terms analytically, and routes the same value/gradient
+  callback through bounded FortOpt L-BFGS-B. The independent
+  `test_mlp_classifier_objective` checks weighted value, JVP/VJP duality, HVP
+  central differences, and bounded optimization; resident CUDA classifier
+  training remains an explicit typed refusal.
 - `gp_variational_classification_t` now exposes latent/probability prediction
   and packed parameter JVPs, and
   `gp_variational_multiclass_classification_t` composes sorted-label OVR

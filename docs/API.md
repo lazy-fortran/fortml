@@ -2050,6 +2050,22 @@ selected CUDA contexts return `FORTNUM_NOT_IMPLEMENTED` until a resident MLP
 classifier kernel is linked. The derivative tests cover central differences,
 the VJP/JVP duality identity, and the explicit device refusal.
 
+`mlp_classifier_training_objective_t` is the FortOpt-facing multiclass
+objective adapter. `initialize(model,x,labels,l2,status[,optimize_l2,
+sample_weight,class_weight])` validates the fitted classifier's sorted class
+metadata and stores one weighted cross-entropy reduction. Its packed state is
+the logits-network parameters, optionally followed by a non-negative L2
+coordinate. `value_gradient`, `jvp`, `vjp`, and `hvp` are analytic; the HVP
+includes the MLP's second-order parameter product and the softmax Hessian, not
+finite differences. `fortopt` exposes the same callback to FortOpt. The
+`mlp_classifier_optimize_lbfgsb` helper applies explicit parameter/L2 bounds
+and reports convergence diagnostics through
+`mlp_classifier_lbfgsb_result_t`. Invalid labels, weights, bounds, and
+unfitted models return typed domain errors. The independent
+`test_mlp_classifier_objective` fixture checks value, directional, adjoint,
+and HVP products against central-difference oracles and exercises the bounded
+L-BFGS-B path.
+
 ### `fortml_mlp_calibrated_classifier`
 
 `mlp_calibrated_classifier_t` composes the preceding MLP classifier with a
