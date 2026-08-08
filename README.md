@@ -263,5 +263,8 @@ See [docs/EXAMPLES.md](docs/EXAMPLES.md) for executable examples and
 [docs/API.md](docs/API.md) for the public module reference. The implementation
 boundaries are recorded in [docs/DESIGN.md](docs/DESIGN.md) and
 [docs/ML_ARCHITECTURE.md](docs/ML_ARCHITECTURE.md). Benchmark evidence and parity
-work packages are maintained in [ROADMAP.md](ROADMAP.md). The package is
+work packages are maintained in [ROADMAP.md](ROADMAP.md). The canonical
+derivative/device/HPO row schema is in
+[docs/DERIVATIVE_CAPABILITY_MATRIX.md](docs/DERIVATIVE_CAPABILITY_MATRIX.md).
+The package is
 distributed under the [MIT license](LICENSE).

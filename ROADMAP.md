@@ -1392,7 +1392,10 @@ when a lower-level primitive already exists.
   input, basis hyperparameter, kernel hyperparameter, likelihood parameter,
   optimizer variable, schedule variable, validation variable, and device
   transfer counter. Products must include adjoint identities and finite-
-  difference checks where a trusted analytic oracle is unavailable.
+  difference checks where a trusted analytic oracle is unavailable. The
+  canonical row schema is documented in
+  `docs/DERIVATIVE_CAPABILITY_MATRIX.md`; the implementation ledger remains
+  open until every declared public surface has a row.
 - [ ] Implicit differentiation through linear solves, fixed points, Laplace
   modes, variational optima, constrained tree policies, and optimizer fixed
   points, with FortOpt L-BFGS-B consuming the same parameter registry.

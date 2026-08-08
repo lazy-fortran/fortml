@@ -79,6 +79,12 @@ parameter/input blocks it covers, the smoothness boundary, and the independent
 oracle. FortOpt consumes the same registry and derivative callback used by
 hyperparameter search, so an L-BFGS-B run cannot optimize a parameter that a
 model silently omitted from its gradient.
+The complete row schema is maintained in
+[`docs/DERIVATIVE_CAPABILITY_MATRIX.md`](DERIVATIVE_CAPABILITY_MATRIX.md).
+It also records fit/trajectory/implicit state mode, transformed block offsets,
+status conditions, residency, benchmark provenance, and whether a finite
+difference appears only in the independent oracle. This makes a missing row an
+auditable gap rather than an inferred zero derivative.
 
 Device execution has three separately measured layers:
 
