@@ -129,6 +129,22 @@ checks finite differences, adjoint scaling, convergence, and the typed CUDA
 boundary. It does not close the remaining loss/module catalog or resident
 neural training gates; the API contract is in `docs/MLP_POISSON.md`.
 
+The variational-GP binary and sorted-label OVR objectives now accept finite
+nonnegative sample weights with positive total mass. Uniform scaling leaves the
+normalized likelihood and KL behavior unchanged, while nonuniform weights
+differentiate through the ELBO, prediction products, and bounded FortOpt
+training adapter. `test_gp_variational_classification_weights` covers the
+weighted finite-difference, OVR-composition, malformed-weight, and CPU/CUDA
+contracts.
+
+MLP training now includes a deterministic fixed full-batch Lion trajectory
+hypergradient. The packed outer coordinates are log learning rate, log L2, and
+two logit betas. Analytic JVP/VJP/HVP products feed FortOpt L-BFGS-B directly;
+the sign-margin branch is a named nonsmooth refusal and CUDA remains typed
+until resident trajectory state is linked. The independent fixture is
+`test_mlp_lion_hypergradient`, with the API contract in
+`docs/MLP_LION_HYPERGRADIENT.md`.
+
 ### 2026-08-07 objective-trainer and tree-contribution slice
 
 The model-agnostic `fortml_trainer` core is now a shared full-batch state

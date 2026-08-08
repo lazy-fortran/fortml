@@ -2032,6 +2032,20 @@ until a resident trajectory graph exists. The independent
 finite-difference and adjoint products, active-set behavior, and optimizer
 integration. See [`docs/MLP_ADAFACTOR_HYPERGRADIENT.md`](MLP_ADAFACTOR_HYPERGRADIENT.md).
 
+### `fortml_mlp_lion_hypergradient`
+
+`mlp_lion_hypergradient_objective_t` differentiates a fixed full-batch Lion
+trajectory. Its packed outer vector is
+`[log(learning_rate),log(l2),logit(beta1),logit(beta2)]`. The analytic CPU
+products propagate the first-moment state, sign-margin update, and validation
+loss through the MLP HVP. `value_gradient`, `jvp`, scalar `vjp`, and
+`mlp_optimize_lion_hyperparameters` feed the same products to FortOpt
+L-BFGS-B. A configured sign-margin neighborhood is a named nonsmooth refusal;
+CUDA trajectory requests return `FORTNUM_NOT_IMPLEMENTED` until the complete
+state is resident. The independent fixture is
+`test_mlp_lion_hypergradient`; see
+[`docs/MLP_LION_HYPERGRADIENT.md`](MLP_LION_HYPERGRADIENT.md).
+
 ### `fortml_mlp_adam_hypergradient`
 
 `mlp_adam_hypergradient_objective_t` differentiates a fixed full-batch Adam
