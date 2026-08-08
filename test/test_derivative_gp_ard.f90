@@ -12,6 +12,7 @@ program test_derivative_gp_ard
     type(gp_derivative_regression_t) :: model
     type(kernel_t) :: kernel
     type(fortnum_status_t) :: status
+    real(dp) :: x(4, 2), y(4, 1)
     real(dp) :: query(3, 2), query_direction(3, 2)
     real(dp) :: mean(3, 1), mean_dot(3, 1), mean_plus(3, 1), mean_minus(3, 1)
     real(dp) :: variance(3), variance_dot(3), variance_plus(3), variance_minus(3)
