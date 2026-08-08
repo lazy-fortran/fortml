@@ -107,6 +107,7 @@ contains
         weights = 1.0_dp
         if (present(sample_weight)) weights = sample_weight
         weight_sum = sum(weights)
+        if (.not. ieee_is_finite(weight_sum) .or. weight_sum <= 0.0_dp) return
         weights = weights/weight_sum
         epsilon = epsilon_dp()
         chance_limit = 1.0_dp - 1.0_dp/real(n_classes, dp)
