@@ -201,6 +201,13 @@ contains
             categorical%categorical_feature(2) .and. &
             categorical%interaction_group(1) == 0, &
             "classifier categorical metadata", failures)
+        call categorical%predict_log_proba_jvp(query, tangent, log_probabilities, &
+            log_probabilities_dot, status)
+        call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
+            "categorical log-probability JVP refusal", failures)
+        call categorical%predict_log_proba_vjp(query, cotangent, x_bar, status)
+        call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
+            "categorical log-probability VJP refusal", failures)
     end subroutine test_log_probability_products
 
     subroutine test_derivative_and_device_contract(failures)
