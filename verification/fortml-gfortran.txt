@@ -1,5 +1,5 @@
 Verification date: 2026-08-08
-FortML revision: 4c1c73a
+FortML revision: 4af6a89
 FortAD dependency: origin/main 0e9a38ebb8c382530272aa3e51f44255e87c41d7 (remote main pin rechecked 2026-08-08)
 FortFront dependency: origin/main 57367e12a7a0010a6683a1ded5a5f8132163ffc4 (clean main checkout)
 FortSym dependency: origin/main 873d33fa38d0c87d111158bc0be987e1ef1dd58c (generation pin rechecked 2026-08-08)

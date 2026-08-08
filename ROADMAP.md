@@ -24,7 +24,7 @@ behavior, and benchmark evidence land together.
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
 The checked-in GNU compiler log is the fresh 2026-08-08 run against FortML code
-revision `4c1c73a`, FortAD `origin/main` at
+revision `4af6a89`, FortAD `origin/main` at
 `0e9a38ebb8c382530272aa3e51f44255e87c41d7`, and FortNum at
 `38bc0e578ec5c6c0e636e8fdd3844f54f9e3e473`, run from the clean checkout
 under `/mnt/storage/code/lazy-fortran/fortml`. The run includes the
@@ -59,7 +59,7 @@ compiler coverage remains an
 explicit older-build result.
 
 The companion benchmark harness is clean at FortML-bench revision
-`0f3b75e7fc31561b8d277225d429b5ac1e2cfcfe`,
+`395613df4287643a5161c37faf55a2423bac525b`,
 the trainer-checkpoint, unfactored-Adafactor, binary-objective,
 multiclass-calibration, variational-multiclass-GP, PINN/physics-objective,
 physics HVP, grouped K-fold, spectral-mixture, XGBoost-ranking,
@@ -101,7 +101,10 @@ record refusals. Known-noise heteroskedastic GP has an independent CPU oracle
 in `test_heteroskedastic_gp` and a release lane in
 `results/HETEROSKEDASTIC_GP.md`.
 The robust Poisson/Student-t Laplace GP has matched stationarity, positive-rate,
-outlier-resistance, and refusal rows in `results/ROBUST_GP.md`.
+outlier-resistance, and refusal rows in `results/ROBUST_GP.md`. The release
+also records the scalar RBF second-derivative GP covariance/JVP/VJP lane,
+transactional LightGBM warm starts and persistence, and the fixed-active-set
+optimizer-group clipping trajectory with explicit HVP and CUDA boundaries.
 
 ### 2026-08-08 parity and provenance slice
 
@@ -134,8 +137,8 @@ optimizer-group execution, mixed precision, distributed state, and migration
 remain open. The source and benchmark pins for this earlier optimizer-group
 slice were FortML `05632ce8fa95268417c7a2d979fa1461a202abaa` and
 FortML-bench `0fb8ac7`; the current aggregate verification is the newer
-`4c1c73a`/
-`0f3b75e7fc31561b8d277225d429b5ac1e2cfcfe` pair recorded above.
+`4af6a89`/
+`395613df4287643a5161c37faf55a2423bac525b` pair recorded above.
 
 The variational-GP classification and OVR wrappers now expose fixed-state
 kernel-log-parameter JVP/VJP products for latent margins and normalized
@@ -849,11 +852,11 @@ derivatives, refusal behavior, and an independent benchmark oracle all exist.
 | scikit-learn linear/GLM | Dense linear regression, weighted ridge/lasso/elastic-net, logistic/softmax, bounded logistic and MLP L-BFGS-B | Robust/quantile/Gamma/Tweedie, SGD estimators, solver parity, calibration, complete multioutput and partial-fit contracts |
 | scikit-learn Naive Bayes | GaussianNB, BernoulliNB, MultinomialNB, ComplementNB, CategoricalNB with weighted sorted categories and unknown-category policy | sparse counts, calibrated and incremental variants |
 | scikit-learn neighbors/margins | Dense exact `fortml_knn_classifier`, closed-radius `fortml_radius_neighbors_classifier`, scalar and multi-output `fortml_radius_neighbors_regression`, weighted linear `linear_svm_classifier_t`, weighted dense `linear_svr_regression_t`, dense RBF `one_class_svm_t`, and dense finite-basis `rbf_svm_classifier_t` with deterministic boundaries, fixed-state products, and explicit derivative/device refusals | KD/ball trees, approximate and sparse inputs, kernel SVR, calibrated support-vector workflows, resident GPU kernels, and smooth fit/hyperparameter products |
-| scikit-learn trees/ensembles | Stumps, weighted CART with deterministic NaN routing, binary and multiclass SAMME AdaBoost over weighted CART, squared boosting, exact and histogram XGBoost-style second-order squared/binary-logistic/Poisson/Tweedie/squared-log/absolute lanes, bounded `rank:pairwise`, per-feature monotonic and interaction-group constraints, bounded ordered-gradient integer categorical partitions with explicit cardinality refusal, transactional XGBoost warm-start continuation, and bounded LightGBM-style weighted leaf-wise regression/binary growth with staged margins/predictions, additive contributions, and fitted-prefix slicing | Random/extra forests, bagging, SAMME.R probability updates, categorical policies beyond ordered partitions, DART/GOSS/EFB, distributed growth, model persistence/warm-start LightGBM APIs, and resident GPU histograms |
+| scikit-learn trees/ensembles | Stumps, weighted CART with deterministic NaN routing, binary and multiclass SAMME AdaBoost over weighted CART, squared boosting, exact and histogram XGBoost-style second-order squared/binary-logistic/Poisson/Tweedie/squared-log/absolute lanes, bounded `rank:pairwise`, per-feature monotonic and interaction-group constraints, bounded ordered-gradient integer categorical partitions with explicit cardinality refusal, transactional XGBoost warm-start continuation, and bounded LightGBM-style weighted leaf-wise regression/binary growth with staged margins/predictions, additive contributions, fitted-prefix slicing, versioned persistence, and matched-option warm starts | Random/extra forests, bagging, SAMME.R probability updates, categorical policies beyond ordered partitions, DART/GOSS/EFB, distributed growth, validation-aware LightGBM warm-start APIs, and resident GPU histograms |
 | scikit-learn unsupervised | Basis maps, centered dense PCA, deterministic seeded dense k-means, validation splitters, variational primitives | Incremental/randomized/sparse/kernel PCA, ICA/NMF/TruncatedSVD, minibatch k-means/GMM/density/manifold/outlier methods, sparse/categorical preprocessing, model persistence |
 | PyTorch/JAX neural core | Dense MLP, classifier, named sequential MLP chain, BNN, VAE, RNN, Hamiltonian MLP; Adam, AdamW, Adagrad, RMSprop, Adafactor, RAdam, and SGD momentum/Nesterov; exact fixed full-batch SGD learning-rate/L2/momentum including classical and Nesterov velocity state, Adam/AdamW beta and decay products, RMSprop, Adafactor, RAdam moment/bias/rectification products, Adagrad, unfactored Adafactor, and typed schedule trajectory hypergradients | Stochastic/device optimizer hypergradients, complete loss/activation/module tree, convolution/attention/sequence/graph models, AMP, compile/fusion, distributed and device-resident train state |
 | GPyTorch/GPflow | Exact, derivative-observation, sparse/local/SKI/structured GP primitives; weighted Laplace binary/OVR and bounded weighted Bernoulli variational GP classification with sorted-label OVR multiclass prediction, fixed-state kernel-log JVPs/VJPs, and weighted envelope hypergradients | Kernel/likelihood/constraint/batch-shape parity, variational categorical/count likelihoods, inducing-state products, multitask, operator-valued derivatives, implicit hypergradients, serialization and resident GPU training |
-| XGBoost/LightGBM | Exact and bounded-histogram depth-limited XGBoost-style squared/logistic/Poisson/Tweedie/squared-log (RMSLE)/Huber/quantile/absolute Newton trees, weighted binary/OVR multiclass staged predictions, bounded `rank:pairwise`, margins, gain/weight/cover diagnostics, per-feature monotonic and interaction-group constraints, bounded ordered-gradient integer categorical partitions with explicit max-category refusal, serialization, fitted-prefix slicing, transactional XGBoost warm starts, and a separately named `lightgbm_t` weighted regression/binary-logistic path with shared weighted-quantile cuts, deterministic globally best-leaf growth up to `num_leaves`, staged margins/predictions, additive contributions, fitted-prefix slicing, and versioned text persistence | Categorical policies beyond ordered partitions, DART, GOSS/EFB, distributed training, warm-start LightGBM state, and resident GPU histograms |
+| XGBoost/LightGBM | Exact and bounded-histogram depth-limited XGBoost-style squared/logistic/Poisson/Tweedie/squared-log (RMSLE)/Huber/quantile/absolute Newton trees, weighted binary/OVR multiclass staged predictions, bounded `rank:pairwise`, margins, gain/weight/cover diagnostics, per-feature monotonic and interaction-group constraints, bounded ordered-gradient integer categorical partitions with explicit max-category refusal, serialization, fitted-prefix slicing, transactional XGBoost warm starts, and a separately named `lightgbm_t` weighted regression/binary-logistic path with shared weighted-quantile cuts, deterministic globally best-leaf growth up to `num_leaves`, staged margins/predictions, additive contributions, fitted-prefix slicing, versioned text/binary persistence, and matched-option warm starts | Categorical policies beyond ordered partitions, DART, GOSS/EFB, distributed training, validation-aware LightGBM warm-start state, and resident GPU histograms |
 | Differentiability and search | Capability-specific JVP/VJP/HVP products, FortOpt L-BFGS-B for selected objectives, exact group-wise log-L2 mixed HVPs, and exact fixed-trajectory MLP hypergradients for SGD momentum/Nesterov, AdamW (including beta logits), RMSprop, and RAdam (including rectification and epsilon) | Complete derivative matrix for every declared parameter/input/hyperparameter, stochastic/device optimizer hypergradients, implicit differentiation, and refusal rather than hidden finite differences |
 | Device and performance | OpenACC/native CUDA operator lanes plus explicit device control-plane contract; kNN, dense-affine value/JVP/VJP inference, and direct RMSprop state have correctness-gated native-CUDA oracles, while complete RMSprop training, staged boosting, variational GP classification, and calibration still report CPU-only rows or typed refusals | Resident model/optimizer/batch state for every supported estimator, CPU parity, transfer/memory accounting, mixed precision, and matched PyTorch/JAX/GPyTorch/XGBoost evidence |
 
