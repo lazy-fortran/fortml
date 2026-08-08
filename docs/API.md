@@ -1843,9 +1843,12 @@ a typed refusal.
 elementwise maximum second moment. Bias correction is applied to both moments,
 and the maximum is checkpointed in `max_second_moment` (in-memory and text
 format 8). The independent `test_mlp_amsgrad` fixture checks the
-recurrence and formatted checkpoint continuation. AMSGrad remains CPU-only;
-there is no hidden CUDA fallback, and fixed-trajectory derivatives through the
-maximum active set remain an explicit follow-up contract.
+recurrence and formatted checkpoint continuation. AMSGrad remains CPU-only,
+and there is no hidden CUDA fallback. `fortml_mlp_amsgrad_hypergradient` adds
+exact fixed full-batch value/gradient/JVP/VJP products through the max state
+with a bounded FortOpt L-BFGS-B adapter. Max ties, zero square-root or update
+denominators, and CUDA trajectory requests are typed refusals. See
+[`MLP_AMSGRAD_HYPERGRADIENT.md`](MLP_AMSGRAD_HYPERGRADIENT.md).
 `MLP_OPTIMIZER_RADAM` keeps the same bias-corrected first and second moments,
 then applies the RAdam variance-rectification factor once `rho_t > 4`; before
 that threshold it uses the bias-corrected first moment. The two moment arrays,
