@@ -67,7 +67,15 @@ module fortml_mlp_classifier
         procedure, public :: predict_proba_device => &
             mlp_classifier_predict_proba_device
         procedure, public :: predict_proba_jvp => mlp_classifier_predict_proba_jvp
+        procedure, public :: predict_proba_parameter_jvp => &
+            mlp_classifier_predict_proba_parameter_jvp
         procedure, public :: predict_proba_vjp => mlp_classifier_predict_proba_vjp
+        procedure, public :: predict_proba_parameter_vjp => &
+            mlp_classifier_predict_proba_parameter_vjp
+        procedure, public :: predict_proba_parameter_jvp_device => &
+            mlp_classifier_predict_proba_parameter_jvp_device
+        procedure, public :: predict_proba_parameter_vjp_device => &
+            mlp_classifier_predict_proba_parameter_vjp_device
         procedure, public :: predict => mlp_classifier_predict
         procedure, public :: predict_device => mlp_classifier_predict_device
         procedure, public :: classes => mlp_classifier_classes
@@ -140,7 +148,11 @@ module fortml_mlp_classifier
     public :: mlp_classifier_decision_vjp
     public :: mlp_classifier_predict_proba_device
     public :: mlp_classifier_predict_proba_jvp
+    public :: mlp_classifier_predict_proba_parameter_jvp
     public :: mlp_classifier_predict_proba_vjp
+    public :: mlp_classifier_predict_proba_parameter_vjp
+    public :: mlp_classifier_predict_proba_parameter_jvp_device
+    public :: mlp_classifier_predict_proba_parameter_vjp_device
     public :: mlp_classifier_predict_device
     public :: mlp_classifier_optimize_lbfgsb
 
@@ -1213,6 +1225,80 @@ contains
         call softmax_jvp(scores, scores_dot, probabilities, probabilities_dot, status)
     end subroutine mlp_classifier_predict_proba_jvp
 
+    subroutine mlp_classifier_predict_proba_parameter_jvp(self, x, theta_dot, &
+            probabilities, probabilities_dot, status)
+        !! Exact softmax probability JVP with respect to network parameters.
+        !!
+        !! This is the fixed-input specialization of
+        !! ``predict_proba_jvp``.  The input tangent is zero, so callers can
+        !! differentiate a fitted multiclass classifier with respect to its
+        !! complete packed parameter vector without manufacturing an
+        !! otherwise unused input tangent.
+        class(mlp_classifier_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), theta_dot(:)
+        real(dp), intent(out) :: probabilities(:, :), probabilities_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: scores(:, :), scores_dot(:, :), x_dot(:, :)
+
+        probabilities = 0.0_dp
+        probabilities_dot = 0.0_dp
+        if (.not. mlp_classifier_fitted(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier parameter probability JVP: model is not fitted")
+            return
+        end if
+        if (size(x, 1) < 1 .or. size(x, 2) /= self%feature_count() .or. &
+            any(shape(probabilities) /= [size(x, 1), self%class_count()]) .or. &
+            any(shape(probabilities_dot) /= shape(probabilities)) .or. &
+            size(theta_dot) /= self%parameter_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier parameter probability JVP: model, parameter, or output shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(x)) .or. &
+            any(.not. ieee_is_finite(theta_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier parameter probability JVP: inputs and tangents must be finite")
+            return
+        end if
+        allocate(scores(size(x, 1), self%class_count()), &
+            scores_dot(size(x, 1), self%class_count()), &
+            x_dot(size(x, 1), size(x, 2)))
+        x_dot = 0.0_dp
+        call self%logits%jvp(x, theta_dot, x_dot, scores, scores_dot, status)
+        if (.not. status_ok(status)) return
+        call softmax_value(scores, probabilities, status)
+        if (.not. status_ok(status)) return
+        call softmax_jvp(scores, scores_dot, probabilities, probabilities_dot, status)
+    end subroutine mlp_classifier_predict_proba_parameter_jvp
+
+    subroutine mlp_classifier_predict_proba_parameter_jvp_device(self, device, x, &
+            theta_dot, probabilities, probabilities_dot, status)
+        !! Device-dispatched parameter JVP; CUDA is a typed refusal.
+        class(mlp_classifier_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :), theta_dot(:)
+        real(dp), intent(out) :: probabilities(:, :), probabilities_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier parameter probability JVP device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_proba_parameter_jvp(x, theta_dot, probabilities, &
+                probabilities_dot, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "MLP classifier parameter probability JVP device: no resident CUDA kernel is linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier parameter probability JVP device: device kind is invalid")
+        end select
+    end subroutine mlp_classifier_predict_proba_parameter_jvp_device
+
     subroutine mlp_classifier_predict_proba_vjp(self, x, probabilities_bar, &
             theta_bar, x_bar, status)
         !! Exact VJP of softmax probabilities with respect to parameters/input.
@@ -1251,6 +1337,71 @@ contains
         if (status%code /= FORTNUM_OK) return
         call self%decision_function_vjp(x, logits_bar, theta_bar, x_bar, status)
     end subroutine mlp_classifier_predict_proba_vjp
+
+    subroutine mlp_classifier_predict_proba_parameter_vjp(self, x, probabilities_bar, &
+            theta_bar, status)
+        !! Exact softmax probability VJP with respect to network parameters.
+        class(mlp_classifier_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), probabilities_bar(:, :)
+        real(dp), intent(out) :: theta_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: scores(:, :), logits_bar(:, :), x_bar(:, :)
+
+        theta_bar = 0.0_dp
+        if (.not. mlp_classifier_fitted(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier parameter probability VJP: model is not fitted")
+            return
+        end if
+        if (size(x, 1) < 1 .or. size(x, 2) /= self%feature_count() .or. &
+            any(shape(probabilities_bar) /= [size(x, 1), self%class_count()]) .or. &
+            size(theta_bar) /= self%parameter_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier parameter probability VJP: model, cotangent, or output shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(x)) .or. &
+            any(.not. ieee_is_finite(probabilities_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier parameter probability VJP: inputs and cotangents must be finite")
+            return
+        end if
+        allocate(scores(size(x, 1), self%class_count()), &
+            logits_bar(size(x, 1), self%class_count()), &
+            x_bar(size(x, 1), size(x, 2)))
+        call self%logits%predict(x, scores, status)
+        if (.not. status_ok(status)) return
+        call softmax_vjp(scores, probabilities_bar, logits_bar, status)
+        if (.not. status_ok(status)) return
+        call self%logits%vjp(x, logits_bar, theta_bar, x_bar, status)
+    end subroutine mlp_classifier_predict_proba_parameter_vjp
+
+    subroutine mlp_classifier_predict_proba_parameter_vjp_device(self, device, x, &
+            probabilities_bar, theta_bar, status)
+        !! Device-dispatched parameter VJP; CUDA is a typed refusal.
+        class(mlp_classifier_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :), probabilities_bar(:, :)
+        real(dp), intent(out) :: theta_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        theta_bar = 0.0_dp
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier parameter probability VJP device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_proba_parameter_vjp(x, probabilities_bar, theta_bar, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "MLP classifier parameter probability VJP device: no resident CUDA kernel is linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP classifier parameter probability VJP device: device kind is invalid")
+        end select
+    end subroutine mlp_classifier_predict_proba_parameter_vjp_device
 
     subroutine mlp_classifier_predict(self, x, labels, status)
         class(mlp_classifier_t), intent(in) :: self
