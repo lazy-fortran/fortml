@@ -3040,8 +3040,13 @@ the variational mean followed by lower-Cholesky columns (log diagonals), while
 CPU products for that vector. Their independent finite-difference and
 dot-product oracles live in `test_sparse_gp`; `elbo_device` and the product
 dispatchers execute on CPU and return `FORTNUM_NOT_IMPLEMENTED` for CUDA until
-the inducing solve and reductions are resident. Kernel, inducing-location, and
-noise hyperparameter products remain outside this bounded variational state.
+the inducing solve and reductions are resident. The complementary
+`elbo_kernel_parameter_jvp` and `elbo_kernel_parameter_vjp` differentiate the
+packed `kernel%parameters()` vector at fixed variational state, inducing
+locations, and noise variance, including the explicit inducing solve
+sensitivity. Their device dispatchers execute on CPU and return the same typed
+CUDA refusal. Kernel, inducing-location, and noise hyperparameter products
+outside this fixed-state slice remain separate work.
 
 ### `fortml_gp_variational_classification`
 
