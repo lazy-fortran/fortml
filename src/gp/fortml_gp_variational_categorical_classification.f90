@@ -52,6 +52,27 @@ module fortml_gp_variational_categorical_classification
         real(dp) :: gradient_norm = huge(1.0_dp)
     end type gp_variational_categorical_state_t
 
+    type, public :: gp_variational_likelihood_options_t
+        !! Bounded FortOpt controls for the scalar softmax likelihood scale.
+        integer :: memory = 5
+        integer :: max_iterations = 50
+        integer :: max_line_search = 30
+        real(dp) :: gradient_tolerance = 1.0e-7_dp
+        real(dp) :: step_tolerance = 1.0e-12_dp
+        real(dp) :: objective_tolerance = 1.0e-12_dp
+        real(dp) :: lower_bound = -8.0_dp
+        real(dp) :: upper_bound = 8.0_dp
+    end type gp_variational_likelihood_options_t
+
+    type, public :: gp_variational_likelihood_state_t
+        !! Diagnostics returned by `fit_likelihood`.
+        logical :: converged = .false.
+        integer :: iterations = 0
+        integer :: line_search_evaluations = 0
+        real(dp) :: elbo = -huge(1.0_dp)
+        real(dp) :: gradient = huge(1.0_dp)
+    end type gp_variational_likelihood_state_t
+
     type, public :: gp_variational_categorical_classification_t
         private
         type(gp_variational_classification_t), allocatable :: models(:)
@@ -59,16 +80,25 @@ module fortml_gp_variational_categorical_classification
         integer :: n_classes = 0
         integer :: n_features = 0
         integer :: likelihood = GP_VARIATIONAL_LOGISTIC
+        !! Logarithm of the positive categorical likelihood temperature.
+        !! Zero is the unit-temperature reference used by older products.
+        real(dp) :: logit_scale = 0.0_dp
         logical :: is_initialized = .false.
     contains
         procedure, public :: initialize => gvcc_initialize
         procedure, public :: fit => gvcc_fit
+        procedure, public :: fit_likelihood => gvcc_fit_likelihood
         procedure, public :: set_parameters => gvcc_set_parameters
         procedure, public :: parameters => gvcc_parameters
         procedure, public :: parameter_count => gvcc_parameter_count
+        procedure, public :: likelihood_parameter_count => gvcc_likelihood_parameter_count
         procedure, public :: elbo => gvcc_elbo
         procedure, public :: elbo_gradient => gvcc_elbo_gradient
         procedure, public :: elbo_jvp => gvcc_elbo_jvp
+        procedure, public :: elbo_likelihood_parameter_gradient => &
+            gvcc_elbo_likelihood_parameter_gradient
+        procedure, public :: elbo_likelihood_parameter_jvp => &
+            gvcc_elbo_likelihood_parameter_jvp
         procedure, public :: predict_latent => gvcc_predict_latent
         procedure, public :: predict_proba => gvcc_predict_proba
         procedure, public :: predict => gvcc_predict
@@ -76,6 +106,13 @@ module fortml_gp_variational_categorical_classification
             gvcc_predict_proba_parameter_jvp
         procedure, public :: predict_proba_parameter_vjp => &
             gvcc_predict_proba_parameter_vjp
+        procedure, public :: likelihood_parameters => gvcc_likelihood_parameters
+        procedure, public :: set_likelihood_parameters => gvcc_set_likelihood_parameters
+        procedure, public :: likelihood_scale => gvcc_likelihood_scale
+        procedure, public :: predict_proba_likelihood_parameter_jvp => &
+            gvcc_predict_proba_likelihood_parameter_jvp
+        procedure, public :: predict_proba_likelihood_parameter_vjp => &
+            gvcc_predict_proba_likelihood_parameter_vjp
         procedure, public :: predict_proba_input_jvp => &
             gvcc_predict_proba_input_jvp
         procedure, public :: predict_proba_input_vjp => &
@@ -83,6 +120,10 @@ module fortml_gp_variational_categorical_classification
         procedure, public :: predict_proba_device => gvcc_predict_proba_device
         procedure, public :: predict_proba_parameter_vjp_device => &
             gvcc_predict_proba_parameter_vjp_device
+        procedure, public :: predict_proba_likelihood_parameter_jvp_device => &
+            gvcc_predict_proba_likelihood_parameter_jvp_device
+        procedure, public :: predict_proba_likelihood_parameter_vjp_device => &
+            gvcc_predict_proba_likelihood_parameter_vjp_device
         procedure, public :: predict_proba_input_vjp_device => &
             gvcc_predict_proba_input_vjp_device
         procedure, public :: elbo_device => gvcc_elbo_device
@@ -98,6 +139,8 @@ module fortml_gp_variational_categorical_classification
         real(dp), allocatable :: x(:, :)
         integer, allocatable :: labels(:)
         real(dp), allocatable :: sample_weight(:)
+        real(dp) :: elbo_scale = 1.0_dp
+        logical :: has_elbo_scale = .false.
     end type categorical_context_t
 
 contains
@@ -156,6 +199,7 @@ contains
         self%n_classes = size(sorted_classes)
         self%n_features = kernel%input_dim
         self%likelihood = requested_likelihood
+        self%logit_scale = 0.0_dp
         allocate(self%class_label(self%n_classes), self%models(self%n_classes))
         self%class_label = sorted_classes
         do i = 1, self%n_classes
@@ -263,6 +307,103 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine gvcc_fit
 
+    subroutine gvcc_fit_likelihood(self, x, labels, status, options, state, scale, &
+            sample_weight)
+        class(gp_variational_categorical_classification_t), intent(inout), target :: self
+        real(dp), intent(in) :: x(:, :)
+        integer, intent(in) :: labels(:)
+        type(fortnum_status_t), intent(out) :: status
+        type(gp_variational_likelihood_options_t), intent(in), optional :: options
+        type(gp_variational_likelihood_state_t), intent(out), optional :: state
+        real(dp), intent(in), optional :: scale
+        real(dp), intent(in), optional :: sample_weight(:)
+        type(gp_variational_likelihood_options_t) :: requested
+        type(gp_variational_likelihood_options_t) :: defaults
+        type(gp_variational_likelihood_state_t) :: result
+        type(categorical_context_t), target :: context
+        type(objective_t) :: objective
+        type(lbfgsb_t) :: optimizer
+        type(lbfgsb_options_t) :: optimizer_options
+        type(lbfgsb_result_t) :: optimizer_result
+        type(fortnum_status_t) :: restore_status
+        real(dp), allocatable :: parameters(:), initial_parameters(:), lower(:), upper(:), gradient(:)
+        type(gp_variational_likelihood_state_t) :: gp_variational_likelihood_state_t_default
+        integer :: n_parameters
+
+        result = gp_variational_likelihood_state_t_default
+        if (present(state)) state = result
+        requested = defaults
+        if (present(options)) requested = options
+        if (.not. self%initialized()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "categorical variational GP likelihood fit: model is not initialized")
+            return
+        end if
+        if (.not. valid_likelihood_options(requested)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "categorical variational GP likelihood fit: options are invalid")
+            return
+        end if
+        if (.not. valid_data(self, x, labels, status, sample_weight)) return
+        n_parameters = self%likelihood_parameter_count()
+        context%model => self
+        allocate(context%x, source=x)
+        allocate(context%labels, source=labels)
+        if (present(scale)) then
+            context%elbo_scale = scale
+            context%has_elbo_scale = .true.
+        end if
+        if (present(sample_weight)) allocate(context%sample_weight, source=sample_weight)
+        parameters = self%likelihood_parameters()
+        initial_parameters = parameters
+        allocate(lower(n_parameters), upper(n_parameters), gradient(n_parameters))
+        lower = requested%lower_bound
+        upper = requested%upper_bound
+        call objective%initialize_context(n_parameters, context, likelihood_objective, status)
+        if (status%code /= FORTNUM_OK) return
+        call copy_likelihood_lbfgsb_options(requested, optimizer_options)
+        call optimizer%minimize(objective, parameters, lower, upper, optimizer_options, &
+            optimizer_result, status)
+        if (status%code /= FORTNUM_OK .and. status%code /= FORTNUM_CONVERGENCE_ERROR) then
+            call self%set_likelihood_parameters(initial_parameters, restore_status)
+            return
+        end if
+        if (present(scale) .and. present(sample_weight)) then
+            call self%elbo_likelihood_parameter_gradient(x, labels, result%elbo, gradient, &
+                status, scale=scale, sample_weight=sample_weight)
+        else if (present(scale)) then
+            call self%elbo_likelihood_parameter_gradient(x, labels, result%elbo, gradient, &
+                status, scale=scale)
+        else if (present(sample_weight)) then
+            call self%elbo_likelihood_parameter_gradient(x, labels, result%elbo, gradient, &
+                status, sample_weight=sample_weight)
+        else
+            call self%elbo_likelihood_parameter_gradient(x, labels, result%elbo, gradient, status)
+        end if
+        if (status%code /= FORTNUM_OK) then
+            call self%set_likelihood_parameters(initial_parameters, restore_status)
+            return
+        end if
+        result%gradient = gradient(1)
+        result%iterations = optimizer_result%state%iteration
+        result%line_search_evaluations = optimizer_result%line_search_evaluations
+        result%converged = optimizer_result%state%converged
+        if (.not. ieee_is_finite(result%elbo) .or. .not. ieee_is_finite(result%gradient)) then
+            call self%set_likelihood_parameters(initial_parameters, restore_status)
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "categorical variational GP likelihood fit: result is not finite")
+            return
+        end if
+        if (.not. result%converged) then
+            call self%set_likelihood_parameters(initial_parameters, restore_status)
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "categorical variational GP likelihood fit: iteration limit reached")
+            return
+        end if
+        if (present(state)) state = result
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gvcc_fit_likelihood
+
     integer function gvcc_parameter_count(self) result(count)
         class(gp_variational_categorical_classification_t), intent(in) :: self
         integer :: i
@@ -273,6 +414,54 @@ contains
             count = count + self%models(i)%parameter_count()
         end do
     end function gvcc_parameter_count
+
+    integer function gvcc_likelihood_parameter_count(self) result(count)
+        class(gp_variational_categorical_classification_t), intent(in) :: self
+
+        count = 0
+        if (self%initialized()) count = 1
+    end function gvcc_likelihood_parameter_count
+
+    function gvcc_likelihood_parameters(self) result(parameters)
+        class(gp_variational_categorical_classification_t), intent(in) :: self
+        real(dp), allocatable :: parameters(:)
+
+        if (.not. self%initialized()) then
+            allocate(parameters(0))
+            return
+        end if
+        allocate(parameters(1))
+        parameters(1) = self%logit_scale
+    end function gvcc_likelihood_parameters
+
+    subroutine gvcc_set_likelihood_parameters(self, parameters, status)
+        class(gp_variational_categorical_classification_t), intent(inout) :: self
+        real(dp), intent(in) :: parameters(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. self%initialized() .or. size(parameters) /= 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "categorical variational GP likelihood: parameter vector is invalid")
+            return
+        end if
+        if (.not. ieee_is_finite(parameters(1))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "categorical variational GP likelihood: parameter vector is not finite")
+            return
+        end if
+        self%logit_scale = parameters(1)
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gvcc_set_likelihood_parameters
+
+    real(dp) function gvcc_likelihood_scale(self) result(scale)
+        class(gp_variational_categorical_classification_t), intent(in) :: self
+
+        if (.not. self%initialized()) then
+            scale = 0.0_dp
+        else
+            scale = exp(self%logit_scale)
+        end if
+    end function gvcc_likelihood_scale
 
     function gvcc_parameters(self) result(parameters)
         class(gp_variational_categorical_classification_t), intent(in) :: self
@@ -434,8 +623,8 @@ contains
                 class_index = find_class(self%class_label, labels(i))
                 scale_value = sqrt(1.0_dp + c*variances(i, j))
                 term = weights(i)*multiplier*(merge(1.0_dp, 0.0_dp, j == class_index) - probabilities(i, j))
-                mean_bar(i) = term/scale_value
-                variance_bar(i) = term*(-0.5_dp*c*means(i, j)/(scale_value**3))
+                mean_bar(i) = exp(self%logit_scale)*term/scale_value
+                variance_bar(i) = exp(self%logit_scale)*term*(-0.5_dp*c*means(i, j)/(scale_value**3))
             end do
             call self%models(j)%predict_latent_parameter_vjp(x, mean_bar, variance_bar, &
                 local_gradient, status)
@@ -494,6 +683,112 @@ contains
         tangent = dot_product(gradient, direction)
         call status_set(status, FORTNUM_OK, "")
     end subroutine gvcc_elbo_jvp
+
+    subroutine gvcc_elbo_likelihood_parameter_gradient(self, x, labels, value, gradient, &
+            status, scale, sample_weight)
+        class(gp_variational_categorical_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        integer, intent(in) :: labels(:)
+        real(dp), intent(out) :: value, gradient(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: scale
+        real(dp), intent(in), optional :: sample_weight(:)
+        real(dp), allocatable :: means(:, :), variances(:, :), logits(:, :), probabilities(:, :)
+        real(dp), allocatable :: weights(:)
+        real(dp) :: multiplier, term
+        integer :: i, class_index
+
+        value = 0.0_dp
+        gradient = 0.0_dp
+        if (.not. valid_data(self, x, labels, status, sample_weight)) return
+        if (size(gradient) /= 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "categorical variational GP likelihood gradient: shape is invalid")
+            return
+        end if
+        multiplier = 1.0_dp
+        if (present(scale)) multiplier = scale
+        if (multiplier <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "categorical variational GP likelihood gradient: scale is invalid")
+            return
+        end if
+        if (.not. ieee_is_finite(multiplier)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "categorical variational GP likelihood gradient: scale is invalid")
+            return
+        end if
+        if (present(scale) .and. present(sample_weight)) then
+            call self%elbo(x, labels, value, status, scale=scale, sample_weight=sample_weight)
+        else if (present(scale)) then
+            call self%elbo(x, labels, value, status, scale=scale)
+        else if (present(sample_weight)) then
+            call self%elbo(x, labels, value, status, sample_weight=sample_weight)
+        else
+            call self%elbo(x, labels, value, status)
+        end if
+        if (status%code /= FORTNUM_OK) return
+        allocate(means(size(x, 1), self%n_classes), variances(size(x, 1), self%n_classes), &
+            logits(size(x, 1), self%n_classes), probabilities(size(x, 1), self%n_classes))
+        call self%predict_latent(x, means, variances, status)
+        if (status%code /= FORTNUM_OK) return
+        call logits_and_probabilities(self, means, variances, logits, probabilities, status)
+        if (status%code /= FORTNUM_OK) return
+        call observation_weights(size(labels), sample_weight, weights, status)
+        if (status%code /= FORTNUM_OK) return
+        gradient(1) = 0.0_dp
+        do i = 1, size(labels)
+            class_index = find_class(self%class_label, labels(i))
+            term = logits(i, class_index) - dot_product(probabilities(i, :), logits(i, :))
+            gradient(1) = gradient(1) + multiplier*weights(i)*term
+        end do
+        if (.not. ieee_is_finite(gradient(1))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "categorical variational GP likelihood gradient: result is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gvcc_elbo_likelihood_parameter_gradient
+
+    subroutine gvcc_elbo_likelihood_parameter_jvp(self, x, labels, direction, value, tangent, &
+            status, scale, sample_weight)
+        class(gp_variational_categorical_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), direction(:)
+        integer, intent(in) :: labels(:)
+        real(dp), intent(out) :: value, tangent
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: scale
+        real(dp), intent(in), optional :: sample_weight(:)
+        real(dp) :: gradient(1)
+
+        value = 0.0_dp
+        tangent = 0.0_dp
+        if (size(direction) /= 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "categorical variational GP likelihood JVP: direction is invalid")
+            return
+        end if
+        if (.not. ieee_is_finite(direction(1))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "categorical variational GP likelihood JVP: direction is not finite")
+            return
+        end if
+        if (present(scale) .and. present(sample_weight)) then
+            call self%elbo_likelihood_parameter_gradient(x, labels, value, gradient, status, &
+                scale=scale, sample_weight=sample_weight)
+        else if (present(scale)) then
+            call self%elbo_likelihood_parameter_gradient(x, labels, value, gradient, status, &
+                scale=scale)
+        else if (present(sample_weight)) then
+            call self%elbo_likelihood_parameter_gradient(x, labels, value, gradient, status, &
+                sample_weight=sample_weight)
+        else
+            call self%elbo_likelihood_parameter_gradient(x, labels, value, gradient, status)
+        end if
+        if (status%code /= FORTNUM_OK) return
+        tangent = gradient(1)*direction(1)
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gvcc_elbo_likelihood_parameter_jvp
 
     subroutine gvcc_predict_latent(self, x, means, variances, status)
         class(gp_variational_categorical_classification_t), intent(in) :: self
@@ -587,9 +882,9 @@ contains
             if (status%code /= FORTNUM_OK) return
             do i = 1, size(x, 1)
                 scale_value = sqrt(1.0_dp + c*variances(i, j))
-                logits(i, j) = means(i, j)/scale_value
-                logits_dot(i, j) = mean_dot(i)/scale_value - &
-                    0.5_dp*c*means(i, j)*variance_dot(i)/(scale_value**3)
+                logits(i, j) = exp(self%logit_scale)*means(i, j)/scale_value
+                logits_dot(i, j) = exp(self%logit_scale)*(mean_dot(i)/scale_value - &
+                    0.5_dp*c*means(i, j)*variance_dot(i)/(scale_value**3))
             end do
             first = last + 1
         end do
@@ -628,8 +923,9 @@ contains
             last = first + local_count - 1
             do i = 1, size(x, 1)
                 scale_value = sqrt(1.0_dp + c*variances(i, j))
-                mean_bar(i) = logits_bar(i, j)/scale_value
-                variance_bar(i) = logits_bar(i, j)*(-0.5_dp*c*means(i, j)/(scale_value**3))
+                mean_bar(i) = exp(self%logit_scale)*logits_bar(i, j)/scale_value
+                variance_bar(i) = exp(self%logit_scale)*logits_bar(i, j)* &
+                    (-0.5_dp*c*means(i, j)/(scale_value**3))
             end do
             call self%models(j)%predict_latent_parameter_vjp(x, mean_bar, variance_bar, &
                 local_bar, status)
@@ -644,6 +940,68 @@ contains
         end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine gvcc_predict_proba_parameter_vjp
+
+    subroutine gvcc_predict_proba_likelihood_parameter_jvp(self, x, direction, probabilities, &
+            probabilities_dot, status)
+        class(gp_variational_categorical_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), direction(:)
+        real(dp), intent(out) :: probabilities(:, :), probabilities_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: means(:, :), variances(:, :), logits(:, :), logits_dot(:, :)
+
+        if (.not. probability_valid(self, x, probabilities, status)) return
+        if (size(direction) /= 1 .or. any(shape(probabilities_dot) /= shape(probabilities))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "categorical variational GP likelihood JVP: shape is invalid")
+            return
+        end if
+        if (.not. ieee_is_finite(direction(1))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "categorical variational GP likelihood JVP: direction is not finite")
+            return
+        end if
+        allocate(means(size(x, 1), self%n_classes), variances(size(x, 1), self%n_classes), &
+            logits(size(x, 1), self%n_classes), logits_dot(size(x, 1), self%n_classes))
+        call self%predict_latent(x, means, variances, status)
+        if (status%code /= FORTNUM_OK) return
+        call logits_and_probabilities(self, means, variances, logits, probabilities, status)
+        if (status%code /= FORTNUM_OK) return
+        logits_dot = direction(1)*logits
+        call softmax_jvp(logits, logits_dot, probabilities, probabilities_dot, status)
+    end subroutine gvcc_predict_proba_likelihood_parameter_jvp
+
+    subroutine gvcc_predict_proba_likelihood_parameter_vjp(self, x, probabilities_bar, &
+            parameter_bar, status)
+        class(gp_variational_categorical_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), probabilities_bar(:, :)
+        real(dp), intent(out) :: parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: means(:, :), variances(:, :), logits(:, :), probabilities(:, :)
+        real(dp), allocatable :: logits_bar(:, :)
+
+        parameter_bar = 0.0_dp
+        if (.not. probability_valid(self, x, probabilities_bar, status)) return
+        if (size(parameter_bar) /= 1 .or. any(.not. ieee_is_finite(probabilities_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "categorical variational GP likelihood VJP: shape is invalid")
+            return
+        end if
+        allocate(means(size(x, 1), self%n_classes), variances(size(x, 1), self%n_classes), &
+            logits(size(x, 1), self%n_classes), probabilities(size(x, 1), self%n_classes), &
+            logits_bar(size(x, 1), self%n_classes))
+        call self%predict_latent(x, means, variances, status)
+        if (status%code /= FORTNUM_OK) return
+        call logits_and_probabilities(self, means, variances, logits, probabilities, status)
+        if (status%code /= FORTNUM_OK) return
+        call softmax_vjp(probabilities, probabilities_bar, logits_bar)
+        parameter_bar(1) = sum(logits_bar*logits)
+        if (.not. ieee_is_finite(parameter_bar(1))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "categorical variational GP likelihood VJP: result is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gvcc_predict_proba_likelihood_parameter_vjp
 
     subroutine gvcc_predict_proba_input_jvp(self, x, x_dot, probabilities, &
             probabilities_dot, status)
@@ -677,9 +1035,9 @@ contains
             if (status%code /= FORTNUM_OK) return
             do i = 1, size(x, 1)
                 scale_value = sqrt(1.0_dp + c*variances(i, j))
-                logits(i, j) = means(i, j)/scale_value
-                logits_dot(i, j) = mean_dot(i)/scale_value - &
-                    0.5_dp*c*means(i, j)*variance_dot(i)/(scale_value**3)
+                logits(i, j) = exp(self%logit_scale)*means(i, j)/scale_value
+                logits_dot(i, j) = exp(self%logit_scale)*(mean_dot(i)/scale_value - &
+                    0.5_dp*c*means(i, j)*variance_dot(i)/(scale_value**3))
             end do
         end do
         call softmax_jvp(logits, logits_dot, probabilities, probabilities_dot, status)
@@ -714,8 +1072,9 @@ contains
         do j = 1, self%n_classes
             do i = 1, size(x, 1)
                 scale_value = sqrt(1.0_dp + c*variances(i, j))
-                mean_bar(i) = logits_bar(i, j)/scale_value
-                variance_bar(i) = logits_bar(i, j)*(-0.5_dp*c*means(i, j)/(scale_value**3))
+                mean_bar(i) = exp(self%logit_scale)*logits_bar(i, j)/scale_value
+                variance_bar(i) = exp(self%logit_scale)*logits_bar(i, j)* &
+                    (-0.5_dp*c*means(i, j)/(scale_value**3))
             end do
             call self%models(j)%predict_latent_input_vjp(x, mean_bar, variance_bar, &
                 local_x_bar, status)
@@ -780,6 +1139,61 @@ contains
                 "categorical variational GP parameter VJP device: device kind is invalid")
         end select
     end subroutine gvcc_predict_proba_parameter_vjp_device
+
+    subroutine gvcc_predict_proba_likelihood_parameter_jvp_device(self, device, x, direction, &
+            probabilities, probabilities_dot, status)
+        class(gp_variational_categorical_classification_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :), direction(:)
+        real(dp), intent(out) :: probabilities(:, :), probabilities_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        probabilities = 0.0_dp
+        probabilities_dot = 0.0_dp
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "categorical variational GP likelihood JVP device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_proba_likelihood_parameter_jvp(x, direction, probabilities, &
+                probabilities_dot, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "categorical variational GP likelihood JVP device: resident CUDA graph is not linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "categorical variational GP likelihood JVP device: device kind is invalid")
+        end select
+    end subroutine gvcc_predict_proba_likelihood_parameter_jvp_device
+
+    subroutine gvcc_predict_proba_likelihood_parameter_vjp_device(self, device, x, &
+            probabilities_bar, parameter_bar, status)
+        class(gp_variational_categorical_classification_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :), probabilities_bar(:, :)
+        real(dp), intent(out) :: parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        parameter_bar = 0.0_dp
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "categorical variational GP likelihood VJP device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_proba_likelihood_parameter_vjp(x, probabilities_bar, &
+                parameter_bar, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "categorical variational GP likelihood VJP device: resident CUDA graph is not linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "categorical variational GP likelihood VJP device: device kind is invalid")
+        end select
+    end subroutine gvcc_predict_proba_likelihood_parameter_vjp_device
 
     subroutine gvcc_predict_proba_input_vjp_device(self, device, x, probabilities_bar, x_bar, status)
         class(gp_variational_categorical_classification_t), intent(in) :: self
@@ -913,6 +1327,48 @@ contains
         end select
     end subroutine categorical_objective
 
+    subroutine likelihood_objective(context_any, parameters, value, gradient, status)
+        class(*), intent(inout) :: context_any
+        real(dp), intent(in) :: parameters(:)
+        real(dp), intent(out) :: value, gradient(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: elbo
+
+        value = huge(1.0_dp)
+        gradient = 0.0_dp
+        select type (context => context_any)
+        type is (categorical_context_t)
+            if (.not. associated(context%model)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "categorical variational GP likelihood objective: model is absent")
+                return
+            end if
+            call context%model%set_likelihood_parameters(parameters, status)
+            if (status%code /= FORTNUM_OK) return
+            if (context%has_elbo_scale .and. allocated(context%sample_weight)) then
+                call context%model%elbo_likelihood_parameter_gradient(context%x, context%labels, &
+                    elbo, gradient, status, scale=context%elbo_scale, &
+                    sample_weight=context%sample_weight)
+            else if (context%has_elbo_scale) then
+                call context%model%elbo_likelihood_parameter_gradient(context%x, context%labels, &
+                    elbo, gradient, status, scale=context%elbo_scale)
+            else if (allocated(context%sample_weight)) then
+                call context%model%elbo_likelihood_parameter_gradient(context%x, context%labels, &
+                    elbo, gradient, status, sample_weight=context%sample_weight)
+            else
+                call context%model%elbo_likelihood_parameter_gradient(context%x, context%labels, &
+                    elbo, gradient, status)
+            end if
+            if (status%code /= FORTNUM_OK) return
+            value = -elbo
+            gradient = -gradient
+            call status_set(status, FORTNUM_OK, "")
+        class default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "categorical variational GP likelihood objective: context type is invalid")
+        end select
+    end subroutine likelihood_objective
+
     subroutine copy_lbfgsb_options(options, output)
         type(gp_variational_categorical_options_t), intent(in) :: options
         type(lbfgsb_options_t), intent(out) :: output
@@ -924,6 +1380,18 @@ contains
         output%step_tolerance = options%step_tolerance
         output%objective_tolerance = options%objective_tolerance
     end subroutine copy_lbfgsb_options
+
+    subroutine copy_likelihood_lbfgsb_options(options, output)
+        type(gp_variational_likelihood_options_t), intent(in) :: options
+        type(lbfgsb_options_t), intent(out) :: output
+
+        output%memory = options%memory
+        output%max_iterations = options%max_iterations
+        output%max_line_search = options%max_line_search
+        output%gradient_tolerance = options%gradient_tolerance
+        output%step_tolerance = options%step_tolerance
+        output%objective_tolerance = options%objective_tolerance
+    end subroutine copy_likelihood_lbfgsb_options
 
     logical function valid_options(options) result(valid)
         type(gp_variational_categorical_options_t), intent(in) :: options
@@ -940,6 +1408,17 @@ contains
             options%objective_tolerance >= 0.0_dp .and. options%jitter > 0.0_dp .and. &
             options%lower_bound <= options%upper_bound
     end function valid_options
+
+    logical function valid_likelihood_options(options) result(valid)
+        type(gp_variational_likelihood_options_t), intent(in) :: options
+
+        valid = options%memory >= 1 .and. options%max_iterations >= 1 .and. &
+            options%max_line_search >= 1 .and. ieee_is_finite(options%gradient_tolerance) .and. &
+            ieee_is_finite(options%step_tolerance) .and. ieee_is_finite(options%objective_tolerance) .and. &
+            ieee_is_finite(options%lower_bound) .and. ieee_is_finite(options%upper_bound) .and. &
+            options%gradient_tolerance >= 0.0_dp .and. options%step_tolerance >= 0.0_dp .and. &
+            options%objective_tolerance >= 0.0_dp .and. options%lower_bound <= options%upper_bound
+    end function valid_likelihood_options
 
     logical function valid_training_data(x, labels, sample_weight) result(valid)
         real(dp), intent(in) :: x(:, :)
@@ -1160,7 +1639,7 @@ contains
                     return
                 end if
                 scale_value = sqrt(1.0_dp + c*variances(i, j))
-                logits(i, j) = means(i, j)/scale_value
+                logits(i, j) = exp(self%logit_scale)*means(i, j)/scale_value
             end do
         end do
         call stable_softmax(logits, probabilities, status)

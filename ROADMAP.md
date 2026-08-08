@@ -1348,6 +1348,14 @@ when a lower-level primitive already exists.
   refusals are covered by `test_gp_variational_categorical_classification` and
   `docs/GP_VARIATIONAL_CATEGORICAL.md`. HVP, kernel-hyperparameter, natural
   gradient, and resident-GPU products remain open.
+- [x] Add the coupled categorical likelihood hyperparameter contract. The
+  positive softmax temperature is stored as a separate log coordinate, with
+  exact probability and ELBO JVP/VJP products, weighted likelihood scaling,
+  transactional FortOpt L-BFGS-B likelihood-only fitting, and explicit CUDA
+  JVP/VJP refusals. The independent finite-difference/adjoint oracle is
+  `test_gp_variational_categorical_likelihood`; the release lane is
+  `fortml-bench/results/GP_CATEGORICAL_LIKELIHOOD.md`. Inducing-state,
+  natural-gradient, HVP, and resident-GPU products remain open.
 - [x] Add `gp_ordinal_classification_t`, a latent-Gaussian ordered GP baseline.
   Sorted integer labels map to rank targets for a zero-mean Gaussian GP;
   fixed mid-rank cut points convert predictive mean/variance to adjacent
