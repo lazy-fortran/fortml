@@ -17,7 +17,7 @@ program fortml_bench_gp_categorical_likelihood
     type(fortml_device_t) :: cuda
     real(dp) :: x(6, 1), inducing(3, 1), probabilities(6, 3), probabilities_dot(6, 3)
     real(dp) :: means(6, 3), variances(6, 3)
-    real(dp) :: probabilities_bar(6, 3), parameter_bar(1), elbo_gradient, value, tangent
+    real(dp) :: probabilities_bar(6, 3), parameter_bar(1), value, tangent
     real(dp) :: fit_seconds, t0, t1
     real(dp), allocatable :: packed(:)
     integer :: labels(6), classes(3), clock_rate, clock_start, clock_stop, cuda_code, i, j
@@ -52,7 +52,6 @@ program fortml_bench_gp_categorical_likelihood
     if (.not. status_ok(status)) error stop "categorical latent prediction failed"
     call model%elbo_likelihood_parameter_gradient(x, labels, value, parameter_bar, status)
     if (.not. status_ok(status)) error stop "categorical likelihood gradient failed"
-    elbo_gradient = parameter_bar(1)
     call model%elbo_likelihood_parameter_jvp(x, labels, [1.0_dp], value, tangent, status)
     if (.not. status_ok(status)) error stop "categorical likelihood JVP failed"
     call model%predict_proba_likelihood_parameter_jvp(x, [1.0_dp], probabilities, &
@@ -71,7 +70,7 @@ program fortml_bench_gp_categorical_likelihood
     write (*, '(a,es24.16)') "gp_categorical_likelihood_fit_seconds,", fit_seconds
     write (*, '(a,i0)') "gp_categorical_likelihood_iterations,", fit_state%iterations
     write (*, '(a,es24.16)') "gp_categorical_likelihood_elbo,", value
-    write (*, '(a,es24.16)') "gp_categorical_likelihood_gradient,", elbo_gradient
+    write (*, '(a,es24.16)') "gp_categorical_likelihood_gradient,", parameter_bar(1)
     write (*, '(a,es24.16)') "gp_categorical_likelihood_jvp,", tangent
     do i = 1, size(x, 1)
         do j = 1, 3
