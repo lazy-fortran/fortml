@@ -3559,14 +3559,16 @@ product silently copies arrays to the host.
 Value-only covariances and their variance-parameter products remain defined at
 coincidence. The refusal applies only when an input derivative is requested.
 For mixed value/first-derivative observations, `hyperparameter_hvp` is analytic
-for RBF, linear, constant, polynomial, spectral-mixture, and sums/products
+for RBF, periodic, linear, constant, polynomial, spectral-mixture, and sums/products
 built solely from those leaves. The polynomial path differentiates all four
 logarithmic kernel coordinates in closed form, including the degree-one limit,
 and returns a typed domain error when its positive base is invalid.
-Spectral-mixture value/first-derivative parameter gradients, query products,
+Periodic and spectral-mixture value/first-derivative parameter gradients, query products,
 and mixed parameter HVPs are analytic on the CPU reference path. Its
 four-jet factor rule differentiates each packed log-weight/log-scale/signed-
-mean coordinate along an arbitrary parameter direction. Other leaves return
+mean coordinate along an arbitrary parameter direction. The periodic path
+uses coincidence-safe radial fourth-input products for all three logarithmic
+kernel coordinates. Other leaves return
 `FORTNUM_NOT_IMPLEMENTED` until their second input/parameter products are
 generated; the implementation never silently finite-differences the likelihood
 gradient. CUDA mixed covariance/factorization remains an explicit typed refusal.
