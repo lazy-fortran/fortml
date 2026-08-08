@@ -145,7 +145,8 @@ contains
         if (present(sample_weight)) then
             if (size(sample_weight) /= size(labels) .or. &
                 any(.not. ieee_is_finite(sample_weight)) .or. &
-                any(sample_weight < 0.0_dp) .or. sum(sample_weight) <= 0.0_dp) then
+                any(sample_weight < 0.0_dp) .or. &
+                .not. ieee_is_finite(sum(sample_weight)) .or. sum(sample_weight) <= 0.0_dp) then
                 call status_set(status, FORTNUM_DOMAIN_ERROR, &
                     "calibrated logistic fit: sample weights are invalid")
                 return
