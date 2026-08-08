@@ -204,7 +204,7 @@ repeated resident-batch evidence.
 | `kernel_t` | Scalar value and matrix | Parameter JVP | Parameter VJP | Parameter HVP |
 | `xgboost_t` | Squared/squared-log (RMSLE)/logistic/Poisson/fixed-shape Gamma/Tweedie/Huber/quantile/absolute/rank:pairwise margins, predictions, additive tree contributions, fitted-prefix slicing, and bounded ordered-gradient integer categorical partitions | Fixed-tree input JVP away from split boundaries; categorical models refuse discrete tangents | Fixed-tree input VJP away from split boundaries; categorical models refuse discrete cotangents | No |
 | `xgboost_classifier_t` | Binary integer labels, logistic `(n,2)` probabilities, staged margins, and feature diagnostics | Fixed-tree probability/input JVP away from split boundaries | Fixed-tree probability/input VJP away from split boundaries | No |
-| `lightgbm_t` | Weighted numeric regression/binary logistic histogram boosting with deterministic globally best-leaf growth | Fixed-tree input JVP away from split boundaries | Fixed-tree input VJP away from split boundaries | No |
+| `lightgbm_t` | Weighted numeric regression/binary logistic histogram boosting with deterministic globally best-leaf growth and GOSS top/other-rate gradient/Hessian sampling | Fixed-tree input JVP away from split boundaries | Fixed-tree input VJP away from split boundaries | No |
 | `random_forest_classifier_t` | Bootstrap-ensemble probabilities/labels plus transactional OOB decision probabilities, OOB accuracy, coverage, bootstrap-inclusion audit state, and deterministic fixed-state accuracy permutation importance | Refused: split routing and permutation membership are discrete | Refused: split routing and permutation membership are discrete | CPU OOB/permutation diagnostics; CUDA returns typed `FORTNUM_NOT_IMPLEMENTED` |
 | `extra_trees_classifier_t` | Randomized-threshold ensemble probabilities and labels | Refused: split routing is discrete | Refused: split routing is discrete | No |
 | `bagging_classifier_t` | Seeded bootstrap or without-replacement CART probabilities and labels | Refused: split routing is discrete | Refused: split routing is discrete | No |
@@ -4060,9 +4060,21 @@ early-stopping state, so nonzero early-stopping controls return
 `FORTNUM_NOT_IMPLEMENTED`; malformed targets, shapes, weights, or options
 return `FORTNUM_DOMAIN_ERROR` without changing the source.
 
+Set `options%boosting_type="goss"` to enable LightGBM's gradient-based
+one-side sampling. `top_rate` retains the largest absolute-gradient rows and
+`other_rate` selects a deterministic seed-ranked subset of the remainder;
+selected small-gradient rows receive the exact `(1-top_rate)/other_rate`
+gradient/Hessian correction before leaf gains and weights are evaluated.
+`boosting_type()`, `top_rate()`, and `other_rate()` expose fitted policy
+metadata. GOSS is available for both regression and binary logistic paths,
+warm-start continuation, prefix slicing, and schema-2 text persistence. Rates
+must be positive with `top_rate+other_rate<1`; invalid combinations refuse
+transactionally. The CPU path is the only supported device and selected CUDA
+prediction returns `FORTNUM_NOT_IMPLEMENTED`.
+
 The finite numeric contract is explicit: NaN and infinity inputs are refused,
-and categorical, missing-value-default, GOSS, EFB, and distributed policies are
-not silently approximated. Fixed-tree input JVP/VJP products are zero away from
+and categorical, missing-value-default, EFB, and distributed policies are not
+silently approximated. Fixed-tree input JVP/VJP products are zero away from
 learned split surfaces and return `FORTNUM_DOMAIN_ERROR` exactly on a split
 boundary. CPU dispatch is supported; `predict_device` on a selected CUDA
 device returns `FORTNUM_NOT_IMPLEMENTED` until resident leaf-wise histogram

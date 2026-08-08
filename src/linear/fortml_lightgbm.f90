@@ -1,7 +1,7 @@
 !> A bounded LightGBM-style leaf-wise histogram boosting estimator.
 module fortml_lightgbm
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
-    use, intrinsic :: iso_fortran_env, only: iostat_end
+    use, intrinsic :: iso_fortran_env, only: iostat_end, int64
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
         FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED
@@ -15,7 +15,9 @@ module fortml_lightgbm
     integer, parameter, public :: LIGHTGBM_OBJECTIVE_BINARY = 2
     character(*), parameter, public :: LIGHTGBM_MODEL_TEXT_MAGIC = &
         "FORTML_LIGHTGBM_TEXT"
-    integer, parameter, public :: LIGHTGBM_MODEL_TEXT_SCHEMA_VERSION = 1
+    integer, parameter, public :: LIGHTGBM_MODEL_TEXT_SCHEMA_VERSION = 2
+    integer, parameter, public :: LIGHTGBM_BOOSTING_GBDT = 0
+    integer, parameter, public :: LIGHTGBM_BOOSTING_GOSS = 1
     integer, parameter :: LIGHTGBM_MAX_SERIALIZED_NODES = 1000000
 
     !> Options for the deterministic numeric LightGBM-style path.  The
@@ -38,6 +40,16 @@ module fortml_lightgbm
         integer :: early_stopping_rounds = 0
         real(dp) :: early_stopping_min_delta = 0.0_dp
         logical :: restore_best = .true.
+        !! LightGBM's gradient-based one-side sampling.  `goss` retains
+        !! `top_rate` of rows with the largest absolute gradients and a
+        !! deterministic hash-selected `other_rate` fraction of the full
+        !! sample from the rest;
+        !! the latter gradients/Hessians are reweighted by
+        !! `(1-top_rate)/other_rate` before leaf statistics are accumulated.
+        character(len=16) :: boosting_type = "gbdt"
+        real(dp) :: top_rate = 0.2_dp
+        real(dp) :: other_rate = 0.1_dp
+        integer(int64) :: seed = 104729_int64
     end type lightgbm_options_t
 
     type :: lgbm_node_t
@@ -91,6 +103,10 @@ module fortml_lightgbm
         integer :: early_stopping_rounds_value = 0
         real(dp) :: early_stopping_min_delta_value = 0.0_dp
         logical :: restore_best_value = .true.
+        integer :: boosting_type_code = LIGHTGBM_BOOSTING_GBDT
+        real(dp) :: top_rate_value = 0.2_dp
+        real(dp) :: other_rate_value = 0.1_dp
+        integer(int64) :: seed_value = 104729_int64
         integer :: best_iteration_value = 0
         real(dp) :: best_validation_loss_value = huge(1.0_dp)
         logical :: early_stopped_flag = .false.
@@ -125,6 +141,9 @@ module fortml_lightgbm
         procedure, public :: tree_depth => lgbm_tree_depth
         procedure, public :: feature_count => lgbm_feature_count
         procedure, public :: base_margin => lgbm_base_margin
+        procedure, public :: boosting_type => lgbm_boosting_type
+        procedure, public :: top_rate => lgbm_top_rate
+        procedure, public :: other_rate => lgbm_other_rate
     end type lightgbm_t
 
 contains
@@ -189,8 +208,9 @@ contains
         type(lightgbm_options_t) :: settings
         type(lgbm_tree_t), allocatable :: expanded_estimators(:)
         real(dp), allocatable :: weights(:), margin(:), gradient(:), hessian(:), correction(:)
-        integer, allocatable :: rows(:)
-        integer :: objective_code, n_samples, n_features, start_estimators, target_estimators
+        real(dp), allocatable :: gradient_for_tree(:), hessian_for_tree(:), row_scale(:)
+        integer, allocatable :: rows(:), sampled_rows(:)
+        integer :: objective_code, boosting_type_code, n_samples, n_features, start_estimators, target_estimators
         integer :: i, j
         real(dp) :: weight_sum
 
@@ -214,9 +234,11 @@ contains
             return
         end if
         objective_code = parse_lgbm_objective(settings%objective)
-        if (objective_code == 0 .or. objective_code /= self%objective_code) then
+        boosting_type_code = parse_lgbm_boosting_type(settings%boosting_type)
+        if (objective_code == 0 .or. objective_code /= self%objective_code .or. &
+            boosting_type_code /= self%boosting_type_code) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
-                "lightgbm warm start: objective must match the fitted prefix")
+                "lightgbm warm start: objective and boosting type must match the fitted prefix")
             return
         end if
         if (settings%num_leaves /= self%num_leaves_value .or. &
@@ -225,7 +247,9 @@ contains
             settings%min_data_in_leaf /= self%min_data_in_leaf_value .or. &
             settings%learning_rate /= self%learning_rate .or. &
             settings%l2 /= self%l2_value .or. &
-            settings%min_gain_to_split /= self%min_gain_value) then
+            settings%min_gain_to_split /= self%min_gain_value .or. &
+            settings%top_rate /= self%top_rate_value .or. settings%other_rate /= self%other_rate_value .or. &
+            settings%seed /= self%seed_value) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "lightgbm warm start: tree options must match the fitted prefix")
             return
@@ -268,7 +292,16 @@ contains
                 "lightgbm warm start: sample weights have no positive mass")
             return
         end if
-        allocate(margin(n_samples), gradient(n_samples), hessian(n_samples), correction(n_samples))
+        if (settings%seed <= 0_int64 .or. (boosting_type_code == LIGHTGBM_BOOSTING_GOSS .and. &
+            (settings%top_rate <= 0.0_dp .or. settings%top_rate >= 1.0_dp .or. &
+            settings%other_rate <= 0.0_dp .or. settings%other_rate > 1.0_dp .or. &
+            settings%top_rate + settings%other_rate >= 1.0_dp))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm warm start: invalid GOSS rates or seed")
+            return
+        end if
+        allocate(margin(n_samples), gradient(n_samples), hessian(n_samples), &
+            gradient_for_tree(n_samples), hessian_for_tree(n_samples), correction(n_samples))
         allocate(rows(n_samples))
         do j = 1, n_samples
             rows(j) = j
@@ -285,7 +318,19 @@ contains
             call lgbm_objective_derivatives(objective_code, margin, y, weights, gradient, &
                 hessian, status)
             if (status%code /= FORTNUM_OK) return
-            call build_leafwise_tree(x, gradient, hessian, weights, settings, rows, &
+            gradient_for_tree = gradient
+            hessian_for_tree = hessian
+            if (boosting_type_code == LIGHTGBM_BOOSTING_GOSS) then
+                call select_goss_rows(gradient, settings, i, sampled_rows, row_scale, status)
+                if (status%code /= FORTNUM_OK) return
+                do j = 1, size(sampled_rows)
+                    gradient_for_tree(sampled_rows(j)) = gradient(sampled_rows(j))*row_scale(j)
+                    hessian_for_tree(sampled_rows(j)) = hessian(sampled_rows(j))*row_scale(j)
+                end do
+            else
+                sampled_rows = rows
+            end if
+            call build_leafwise_tree(x, gradient_for_tree, hessian_for_tree, weights, settings, sampled_rows, &
                 expanded_estimators(i), status)
             if (status%code /= FORTNUM_OK) return
             call lgbm_tree_predict(expanded_estimators(i), x, correction, status)
@@ -315,12 +360,13 @@ contains
             validation_weight(:)
         type(lightgbm_options_t) :: settings
         real(dp), allocatable :: weights(:), margin(:), gradient(:), hessian(:), correction(:)
+        real(dp), allocatable :: gradient_for_tree(:), hessian_for_tree(:), row_scale(:)
         real(dp), allocatable :: validation_weights(:), validation_margin(:), &
             validation_correction(:)
         type(lgbm_tree_t), allocatable :: best_estimators(:), retained_estimators(:)
-        integer, allocatable :: rows(:)
-        integer :: objective_code, i, n_samples, n_features, n_validation
-        integer :: completed_estimators, best_iteration, stale_rounds
+        integer, allocatable :: rows(:), sampled_rows(:)
+        integer :: objective_code, boosting_type_code, i, n_samples, n_features, n_validation
+        integer :: completed_estimators, best_iteration, stale_rounds, j
         real(dp) :: weight_sum, mean_target, validation_loss, best_validation_loss
         logical :: have_validation, improved
         !! Default-initialized instances, standing in for empty
@@ -356,6 +402,12 @@ contains
                 "lightgbm fit: objective must be regression or binary")
             return
         end if
+        boosting_type_code = parse_lgbm_boosting_type(settings%boosting_type)
+        if (boosting_type_code < 0) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm fit: boosting_type must be gbdt or goss")
+            return
+        end if
         n_samples = size(x, 1)
         n_features = size(x, 2)
         if (have_validation) then
@@ -378,7 +430,12 @@ contains
             settings%learning_rate <= 0.0_dp .or. settings%learning_rate > 1.0_dp .or. &
             .not. ieee_is_finite(settings%l2) .or. settings%l2 < 0.0_dp .or. &
             .not. ieee_is_finite(settings%min_gain_to_split) .or. &
-            settings%min_gain_to_split < 0.0_dp) then
+            settings%min_gain_to_split < 0.0_dp .or. settings%seed <= 0_int64 .or. &
+            (boosting_type_code == LIGHTGBM_BOOSTING_GOSS .and. &
+            (.not. ieee_is_finite(settings%top_rate) .or. &
+            .not. ieee_is_finite(settings%other_rate) .or. settings%top_rate <= 0.0_dp .or. &
+            settings%top_rate >= 1.0_dp .or. settings%other_rate <= 0.0_dp .or. &
+            settings%other_rate > 1.0_dp .or. settings%top_rate + settings%other_rate >= 1.0_dp))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "lightgbm fit: invalid dimensions or options")
             return
@@ -455,7 +512,8 @@ contains
             self%base_score = mean_target
         end if
         allocate(self%estimator(settings%n_estimators), margin(n_samples), &
-            gradient(n_samples), hessian(n_samples), correction(n_samples), rows(n_samples))
+            gradient(n_samples), hessian(n_samples), gradient_for_tree(n_samples), &
+            hessian_for_tree(n_samples), correction(n_samples), rows(n_samples))
         rows = [(i, i=1,n_samples)]
         margin = self%base_score
         if (have_validation) then
@@ -473,7 +531,19 @@ contains
             call lgbm_objective_derivatives(objective_code, margin, y, weights, gradient, &
                 hessian, status)
             if (status%code /= FORTNUM_OK) return
-            call build_leafwise_tree(x, gradient, hessian, weights, settings, rows, &
+            gradient_for_tree = gradient
+            hessian_for_tree = hessian
+            if (boosting_type_code == LIGHTGBM_BOOSTING_GOSS) then
+                call select_goss_rows(gradient, settings, i, sampled_rows, row_scale, status)
+                if (status%code /= FORTNUM_OK) return
+                do j = 1, size(sampled_rows)
+                    gradient_for_tree(sampled_rows(j)) = gradient(sampled_rows(j))*row_scale(j)
+                    hessian_for_tree(sampled_rows(j)) = hessian(sampled_rows(j))*row_scale(j)
+                end do
+            else
+                sampled_rows = rows
+            end if
+            call build_leafwise_tree(x, gradient_for_tree, hessian_for_tree, weights, settings, sampled_rows, &
                 self%estimator(i), status)
             if (status%code /= FORTNUM_OK) return
             call lgbm_tree_predict(self%estimator(i), x, correction, status)
@@ -543,6 +613,10 @@ contains
         self%early_stopping_rounds_value = settings%early_stopping_rounds
         self%early_stopping_min_delta_value = settings%early_stopping_min_delta
         self%restore_best_value = settings%restore_best
+        self%boosting_type_code = boosting_type_code
+        self%top_rate_value = settings%top_rate
+        self%other_rate_value = settings%other_rate
+        self%seed_value = settings%seed
         self%initialized = .true.
         call status_set(status, FORTNUM_OK, "")
     end subroutine lgbm_fit
@@ -726,6 +800,10 @@ contains
         candidate%early_stopping_rounds_value = self%early_stopping_rounds_value
         candidate%early_stopping_min_delta_value = self%early_stopping_min_delta_value
         candidate%restore_best_value = self%restore_best_value
+        candidate%boosting_type_code = self%boosting_type_code
+        candidate%top_rate_value = self%top_rate_value
+        candidate%other_rate_value = self%other_rate_value
+        candidate%seed_value = self%seed_value
         candidate%best_iteration_value = min(max(self%best_iteration_value, 0), n_trees)
         candidate%best_validation_loss_value = self%best_validation_loss_value
         candidate%early_stopped_flag = self%early_stopped_flag
@@ -801,6 +879,10 @@ contains
         if (ios == 0) call lgbm_write_r(unit, "best_validation_loss", &
             self%best_validation_loss_value, ios)
         if (ios == 0) call lgbm_write_l(unit, "early_stopped", self%early_stopped_flag, ios)
+        if (ios == 0) call lgbm_write_i(unit, "boosting_type_code", self%boosting_type_code, ios)
+        if (ios == 0) call lgbm_write_r(unit, "top_rate", self%top_rate_value, ios)
+        if (ios == 0) call lgbm_write_r(unit, "other_rate", self%other_rate_value, ios)
+        if (ios == 0) call lgbm_write_i64(unit, "seed", self%seed_value, ios)
         if (ios == 0) call lgbm_write_i(unit, "tree_count", self%n_estimators, ios)
         do i = 1, self%n_estimators
             if (ios /= 0) exit
@@ -885,6 +967,10 @@ contains
         if (ios == 0) call lgbm_read_r(unit, "best_validation_loss", &
             candidate%best_validation_loss_value, ios)
         if (ios == 0) call lgbm_read_l(unit, "early_stopped", candidate%early_stopped_flag, ios)
+        if (ios == 0) call lgbm_read_i(unit, "boosting_type_code", candidate%boosting_type_code, ios)
+        if (ios == 0) call lgbm_read_r(unit, "top_rate", candidate%top_rate_value, ios)
+        if (ios == 0) call lgbm_read_r(unit, "other_rate", candidate%other_rate_value, ios)
+        if (ios == 0) call lgbm_read_i64(unit, "seed", candidate%seed_value, ios)
         if (ios /= 0 .or. .not. valid_lgbm_scalars(candidate)) goto 900
         call lgbm_read_i(unit, "tree_count", tree_count, ios)
         if (ios /= 0 .or. tree_count /= candidate%n_estimators) goto 900
@@ -934,14 +1020,14 @@ contains
         end if
         candidate%initialized = .true.
         select type (self)
-        type is (lightgbm_t)
+            type is (lightgbm_t)
             self = candidate
         class default
             goto 900
         end select
         call status_set(status, FORTNUM_OK, "")
         return
-900     close_ios = 0
+        900     close_ios = 0
         close(unit, iostat=close_ios)
         call status_set(status, FORTNUM_DOMAIN_ERROR, &
             "lightgbm load_text: malformed, truncated, or trailing record")
@@ -1117,6 +1203,27 @@ contains
         class(lightgbm_t), intent(in) :: self
         value = self%base_score
     end function lgbm_base_margin
+
+    character(len=16) function lgbm_boosting_type(self) result(name)
+        class(lightgbm_t), intent(in) :: self
+        if (self%boosting_type_code == LIGHTGBM_BOOSTING_GOSS) then
+            name = "goss"
+        else if (self%boosting_type_code == LIGHTGBM_BOOSTING_GBDT) then
+            name = "gbdt"
+        else
+            name = "unfitted"
+        end if
+    end function lgbm_boosting_type
+
+    real(dp) function lgbm_top_rate(self) result(value)
+        class(lightgbm_t), intent(in) :: self
+        value = self%top_rate_value
+    end function lgbm_top_rate
+
+    real(dp) function lgbm_other_rate(self) result(value)
+        class(lightgbm_t), intent(in) :: self
+        value = self%other_rate_value
+    end function lgbm_other_rate
 
     subroutine lgbm_objective_derivatives(code, margin, target, weights, gradient, hessian, status)
         integer, intent(in) :: code
@@ -1419,6 +1526,17 @@ contains
             model%l2_value >= 0.0_dp .and. ieee_is_finite(model%min_gain_value) .and. &
             model%min_gain_value >= 0.0_dp .and. ieee_is_finite(model%base_score)
         if (.not. valid) return
+        valid = model%boosting_type_code == LIGHTGBM_BOOSTING_GBDT .or. &
+            model%boosting_type_code == LIGHTGBM_BOOSTING_GOSS
+        if (.not. valid) return
+        valid = model%seed_value > 0_int64 .and. ieee_is_finite(model%top_rate_value) .and. &
+            ieee_is_finite(model%other_rate_value)
+        if (model%boosting_type_code == LIGHTGBM_BOOSTING_GOSS) then
+            valid = valid .and. model%top_rate_value > 0.0_dp .and. model%top_rate_value < 1.0_dp .and. &
+                model%other_rate_value > 0.0_dp .and. model%other_rate_value <= 1.0_dp .and. &
+                model%top_rate_value + model%other_rate_value < 1.0_dp
+        end if
+        if (.not. valid) return
         valid = model%early_stopping_rounds_value >= 0 .and. &
             ieee_is_finite(model%early_stopping_min_delta_value) .and. &
             model%early_stopping_min_delta_value >= 0.0_dp .and. &
@@ -1473,6 +1591,15 @@ contains
         write(unit, "(A,1X,I0)", iostat=ios) trim(key), value
     end subroutine lgbm_write_i
 
+    subroutine lgbm_write_i64(unit, key, value, ios)
+        integer, intent(in) :: unit
+        integer(int64), intent(in) :: value
+        character(*), intent(in) :: key
+        integer, intent(out) :: ios
+
+        write(unit, "(A,1X,I0)", iostat=ios) trim(key), value
+    end subroutine lgbm_write_i64
+
     subroutine lgbm_write_l(unit, key, value, ios)
         integer, intent(in) :: unit
         character(*), intent(in) :: key
@@ -1501,6 +1628,17 @@ contains
         read(unit, *, iostat=ios) key, value
         if (ios == 0 .and. trim(key) /= trim(expected)) ios = 1
     end subroutine lgbm_read_i
+
+    subroutine lgbm_read_i64(unit, expected, value, ios)
+        integer, intent(in) :: unit
+        character(*), intent(in) :: expected
+        integer(int64), intent(out) :: value
+        integer, intent(out) :: ios
+        character(len=80) :: key
+
+        read(unit, *, iostat=ios) key, value
+        if (ios == 0 .and. trim(key) /= trim(expected)) ios = 1
+    end subroutine lgbm_read_i64
 
     subroutine lgbm_read_l(unit, expected, value, ios)
         integer, intent(in) :: unit
@@ -1541,6 +1679,92 @@ contains
             code = 0
         end select
     end function parse_lgbm_objective
+
+    integer function parse_lgbm_boosting_type(name) result(code)
+        character(len=*), intent(in) :: name
+        character(len=:), allocatable :: normalized
+
+        normalized = trim(adjustl(name))
+        select case (normalized)
+        case ("gbdt"); code = LIGHTGBM_BOOSTING_GBDT
+        case ("goss"); code = LIGHTGBM_BOOSTING_GOSS
+        case default; code = -1
+        end select
+    end function parse_lgbm_boosting_type
+
+    !> Select one GOSS row set for a boosting round.  The largest absolute
+    !> gradients are retained exactly; the remaining rows are ranked by a
+    !> stable integer hash of `(seed, round, row)` so repeated fits and
+    !> compiler-independent text snapshots have deterministic membership.
+    subroutine select_goss_rows(gradient, options, round, rows, row_scale, status)
+        real(dp), intent(in) :: gradient(:)
+        type(lightgbm_options_t), intent(in) :: options
+        integer, intent(in) :: round
+        integer, allocatable, intent(out) :: rows(:)
+        real(dp), allocatable, intent(out) :: row_scale(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: magnitude(:), hash_value(:)
+        integer, allocatable :: order(:), remainder(:), remainder_order(:)
+        integer :: n, top_count, other_count, i, j, k, remainder_count, selected_count
+        real(dp) :: scale
+
+        n = size(gradient)
+        if (n < 2 .or. options%top_rate <= 0.0_dp .or. options%top_rate >= 1.0_dp .or. &
+            options%other_rate <= 0.0_dp .or. options%other_rate > 1.0_dp .or. &
+            options%top_rate + options%other_rate >= 1.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm GOSS: rates or sample size are invalid")
+            return
+        end if
+        top_count = max(1, min(n-1, ceiling(options%top_rate*real(n, dp))))
+        remainder_count = n-top_count
+        other_count = max(1, min(remainder_count, ceiling(options%other_rate*real(n, dp))))
+        selected_count = top_count + other_count
+        scale = (1.0_dp-options%top_rate)/options%other_rate
+        if (.not. ieee_is_finite(scale) .or. scale <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, "lightgbm GOSS: row reweight is invalid")
+            return
+        end if
+        allocate(magnitude(n), order(n), remainder(remainder_count), hash_value(remainder_count), &
+            remainder_order(remainder_count), rows(selected_count), row_scale(selected_count))
+        magnitude = abs(gradient)
+        call sort_indices(magnitude, order)
+        k = 0
+        do i = n, n-top_count+1, -1
+            k = k+1
+            rows(k) = order(i)
+            row_scale(k) = 1.0_dp
+        end do
+        k = 0
+        do i = 1, n
+            if (.not. row_is_selected(i, rows(:top_count))) then
+                k = k+1
+                remainder(k) = i
+                hash_value(k) = real(goss_hash(options%seed, round, i), dp)
+            end if
+        end do
+        call sort_indices(hash_value, remainder_order)
+        do j = 1, other_count
+            rows(top_count+j) = remainder(remainder_order(j))
+            row_scale(top_count+j) = scale
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine select_goss_rows
+
+    logical function row_is_selected(row, selected) result(value)
+        integer, intent(in) :: row, selected(:)
+        value = any(selected == row)
+    end function row_is_selected
+
+    pure integer(int64) function goss_hash(seed, round, row) result(value)
+        integer(int64), intent(in) :: seed
+        integer, intent(in) :: round, row
+        integer(int64), parameter :: modulus = 2147483629_int64
+
+        value = modulo(seed + 104729_int64*int(row, int64) + &
+            13007_int64*int(round, int64), modulus)
+        value = modulo(value*48271_int64 + 17_int64, modulus)
+    end function goss_hash
 
     subroutine sort_indices(values, order)
         real(dp), intent(in) :: values(:)
