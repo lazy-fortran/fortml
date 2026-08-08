@@ -1954,8 +1954,9 @@ CUDA refusal until private CART storage is safely bound to the C ABI.
   weighted simplex values, deterministic ties, typed active-set JVP/VJP and
   parameter-product refusals, and the typed CUDA boundary. The companion
   `fortml-bench/results/MULTICLASS_ISOTONIC_CALIBRATION.md` report records the
-  NumPy/Fortran correctness-gated lane. Multiclass Platt and generic estimator
-  routing remain open.
+  NumPy/Fortran correctness-gated lane. The calibrated-softmax OOF wrapper
+  now routes this value-only policy with the same typed active-set boundary;
+  generic estimator routing remains open.
 - [x] Add weighted one-vs-rest Platt sigmoid calibration to
   `multiclass_probability_calibrator_t`. Stable raw softmax columns receive
   deterministic weighted sigmoid fits and are renormalized to a simplex while
@@ -1967,6 +1968,17 @@ CUDA refusal until private CART storage is safely bound to the C ABI.
   `fortml-bench/results/MULTICLASS_PLATT_CALIBRATION.md` records the independent
   NumPy correctness-gated lane. The calibrated-softmax OOF wrapper now routes
   this smooth policy and records its packed calibration metadata and products.
+- [x] Add leakage-safe multiclass calibrated-softmax OOF routing. Each
+  deterministic stratified fold fits an independent deployment-base softmax,
+  writes one held-out logit row per sample, and fits temperature, weighted
+  one-vs-rest Platt, or weighted isotonic calibration only on those rows before
+  refitting the deployment model on all samples. The wrapper state records the
+  method, calibration packed count, isotonic knot count, and derivative
+  availability. Temperature and Platt expose exact packed/input JVP/VJPs;
+  isotonic values are complete while active-set products and every CUDA path
+  return typed refusals. `test_calibrated_softmax_classifier` and
+  `fortml-bench/results/CALIBRATED_SOFTMAX_CV.md` provide independent oracles
+  and clean multi-policy provenance.
 - [x] Add leakage-safe binary calibration-aware cross-validation through
   `calibrated_logistic_classifier_t`. Each deterministic stratified fold fits
   an independent logistic model, produces held-out margins for every sample,
