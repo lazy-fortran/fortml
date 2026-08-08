@@ -213,7 +213,7 @@ contains
         integer :: i
 
         value = 0.0_dp
-        if (.not. valid_data(self, x, labels, status)) return
+        if (.not. valid_data(self, x, labels, status, sample_weight)) return
         multiplier = 1.0_dp
         if (present(scale)) multiplier = scale
         if (multiplier <= 0.0_dp) then
@@ -259,7 +259,7 @@ contains
 
         value = 0.0_dp
         gradient = 0.0_dp
-        if (.not. valid_data(self, x, labels, status)) return
+        if (.not. valid_data(self, x, labels, status, sample_weight)) return
         if (size(gradient) /= self%parameter_count()) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "variational GP multiclass: gradient shape is invalid")
@@ -318,7 +318,7 @@ contains
 
         value = 0.0_dp
         tangent = 0.0_dp
-        if (.not. valid_data(self, x, labels, status)) return
+        if (.not. valid_data(self, x, labels, status, sample_weight)) return
         if (size(direction) /= self%parameter_count() .or. &
             any(.not. ieee_is_finite(direction))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -867,13 +867,15 @@ contains
         end select
     end function gvmc_device_supported
 
-    logical function valid_data(self, x, labels, status) result(valid)
+    logical function valid_data(self, x, labels, status, sample_weight) result(valid)
         class(gp_variational_multiclass_classification_t), intent(in) :: self
         real(dp), intent(in) :: x(:, :)
         integer, intent(in) :: labels(:)
         type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
         integer :: i, j
         logical :: known
+        real(dp) :: weight_mass
 
         valid = .false.
         if (.not. self%initialized()) then
@@ -898,6 +900,21 @@ contains
                 return
             end if
         end do
+        if (present(sample_weight)) then
+            if (size(sample_weight) /= size(labels) .or. &
+                    any(.not. ieee_is_finite(sample_weight)) .or. &
+                    any(sample_weight < 0.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "variational GP multiclass: sample weights are invalid")
+                return
+            end if
+            weight_mass = sum(sample_weight)
+            if (.not. ieee_is_finite(weight_mass) .or. weight_mass <= 0.0_dp) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "variational GP multiclass: sample weights need positive mass")
+                return
+            end if
+        end if
         valid = .true.
         call status_set(status, FORTNUM_OK, "")
     end function valid_data
