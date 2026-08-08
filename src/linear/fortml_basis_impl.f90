@@ -144,6 +144,31 @@ module fortml_basis_impl
         procedure :: valid => fourier_valid
     end type fourier_basis_impl_t
 
+    ! Fixed random Fourier features approximate a stationary kernel with
+    ! ``sqrt(2/m)*cos(w_k dot x + b_k)``.  The frequencies and phases are
+    ! intentionally part of the fitted state, not trainable parameters: this
+    ! keeps the map a deterministic feature transform while retaining exact
+    ! input JVP/VJP/HVP products.  A caller can sample ``frequencies`` and
+    ! ``phases`` with any reproducible RNG before construction.
+    type, extends(basis_impl_t) :: random_fourier_basis_impl_t
+        integer :: n_inputs = 0
+        integer :: n_components = 0
+        real(dp), allocatable :: frequencies(:, :)
+        real(dp), allocatable :: phases(:)
+        real(dp) :: normalization = 0.0_dp
+    contains
+        procedure :: input_count => random_fourier_input_count
+        procedure :: feature_count => random_fourier_feature_count
+        procedure :: parameter_count => random_fourier_parameter_count
+        procedure :: parameters => random_fourier_parameters
+        procedure :: set_parameters => random_fourier_set_parameters
+        procedure :: evaluate => random_fourier_evaluate
+        procedure :: jvp => random_fourier_jvp
+        procedure :: vjp => random_fourier_vjp
+        procedure :: hvp => random_fourier_hvp
+        procedure :: valid => random_fourier_valid
+    end type random_fourier_basis_impl_t
+
     type, extends(basis_impl_t) :: radial_basis_impl_t
         integer :: n_inputs = 0
         integer :: n_centers = 0
@@ -199,7 +224,8 @@ module fortml_basis_impl
     end type callback_basis_impl_t
 
     public :: basis_value_callback, basis_jvp_callback, basis_vjp_callback
-    public :: create_polynomial_impl, create_fourier_impl, create_radial_impl
+    public :: create_polynomial_impl, create_fourier_impl, &
+        create_random_fourier_impl, create_radial_impl
     public :: create_spline_impl, create_callback_impl
 
 contains
@@ -386,6 +412,45 @@ contains
         allocate(impl, source=value)
         call status_set(status, FORTNUM_OK, "")
     end subroutine create_fourier_impl
+
+    subroutine create_random_fourier_impl(n_inputs, frequencies, phases, impl, &
+            status)
+        integer, intent(in) :: n_inputs
+        real(dp), intent(in) :: frequencies(:, :), phases(:)
+        class(basis_impl_t), allocatable, intent(out) :: impl
+        type(fortnum_status_t), intent(out) :: status
+        type(random_fourier_basis_impl_t) :: value
+
+        if (n_inputs < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "basis random Fourier: n_inputs must be positive")
+            return
+        end if
+        if (size(frequencies, 1) < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "basis random Fourier: at least one component is required")
+            return
+        end if
+        if (size(frequencies, 2) /= n_inputs) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "basis random Fourier: frequency shape is invalid")
+            return
+        end if
+        if (size(phases) /= size(frequencies, 1)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "basis random Fourier: phase shape is invalid")
+            return
+        end if
+        value%n_inputs = n_inputs
+        value%n_components = size(frequencies, 1)
+        allocate(value%frequencies(value%n_components, n_inputs))
+        allocate(value%phases(value%n_components))
+        value%frequencies = frequencies
+        value%phases = phases
+        value%normalization = sqrt(2.0_dp/real(value%n_components, dp))
+        allocate(impl, source=value)
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine create_random_fourier_impl
 
     subroutine create_radial_impl(n_inputs, centers, scales, impl, status)
         integer, intent(in) :: n_inputs
@@ -865,6 +930,212 @@ contains
         if (.not. valid) return
         valid = allocated(self%log_frequencies)
     end function fourier_valid
+
+    integer function random_fourier_input_count(self) result(count)
+        class(random_fourier_basis_impl_t), intent(in) :: self
+        count = self%n_inputs
+    end function random_fourier_input_count
+
+    integer function random_fourier_feature_count(self) result(count)
+        class(random_fourier_basis_impl_t), intent(in) :: self
+        count = self%n_components
+    end function random_fourier_feature_count
+
+    integer function random_fourier_parameter_count(self) result(count)
+        class(random_fourier_basis_impl_t), intent(in) :: self
+        count = 0
+    end function random_fourier_parameter_count
+
+    function random_fourier_parameters(self) result(theta)
+        class(random_fourier_basis_impl_t), intent(in) :: self
+        real(dp), allocatable :: theta(:)
+        allocate(theta(0))
+    end function random_fourier_parameters
+
+    subroutine random_fourier_set_parameters(self, theta, status)
+        class(random_fourier_basis_impl_t), intent(inout) :: self
+        real(dp), intent(in) :: theta(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (size(theta) /= 0) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "basis random Fourier: parameter shape is invalid")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine random_fourier_set_parameters
+
+    subroutine random_fourier_evaluate(self, x, phi, status)
+        class(random_fourier_basis_impl_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: phi(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        integer :: i, j, k
+        real(dp) :: argument
+
+        if (size(x, 2) /= self%n_inputs) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "basis random Fourier: input shape is invalid")
+            return
+        end if
+        if (size(phi, 2) /= self%feature_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "basis random Fourier: output shape is invalid")
+            return
+        end if
+        do k = 1, self%n_components
+            do i = 1, size(x, 1)
+                argument = self%phases(k)
+                do j = 1, self%n_inputs
+                    argument = argument + self%frequencies(k, j)*x(i, j)
+                end do
+                phi(i, k) = self%normalization*cos(argument)
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine random_fourier_evaluate
+
+    subroutine random_fourier_jvp(self, x, theta_dot, x_dot, phi, phi_dot, &
+            status)
+        class(random_fourier_basis_impl_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), theta_dot(:), x_dot(:, :)
+        real(dp), intent(out) :: phi(:, :), phi_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        integer :: i, j, k
+        real(dp) :: argument, argument_dot
+
+        if (size(theta_dot) /= 0) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "basis random Fourier: parameter tangent shape is invalid")
+            return
+        end if
+        if (any(shape(x_dot) /= shape(x))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "basis random Fourier: input tangent shape is invalid")
+            return
+        end if
+        if (any(shape(phi_dot) /= shape(phi))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "basis random Fourier: output tangent shape is invalid")
+            return
+        end if
+        call self%evaluate(x, phi, status)
+        if (status%code /= FORTNUM_OK) return
+        do k = 1, self%n_components
+            do i = 1, size(x, 1)
+                argument = self%phases(k)
+                argument_dot = 0.0_dp
+                do j = 1, self%n_inputs
+                    argument = argument + self%frequencies(k, j)*x(i, j)
+                    argument_dot = argument_dot + self%frequencies(k, j)* &
+                        x_dot(i, j)
+                end do
+                phi_dot(i, k) = -self%normalization*sin(argument)*argument_dot
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine random_fourier_jvp
+
+    subroutine random_fourier_vjp(self, x, u, theta_bar, x_bar, status)
+        class(random_fourier_basis_impl_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), u(:, :)
+        real(dp), intent(out) :: theta_bar(:), x_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        integer :: i, j, k
+        real(dp) :: argument, coefficient
+
+        if (size(u, 2) /= self%feature_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "basis random Fourier: cotangent shape is invalid")
+            return
+        end if
+        if (size(theta_bar) /= 0) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "basis random Fourier: parameter cotangent shape is invalid")
+            return
+        end if
+        if (any(shape(x_bar) /= shape(x))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "basis random Fourier: input cotangent shape is invalid")
+            return
+        end if
+        theta_bar = 0.0_dp
+        x_bar = 0.0_dp
+        do k = 1, self%n_components
+            do i = 1, size(x, 1)
+                argument = self%phases(k)
+                do j = 1, self%n_inputs
+                    argument = argument + self%frequencies(k, j)*x(i, j)
+                end do
+                coefficient = -self%normalization*u(i, k)*sin(argument)
+                do j = 1, self%n_inputs
+                    x_bar(i, j) = x_bar(i, j) + coefficient* &
+                        self%frequencies(k, j)
+                end do
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine random_fourier_vjp
+
+    subroutine random_fourier_hvp(self, x, u, theta_dot, x_dot, theta_hvp, &
+            x_hvp, status)
+        class(random_fourier_basis_impl_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), u(:, :), theta_dot(:), x_dot(:, :)
+        real(dp), intent(out) :: theta_hvp(:), x_hvp(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        integer :: i, j, k
+        real(dp) :: argument, argument_dot, coefficient
+
+        if (size(u, 2) /= self%feature_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "basis random Fourier hvp: cotangent shape is invalid")
+            return
+        end if
+        if (size(theta_dot) /= 0 .or. size(theta_hvp) /= 0) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "basis random Fourier hvp: parameter direction shape is invalid")
+            return
+        end if
+        if (any(shape(x_dot) /= shape(x))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "basis random Fourier hvp: input direction shape is invalid")
+            return
+        end if
+        if (any(shape(x_hvp) /= shape(x))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "basis random Fourier hvp: output shape is invalid")
+            return
+        end if
+        x_hvp = 0.0_dp
+        do k = 1, self%n_components
+            do i = 1, size(x, 1)
+                argument = self%phases(k)
+                argument_dot = 0.0_dp
+                do j = 1, self%n_inputs
+                    argument = argument + self%frequencies(k, j)*x(i, j)
+                    argument_dot = argument_dot + self%frequencies(k, j)* &
+                        x_dot(i, j)
+                end do
+                coefficient = -self%normalization*u(i, k)*cos(argument)* &
+                    argument_dot
+                do j = 1, self%n_inputs
+                    x_hvp(i, j) = x_hvp(i, j) + coefficient* &
+                        self%frequencies(k, j)
+                end do
+            end do
+        end do
+        theta_hvp = 0.0_dp
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine random_fourier_hvp
+
+    logical function random_fourier_valid(self) result(valid)
+        class(random_fourier_basis_impl_t), intent(in) :: self
+        valid = self%n_inputs > 0 .and. self%n_components > 0
+        if (.not. valid) return
+        valid = allocated(self%frequencies)
+        if (.not. valid) return
+        valid = allocated(self%phases)
+    end function random_fourier_valid
 
     integer function radial_input_count(self) result(count)
         class(radial_basis_impl_t), intent(in) :: self

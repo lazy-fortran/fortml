@@ -4,8 +4,8 @@ module fortml_basis
         FORTNUM_DOMAIN_ERROR
     use fortml_basis_impl, only: basis_impl_t, basis_value_callback, &
         basis_jvp_callback, basis_vjp_callback, create_polynomial_impl, &
-        create_fourier_impl, create_radial_impl, create_spline_impl, &
-        create_callback_impl
+        create_fourier_impl, create_random_fourier_impl, create_radial_impl, &
+        create_spline_impl, create_callback_impl
     implicit none
     private
 
@@ -14,6 +14,7 @@ module fortml_basis
     integer, parameter, public :: BASIS_RADIAL = 3
     integer, parameter, public :: BASIS_SPLINE = 4
     integer, parameter, public :: BASIS_CALLBACK = 5
+    integer, parameter, public :: BASIS_RANDOM_FOURIER = 6
 
     type, public :: basis_map_t
         private
@@ -24,6 +25,8 @@ module fortml_basis
         procedure, public :: initialize_polynomial_interactions => &
             basis_initialize_polynomial_interactions
         procedure, public :: initialize_fourier => basis_initialize_fourier
+        procedure, public :: initialize_random_fourier => &
+            basis_initialize_random_fourier
         procedure, public :: initialize_radial => basis_initialize_radial
         procedure, public :: initialize_spline => basis_initialize_spline
         procedure, public :: initialize_callback => basis_initialize_callback
@@ -44,6 +47,7 @@ module fortml_basis
     public :: make_polynomial_basis
     public :: make_polynomial_interaction_basis
     public :: make_fourier_basis
+    public :: make_random_fourier_basis
     public :: make_radial_basis
     public :: make_spline_basis
     public :: basis_value_callback, basis_jvp_callback, basis_vjp_callback
@@ -82,6 +86,18 @@ contains
         call map%initialize_fourier(n_inputs, frequencies, status, &
             include_intercept)
     end function make_fourier_basis
+
+    function make_random_fourier_basis(n_inputs, frequencies, phases, status, &
+            include_intercept) result(map)
+        integer, intent(in) :: n_inputs
+        real(dp), intent(in) :: frequencies(:, :), phases(:)
+        type(fortnum_status_t), intent(out) :: status
+        logical, intent(in), optional :: include_intercept
+        type(basis_map_t) :: map
+
+        call map%initialize_random_fourier(n_inputs, frequencies, phases, status, &
+            include_intercept)
+    end function make_random_fourier_basis
 
     function make_radial_basis(n_inputs, centers, scales, status, include_intercept) &
             result(map)
@@ -153,6 +169,23 @@ contains
         if (status%code /= FORTNUM_OK) return
         call move_alloc(implementation, self%implementation)
     end subroutine basis_initialize_fourier
+
+    subroutine basis_initialize_random_fourier(self, n_inputs, frequencies, &
+            phases, status, include_intercept)
+        class(basis_map_t), intent(out) :: self
+        integer, intent(in) :: n_inputs
+        real(dp), intent(in) :: frequencies(:, :), phases(:)
+        type(fortnum_status_t), intent(out) :: status
+        logical, intent(in), optional :: include_intercept
+        class(basis_impl_t), allocatable :: implementation
+
+        self%include_intercept = .false.
+        if (present(include_intercept)) self%include_intercept = include_intercept
+        call create_random_fourier_impl(n_inputs, frequencies, phases, &
+            implementation, status)
+        if (status%code /= FORTNUM_OK) return
+        call move_alloc(implementation, self%implementation)
+    end subroutine basis_initialize_random_fourier
 
     subroutine basis_initialize_radial(self, n_inputs, centers, scales, status, &
             include_intercept)

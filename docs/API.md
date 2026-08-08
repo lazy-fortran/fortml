@@ -1400,6 +1400,7 @@ input derivative is required.  This boundary is covered by
 | `make_polynomial_basis(n_inputs,degree,status[,include_intercept])` | Separate powers 1 through `degree` for each input | Empty |
 | `make_polynomial_interaction_basis(n_inputs,degree,status[,include_intercept])` | All nonconstant monomials through total degree `degree`, in deterministic graded order | Empty |
 | `make_fourier_basis(n_inputs,frequencies,status[,include_intercept])` | Sine/cosine pair for each positive frequency and input | Log frequencies, column-major |
+| `make_random_fourier_basis(n_inputs,frequencies,phases,status[,include_intercept])` | Fixed `sqrt(2/m) cos(w_k dot x + b_k)` random-feature map | Empty (frequencies and phases are fixed transform state) |
 | `make_radial_basis(n_inputs,centers,scales,status[,include_intercept])` | One anisotropic Gaussian feature per center | Centers followed by log scales |
 | `make_spline_basis(n_inputs,order,breakpoints,status[,include_intercept])` | B-spline basis functions for each input | Empty |
 | `map%initialize_callback(...)` | Caller-defined | Caller-defined flat vector |
