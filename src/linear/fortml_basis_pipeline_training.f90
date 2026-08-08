@@ -27,6 +27,7 @@ module fortml_basis_pipeline_training
         real(dp), allocatable :: coef(:, :)
         real(dp) :: ridge = 0.0_dp
         logical :: fit_intercept = .true.
+        logical :: optimize_ridge = .false.
         integer :: device_kind = FORTML_DEVICE_CPU
     contains
         procedure, public :: initialize => basis_training_initialize
@@ -45,7 +46,7 @@ module fortml_basis_pipeline_training
 contains
 
     subroutine basis_training_initialize(self, pipeline, x, target, status, &
-            ridge, fit_intercept, device_kind)
+            ridge, fit_intercept, device_kind, optimize_ridge)
         class(basis_pipeline_training_objective_t), intent(out) :: self
         type(basis_pipeline_t), target, intent(inout) :: pipeline
         real(dp), intent(in) :: x(:, :), target(:, :)
@@ -53,6 +54,7 @@ contains
         real(dp), intent(in), optional :: ridge
         logical, intent(in), optional :: fit_intercept
         integer, intent(in), optional :: device_kind
+        logical, intent(in), optional :: optimize_ridge
         integer :: requested_device
 
         self%device_kind = FORTML_DEVICE_CPU
@@ -72,10 +74,13 @@ contains
         if (present(ridge)) self%ridge = ridge
         self%fit_intercept = .true.
         if (present(fit_intercept)) self%fit_intercept = fit_intercept
+        self%optimize_ridge = .false.
+        if (present(optimize_ridge)) self%optimize_ridge = optimize_ridge
         if (.not. pipeline%valid() .or. size(x, 1) < 1 .or. &
             size(x, 2) /= pipeline%input_count() .or. &
             size(target, 1) /= size(x, 1) .or. size(target, 2) < 1 .or. &
-            self%ridge < 0.0_dp .or. any(.not. ieee_is_finite(x)) .or. &
+            self%ridge < 0.0_dp .or. .not. ieee_is_finite(self%ridge) .or. &
+            any(.not. ieee_is_finite(x)) .or. &
             any(.not. ieee_is_finite(target))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "basis training objective: pipeline or data is invalid")
@@ -119,6 +124,7 @@ contains
         if (.not. associated(self%pipeline)) return
         count = self%pipeline%parameter_count()
         if (allocated(self%coef)) count = count + size(self%coef)
+        if (self%optimize_ridge .and. allocated(self%coef)) count = count + 1
     end function basis_training_parameter_count
 
     function basis_training_parameters(self) result(parameters)
@@ -134,14 +140,17 @@ contains
             pipeline_parameters = self%pipeline%parameters()
             parameters(:n_pipeline) = pipeline_parameters
         end if
-        parameters(n_pipeline + 1:) = reshape(self%coef, [size(self%coef)])
+        parameters(n_pipeline + 1:n_pipeline + size(self%coef)) = &
+            reshape(self%coef, [size(self%coef)])
+        if (self%optimize_ridge) parameters(n_pipeline + size(self%coef) + 1) = self%ridge
     end function basis_training_parameters
 
     subroutine basis_training_set_parameters(self, parameters, status)
         class(basis_pipeline_training_objective_t), intent(inout) :: self
         real(dp), intent(in) :: parameters(:)
         type(fortnum_status_t), intent(out) :: status
-        integer :: n_pipeline
+        integer :: n_pipeline, n_coefficient
+        real(dp) :: ridge_value
 
         if (.not. self%initialized() .or. size(parameters) /= self%parameter_count() .or. &
             any(.not. ieee_is_finite(parameters))) then
@@ -150,11 +159,23 @@ contains
             return
         end if
         n_pipeline = self%pipeline%parameter_count()
+        n_coefficient = size(self%coef)
+        ridge_value = self%ridge
+        if (self%optimize_ridge) then
+            ridge_value = parameters(n_pipeline + n_coefficient + 1)
+            if (ridge_value < 0.0_dp) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "basis training objective: optimized ridge must be nonnegative")
+                return
+            end if
+        end if
         if (n_pipeline > 0) then
             call self%pipeline%set_parameters(parameters(:n_pipeline), status)
             if (status%code /= FORTNUM_OK) return
         end if
-        self%coef = reshape(parameters(n_pipeline + 1:), shape(self%coef))
+        self%coef = reshape(parameters(n_pipeline + 1:n_pipeline + n_coefficient), &
+            shape(self%coef))
+        if (self%optimize_ridge) self%ridge = ridge_value
         call status_set(status, FORTNUM_OK, "")
     end subroutine basis_training_set_parameters
 
@@ -167,7 +188,7 @@ contains
         real(dp), allocatable :: residual(:, :), feature_bar(:, :)
         real(dp), allocatable :: pipeline_bar(:), coefficient_bar(:, :), x_bar(:, :)
         real(dp) :: scale, penalty
-        integer :: n_pipeline
+        integer :: n_pipeline, n_coefficient
 
         value = huge(1.0_dp)
         gradient = 0.0_dp
@@ -196,11 +217,15 @@ contains
             x_bar, status)
         if (status%code /= FORTNUM_OK) return
         gradient(:n_pipeline) = pipeline_bar
-        gradient(n_pipeline + 1:) = reshape(coefficient_bar, [size(coefficient_bar)])
+        n_coefficient = size(self%coef)
+        gradient(n_pipeline + 1:n_pipeline + n_coefficient) = &
+            reshape(coefficient_bar, [n_coefficient])
         penalty = ridge_penalty(self%coef, self%ridge, self%fit_intercept)
         value = value + penalty
         call add_ridge_gradient(self%coef, self%ridge, self%fit_intercept, &
-            gradient(n_pipeline + 1:))
+            gradient(n_pipeline + 1:n_pipeline + n_coefficient))
+        if (self%optimize_ridge) gradient(n_pipeline + n_coefficient + 1) = &
+            ridge_hypergradient(self%coef, self%fit_intercept)
         if (.not. ieee_is_finite(value) .or. any(.not. ieee_is_finite(gradient))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "basis training objective: value or gradient is not finite")
@@ -262,8 +287,8 @@ contains
             x_hvp(:, :)
         real(dp), allocatable :: coefficient_bar_dot(:, :), coefficient_hvp(:, :)
         real(dp), allocatable :: coefficient_dot(:, :)
-        real(dp) :: scale
-        integer :: n_pipeline, n_features
+        real(dp) :: scale, ridge_direction
+        integer :: n_pipeline, n_features, n_coefficient
 
         product = 0.0_dp
         if (.not. valid_objective_inputs(self, parameters, product, status)) return
@@ -277,6 +302,10 @@ contains
         if (status%code /= FORTNUM_OK) return
         n_pipeline = self%pipeline%parameter_count()
         n_features = self%pipeline%feature_count()
+        n_coefficient = size(self%coef)
+        ridge_direction = 0.0_dp
+        if (self%optimize_ridge) ridge_direction = &
+            direction(n_pipeline + n_coefficient + 1)
         scale = 1.0_dp / real(size(self%features, 1)*size(self%targets, 2), dp)
         allocate(phi(size(self%features, 1), n_features))
         allocate(phi_dot, mold=phi)
@@ -288,7 +317,8 @@ contains
         allocate(x_hvp, mold=self%features)
         zero_x = 0.0_dp
         allocate(coefficient_dot, mold=self%coef)
-        coefficient_dot = reshape(direction(n_pipeline + 1:), shape(self%coef))
+        coefficient_dot = reshape(direction(n_pipeline + 1:n_pipeline + n_coefficient), &
+            shape(self%coef))
         call self%pipeline%jvp(self%features, direction(:n_pipeline), zero_x, phi, &
             phi_dot, status)
         if (status%code /= FORTNUM_OK) return
@@ -318,8 +348,16 @@ contains
             matmul(transpose(phi_dot), residual)
         call add_ridge_hvp(self%coef, coefficient_dot, self%ridge, &
             self%fit_intercept, coefficient_hvp)
+        if (self%optimize_ridge) then
+            call add_ridge_direction_hvp(self%coef, ridge_direction, &
+                self%fit_intercept, coefficient_hvp)
+        end if
         product(:n_pipeline) = pipeline_hvp + pipeline_vjp
-        product(n_pipeline + 1:) = reshape(coefficient_hvp, [size(coefficient_hvp)])
+        product(n_pipeline + 1:n_pipeline + n_coefficient) = &
+            reshape(coefficient_hvp, [n_coefficient])
+        if (self%optimize_ridge) product(n_pipeline + n_coefficient + 1) = &
+            ridge_hypergradient_direction(self%coef, coefficient_dot, &
+            self%fit_intercept)
         if (any(.not. ieee_is_finite(product))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "basis training objective HVP: product is not finite")
@@ -408,5 +446,34 @@ contains
         offset = 1 + merge(1, 0, fit_intercept)
         product(offset:, :) = product(offset:, :) + ridge*coefficient_dot(offset:, :)
     end subroutine add_ridge_hvp
+
+    real(dp) function ridge_hypergradient(coef, fit_intercept) result(value)
+        real(dp), intent(in) :: coef(:, :)
+        logical, intent(in) :: fit_intercept
+        integer :: offset
+
+        offset = 1 + merge(1, 0, fit_intercept)
+        value = 0.5_dp*sum(coef(offset:, :)**2)
+    end function ridge_hypergradient
+
+    subroutine add_ridge_direction_hvp(coef, ridge_direction, fit_intercept, product)
+        real(dp), intent(in) :: coef(:, :), ridge_direction
+        logical, intent(in) :: fit_intercept
+        real(dp), intent(inout) :: product(:, :)
+        integer :: offset
+
+        offset = 1 + merge(1, 0, fit_intercept)
+        product(offset:, :) = product(offset:, :) + ridge_direction*coef(offset:, :)
+    end subroutine add_ridge_direction_hvp
+
+    real(dp) function ridge_hypergradient_direction(coef, coefficient_dot, &
+            fit_intercept) result(value)
+        real(dp), intent(in) :: coef(:, :), coefficient_dot(:, :)
+        logical, intent(in) :: fit_intercept
+        integer :: offset
+
+        offset = 1 + merge(1, 0, fit_intercept)
+        value = sum(coef(offset:, :)*coefficient_dot(offset:, :))
+    end function ridge_hypergradient_direction
 
 end module fortml_basis_pipeline_training

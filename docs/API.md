@@ -1438,16 +1438,21 @@ callback in an accelerator path.
 `basis_pipeline_training_objective_t` keeps a composable basis pipeline and a
 multi-output linear coefficient block in one differentiable least-squares
 objective. `initialize(pipeline,x,target,status[,ridge,fit_intercept,
-device_kind])` fits the pipeline's declared state, stores the training rows and
-targets, and initializes coefficients. The packed vector is
+device_kind,optimize_ridge])` fits the pipeline's declared state, stores the
+training rows and targets, and initializes coefficients. The packed vector is
 `[pipeline parameters, column-major coefficients]`, including an intercept row
-when requested. `set_parameters` updates both blocks without refitting the
-targets.
+when requested. With `optimize_ridge=.true.`, one final nonnegative scalar
+coordinate is appended for the ridge coefficient.
+`set_parameters` updates both blocks without refitting the targets and refuses
+a negative optimized ridge value.
 
 `value_gradient` evaluates mean half-squared error plus optional ridge penalty.
-`jvp`, `vjp`, and `hvp` use the pipeline's chained analytic products and the
-linear map's exact contractions. `fortopt` supplies the same value/gradient
-callback to FortOpt L-BFGS-B. CPU is the current execution path. A CUDA
+When the ridge coordinate is optimized, its exact derivative is half the
+non-intercept coefficient squared norm; the HVP includes both mixed
+ridge/coefficient blocks and the ridge-coordinate curvature. `jvp`, `vjp`, and
+`hvp` use the pipeline's chained analytic products and the linear map's exact
+contractions. `fortopt` supplies the same value/gradient callback to FortOpt
+L-BFGS-B. CPU is the current execution path. A CUDA
 request returns `FORTNUM_NOT_IMPLEMENTED` before fitting, so no host callback
 is hidden behind a device selection. The independent
 `test_basis_pipeline_training` fixture checks value/JVP, coordinate and
