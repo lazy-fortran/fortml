@@ -74,6 +74,49 @@ pipeline composition, device plans, then serialization and external adapters.
 The current implementation is partial. The open rows in `ROADMAP.md` are the
 authoritative migration ledger.
 
+## Family adapters and production state
+
+Every estimator family uses the same outer protocol while retaining its own
+mathematical state. A classification adapter owns sorted labels, weighting,
+probability policy, decision values, and calibration metadata. A GP adapter
+owns the kernel expression, mean, likelihood, observation layout, factorization
+or inducing state, and query derivative layout. A neural adapter owns the
+module tree, buffers, train/eval mode, loss reduction, optimizer coordinates,
+and batch cursor. A tree or boosting adapter owns split topology, missing-value
+policy, sampling stream, staged prefixes, contribution layout, and fit-time
+discrete boundaries. These state blocks are registered under named paths and
+are never exposed through private array orderings.
+
+The state dictionary has four required sections:
+
+```text
+topology      architecture, labels, shapes, active dimensions, split policy
+parameters    named trainable blocks, transforms, bounds, dtype, device
+execution     optimizer/schedule, RNG cursor, batches, validation, callbacks
+provenance    schema, dependency revisions, capability rows, checksum, device
+```
+
+Loading validates the schema and topology before allocating model or accelerator
+state. A failed load leaves the destination unchanged. A resumed trainer or
+warm-start estimator must reproduce the uninterrupted state hash and prediction
+oracle at the declared checkpoint boundary.
+
+The derivative provider is a first-class object in this graph. It reports the
+product mode, covered blocks, smoothness boundary, and refusal status for every
+value, input JVP/VJP, parameter JVP/VJP, hyperparameter JVP/VJP, and HVP entry
+point. Training and FortOpt search receive the same provider. A hyperparameter
+that lacks a declared product cannot enter an optimization run. Fit-time split
+choices, active sets, stochastic draws, early stopping, and calibration knots
+are discrete or nonsmooth state and remain explicit boundaries.
+
+Device plans follow the same family adapters. A plan owns resident data,
+parameters, derivative workspaces, optimizer state, and transfer counters. The
+public call either executes the complete graph on the selected device or
+returns a typed refusal. The CPU implementation is the independent behavioral
+oracle. OpenACC and generated CUDA kernels are added only after a FortSym or
+hand-derived identity, a CPU oracle, a resident-state test, and a transfer-aware
+benchmark agree.
+
 ## Common differentiable model contract
 
 Models that implement the optimizer-facing product contract use a stable flat
