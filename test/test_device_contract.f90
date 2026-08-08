@@ -48,6 +48,10 @@ program test_device_contract
     call require(status_ok(status) .and. .not. device%resident .and. &
         device%resident_bytes == 0_int64, &
         "ending residency clears the registered extent", failures)
+    call device%end_residency(status)
+    call require(status%code == FORTNUM_DOMAIN_ERROR .and. &
+        .not. device%resident .and. device%resident_bytes == 0_int64, &
+        "ending inactive residency is an explicit lifecycle refusal", failures)
 
     call device%select(FORTML_DEVICE_CPU, status, stream_id=1)
     call require(status%code == FORTNUM_NOT_IMPLEMENTED .and. &

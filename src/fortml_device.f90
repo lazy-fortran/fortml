@@ -283,6 +283,11 @@ contains
         class(fortml_device_t), intent(inout) :: self
         type(fortnum_status_t), intent(out) :: status
 
+        if (.not. self%resident) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "device: residency is not active")
+            return
+        end if
         self%resident = .false.
         self%owns_residency = .false.
         self%resident_bytes = 0_int64

@@ -65,8 +65,11 @@ prevents a CPU timing from being reported as a GPU transfer. The counters are
 The accounting object is deliberately separate from an operator's data
 ownership. `owns_residency=.true.` means that the caller registered ownership
 for reporting. `fortml_device` still never deallocates the operator's arrays.
-Call `end_residency` before `clear` or backend selection. Repeated create,
-register, and destroy cycles therefore remain observable and recoverable.
+`end_residency` requires an active region and returns `FORTNUM_DOMAIN_ERROR`
+when called twice or after a failed `begin_residency`; this prevents a stale
+lifecycle event from being mistaken for a completed device operation. Call it
+before `clear` or backend selection. Repeated create, register, and destroy
+cycles therefore remain observable and recoverable.
 
 Current operator APIs retain their existing explicit `enter_data`/`exit_data`
 calls. They are not implicitly converted by this metadata layer, and a model
