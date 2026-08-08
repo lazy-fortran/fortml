@@ -5,7 +5,7 @@ program test_mlp_schedule_hypergradient
     use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_NOT_IMPLEMENTED
     use fortopt_objective, only: objective_t
     use fortml_device, only: FORTML_DEVICE_CUDA
-    use fortml_mlp, only: mlp_t, MLP_LINEAR
+    use fortml_mlp, only: mlp_t
     use fortml_mlp_schedules, only: make_mlp_schedule_cosine_decay, &
         make_mlp_schedule_constant, make_mlp_schedule_one_cycle
     use fortml_mlp_schedule_hypergradient, only: &
@@ -46,8 +46,7 @@ program test_mlp_schedule_hypergradient
     validation_x(:, 1) = [-1.5_dp, 0.5_dp, 1.75_dp]
     validation_target(:, 1) = 0.7_dp*validation_x(:, 1) - 0.2_dp
 
-    call model%initialize([1, 1], status, initialization_seed=23, &
-        hidden_activation=MLP_LINEAR, output_activation=MLP_LINEAR)
+    call model%initialize([1, 1], status, initialization_seed=23)
     call model%set_parameters([0.15_dp, -0.1_dp], status)
     options%steps = 4
     options%base_rate = 0.12_dp
