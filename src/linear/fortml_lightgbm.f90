@@ -832,8 +832,8 @@ contains
 
     !> Return additive raw-margin contributions for the fitted ensemble.
     !>
-    !> Column one is the base margin and column `i+1` is the learning-rate
-    !> scaled contribution of tree `i`.  Summing columns reproduces
+    !> Column one is the base margin and column `i+1` is the learning-rate and
+    !> fitted tree-scale-scaled contribution of tree `i`.  Summing columns reproduces
     !> `predict_margin`; for binary objectives apply the sigmoid only after
     !> summing the raw-link contributions.
     subroutine lgbm_predict_contributions(self, x, contributions, status)
@@ -912,6 +912,9 @@ contains
         candidate%boosting_type_code = self%boosting_type_code
         candidate%top_rate_value = self%top_rate_value
         candidate%other_rate_value = self%other_rate_value
+        candidate%dart_drop_rate_value = self%dart_drop_rate_value
+        candidate%dart_skip_drop_value = self%dart_skip_drop_value
+        candidate%dart_max_drop_value = self%dart_max_drop_value
         candidate%seed_value = self%seed_value
         candidate%best_iteration_value = min(max(self%best_iteration_value, 0), n_trees)
         candidate%best_validation_loss_value = self%best_validation_loss_value

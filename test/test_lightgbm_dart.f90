@@ -12,7 +12,7 @@ program test_lightgbm_dart
     implicit none
 
     character(*), parameter :: snapshot = "test_lightgbm_dart.txt"
-    type(lightgbm_t) :: model, repeated, restored, prefix, continued
+    type(lightgbm_t) :: model, repeated, restored, prefix, continued, sliced
     type(lightgbm_options_t) :: options, prefix_options, invalid
     type(fortnum_status_t) :: status
     type(fortml_device_t) :: cuda
@@ -62,6 +62,15 @@ program test_lightgbm_dart
     call model%predict_contributions(x, contributions, status)
     call check(status_ok(status) .and. maxval(abs(sum(contributions, dim=2)-margin)) < &
         2.0e-13_real64, "DART contributions sum to margin", failures)
+
+    call model%slice(2, sliced, status)
+    call check(status_ok(status) .and. sliced%estimator_count() == 2 .and. &
+        abs(sliced%dart_drop_rate()-model%dart_drop_rate()) < 1.0e-14_real64 .and. &
+        abs(sliced%tree_scale(1)-model%tree_scale(1)) < 1.0e-14_real64, &
+        "DART prefix slice preserves metadata/scales", failures)
+    call sliced%predict(x, replay, status)
+    call check(status_ok(status) .and. maxval(abs(replay-staged(:, 2))) < 2.0e-13_real64, &
+        "DART prefix slice prediction", failures)
 
     call model%save_text(snapshot, status)
     call check(status_ok(status), "DART save text", failures)
