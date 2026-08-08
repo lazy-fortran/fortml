@@ -11,7 +11,7 @@ program test_trainer
 
     type(objective_t) :: objective
     type(trainer_t) :: trainer, clone
-    type(trainer_t) :: baseline, checkpointed, resumed
+    type(trainer_t) :: baseline, checkpointed, resumed, validation_reference
     type(trainer_options_t) :: options
     type(trainer_state_t) :: state
     type(fortnum_status_t) :: status
@@ -23,6 +23,10 @@ program test_trainer
     character(len=*), parameter :: truncated_path = "trainer_checkpoint_truncated.txt"
     integer :: failures, i
     real(dp) :: expected(2), moment(2), gradient(2), update_rms, clip_scale
+    type(trainer_state_t) :: validation_state
+    real(dp), allocatable :: validation_best_parameters(:), validation_before_load(:)
+    character(len=*), parameter :: validation_checkpoint_path = &
+        "trainer_validation_checkpoint_test.txt"
 
     failures = 0
     call objective%initialize(2, quadratic_objective, status)
@@ -228,6 +232,69 @@ program test_trainer
     open (unit=91, file=truncated_path, status="old")
     close (91, status="delete")
 
+    ! Validation diagnostics use a process-local callback and persist the
+    ! complete patience/best-state machine.  The callback sequence is an
+    ! independent known-answer oracle: the best validation point is step 1,
+    ! then two non-improving steps trigger restoration and an early stop.
+    options = trainer_options_t()
+    options%optimizer = FORTML_TRAIN_SGD
+    options%learning_rate = 0.1_dp
+    options%max_steps = 8
+    options%tolerance = 0.0_dp
+    options%step_tolerance = 0.0_dp
+    options%objective_tolerance = 0.0_dp
+    options%validation_patience = 2
+    options%validation_min_delta = 0.0_dp
+    options%validation_restore_best = .true.
+    options%validation_callback => validation_curve
+    call trainer%initialize(objective, [0.0_dp, 1.0_dp], status, options)
+    call check(status_ok(status), "validation trainer initialization", failures)
+    call trainer%fit(status)
+    validation_state = trainer%state_copy()
+    call check(status_ok(status) .and. validation_state%stopped_by_validation .and. &
+        validation_state%steps == 3 .and. validation_state%validation_best_step == 1 .and. &
+        validation_state%validation_bad_steps == 2 .and. &
+        validation_state%validation_history_length == 4 .and. &
+        abs(validation_state%best_validation_value - 0.2_dp) < 1.0e-14_dp, &
+        "validation patience records best step and early stop", failures)
+    call validation_reference%initialize(objective, [0.0_dp, 1.0_dp], status, &
+        options_without_validation())
+    call validation_reference%step(status)
+    validation_best_parameters = validation_reference%parameters()
+    call check(status_ok(status) .and. maxval(abs(trainer%parameters() - &
+        validation_best_parameters)) < 1.0e-14_dp, &
+        "validation restore-best returns the independent best parameters", failures)
+
+    call checkpointed%initialize(objective, [0.0_dp, 1.0_dp], status, options)
+    call checkpointed%step(status)
+    call checkpointed%save_checkpoint(validation_checkpoint_path, status)
+    call check(status_ok(status), "validation checkpoint save", failures)
+    call resumed%initialize(objective, [0.0_dp, 1.0_dp], status, options)
+    call resumed%load_checkpoint(validation_checkpoint_path, status)
+    call check(status_ok(status), "validation checkpoint load", failures)
+    call checkpointed%step(status)
+    call resumed%step(status)
+    call checkpointed%step(status)
+    call resumed%step(status)
+    baseline_state = checkpointed%state_copy()
+    validation_state = resumed%state_copy()
+    call check(status_ok(status) .and. maxval(abs(checkpointed%parameters() - &
+        resumed%parameters())) < 1.0e-14_dp .and. &
+        validation_state%stopped_by_validation .and. &
+        maxval(abs(baseline_state%validation_history(: &
+        baseline_state%validation_history_length) - &
+        validation_state%validation_history(:validation_state%validation_history_length))) < 1.0e-14_dp, &
+        "validation checkpoint continuation preserves diagnostics", failures)
+    call baseline%initialize(objective, [0.0_dp, 1.0_dp], status, &
+        options_without_validation())
+    validation_before_load = baseline%parameters()
+    call baseline%load_checkpoint(validation_checkpoint_path, status)
+    call check(.not. status_ok(status) .and. maxval(abs(validation_before_load - &
+        baseline%parameters())) < 1.0e-14_dp, &
+        "validation callback absence is a transactional refusal", failures)
+    open (unit=90, file=validation_checkpoint_path, status="old")
+    close (90, status="delete")
+
     if (failures /= 0) then
         write (error_unit, '(a,i0)') "FAIL trainer cases: ", failures
         error stop 1
@@ -235,6 +302,41 @@ program test_trainer
     write (*, '(a)') "PASS model-agnostic trainer independent quadratic oracle"
 
 contains
+
+    function options_without_validation() result(settings)
+        type(trainer_options_t) :: settings
+
+        settings = trainer_options_t()
+        settings%optimizer = FORTML_TRAIN_SGD
+        settings%learning_rate = 0.1_dp
+        settings%max_steps = 8
+        settings%tolerance = 0.0_dp
+        settings%step_tolerance = 0.0_dp
+        settings%objective_tolerance = 0.0_dp
+    end function options_without_validation
+
+    subroutine validation_curve(step, parameters, validation_value, status)
+        integer, intent(in) :: step
+        real(dp), intent(in) :: parameters(:)
+        real(dp), intent(out) :: validation_value
+        type(fortnum_status_t), intent(out) :: status
+
+        if (size(parameters) /= 2) then
+            call status_set(status, 1, "validation curve: parameter shape")
+            return
+        end if
+        select case (step)
+        case (0)
+            validation_value = 0.4_dp
+        case (1)
+            validation_value = 0.2_dp
+        case (2)
+            validation_value = 0.25_dp
+        case default
+            validation_value = 0.3_dp
+        end select
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine validation_curve
 
     subroutine quadratic_objective(x, value, gradient, status)
         real(dp), intent(in) :: x(:)

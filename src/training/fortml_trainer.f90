@@ -35,7 +35,7 @@ module fortml_trainer
     integer, parameter, public :: FORTML_TRAIN_LION = 8
     character(*), parameter, public :: FORTML_TRAINER_CHECKPOINT_MAGIC = &
         "FORTML_TRAINER_CHECKPOINT_TEXT"
-    integer, parameter, public :: FORTML_TRAINER_CHECKPOINT_SCHEMA_VERSION = 3
+    integer, parameter, public :: FORTML_TRAINER_CHECKPOINT_SCHEMA_VERSION = 4
 
     abstract interface
         subroutine trainer_step_callback_proc(step, value, gradient_norm, stop, status)
@@ -45,6 +45,14 @@ module fortml_trainer
             logical, intent(out) :: stop
             type(fortnum_status_t), intent(out) :: status
         end subroutine trainer_step_callback_proc
+
+        subroutine trainer_validation_callback_proc(step, parameters, validation_value, status)
+            import :: dp, fortnum_status_t
+            integer, intent(in) :: step
+            real(dp), intent(in) :: parameters(:)
+            real(dp), intent(out) :: validation_value
+            type(fortnum_status_t), intent(out) :: status
+        end subroutine trainer_validation_callback_proc
     end interface
 
     type, public :: trainer_options_t
@@ -71,8 +79,12 @@ module fortml_trainer
         real(dp) :: ema_decay = 0.0_dp
         logical :: use_bounds = .false.
         real(dp), allocatable :: lower(:), upper(:)
+        integer :: validation_patience = 0
+        real(dp) :: validation_min_delta = 0.0_dp
+        logical :: validation_restore_best = .false.
         type(lbfgsb_options_t) :: lbfgsb
         procedure(trainer_step_callback_proc), pointer, nopass :: callback => null()
+        procedure(trainer_validation_callback_proc), pointer, nopass :: validation_callback => null()
     end type trainer_options_t
 
     type, public :: trainer_state_t
@@ -82,16 +94,24 @@ module fortml_trainer
         logical :: initialized = .false.
         logical :: converged = .false.
         logical :: stopped_by_callback = .false.
+        logical :: stopped_by_validation = .false.
         integer :: clipped_steps = 0
+        integer :: validation_history_length = 0
+        integer :: validation_bad_steps = 0
+        integer :: validation_best_step = 0
         real(dp) :: initial_value = huge(1.0_dp)
         real(dp) :: final_value = huge(1.0_dp)
         real(dp) :: best_value = huge(1.0_dp)
         real(dp) :: gradient_norm = huge(1.0_dp)
         real(dp) :: last_step_norm = huge(1.0_dp)
+        real(dp) :: validation_value = huge(1.0_dp)
+        real(dp) :: best_validation_value = huge(1.0_dp)
         real(dp), allocatable :: parameters(:)
         real(dp), allocatable :: ema_parameters(:)
         real(dp), allocatable :: value_history(:)
         real(dp), allocatable :: gradient_norm_history(:)
+        real(dp), allocatable :: validation_history(:)
+        real(dp), allocatable :: validation_best_parameters(:)
     contains
         procedure, public :: clear => trainer_state_clear
     end type trainer_state_t
@@ -124,6 +144,7 @@ module fortml_trainer
     end type trainer_t
 
     public :: trainer_step_callback_proc
+    public :: trainer_validation_callback_proc
 
 contains
 
@@ -149,6 +170,12 @@ contains
         if (present(options)) settings = options
         call validate_options(settings, objective%n_parameters, status)
         if (status%code /= FORTNUM_OK) return
+        if (settings%optimizer == FORTML_TRAIN_LBFGSB .and. &
+            associated(settings%validation_callback)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "trainer: validation callback is unavailable for L-BFGS-B")
+            return
+        end if
         n = size(initial)
         if (n < 1 .or. n /= objective%n_parameters .or. &
             any(.not. ieee_is_finite(initial))) then
@@ -163,11 +190,15 @@ contains
         self%state%initialized = .true.
         allocate(self%state%parameters(n), self%state%ema_parameters(n), &
             self%state%value_history(settings%max_steps + 1), &
-            self%state%gradient_norm_history(settings%max_steps + 1))
+            self%state%gradient_norm_history(settings%max_steps + 1), &
+            self%state%validation_history(settings%max_steps + 1), &
+            self%state%validation_best_parameters(n))
         self%state%parameters = initial
         self%state%ema_parameters = initial
         self%state%value_history = huge(1.0_dp)
         self%state%gradient_norm_history = huge(1.0_dp)
+        self%state%validation_history = huge(1.0_dp)
+        self%state%validation_best_parameters = initial
 
         allocate(initial_gradient(n))
         call objective%value_gradient(initial, initial_value, initial_gradient, status)
@@ -186,6 +217,19 @@ contains
         self%state%value_history(1) = initial_value
         self%state%gradient_norm_history(1) = self%state%gradient_norm
         self%state%history_length = 1
+        if (associated(settings%validation_callback)) then
+            call settings%validation_callback(0, initial, self%state%validation_value, status)
+            if (status%code /= FORTNUM_OK) return
+            if (.not. ieee_is_finite(self%state%validation_value)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "trainer: validation callback returned a non-finite value")
+                return
+            end if
+            self%state%best_validation_value = self%state%validation_value
+            self%state%validation_history(1) = self%state%validation_value
+            self%state%validation_history_length = 1
+            self%state%validation_best_step = 0
+        end if
 
         select case (settings%optimizer)
         case (FORTML_TRAIN_SGD)
@@ -229,7 +273,7 @@ contains
 
         real(dp), allocatable :: gradient(:), before(:)
         real(dp) :: value, norm, scale, step_norm, new_value
-        logical :: stop
+        logical :: stop, validation_stop
 
         if (.not. self%ready .or. .not. self%state%initialized) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -256,6 +300,9 @@ contains
             self%state%gradient_norm = norm
             self%state%final_value = value
             call record_history(self, value, norm)
+            call record_validation(self, validation_stop, status)
+            if (status%code /= FORTNUM_OK) return
+            if (validation_stop) self%state%stopped_by_validation = .true.
             call status_set(status, FORTNUM_OK, "")
             return
         end if
@@ -326,6 +373,8 @@ contains
         if (self%state%steps == 1) self%state%initial_value = value
         self%state%best_value = min(self%state%best_value, new_value)
         call record_history(self, new_value, norm)
+        call record_validation(self, validation_stop, status)
+        if (status%code /= FORTNUM_OK) return
         if (step_norm <= self%options%step_tolerance .or. &
             abs(value - new_value) <= self%options%objective_tolerance) then
             self%state%converged = .true.
@@ -336,6 +385,7 @@ contains
             if (status%code /= FORTNUM_OK) return
             if (stop) self%state%stopped_by_callback = .true.
         end if
+        if (validation_stop) self%state%stopped_by_validation = .true.
         call status_set(status, FORTNUM_OK, "")
     end subroutine trainer_step
 
@@ -384,9 +434,11 @@ contains
         do i = self%state%steps + 1, self%options%max_steps
             call self%step(status)
             if (status%code /= FORTNUM_OK) return
-            if (self%state%converged .or. self%state%stopped_by_callback) exit
+            if (self%state%converged .or. self%state%stopped_by_callback .or. &
+                self%state%stopped_by_validation) exit
         end do
         if (.not. self%state%converged .and. .not. self%state%stopped_by_callback .and. &
+            .not. self%state%stopped_by_validation .and. &
             self%state%steps >= self%options%max_steps) then
             call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
                 "trainer: maximum steps reached before convergence")
@@ -493,6 +545,14 @@ contains
         if (ios == 0) call write_r(unit, "objective_tolerance", self%options%objective_tolerance, ios)
         if (ios == 0) call write_r(unit, "ema_decay", self%options%ema_decay, ios)
         if (ios == 0) call write_l(unit, "use_bounds", self%options%use_bounds, ios)
+        if (ios == 0) call write_i(unit, "validation_patience", &
+            self%options%validation_patience, ios)
+        if (ios == 0) call write_r(unit, "validation_min_delta", &
+            self%options%validation_min_delta, ios)
+        if (ios == 0) call write_l(unit, "validation_restore_best", &
+            self%options%validation_restore_best, ios)
+        if (ios == 0) call write_l(unit, "validation_callback_present", &
+            associated(self%options%validation_callback), ios)
         if (ios == 0) call write_i(unit, "lbfgsb_memory", self%options%lbfgsb%memory, ios)
         if (ios == 0) call write_i(unit, "lbfgsb_max_iterations", self%options%lbfgsb%max_iterations, ios)
         if (ios == 0) call write_i(unit, "lbfgsb_max_line_search", self%options%lbfgsb%max_line_search, ios)
@@ -514,18 +574,33 @@ contains
         if (ios == 0) call write_l(unit, "initialized", self%state%initialized, ios)
         if (ios == 0) call write_l(unit, "converged", self%state%converged, ios)
         if (ios == 0) call write_l(unit, "stopped_by_callback", self%state%stopped_by_callback, ios)
+        if (ios == 0) call write_l(unit, "stopped_by_validation", self%state%stopped_by_validation, ios)
         if (ios == 0) call write_i(unit, "clipped_steps", self%state%clipped_steps, ios)
+        if (ios == 0) call write_i(unit, "validation_history_length", &
+            self%state%validation_history_length, ios)
+        if (ios == 0) call write_i(unit, "validation_bad_steps", &
+            self%state%validation_bad_steps, ios)
+        if (ios == 0) call write_i(unit, "validation_best_step", &
+            self%state%validation_best_step, ios)
         if (ios == 0) call write_r(unit, "initial_value", self%state%initial_value, ios)
         if (ios == 0) call write_r(unit, "final_value", self%state%final_value, ios)
         if (ios == 0) call write_r(unit, "best_value", self%state%best_value, ios)
         if (ios == 0) call write_r(unit, "gradient_norm", self%state%gradient_norm, ios)
         if (ios == 0) call write_r(unit, "last_step_norm", self%state%last_step_norm, ios)
+        if (ios == 0) call write_r(unit, "validation_value", &
+            self%state%validation_value, ios)
+        if (ios == 0) call write_r(unit, "best_validation_value", &
+            self%state%best_validation_value, ios)
         if (ios == 0) call write_r_array(unit, "parameters", self%state%parameters, ios)
         if (ios == 0) call write_r_array(unit, "ema_parameters", self%state%ema_parameters, ios)
         if (ios == 0) call write_r_array(unit, "value_history", &
             self%state%value_history(:self%state%history_length), ios)
         if (ios == 0) call write_r_array(unit, "gradient_norm_history", &
             self%state%gradient_norm_history(:self%state%history_length), ios)
+        if (ios == 0) call write_r_array(unit, "validation_history", &
+            self%state%validation_history(:self%state%validation_history_length), ios)
+        if (ios == 0) call write_r_array(unit, "validation_best_parameters", &
+            self%state%validation_best_parameters, ios)
 
         if (ios == 0) then
             select case (self%options%optimizer)
@@ -577,7 +652,8 @@ contains
         type(trainer_state_t) :: state
         character(len=256) :: line
         integer :: unit, ios, close_ios, schema, n, history_length, optimizer_step
-        logical :: callback_present
+        integer :: validation_history_length
+        logical :: callback_present, validation_callback_present
         real(dp), allocatable :: vector(:), payload1(:), payload2(:), payload3(:)
 
         if (.not. self%ready .or. .not. self%state%initialized) then
@@ -618,6 +694,14 @@ contains
         if (ios == 0) call read_r(unit, "objective_tolerance", options%objective_tolerance, ios)
         if (ios == 0) call read_r(unit, "ema_decay", options%ema_decay, ios)
         if (ios == 0) call read_l(unit, "use_bounds", options%use_bounds, ios)
+        if (ios == 0) call read_i(unit, "validation_patience", &
+            options%validation_patience, ios)
+        if (ios == 0) call read_r(unit, "validation_min_delta", &
+            options%validation_min_delta, ios)
+        if (ios == 0) call read_l(unit, "validation_restore_best", &
+            options%validation_restore_best, ios)
+        if (ios == 0) call read_l(unit, "validation_callback_present", &
+            validation_callback_present, ios)
         if (ios == 0) call read_i(unit, "lbfgsb_memory", options%lbfgsb%memory, ios)
         if (ios == 0) call read_i(unit, "lbfgsb_max_iterations", options%lbfgsb%max_iterations, ios)
         if (ios == 0) call read_i(unit, "lbfgsb_max_line_search", options%lbfgsb%max_line_search, ios)
@@ -642,14 +726,29 @@ contains
         if (ios == 0) call read_l(unit, "initialized", state%initialized, ios)
         if (ios == 0) call read_l(unit, "converged", state%converged, ios)
         if (ios == 0) call read_l(unit, "stopped_by_callback", state%stopped_by_callback, ios)
+        if (ios == 0) call read_l(unit, "stopped_by_validation", &
+            state%stopped_by_validation, ios)
         if (ios == 0) call read_i(unit, "clipped_steps", state%clipped_steps, ios)
+        if (ios == 0) call read_i(unit, "validation_history_length", &
+            validation_history_length, ios)
+        if (ios == 0) state%validation_history_length = validation_history_length
+        if (ios == 0) call read_i(unit, "validation_bad_steps", &
+            state%validation_bad_steps, ios)
+        if (ios == 0) call read_i(unit, "validation_best_step", &
+            state%validation_best_step, ios)
         if (ios == 0) call read_r(unit, "initial_value", state%initial_value, ios)
         if (ios == 0) call read_r(unit, "final_value", state%final_value, ios)
         if (ios == 0) call read_r(unit, "best_value", state%best_value, ios)
         if (ios == 0) call read_r(unit, "gradient_norm", state%gradient_norm, ios)
         if (ios == 0) call read_r(unit, "last_step_norm", state%last_step_norm, ios)
+        if (ios == 0) call read_r(unit, "validation_value", state%validation_value, ios)
+        if (ios == 0) call read_r(unit, "best_validation_value", &
+            state%best_validation_value, ios)
         if (ios /= 0 .or. .not. state%initialized .or. history_length < 1 .or. &
-            history_length > options%max_steps + 1 .or. state%steps < 0) goto 900
+            history_length > options%max_steps + 1 .or. state%steps < 0 .or. &
+            validation_history_length < 0 .or. &
+            validation_history_length > options%max_steps + 1 .or. &
+            state%validation_bad_steps < 0 .or. state%validation_best_step < 0) goto 900
         state%n_parameters = n
         call read_r_array(unit, "parameters_count", "parameters_item", n, state%parameters, ios)
         if (ios == 0) call read_r_array(unit, "ema_parameters_count", "ema_parameters_item", n, state%ema_parameters, ios)
@@ -667,6 +766,18 @@ contains
             state%gradient_norm_history(:history_length) = vector
             deallocate(vector)
         end if
+        if (ios == 0) call read_r_array(unit, "validation_history_count", &
+            "validation_history_item", validation_history_length, vector, ios)
+        if (ios == 0) then
+            allocate(state%validation_history(options%max_steps + 1))
+            state%validation_history = huge(1.0_dp)
+            if (validation_history_length > 0) then
+                state%validation_history(:validation_history_length) = vector
+            end if
+            deallocate(vector)
+        end if
+        if (ios == 0) call read_r_array(unit, "validation_best_parameters_count", &
+            "validation_best_parameters_item", n, state%validation_best_parameters, ios)
         if (ios /= 0) goto 900
         select case (options%optimizer)
         case (FORTML_TRAIN_SGD)
@@ -700,17 +811,32 @@ contains
         close (unit, iostat=close_ios)
         if (close_ios /= 0) goto 900
         if (options%optimizer == FORTML_TRAIN_LBFGSB) goto 900
-        call validate_options(options, n, status)
-        if (status%code /= FORTNUM_OK) return
         if (callback_present .and. .not. associated(self%options%callback)) then
             ! A callback is process-local and cannot be reconstructed from text.
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "trainer checkpoint load: callback must be attached by caller")
             return
         end if
+        if (validation_callback_present .and. &
+            .not. associated(self%options%validation_callback)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "trainer checkpoint load: validation callback must be attached by caller")
+            return
+        end if
+        if (.not. validation_callback_present .and. &
+            associated(self%options%validation_callback)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "trainer checkpoint load: validation callback presence changed")
+            return
+        end if
+        if (associated(self%options%callback)) options%callback => self%options%callback
+        if (associated(self%options%validation_callback)) then
+            options%validation_callback => self%options%validation_callback
+        end if
+        call validate_options(options, n, status)
+        if (status%code /= FORTNUM_OK) return
         call restore_optimizer(self, options, state, optimizer_step, payload1, payload2, payload3, status)
         if (status%code /= FORTNUM_OK) return
-        if (associated(self%options%callback)) options%callback => self%options%callback
         self%options = options
         self%state = state
         self%ready = .true.
@@ -746,7 +872,9 @@ contains
         if (.not. allocated(self%state%parameters) .or. &
             .not. allocated(self%state%ema_parameters) .or. &
             .not. allocated(self%state%value_history) .or. &
-            .not. allocated(self%state%gradient_norm_history)) then
+            .not. allocated(self%state%gradient_norm_history) .or. &
+            .not. allocated(self%state%validation_history) .or. &
+            .not. allocated(self%state%validation_best_parameters)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "trainer checkpoint save: state is malformed or non-finite")
             return
@@ -756,15 +884,27 @@ contains
             size(self%state%parameters) /= n .or. size(self%state%ema_parameters) /= n .or. &
             size(self%state%value_history) /= self%options%max_steps + 1 .or. &
             size(self%state%gradient_norm_history) /= self%options%max_steps + 1 .or. &
+            size(self%state%validation_history) /= self%options%max_steps + 1 .or. &
+            size(self%state%validation_best_parameters) /= n .or. &
+            self%state%validation_history_length < 0 .or. &
+            self%state%validation_history_length > self%options%max_steps + 1 .or. &
+            self%state%validation_bad_steps < 0 .or. &
+            self%state%validation_best_step < 0 .or. &
             any(.not. ieee_is_finite(self%state%parameters)) .or. &
             any(.not. ieee_is_finite(self%state%ema_parameters)) .or. &
             any(.not. ieee_is_finite(self%state%value_history(:h))) .or. &
             any(.not. ieee_is_finite(self%state%gradient_norm_history(:h))) .or. &
+            any(.not. ieee_is_finite(self%state%validation_best_parameters)) .or. &
+            (self%state%validation_history_length > 0 .and. &
+                any(.not. ieee_is_finite(self%state%validation_history(: &
+                self%state%validation_history_length)))) .or. &
             .not. ieee_is_finite(self%state%initial_value) .or. &
             .not. ieee_is_finite(self%state%final_value) .or. &
             .not. ieee_is_finite(self%state%best_value) .or. &
             .not. ieee_is_finite(self%state%gradient_norm) .or. &
-            .not. ieee_is_finite(self%state%last_step_norm)) then
+            .not. ieee_is_finite(self%state%last_step_norm) .or. &
+            .not. ieee_is_finite(self%state%validation_value) .or. &
+            .not. ieee_is_finite(self%state%best_validation_value)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "trainer checkpoint save: state is malformed or non-finite")
             return
@@ -959,16 +1099,24 @@ contains
         self%initialized = .false.
         self%converged = .false.
         self%stopped_by_callback = .false.
+        self%stopped_by_validation = .false.
         self%clipped_steps = 0
+        self%validation_history_length = 0
+        self%validation_bad_steps = 0
+        self%validation_best_step = 0
         self%initial_value = huge(1.0_dp)
         self%final_value = huge(1.0_dp)
         self%best_value = huge(1.0_dp)
         self%gradient_norm = huge(1.0_dp)
         self%last_step_norm = huge(1.0_dp)
+        self%validation_value = huge(1.0_dp)
+        self%best_validation_value = huge(1.0_dp)
         if (allocated(self%parameters)) deallocate(self%parameters)
         if (allocated(self%ema_parameters)) deallocate(self%ema_parameters)
         if (allocated(self%value_history)) deallocate(self%value_history)
         if (allocated(self%gradient_norm_history)) deallocate(self%gradient_norm_history)
+        if (allocated(self%validation_history)) deallocate(self%validation_history)
+        if (allocated(self%validation_best_parameters)) deallocate(self%validation_best_parameters)
     end subroutine trainer_state_clear
 
     subroutine record_history(self, value, gradient_norm)
@@ -990,6 +1138,62 @@ contains
             self%state%gradient_norm_history(index) = gradient_norm
         end if
     end subroutine record_history
+
+    subroutine record_validation(self, stop, status)
+        !! Evaluate the process-local validation metric and update its state.
+        !! The callback receives the current parameter vector and owns the
+        !! validation data.  A patience boundary is transactional: when it
+        !! fires, optional best-parameter restoration happens before the
+        !! trainer reports the stop.
+        class(trainer_t), intent(inout) :: self
+        logical, intent(out) :: stop
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: value
+        integer :: index
+
+        stop = .false.
+        if (.not. associated(self%options%validation_callback)) then
+            call status_set(status, FORTNUM_OK, "")
+            return
+        end if
+        call self%options%validation_callback(self%state%steps, &
+            self%state%parameters, value, status)
+        if (status%code /= FORTNUM_OK) return
+        if (.not. ieee_is_finite(value)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "trainer: validation callback returned a non-finite value")
+            return
+        end if
+        self%state%validation_value = value
+        index = min(self%state%steps + 1, size(self%state%validation_history))
+        if (self%state%validation_history_length == 0) then
+            self%state%validation_history(1) = value
+            self%state%validation_history_length = 1
+        else if (index > self%state%validation_history_length) then
+            self%state%validation_history(index) = value
+            self%state%validation_history_length = index
+        else
+            self%state%validation_history(index) = value
+        end if
+
+        if (value < self%state%best_validation_value - self%options%validation_min_delta) then
+            self%state%best_validation_value = value
+            self%state%validation_best_step = self%state%steps
+            self%state%validation_bad_steps = 0
+            self%state%validation_best_parameters = self%state%parameters
+        else
+            self%state%validation_bad_steps = self%state%validation_bad_steps + 1
+        end if
+        if (self%options%validation_patience > 0) then
+            if (self%state%validation_bad_steps >= self%options%validation_patience) then
+                stop = .true.
+                if (self%options%validation_restore_best) then
+                    self%state%parameters = self%state%validation_best_parameters
+                end if
+            end if
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine record_validation
 
     subroutine validate_options(options, n_parameters, status)
         type(trainer_options_t), intent(in) :: options
@@ -1037,6 +1241,25 @@ contains
                     "trainer: bounds are missing, nonfinite, or inconsistent")
                 return
             end if
+        end if
+        if (options%validation_patience < 0 .or. &
+            .not. ieee_is_finite(options%validation_min_delta) .or. &
+            options%validation_min_delta < 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "trainer: validation patience or minimum delta is invalid")
+            return
+        end if
+        if (options%validation_restore_best .and. &
+            .not. associated(options%validation_callback)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "trainer: validation restore-best requires a validation callback")
+            return
+        end if
+        if (options%validation_patience > 0 .and. &
+            .not. associated(options%validation_callback)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "trainer: validation patience requires a validation callback")
+            return
         end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine validate_options
