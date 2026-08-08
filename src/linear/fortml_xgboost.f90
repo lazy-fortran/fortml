@@ -26,7 +26,7 @@ module fortml_xgboost
     integer, parameter, public :: XGB_TREE_HIST = 2
     character(*), parameter, public :: XGB_MODEL_TEXT_MAGIC = &
         "FORTML_XGBOOST_TEXT"
-    integer, parameter, public :: XGB_MODEL_TEXT_SCHEMA_VERSION = 1
+    integer, parameter, public :: XGB_MODEL_TEXT_SCHEMA_VERSION = 2
     integer, parameter :: XGB_MAX_SERIALIZED_NODES = 1000000
 
     public :: xgb_pairwise_loss, xgb_pairwise_derivatives
@@ -49,6 +49,11 @@ module fortml_xgboost
     !> are enforced per tree by propagating leaf-value bounds through every
     !> recursive split.  Fit remains piecewise/discrete; input products keep
     !> the existing split-boundary refusal contract.
+    !>
+    !> `interaction_groups`, when allocated, assigns each feature to an
+    !> interaction group. A zero entry leaves that feature unconstrained;
+    !> after a positive-group feature is used on a root-to-leaf path, all
+    !> descendant splits on that path must use features from the same group.
     type, public :: xgboost_options_t
         integer :: n_estimators = 50
         integer :: max_depth = 1
@@ -82,6 +87,7 @@ module fortml_xgboost
         !! Positive local stream seed for deterministic row/feature sampling.
         integer(int64) :: seed = 104729_int64
         integer, allocatable :: monotone_constraints(:)
+        integer, allocatable :: interaction_groups(:)
     end type xgboost_options_t
 
     type :: xgb_tree_t
@@ -137,6 +143,7 @@ module fortml_xgboost
         logical :: early_stopped_flag = .false.
         integer :: missing_code = XGB_MISSING_ERROR
         integer, allocatable :: monotone_constraints(:)
+        integer, allocatable :: interaction_groups(:)
         type(xgb_tree_t), allocatable :: estimators(:)
         logical :: initialized = .false.
     contains
@@ -189,6 +196,7 @@ module fortml_xgboost
         procedure, public :: max_bin_count => xgb_max_bin_count
         procedure, public :: accepts_missing => xgb_accepts_missing
         procedure, public :: monotone_constraint => xgb_monotone_constraint
+        procedure, public :: interaction_group => xgb_interaction_group
         procedure, public :: fitted => xgb_fitted
         procedure, public :: best_iteration => xgb_best_iteration
         procedure, public :: best_validation_loss => xgb_best_validation_loss
@@ -358,6 +366,14 @@ contains
                 any(abs(settings%monotone_constraints) > 1)) then
                 call status_set(status, FORTNUM_DOMAIN_ERROR, &
                     "xgboost fit: monotone_constraints must have one entry per feature in {-1,0,1}")
+                return
+            end if
+        end if
+        if (allocated(settings%interaction_groups)) then
+            if (size(settings%interaction_groups) /= n_features .or. &
+                any(settings%interaction_groups < 0)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "xgboost fit: interaction_groups must have one nonnegative entry per feature")
                 return
             end if
         end if
@@ -635,6 +651,11 @@ contains
         if (allocated(settings%monotone_constraints)) then
             self%monotone_constraints = settings%monotone_constraints
         end if
+        allocate(self%interaction_groups(n_features))
+        self%interaction_groups = 0
+        if (allocated(settings%interaction_groups)) then
+            self%interaction_groups = settings%interaction_groups
+        end if
         self%initialized = .true.
         call status_set(status, FORTNUM_OK, "")
     end subroutine xgb_fit
@@ -674,7 +695,8 @@ contains
         logical :: have_validation, improved, is_ranking, early_stop
 
         if (.not. self%initialized .or. .not. allocated(self%estimators) .or. &
-            .not. allocated(self%monotone_constraints)) then
+            .not. allocated(self%monotone_constraints) .or. &
+            .not. allocated(self%interaction_groups)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "xgboost warm start: source is not a valid fitted model")
             return
@@ -727,6 +749,23 @@ contains
         else if (any(self%monotone_constraints /= 0)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "xgboost warm start: monotone constraints must be supplied unchanged")
+            return
+        end if
+        if (allocated(settings%interaction_groups)) then
+            if (size(settings%interaction_groups) /= self%n_inputs .or. &
+                any(settings%interaction_groups < 0)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "xgboost warm start: interaction groups are invalid")
+                return
+            end if
+            if (any(settings%interaction_groups /= self%interaction_groups)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "xgboost warm start: interaction groups differ from the fitted model")
+                return
+            end if
+        else if (any(self%interaction_groups /= 0)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost warm start: interaction groups must be supplied unchanged")
             return
         end if
         if (objective_code == XGB_OBJECTIVE_HUBER .and. &
@@ -1784,13 +1823,15 @@ contains
         integer :: i
 
         if (.not. self%initialized .or. .not. allocated(self%estimators) .or. &
-            .not. allocated(self%monotone_constraints)) then
+            .not. allocated(self%monotone_constraints) .or. &
+            .not. allocated(self%interaction_groups)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "xgboost slice: source is not a valid fitted ensemble")
             return
         end if
         if (self%n_estimators < 1 .or. size(self%estimators) /= self%n_estimators .or. &
             size(self%monotone_constraints) /= self%n_inputs .or. &
+            size(self%interaction_groups) /= self%n_inputs .or. &
             n_trees < 1 .or. n_trees > self%n_estimators) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "xgboost slice: requested prefix is invalid")
@@ -1831,6 +1872,8 @@ contains
         candidate%missing_code = self%missing_code
         allocate(candidate%monotone_constraints(self%n_inputs))
         candidate%monotone_constraints = self%monotone_constraints
+        allocate(candidate%interaction_groups(self%n_inputs))
+        candidate%interaction_groups = self%interaction_groups
         allocate(candidate%estimators(n_trees))
         candidate%estimators = self%estimators(:n_trees)
         candidate%initialized = .true.
@@ -2082,6 +2125,18 @@ contains
         value = self%monotone_constraints(feature_index)
     end function xgb_monotone_constraint
 
+    integer function xgb_interaction_group(self, feature_index) result(value)
+        !! Return the interaction-group label for one feature. Zero denotes
+        !! an unconstrained feature; invalid or unfitted queries return zero.
+        class(xgboost_t), intent(in) :: self
+        integer, intent(in) :: feature_index
+
+        value = 0
+        if (.not. self%initialized .or. .not. allocated(self%interaction_groups)) return
+        if (feature_index < 1 .or. feature_index > size(self%interaction_groups)) return
+        value = self%interaction_groups(feature_index)
+    end function xgb_interaction_group
+
     logical function xgb_fitted(self) result(fitted)
         class(xgboost_t), intent(in) :: self
         fitted = self%initialized
@@ -2141,9 +2196,20 @@ contains
                 "xgboost save_text: model is not a valid fitted ensemble")
             return
         end if
+        if (.not. allocated(self%interaction_groups)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost save_text: model is not a valid fitted ensemble")
+            return
+        end if
         if (size(self%monotone_constraints) /= self%n_inputs) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "xgboost save_text: model is not a valid fitted ensemble")
+            return
+        end if
+        if (size(self%interaction_groups) /= self%n_inputs .or. &
+            any(self%interaction_groups < 0)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost save_text: model contains invalid interaction groups")
             return
         end if
         do i = 1, self%n_estimators
@@ -2207,6 +2273,12 @@ contains
             if (ios /= 0) exit
             call xgb_write_i(unit, "monotone_item", self%monotone_constraints(i), ios)
         end do
+        if (ios == 0) call xgb_write_i(unit, "interaction_count", &
+            size(self%interaction_groups), ios)
+        do i = 1, self%n_inputs
+            if (ios /= 0) exit
+            call xgb_write_i(unit, "interaction_item", self%interaction_groups(i), ios)
+        end do
         if (ios == 0) call xgb_write_i(unit, "tree_count", self%n_estimators, ios)
         do i = 1, self%n_estimators
             if (ios /= 0) exit
@@ -2235,6 +2307,7 @@ contains
         type(xgboost_t) :: candidate
         character(len=256) :: line
         integer :: unit, ios, close_ios, schema, i, tree_count, monotone_count
+        integer :: interaction_count
 
         open(newunit=unit, file=path, status="old", action="read", &
             form="formatted", access="sequential", iostat=ios)
@@ -2294,6 +2367,14 @@ contains
         do i = 1, monotone_count
             call xgb_read_i(unit, "monotone_item", candidate%monotone_constraints(i), ios)
             if (ios /= 0 .or. abs(candidate%monotone_constraints(i)) > 1) goto 900
+        end do
+        call xgb_read_i(unit, "interaction_count", interaction_count, ios)
+        if (ios /= 0 .or. interaction_count /= candidate%n_inputs) goto 900
+        allocate(candidate%interaction_groups(interaction_count), stat=ios)
+        if (ios /= 0) goto 900
+        do i = 1, interaction_count
+            call xgb_read_i(unit, "interaction_item", candidate%interaction_groups(i), ios)
+            if (ios /= 0 .or. candidate%interaction_groups(i) < 0) goto 900
         end do
         call xgb_read_i(unit, "tree_count", tree_count, ios)
         if (ios /= 0 .or. tree_count /= candidate%n_estimators) goto 900
@@ -3110,8 +3191,8 @@ contains
         next_node = 0
         tree%depth = 0
         call build_tree_node(x, gradient, hessian, observation_weight, options, &
-            sample_index, feature_mask, 0, tree, next_node, root, status, -huge(1.0_dp), &
-            huge(1.0_dp))
+            sample_index, feature_mask, feature_mask, 0, tree, next_node, root, status, &
+            -huge(1.0_dp), huge(1.0_dp))
         if (status%code /= FORTNUM_OK) return
         tree%n_nodes = next_node
         tree%feature_index = tree%feature(root)
@@ -3128,19 +3209,21 @@ contains
     end subroutine build_tree
 
     recursive subroutine build_tree_node(x, gradient, hessian, observation_weight, &
-            options, sample_index, feature_mask, depth, tree, next_node, node_id, status, &
-            lower_bound, upper_bound)
+            options, sample_index, feature_mask, path_feature_mask, depth, tree, &
+            next_node, node_id, status, lower_bound, upper_bound)
         real(dp), intent(in) :: x(:, :), gradient(:), hessian(:)
         real(dp), intent(in) :: observation_weight(:)
         type(xgboost_options_t), intent(in) :: options
         integer, intent(in) :: sample_index(:), depth
         logical, intent(in) :: feature_mask(:)
+        logical, intent(in) :: path_feature_mask(:)
         type(xgb_tree_t), intent(inout) :: tree
         integer, intent(inout) :: next_node
         integer, intent(out) :: node_id
         type(fortnum_status_t), intent(out) :: status
         real(dp), intent(in) :: lower_bound, upper_bound
         integer, allocatable :: order(:), left_index(:), right_index(:)
+        logical, allocatable :: left_path_mask(:), right_path_mask(:)
         integer, allocatable :: finite_index(:), candidate_position(:)
         logical, allocatable :: candidate_mask(:)
         real(dp), allocatable :: feature_values(:), finite_values(:)
@@ -3195,7 +3278,8 @@ contains
         best_right_lower = lower_bound
         best_right_upper = upper_bound
         do feature = 1, n_features
-            if (.not. feature_mask(feature)) cycle
+            if (.not. feature_mask(feature) .or. &
+                .not. path_feature_mask(feature)) cycle
             n_finite = 0
             n_missing = 0
             missing_gradient = 0.0_dp
@@ -3371,13 +3455,28 @@ contains
         tree%node_threshold(node_id) = best_threshold
         tree%node_gain(node_id) = best_gain
         tree%missing_left(node_id) = best_missing_left
+        allocate(left_path_mask(n_features), right_path_mask(n_features))
+        left_path_mask = path_feature_mask
+        right_path_mask = path_feature_mask
+        if (interaction_group_for_feature(options, best_feature) > 0) then
+            left_path_mask = .false.
+            right_path_mask = .false.
+            do i = 1, n_features
+                if (feature_mask(i) .and. interaction_group_for_feature(options, i) == &
+                    interaction_group_for_feature(options, best_feature)) then
+                    left_path_mask(i) = .true.
+                    right_path_mask(i) = .true.
+                end if
+            end do
+        end if
         call build_tree_node(x, gradient, hessian, observation_weight, options, &
-            left_index, feature_mask, depth + 1, tree, next_node, left_node, status, &
-            best_left_lower, best_left_upper)
+            left_index, feature_mask, left_path_mask, depth + 1, tree, next_node, &
+            left_node, status, best_left_lower, best_left_upper)
         if (status%code /= FORTNUM_OK) return
         call build_tree_node(x, gradient, hessian, observation_weight, options, &
-            right_index, feature_mask, depth + 1, tree, next_node, right_node, status, &
-            best_right_lower, best_right_upper)
+            right_index, feature_mask, right_path_mask, depth + 1, tree, next_node, &
+            right_node, status, best_right_lower, best_right_upper)
+        deallocate(left_path_mask, right_path_mask)
         if (status%code /= FORTNUM_OK) return
         tree%left_child(node_id) = left_node
         tree%right_child(node_id) = right_node
@@ -3541,6 +3640,17 @@ contains
         if (feature < 1 .or. feature > size(options%monotone_constraints)) return
         value = options%monotone_constraints(feature)
     end function monotone_constraint_for_feature
+
+    integer function interaction_group_for_feature(options, feature) result(value)
+        !! Return zero for an unconstrained feature or absent option vector.
+        type(xgboost_options_t), intent(in) :: options
+        integer, intent(in) :: feature
+
+        value = 0
+        if (.not. allocated(options%interaction_groups)) return
+        if (feature < 1 .or. feature > size(options%interaction_groups)) return
+        value = options%interaction_groups(feature)
+    end function interaction_group_for_feature
 
     logical function valid_query_values(missing_code, x) result(valid)
         integer, intent(in) :: missing_code
