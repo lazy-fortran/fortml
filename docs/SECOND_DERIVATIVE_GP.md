@@ -3,7 +3,7 @@
 `second_derivative_gp_t` is a deliberately small exact-GP reference for scalar
 one-dimensional RBF processes. It accepts one observation row per value,
 first derivative, or second derivative observation. The `orders` vector uses
-`0`, `1`, and `2` for those three operators; the same vector is used for
+`0`, `1`, and `2` for those three operators. The same vector is used for
 prediction and dense latent `joint_covariance` queries. One Cholesky factor is
 shared by every mixed block, so value/gradient/Hessian observations can be
 combined without finite-difference observations.
@@ -23,12 +23,12 @@ call gp%predict(query, query_orders, mean, variance, status)
 ```
 
 The generated RBF covariance uses the exact distance derivatives through
-order four. Query-coordinate JVPs and VJPs use the fifth distance derivative;
+order four. Query-coordinate JVPs and VJPs use the fifth distance derivative.
 the VJP satisfies the ordinary cotangent identity for mean and latent
 variance. `joint_covariance` returns the posterior latent covariance and does
 not add observation noise. Parameters are the packed
 `[log(variance), log(lengthscale), log(noise_variance)]` state for metadata
-and interoperability; hyperparameter products are not yet exposed by this
+and interoperability. Hyperparameter products are not yet exposed by this
 bounded type.
 
 The implementation is a CPU reference. `predict_device`,
