@@ -54,6 +54,11 @@ program test_mlp_weighted_validation_hypergradient
     parameters = objective%parameters()
     call objective%value_gradient(parameters, value, gradient, status)
     call check(status_ok(status), "weighted value/gradient", failures)
+    call check(abs(value - 1.4998256378050192e-2_dp) < 2.0e-12_dp, &
+        "weighted validation value independent oracle", failures)
+    call check(maxval(abs(gradient - [-6.10401804644091e-2_dp, &
+        1.65088250231663e-3_dp, -8.02196233914802e-2_dp])) < 2.0e-10_dp, &
+        "weighted validation gradient independent oracle", failures)
 
     h = 2.0e-6_dp
     do i = 1, MLP_SGD_MOMENTUM_HYPERPARAMETER_COUNT
@@ -73,6 +78,8 @@ program test_mlp_weighted_validation_hypergradient
     call objective%value_gradient(parameters-h*direction, value_minus, vjp_gradient, status)
     call check(status_ok(status) .and. abs(tangent - (value_plus-value_minus)/(2.0_dp*h)) &
         < 3.0e-6_dp, "weighted validation JVP central difference", failures)
+    call check(abs(tangent - (-2.31440501021786e-2_dp)) < 2.0e-10_dp, &
+        "weighted validation JVP independent oracle", failures)
     call objective%vjp(parameters, 1.7_dp, vjp_gradient, status)
     call objective%value_gradient(parameters, value, gradient, status)
     call check(status_ok(status) .and. maxval(abs(vjp_gradient-1.7_dp*gradient)) < 2.0e-12_dp, &
@@ -94,6 +101,9 @@ program test_mlp_weighted_validation_hypergradient
     call check(status_ok(status) .and. maxval(abs(hvp_product - &
         (hvp_plus-hvp_minus)/(2.0_dp*h))) < 4.0e-6_dp, &
         "uniform validation HVP central-difference oracle", failures)
+    call check(maxval(abs(hvp_product - [3.79430071650692e-2_dp, &
+        -8.46766233519869e-4_dp, 3.37074129459075e-2_dp])) < 4.0e-6_dp, &
+        "uniform validation HVP independent oracle", failures)
 
     validation_weight = [1.0_dp, -1.0_dp, 1.0_dp]
     call objective%initialize(model, train_x, train_target, validation_x, &

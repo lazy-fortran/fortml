@@ -681,7 +681,8 @@ contains
         if (status%code /= FORTNUM_OK) return
         allocate(validation_gradient(n_parameters))
         call mlp_loss_value_gradient(self%model, self%validation_x, self%validation_target, &
-            0.0_dp, value, validation_gradient, l2_gradient, status)
+            0.0_dp, value, validation_gradient, l2_gradient, status, &
+            sample_weight=self%validation_weight)
         if (status%code /= FORTNUM_OK) return
         do parameter_index = 1, MLP_SGD_MOMENTUM_HYPERPARAMETER_COUNT
             gradient(parameter_index) = dot_product(validation_gradient, &
