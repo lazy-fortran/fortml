@@ -16,13 +16,13 @@ gate is still open, so this work does not move or recreate that tag.
 
 | Compiler | Command | Result |
 | --- | --- | --- |
-| GNU Fortran | `fo` | Static build, all 207 behavioral tests, and lint passed at the current FortML/FortAD-main revisions. The compiler still emits non-fatal array-temporary warnings; see [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
-| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded older compiler lane. The checked-in NVIDIA log predates the current 207-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
+| GNU Fortran | `fo` | Static build, all 209 behavioral tests, and lint passed at the current FortML/FortAD-main revisions. The compiler still emits non-fatal array-temporary warnings; see [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
+| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded older compiler lane. The checked-in NVIDIA log predates the current 209-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
 The checked-in GNU compiler log is the fresh 2026-08-08 run against FortML code
-revision `5ff07af43e809b404afb14d015c12bc41f75a595`, FortAD `origin/main` at
-`1f153c304a8fa47119f7b282b83a51214ef6ad25`, and FortNum at
+revision `024aaf763c9531bdca0501643d57991474a68433`, FortAD `origin/main` at
+`e02b59994496c59a194a36066e029f9771c6023b`, and FortNum at
 `38bc0e578ec5c6c0e636e8fdd3844f54f9e3e473`, run from the clean checkout
 under `/mnt/storage/code/lazy-fortran/fortml`. The run includes the
   kernel-catalog, weighted LDA/QDA, robust/absolute XGBoost, neural NLL, random-forest,
@@ -45,7 +45,7 @@ variational-GP objective, multiclass variational-GP prediction/JVPs/VJPs, positi
  training objective. The build emits non-fatal GNU
 array-temporary warnings in FortFront query/generator calls, existing GP
 benchmark boundaries, variational-GP batch conversions, and basis-pipeline
-shape conversions. They are isolated to array construction; all 207 behavioral
+shape conversions. They are isolated to array construction; all 209 behavioral
 tests pass. Lint has zero unused-import findings and the full `fo` lint stage
 passes despite the non-fatal compiler warning corpus. The independent CUDA gate additionally covers the
 resident dense-affine value/JVP/VJP path and its single-layer MSE update with
@@ -54,7 +54,7 @@ compiler coverage remains an
 explicit older-build result.
 
 The companion benchmark harness is clean at FortML-bench revision
-`6eeb9c5cdd1045087aaf2f3434232112de137213`,
+`c21a4749677f9a6fb61c493bd63bf61f0303679f`,
 the trainer-checkpoint, unfactored-Adafactor, binary-objective,
 multiclass-calibration, variational-multiclass-GP, PINN/physics-objective,
 physics HVP, grouped K-fold, spectral-mixture, XGBoost-ranking,
@@ -121,8 +121,8 @@ optimizer-group execution, mixed precision, distributed state, and migration
 remain open. The source and benchmark pins for this earlier optimizer-group
 slice were FortML `05632ce8fa95268417c7a2d979fa1461a202abaa` and
 FortML-bench `0fb8ac7`; the current aggregate verification is the newer
-`5ff07af43e809b404afb14d015c12bc41f75a595`/
-`6eeb9c5cdd1045087aaf2f3434232112de137213` pair recorded above.
+`024aaf763c9531bdca0501643d57991474a68433`/
+`c21a4749677f9a6fb61c493bd63bf61f0303679f` pair recorded above.
 
 The variational-GP classification and OVR wrappers now expose fixed-state
 kernel-log-parameter JVP/VJP products for latent margins and normalized
@@ -540,7 +540,7 @@ only listed as gaps:
 
 The FortBO and FortMC companion pins were rechecked against their remote
 `main` branches on 2026-08-08: FortBO
-`ff1e22809aaf1d1c7a62682adb5817382dacaa06` and FortMC
+`68a73258ac4d36f7655e054efb71b10c2803fe7c` and FortMC
 `4dde0ccdc37b4c331126605406b08e1f3bda4f59`. Their roadmaps remain authoritative
 for acquisition and sampling algorithms; FortML owns the posterior/log-density
 protocols and does not embed sampler or acquisition state. FortBO additionally
@@ -556,7 +556,9 @@ FortSym-generated Gaussian-comparison derivatives, noisy expected improvement,
 joint qEI/qNEI/qUCB batch acquisitions, risk-sensitive and multi-fidelity
 criteria, constrained/cost-aware acquisitions, active-learning and level-set
 design, max-value entropy search, mixed-integer/categorical candidate search,
-per-evaluation benchmark metrics,
+per-evaluation benchmark metrics, asynchronous worker bookkeeping with
+mean/incumbent/worst fantasies and bounded retries, a Bayesian-linear
+posterior provider, and high-dimensional gradient benchmark fixtures,
 FortSym-derived trust-region length rescaling, exact posterior mean and
 standard-deviation Hessians from derivative predictions, and tested TuRBO-1/
 TuRBO-m and DTuRBO mode-2 drivers with deterministic region updates,
@@ -624,7 +626,7 @@ the complete operation graph resident or return a typed refusal; OpenACC is the
 first choice when it preserves semantics, and native CUDA is reserved for
 fixed no-autodiff hot loops where OpenACC cannot.
 
-The dependency pins used by the current GNU verification are FortAD `1f153c3`,
+The dependency pins used by the current GNU verification are FortAD `e02b599`,
 FortSym `873d33f`, and FortOpt `bfbf1fc`, all checked against their remote
 `main` branches on 2026-08-08. Generated derivatives record the exact FortSym
 revision and source hash; model-level autodiff uses the same FortAD `main` pin.
@@ -637,7 +639,7 @@ acquisition work packages:
 
 The companion repositories were checked on 2026-08-08 at FortMC
 `4dde0ccdc37b4c331126605406b08e1f3bda4f59` and FortBO
-`ff1e22809aaf1d1c7a62682adb5817382dacaa06`, both on their `main` branches. The
+`68a73258ac4d36f7655e054efb71b10c2803fe7c`, both on their `main` branches. The
 FortBO pin now includes a versioned capability-gated posterior contract,
 gradient-aware observation history/checkpointing, normalized continuous/integer/
 categorical/mixed/conditional search spaces, a differentiable-coordinate mask,
@@ -655,23 +657,25 @@ trust-region traces, and an
 indefinite-curvature quadratic subproblem, Pareto archives with
 exact hypervolume, scalarizations, machine-readable stopping reasons,
 preference learning, noisy dominance, the FortML derivative-GP input-HVP
-adapter, and FortML value/derivative-GP adapters;
+adapter, FortML value/derivative-GP adapters, asynchronous worker bookkeeping
+with selectable fantasies and bounded retries, a Bayesian-linear posterior
+provider, and fixed-choice/constraint-penalty feasibility utilities;
 refresh these pins when
 their protocol or device contracts change.
 
 The preceding FortBO `4266ce6` pin built and ran 20/20 tests, including
 knowledge-gradient and qEI/qNEI/qUCB batch acquisitions, TuRBO/DTuRBO drivers,
 trust-region trace/rescaling, preference-learning, and noisy-dominance oracles.
-The current `ff1e228` remote registers 25 tests; a clean `fo test` run passes
-13 and reports 12 generated-leaf link failures in the upstream acquisition,
-trust-region, and preference fixtures. FortMC's current
+The current `68a7325` remote registers 31 tests; a clean `fo test` run passes
+31/31, including the feasibility, worker, high-dimensional benchmark,
+acquisition, trust-region, and preference fixtures. FortMC's current
 checkout builds cleanly and reports zero registered
 tests, so its sampler and diagnostics claims remain roadmap items rather than
 FortML verification evidence.
 
 This companion check was repeated from clean source trees on 2026-08-08:
 `origin/main` resolves exactly to the two pins above; FortBO's current clean
-run is the 13-pass/12-link-failure result above, while FortMC has 0 registered
+run is the 31-pass result above, while FortMC has 0 registered
 tests, and neither repository has a
 runtime dependency on the FortSym executable. These are boundary checks, not a
 claim that FortMC samplers or the remaining FortBO policy catalog are shipped.
@@ -3049,7 +3053,7 @@ results as an external literature claim.
   count, and fallback reason in generated-kernel provenance.
 
 The repository snapshot used for this roadmap resolves `fortad` `main` at
-`1f153c304a8fa47119f7b282b83a51214ef6ad25` and `fortsym` `main` at
+`e02b59994496c59a194a36066e029f9771c6023b` and `fortsym` `main` at
 `873d33fa38d0c87d111158bc0be987e1ef1dd58c`. The checked-in RBF HVP/product
 module was generated by FortAD `5e1bfe0`; the RBF primal and first-order leaf
 was generated by FortSym `f71a1aa` (the earlier primal-only leaf remains
