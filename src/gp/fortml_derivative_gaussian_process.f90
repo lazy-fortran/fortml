@@ -3539,10 +3539,12 @@ contains
         real(dp) :: p, p2, p3, radial_first, radial_second, radial_third
         real(dp) :: radial_scale, radial_coefficient, dot_difference
         real(dp) :: variance, lengthscale, alpha, period, inverse_length_squared
+        real(dp) :: envelope_scale, periodic_scale
         real(dp) :: denominator, t, argument, sine_value, cosine_value, pi_over_period
         real(dp) :: cosine_numerator
-        real(dp) :: t1, t2, t3, b, f, rscale, rsecond
+        real(dp) :: t1, t2, t3, b, c, f, rscale, rsecond
         real(dp) :: a, exponential, z
+        real(dp) :: q, a1, a2, a3
         real(dp) :: ard_q(size(x1)), ard_r(size(x1)), ard_a, ard_a_dot
         integer :: i, j
 
@@ -3659,7 +3661,8 @@ contains
             return
         end if
         if (kernel%kind == KERNEL_RBF .or. kernel%kind == KERNEL_PERIODIC .or. &
-            kernel%kind == KERNEL_RATIONAL_QUADRATIC .or. kernel%kind == KERNEL_COSINE) then
+            kernel%kind == KERNEL_RATIONAL_QUADRATIC .or. kernel%kind == KERNEL_COSINE .or. &
+            kernel%kind == KERNEL_LOCAL_PERIODIC) then
             variance = exp(kernel%log_parameters(1))
             lengthscale = exp(kernel%log_parameters(2))
             if (kernel%kind == KERNEL_RBF) then
@@ -3696,6 +3699,53 @@ contains
                 p2 = value*(alpha + 1.0_dp)/(4.0_dp*alpha*lengthscale**4*denominator**2)
                 p3 = -value*(alpha + 1.0_dp)*(alpha + 2.0_dp)/ &
                     (8.0_dp*alpha*alpha*lengthscale**6*denominator**3)
+            else if (kernel%kind == KERNEL_LOCAL_PERIODIC) then
+                !! The local-periodic leaf is radial in the squared lag
+                !! s=||x1-x2||**2, with
+                !!
+                !!   F(s) = v exp(-a s - b sin(c sqrt(s))**2).
+                !!
+                !! Query products need F', F'', and F''' with respect to s.
+                !! Computing the radial derivatives through log F keeps the
+                !! expression compact and, at coincidence, the power series
+                !! below avoids the removable 0/0 forms in the conversion
+                !! from r=sqrt(s) to s.
+                envelope_scale = exp(kernel%log_parameters(2))
+                periodic_scale = exp(kernel%log_parameters(3))
+                period = exp(kernel%log_parameters(4))
+                a = 0.5_dp/(envelope_scale*envelope_scale)
+                b = 2.0_dp/(periodic_scale*periodic_scale)
+                c = acos(-1.0_dp)/period
+                variance = exp(kernel%log_parameters(1))
+                if (distance <= 1.0e-8_dp) then
+                    !! sin(c*r)**2 = c**2*s - c**4*s**2/3
+                    !!                + 2*c**6*s**3/45 + O(s**4).
+                    q = a + b*c*c
+                    value = variance
+                    p = -value*q
+                    p2 = value*(q*q + 2.0_dp*b*c**4/3.0_dp)
+                    a1 = -q
+                    a2 = b*c**4/3.0_dp
+                    a3 = -2.0_dp*b*c**6/45.0_dp
+                    p3 = value*(a1**3 + 6.0_dp*a1*a2 + 6.0_dp*a3)
+                else
+                    !! L(r)=log(F(r)); F_r, F_rr, F_rrr follow from
+                    !! L_r, L_rr, L_rrr, then convert to s derivatives.
+                    argument = c*distance
+                    sine_value = sin(argument)
+                    cosine_value = cos(argument)
+                    value = variance*exp(-a*squared_distance - b*sine_value*sine_value)
+                    f = -2.0_dp*a*distance - 2.0_dp*b*c*sine_value*cosine_value
+                    rscale = -2.0_dp*a - 2.0_dp*b*c*c*cos(2.0_dp*argument)
+                    rsecond = 4.0_dp*b*c**3*sin(2.0_dp*argument)
+                    t1 = value*f
+                    t2 = value*(f*f + rscale)
+                    t3 = value*(f*f*f + 3.0_dp*f*rscale + rsecond)
+                    p = t1/(2.0_dp*distance)
+                    p2 = (t2 - t1/distance)/(4.0_dp*squared_distance)
+                    p3 = (t3 - 3.0_dp*t2/distance + 3.0_dp*t1/ &
+                        squared_distance)/(8.0_dp*distance**3)
+                end if
             else
                 period = exp(kernel%log_parameters(3))
                 pi_over_period = acos(-1.0_dp)/period

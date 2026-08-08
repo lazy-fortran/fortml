@@ -3355,7 +3355,7 @@ The HVP is symmetric and linear in `direction`; derivative-observation query
 components are rejected with a typed `FORTNUM_NOT_IMPLEMENTED` boundary until
 the required fourth input derivatives are generated.
 The query products use exact third-input products for RBF, Matérn 3/2, Matérn
-5/2, periodic, rational-quadratic, cosine, linear, constant, polynomial,
+5/2, periodic, local-periodic, rational-quadratic, cosine, linear, constant, polynomial,
 spectral-mixture, and sum/product kernels when the polynomial base is positive.
 The smooth leaf and composition rules are propagated directly through the
 value, first-gradient, and mixed-Hessian covariance blocks; no finite-

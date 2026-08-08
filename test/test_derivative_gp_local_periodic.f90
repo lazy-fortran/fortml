@@ -1,11 +1,11 @@
 program test_derivative_gp_local_periodic
     !! Independent analytic and finite-difference checks for local-periodic
-    !! mixed value/derivative observations and parameter products.
+    !! mixed value/derivative observations and parameter/query products.
     use, intrinsic :: iso_fortran_env, only: dp => real64, error_unit
     use fortml_derivative_gaussian_process, only: gp_derivative_regression_t
     use fortml_kernels, only: kernel_t, make_local_periodic_kernel
     use fortnum_cholesky, only: cholesky_factorization_t
-    use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_NOT_IMPLEMENTED
+    use fortnum_status, only: fortnum_status_t, status_ok
     implicit none
 
     integer :: failures
@@ -31,6 +31,9 @@ contains
         real(dp) :: theta(5), gradient(5), fd_gradient(5), direction(5)
         real(dp) :: value, value_dot, expected, h, plus, minus
         real(dp) :: mean_dot(3, 1), variance_dot(3), x_direction(3, 2)
+        real(dp) :: mean_plus(3, 1), mean_minus(3, 1)
+        real(dp) :: variance_plus(3), variance_minus(3), query_error
+        real(dp) :: query_step
         integer :: components(5), query_components(3), i
 
         x_train = reshape([ &
@@ -41,6 +44,11 @@ contains
         x_query = reshape([0.15_dp, -0.3_dp, 0.72_dp, 0.44_dp, -0.48_dp, 0.93_dp], &
             shape(x_query))
         query_components = [2, 0, 1]
+        ! The first query coincides with a value-observation training row.
+        ! This exercises the removable local-periodic radial limits while the
+        ! remaining rows cover value, first-feature, and second-feature query
+        ! components in the same call.
+        x_query(1, :) = x_train(1, :)
         kernel = make_local_periodic_kernel(2, 1.3_dp, 0.85_dp, 0.62_dp, 1.7_dp, status)
         if (.not. status_ok(status)) then
             write (error_unit, '(a)') "FAIL [local-periodic derivative GP] constructor"
@@ -106,13 +114,16 @@ contains
             shape(x_direction))
         call model%predict_input_jvp(x_query, query_components, x_direction, &
             mean, mean_dot, variance, variance_dot, status)
-        if (status%code /= FORTNUM_NOT_IMPLEMENTED) then
-            !! Local-periodic query products are intentionally still a typed
-            !! refusal until the third input derivative is generated.  The
-            !! parameter JVP above must nevertheless work for every mixed
-            !! observation component.
-            write (error_unit, '(a)') &
-                "FAIL [local-periodic derivative GP] unsupported query JVP accepted"
+        query_step = 2.0e-5_dp
+        call oracle_predict(theta, x_train, components, y_train, x_query + query_step*x_direction, &
+            query_components, 1.0e-10_dp, mean_plus, variance_plus)
+        call oracle_predict(theta, x_train, components, y_train, x_query - query_step*x_direction, &
+            query_components, 1.0e-10_dp, mean_minus, variance_minus)
+        query_error = max(maxval(abs(mean_dot - (mean_plus - mean_minus)/(2.0_dp*query_step))), &
+            maxval(abs(variance_dot - (variance_plus - variance_minus)/(2.0_dp*query_step))))
+        if (.not. status_ok(status) .or. query_error > 3.0e-7_dp) then
+            write (error_unit, '(a,es12.4)') &
+                "FAIL [local-periodic derivative GP] query-input JVP oracle ", query_error
             failures = failures + 1
         end if
     end subroutine test_local_periodic_products
