@@ -668,7 +668,7 @@ contains
         !! refusal until a resident loss kernel owns the logits and result;
         !! this routine never falls back to a host computation.
         real(dp), intent(in) :: logits(:, :)
-        real(dp), intent(out) :: probabilities(:, :)
+        real(dp), intent(inout) :: probabilities(:, :)
         type(fortnum_status_t), intent(out) :: status
         integer, intent(in), optional :: device_kind
         integer :: requested_device
@@ -770,14 +770,14 @@ contains
 
         logits_hvp = 0.0_dp
         if (any(shape(logits_dot) /= shape(logits)) .or. &
-                any(shape(probabilities_bar) /= shape(logits)) .or. &
-                any(shape(logits_hvp) /= shape(logits))) then
+            any(shape(probabilities_bar) /= shape(logits)) .or. &
+            any(shape(logits_hvp) /= shape(logits))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "softmax HVP: tangent, cotangent, or output shape is invalid")
             return
         end if
         if (any(.not. ieee_is_finite(logits_dot)) .or. &
-                any(.not. ieee_is_finite(probabilities_bar))) then
+            any(.not. ieee_is_finite(probabilities_bar))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "softmax HVP: tangent and cotangent must be finite")
             return
@@ -832,7 +832,7 @@ contains
             device_kind)
         !! Device-dispatch boundary for log-softmax values.
         real(dp), intent(in) :: logits(:, :)
-        real(dp), intent(out) :: log_probabilities(:, :)
+        real(dp), intent(inout) :: log_probabilities(:, :)
         type(fortnum_status_t), intent(out) :: status
         integer, intent(in), optional :: device_kind
         integer :: requested_device
@@ -930,14 +930,14 @@ contains
 
         logits_hvp = 0.0_dp
         if (any(shape(logits_dot) /= shape(logits)) .or. &
-                any(shape(log_probabilities_bar) /= shape(logits)) .or. &
-                any(shape(logits_hvp) /= shape(logits))) then
+            any(shape(log_probabilities_bar) /= shape(logits)) .or. &
+            any(shape(logits_hvp) /= shape(logits))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "log softmax HVP: tangent, cotangent, or output shape is invalid")
             return
         end if
         if (any(.not. ieee_is_finite(logits_dot)) .or. &
-                any(.not. ieee_is_finite(log_probabilities_bar))) then
+            any(.not. ieee_is_finite(log_probabilities_bar))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "log softmax HVP: tangent and cotangent must be finite")
             return
@@ -1010,7 +1010,7 @@ contains
         !! Device-dispatch boundary for weighted softmax cross-entropy.
         real(dp), intent(in) :: logits(:, :)
         integer, intent(in) :: labels(:)
-        real(dp), intent(out) :: value
+        real(dp), intent(inout) :: value
         type(fortnum_status_t), intent(out) :: status
         integer, intent(in), optional :: device_kind
         real(dp), intent(in), optional :: sample_weight(:)
@@ -1473,7 +1473,7 @@ contains
             reduction)
         !! Device-dispatch boundary for weighted focal BCE values.
         real(dp), intent(in) :: logits(:, :), targets(:, :), alpha, gamma
-        real(dp), intent(out) :: value
+        real(dp), intent(inout) :: value
         type(fortnum_status_t), intent(out) :: status
         integer, intent(in), optional :: device_kind
         real(dp), intent(in), optional :: sample_weight(:)
@@ -1591,7 +1591,7 @@ contains
 
         logits_hvp = 0.0_dp
         if (any(shape(logits_dot) /= shape(logits)) .or. &
-                any(shape(logits_hvp) /= shape(logits))) then
+            any(shape(logits_hvp) /= shape(logits))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "focal BCE HVP: tangent or output shape is invalid")
             return
@@ -1611,8 +1611,8 @@ contains
                 call focal_terms_with_hessian(logits(i, j), targets(i, j), alpha, &
                     gamma, loss, derivative, second_derivative)
                 if (.not. ieee_is_finite(loss) .or. &
-                        .not. ieee_is_finite(derivative) .or. &
-                        .not. ieee_is_finite(second_derivative)) then
+                    .not. ieee_is_finite(derivative) .or. &
+                    .not. ieee_is_finite(second_derivative)) then
                     logits_hvp = 0.0_dp
                     call status_set(status, FORTNUM_DOMAIN_ERROR, &
                         "focal BCE HVP: product is not finite")

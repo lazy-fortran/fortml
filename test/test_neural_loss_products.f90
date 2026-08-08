@@ -121,6 +121,7 @@ contains
         real(dp) :: logits(3, 3), direction(3, 3), weights(3)
         real(dp) :: probabilities(3, 3), cotangent(3, 3), logits_bar(3, 3)
         real(dp) :: hvp(3, 3), bar_plus(3, 3), bar_minus(3, 3)
+        real(dp) :: bad_direction(2, 3), zero_weights(3)
         real(dp) :: value, value_dot, value_plus, value_minus, sum_value
         real(dp) :: h, expected, finite_dot
         integer :: labels(3)
@@ -172,6 +173,19 @@ contains
             /sum(weights)
         call check(status_ok(status) .and. abs(value-expected) < 2.0e-14_dp, &
             "softmax cross-entropy independent NumPy-style value", failures)
+        zero_weights = 0.0_dp
+        call softmax_cross_entropy_value(logits, labels, value, status, zero_weights)
+        call check(.not. status_ok(status), &
+            "softmax cross-entropy zero-support refusal", failures)
+        bad_direction = 0.0_dp
+        call softmax_cross_entropy_hvp(logits, labels, bad_direction, hvp, status, &
+            weights)
+        call check(.not. status_ok(status), &
+            "softmax cross-entropy tangent-shape refusal", failures)
+        labels(3) = 4
+        call softmax_cross_entropy_value(logits, labels, value, status, weights)
+        call check(.not. status_ok(status), "softmax cross-entropy label refusal", &
+            failures)
     end subroutine test_weighted_cross_entropy_products
 
     subroutine test_focal_hvp(failures)
