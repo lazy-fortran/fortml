@@ -198,7 +198,7 @@ repeated resident-batch evidence.
 | `extra_trees_classifier_t` | Randomized-threshold ensemble probabilities and labels | Refused: split routing is discrete | Refused: split routing is discrete | No |
 | `gp_regression_t` | Mean, variance, LML | Prediction and LML parameters | Prediction and LML parameters | Mean and LML parameters |
 | `gp_derivative_regression_t` | Mean, variance, and LML | Prediction and LML parameter JVP | Prediction parameter VJP and analytic LML hyperparameter gradient | Directional HVP (finite difference of the analytic gradient) |
-| `gp_classification_t` | Latent and observed probabilities | Input JVP | Input VJP and Laplace-mode kernel hyperparameter gradient | No |
+| `gp_classification_t` | Latent and observed probabilities | Input and fixed-state kernel-parameter JVP | Input and fixed-state kernel-parameter VJP; Laplace-mode kernel hyperparameter gradient | No |
 | `gp_multiclass_classification_t` | Latent one-vs-rest margins and normalized observed probabilities | Input JVP for margins and probabilities | Input VJP for margins and probabilities; packed one-vs-rest Laplace-mode kernel hyperparameter gradient | No |
 | `multi_output_gp_t` | Correlated mean and LML | Packed kernel/log-noise/output-major W/independent JVP; query-input JVP | Fitted posterior-mean parameter VJP and query-input VJP | No |
 | Approximate GP types | Mean, variance, or ELBO as listed below | No | No | No |
@@ -2775,7 +2775,13 @@ integral. `GP_LIKELIHOOD_PROBIT` uses the analytic probit predictive map.
 `gp_classification_options_t` controls Newton iterations, damping, tolerance,
 and jitter. `predict_latent` returns posterior latent mean and variance.
 `predict_proba` returns two observed-probability columns. Both have input-JVP
-and input-VJP variants, and `predict` returns the stored integer labels. Every kernel that
+and input-VJP variants, and `predict` returns the stored integer labels. The
+`predict_latent_parameter_jvp`/`_vjp` and `predict_proba_parameter_jvp`/`_vjp`
+variants differentiate the fixed fitted Laplace prediction with respect to
+the packed kernel log parameters. They propagate `matrix_jvp` and
+`parameter_vjp` through the posterior covariance solve; the Newton mode,
+`alpha`, and likelihood curvature are intentionally held fixed and are not
+silently differentiated. Every kernel that
 supplies the existing matrix and input-derivative contracts is supported.
 `parameter_count()` and `parameters()` expose read-only kernel-log-parameter
 metadata in the fitted model. `hyperparameter_gradient` returns the exact

@@ -62,10 +62,18 @@ module fortml_gp_classification
         procedure, public :: predict_latent_device => gp_classification_predict_latent_device
         procedure, public :: predict_latent_jvp => gp_classification_predict_latent_jvp
         procedure, public :: predict_latent_vjp => gp_classification_predict_latent_vjp
+        procedure, public :: predict_latent_parameter_jvp => &
+            gp_classification_predict_latent_parameter_jvp
+        procedure, public :: predict_latent_parameter_vjp => &
+            gp_classification_predict_latent_parameter_vjp
         procedure, public :: predict_proba => gp_classification_predict_proba
         procedure, public :: predict_proba_device => gp_classification_predict_proba_device
         procedure, public :: predict_proba_jvp => gp_classification_predict_proba_jvp
         procedure, public :: predict_proba_vjp => gp_classification_predict_proba_vjp
+        procedure, public :: predict_proba_parameter_jvp => &
+            gp_classification_predict_proba_parameter_jvp
+        procedure, public :: predict_proba_parameter_vjp => &
+            gp_classification_predict_proba_parameter_vjp
         procedure, public :: predict => gp_classification_predict
         procedure, public :: classes => gp_classification_classes
         procedure, public :: feature_count => gp_classification_feature_count
@@ -83,10 +91,14 @@ module fortml_gp_classification
     public :: gp_classification_predict_latent_device
     public :: gp_classification_predict_latent_jvp
     public :: gp_classification_predict_latent_vjp
+    public :: gp_classification_predict_latent_parameter_jvp
+    public :: gp_classification_predict_latent_parameter_vjp
     public :: gp_classification_predict_proba
     public :: gp_classification_predict_proba_device
     public :: gp_classification_predict_proba_jvp
     public :: gp_classification_predict_proba_vjp
+    public :: gp_classification_predict_proba_parameter_jvp
+    public :: gp_classification_predict_proba_parameter_vjp
     public :: gp_classification_predict
     public :: gp_classification_log_likelihood_value
     public :: gp_classification_log_likelihood_jvp
@@ -378,6 +390,233 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine gp_classification_predict_latent_vjp
+
+    !> Forward product of the latent prediction with respect to packed kernel
+    !! log parameters.  The fitted Laplace state (mode, alpha, and W) is held
+    !! fixed; this is the same fixed-state contract used by variational GP
+    !! prediction products and avoids silently differentiating a Newton solve.
+    subroutine gp_classification_predict_latent_parameter_jvp(self, x, direction, &
+            mean, mean_dot, variance, variance_dot, status)
+        class(gp_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), direction(:)
+        real(dp), intent(out) :: mean(:), mean_dot(:), variance(:), variance_dot(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: cross(:, :), cross_dot(:, :), prior(:, :), prior_dot(:, :)
+        real(dp), allocatable :: train(:, :), train_dot(:, :), matrix_dot(:, :)
+        real(dp), allocatable :: work(:, :), work_dot(:, :)
+        if (.not. prediction_shapes(self, x, mean, variance, status)) return
+        if (size(direction) /= self%parameter_count() .or. &
+            any(.not. ieee_is_finite(direction)) .or. size(mean_dot) /= size(mean) .or. &
+            size(variance_dot) /= size(variance)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP classification parameter JVP: direction or output shape is invalid")
+            return
+        end if
+        allocate(cross(self%n_samples, size(x, 1)))
+        allocate(cross_dot(self%n_samples, size(x, 1)))
+        allocate(prior(size(x, 1), size(x, 1)))
+        allocate(prior_dot(size(x, 1), size(x, 1)))
+        allocate(train(self%n_samples, self%n_samples))
+        allocate(train_dot(self%n_samples, self%n_samples))
+        allocate(matrix_dot(self%n_samples, self%n_samples))
+        call self%kernel%matrix_jvp(self%x_train, x, direction, cross, cross_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        call self%kernel%matrix_jvp(x, x, direction, prior, prior_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        call self%kernel%matrix_jvp(self%x_train, self%x_train, direction, train, &
+            train_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        allocate(work, mold=cross)
+        allocate(work_dot, mold=cross)
+        call scale_rows(cross, self%sqrt_w, work)
+        call scale_rows(cross_dot, self%sqrt_w, work_dot)
+        call self%posterior_factorization%solve(work, status)
+        if (status%code /= FORTNUM_OK) return
+        call scale_rows(train_dot, self%sqrt_w, matrix_dot)
+        call scale_columns(matrix_dot, self%sqrt_w)
+        work_dot = work_dot - matmul(matrix_dot, work)
+        call self%posterior_factorization%solve(work_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        mean = matmul(transpose(cross), self%alpha)
+        mean_dot = matmul(transpose(cross_dot), self%alpha)
+        variance = diagonal_matrix(prior) - sum(work*work, dim=1)
+        variance_dot = diagonal_matrix(prior_dot) - 2.0_dp*sum(work*work_dot, dim=1)
+        call clamp_variance(variance, status)
+        if (status%code /= FORTNUM_OK) return
+        if (any(.not. ieee_is_finite(mean_dot)) .or. &
+            any(.not. ieee_is_finite(variance_dot))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "GP classification parameter JVP: result is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_classification_predict_latent_parameter_jvp
+
+    !> Reverse product of the latent prediction with respect to packed kernel
+    !! log parameters under the same fixed fitted-state contract as the JVP.
+    subroutine gp_classification_predict_latent_parameter_vjp(self, x, mean_bar, &
+            variance_bar, parameter_bar, status)
+        class(gp_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), mean_bar(:), variance_bar(:)
+        real(dp), intent(out) :: parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: cross(:, :), work(:, :), lambda(:, :)
+        real(dp), allocatable :: cross_bar(:, :), prior_bar(:, :), train_bar(:, :)
+        real(dp), allocatable :: local_bar(:), left(:), right(:)
+        integer :: i, j
+
+        parameter_bar = 0.0_dp
+        if (.not. prediction_input_valid(self, x, status)) return
+        if (size(mean_bar) /= size(x, 1) .or. size(variance_bar) /= size(x, 1) .or. &
+            size(parameter_bar) /= self%parameter_count() .or. &
+            any(.not. ieee_is_finite(mean_bar)) .or. &
+            any(.not. ieee_is_finite(variance_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP classification parameter VJP: input or cotangent shape is invalid")
+            return
+        end if
+        allocate(cross(self%n_samples, size(x, 1)))
+        allocate(work(self%n_samples, size(x, 1)))
+        allocate(lambda(self%n_samples, size(x, 1)))
+        allocate(cross_bar(self%n_samples, size(x, 1)))
+        allocate(train_bar(self%n_samples, self%n_samples))
+        allocate(prior_bar(size(x, 1), size(x, 1)))
+        allocate(local_bar(self%parameter_count()))
+        allocate(left(self%n_samples), right(self%n_samples))
+        call self%kernel%matrix(self%x_train, x, cross, status)
+        if (status%code /= FORTNUM_OK) return
+        call scale_rows(cross, self%sqrt_w, work)
+        call self%posterior_factorization%solve(work, status)
+        if (status%code /= FORTNUM_OK) return
+        cross_bar = spread(self%alpha, dim=2, ncopies=size(x, 1))* &
+            spread(mean_bar, dim=1, ncopies=self%n_samples)
+        lambda = -2.0_dp*work*spread(variance_bar, dim=1, ncopies=self%n_samples)
+        call self%posterior_factorization%solve(lambda, status)
+        if (status%code /= FORTNUM_OK) return
+        block
+            real(dp), allocatable :: lambda_scaled(:, :)
+            allocate(lambda_scaled(self%n_samples, size(x, 1)))
+            call scale_rows(lambda, self%sqrt_w, lambda_scaled)
+            cross_bar = cross_bar + lambda_scaled
+        end block
+        train_bar = 0.0_dp
+        do j = 1, size(x, 1)
+            left = self%sqrt_w*lambda(:, j)
+            right = self%sqrt_w*work(:, j)
+            train_bar = train_bar - 0.5_dp*(outer_product(left, right) + &
+                outer_product(right, left))
+        end do
+        prior_bar = 0.0_dp
+        do i = 1, size(x, 1)
+            prior_bar(i, i) = variance_bar(i)
+        end do
+        call self%kernel%parameter_vjp(self%x_train, self%x_train, train_bar, &
+            local_bar, status)
+        if (status%code /= FORTNUM_OK) return
+        parameter_bar = local_bar
+        call self%kernel%parameter_vjp(self%x_train, x, cross_bar, local_bar, status)
+        if (status%code /= FORTNUM_OK) return
+        parameter_bar = parameter_bar + local_bar
+        call self%kernel%parameter_vjp(x, x, prior_bar, local_bar, status)
+        if (status%code /= FORTNUM_OK) return
+        parameter_bar = parameter_bar + local_bar
+        if (any(.not. ieee_is_finite(parameter_bar))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "GP classification parameter VJP: result is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_classification_predict_latent_parameter_vjp
+
+    !> Forward product of observed probabilities with respect to fixed-state
+    !! kernel parameters.
+    subroutine gp_classification_predict_proba_parameter_jvp(self, x, direction, &
+            probabilities, probabilities_dot, status)
+        class(gp_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), direction(:)
+        real(dp), intent(out) :: probabilities(:, :), probabilities_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: mean(:), mean_dot(:), variance(:), variance_dot(:)
+        real(dp) :: p, p_mu, p_variance, scale, z, density
+        integer :: i
+
+        if (.not. prediction_probability_shapes(self, x, probabilities, status)) return
+        if (any(shape(probabilities_dot) /= shape(probabilities))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP classification probability parameter JVP: output shape is invalid")
+            return
+        end if
+        allocate(mean(size(x, 1)), mean_dot(size(x, 1)), variance(size(x, 1)), &
+            variance_dot(size(x, 1)))
+        call self%predict_latent_parameter_jvp(x, direction, mean, mean_dot, variance, &
+            variance_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        do i = 1, size(x, 1)
+            p = predictive_probability(self%likelihood, mean(i), variance(i))
+            if (self%likelihood == GP_LIKELIHOOD_LOGISTIC) then
+                scale = sqrt(1.0_dp + PI*variance(i)/8.0_dp)
+                p_mu = p*(1.0_dp - p)/scale
+                p_variance = p*(1.0_dp - p)*(-mean(i)*PI/(16.0_dp*scale**3))
+            else
+                scale = sqrt(1.0_dp + variance(i))
+                z = mean(i)/scale
+                density = exp(-0.5_dp*z*z)/SQRT_TWO_PI
+                p_mu = density/scale
+                p_variance = density*(-mean(i)/(2.0_dp*scale**3))
+            end if
+            probabilities(i, 2) = p
+            probabilities(i, 1) = 1.0_dp - p
+            probabilities_dot(i, 2) = p_mu*mean_dot(i) + p_variance*variance_dot(i)
+            probabilities_dot(i, 1) = -probabilities_dot(i, 2)
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_classification_predict_proba_parameter_jvp
+
+    !> Reverse product of observed probabilities with respect to fixed-state
+    !! kernel parameters.
+    subroutine gp_classification_predict_proba_parameter_vjp(self, x, &
+            probabilities_bar, parameter_bar, status)
+        class(gp_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), probabilities_bar(:, :)
+        real(dp), intent(out) :: parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: mean(:), variance(:), mean_bar(:), variance_bar(:)
+        real(dp) :: probability, p_mu, p_variance, scale, z, density
+        integer :: i
+
+        parameter_bar = 0.0_dp
+        if (.not. prediction_input_valid(self, x, status)) return
+        if (any(shape(probabilities_bar) /= [size(x, 1), 2]) .or. &
+            size(parameter_bar) /= self%parameter_count() .or. &
+            any(.not. ieee_is_finite(probabilities_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP classification probability parameter VJP: input is invalid")
+            return
+        end if
+        allocate(mean(size(x, 1)), variance(size(x, 1)), mean_bar(size(x, 1)), &
+            variance_bar(size(x, 1)))
+        call self%predict_latent(x, mean, variance, status)
+        if (status%code /= FORTNUM_OK) return
+        do i = 1, size(x, 1)
+            probability = predictive_probability(self%likelihood, mean(i), variance(i))
+            if (self%likelihood == GP_LIKELIHOOD_LOGISTIC) then
+                scale = sqrt(1.0_dp + PI*variance(i)/8.0_dp)
+                p_mu = probability*(1.0_dp - probability)/scale
+                p_variance = probability*(1.0_dp - probability)*(-mean(i)*PI/ &
+                    (16.0_dp*scale**3))
+            else
+                scale = sqrt(1.0_dp + variance(i))
+                z = mean(i)/scale
+                density = exp(-0.5_dp*z*z)/SQRT_TWO_PI
+                p_mu = density/scale
+                p_variance = density*(-mean(i)/(2.0_dp*scale**3))
+            end if
+            mean_bar(i) = (probabilities_bar(i, 2) - probabilities_bar(i, 1))*p_mu
+            variance_bar(i) = (probabilities_bar(i, 2) - probabilities_bar(i, 1))*p_variance
+        end do
+        call self%predict_latent_parameter_vjp(x, mean_bar, variance_bar, parameter_bar, &
+            status)
+    end subroutine gp_classification_predict_proba_parameter_vjp
 
     subroutine gp_classification_predict_proba(self, x, probabilities, status)
         class(gp_classification_t), intent(in) :: self
@@ -883,6 +1122,36 @@ contains
             scaled(i, :) = weights(i)*matrix(i, :)
         end do
     end subroutine scale_rows
+
+    subroutine scale_columns(matrix, weights)
+        real(dp), intent(inout) :: matrix(:, :)
+        real(dp), intent(in) :: weights(:)
+        integer :: j
+
+        do j = 1, size(matrix, 2)
+            matrix(:, j) = weights(j)*matrix(:, j)
+        end do
+    end subroutine scale_columns
+
+    function diagonal_matrix(matrix) result(values)
+        real(dp), intent(in) :: matrix(:, :)
+        real(dp) :: values(min(size(matrix, 1), size(matrix, 2)))
+        integer :: i
+
+        do i = 1, size(values)
+            values(i) = matrix(i, i)
+        end do
+    end function diagonal_matrix
+
+    function outer_product(left, right) result(matrix)
+        real(dp), intent(in) :: left(:), right(:)
+        real(dp) :: matrix(size(left), size(right))
+        integer :: i
+
+        do i = 1, size(left)
+            matrix(i, :) = left(i)*right
+        end do
+    end function outer_product
 
     subroutine likelihood_terms(eta, likelihood, probability, gradient, curvature)
         real(dp), intent(in) :: eta
