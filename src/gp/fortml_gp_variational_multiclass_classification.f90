@@ -200,13 +200,14 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine gvmc_set_parameters
 
-    subroutine gvmc_elbo(self, x, labels, value, status, scale)
+    subroutine gvmc_elbo(self, x, labels, value, status, scale, sample_weight)
         class(gp_variational_multiclass_classification_t), intent(inout) :: self
         real(dp), intent(in) :: x(:, :)
         integer, intent(in) :: labels(:)
         real(dp), intent(out) :: value
         type(fortnum_status_t), intent(out) :: status
         real(dp), intent(in), optional :: scale
+        real(dp), intent(in), optional :: sample_weight(:)
         integer, allocatable :: binary_labels(:)
         real(dp) :: local_value, multiplier
         integer :: i
@@ -229,20 +230,28 @@ contains
         do i = 1, self%n_classes
             call encode_labels(labels, self%class_label(i), binary_labels, status)
             if (status%code /= FORTNUM_OK) return
-            call self%models(i)%elbo(x, binary_labels, local_value, status, scale=multiplier)
+            if (present(sample_weight)) then
+                call self%models(i)%elbo(x, binary_labels, local_value, status, &
+                    scale=multiplier, sample_weight=sample_weight)
+            else
+                call self%models(i)%elbo(x, binary_labels, local_value, status, &
+                    scale=multiplier)
+            end if
             if (status%code /= FORTNUM_OK) return
             value = value + local_value
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine gvmc_elbo
 
-    subroutine gvmc_elbo_gradient(self, x, labels, value, gradient, status, scale)
+    subroutine gvmc_elbo_gradient(self, x, labels, value, gradient, status, scale, &
+            sample_weight)
         class(gp_variational_multiclass_classification_t), intent(inout) :: self
         real(dp), intent(in) :: x(:, :)
         integer, intent(in) :: labels(:)
         real(dp), intent(out) :: value, gradient(:)
         type(fortnum_status_t), intent(out) :: status
         real(dp), intent(in), optional :: scale
+        real(dp), intent(in), optional :: sample_weight(:)
         integer, allocatable :: binary_labels(:)
         real(dp), allocatable :: local_gradient(:)
         real(dp) :: local_value, multiplier
@@ -276,8 +285,14 @@ contains
             allocate(local_gradient(local_count))
             call encode_labels(labels, self%class_label(i), binary_labels, status)
             if (status%code /= FORTNUM_OK) return
-            call self%models(i)%elbo_gradient(x, binary_labels, local_value, &
-                local_gradient, status, scale=multiplier)
+            if (present(sample_weight)) then
+                call self%models(i)%elbo_gradient(x, binary_labels, local_value, &
+                    local_gradient, status, scale=multiplier, &
+                    sample_weight=sample_weight)
+            else
+                call self%models(i)%elbo_gradient(x, binary_labels, local_value, &
+                    local_gradient, status, scale=multiplier)
+            end if
             if (status%code /= FORTNUM_OK) return
             value = value + local_value
             gradient(first:last) = local_gradient
@@ -287,13 +302,15 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine gvmc_elbo_gradient
 
-    subroutine gvmc_elbo_jvp(self, x, labels, direction, value, tangent, status, scale)
+    subroutine gvmc_elbo_jvp(self, x, labels, direction, value, tangent, status, scale, &
+            sample_weight)
         class(gp_variational_multiclass_classification_t), intent(inout) :: self
         real(dp), intent(in) :: x(:, :), direction(:)
         integer, intent(in) :: labels(:)
         real(dp), intent(out) :: value, tangent
         type(fortnum_status_t), intent(out) :: status
         real(dp), intent(in), optional :: scale
+        real(dp), intent(in), optional :: sample_weight(:)
         integer, allocatable :: binary_labels(:)
         real(dp), allocatable :: local_direction(:)
         real(dp) :: local_value, local_tangent, multiplier
@@ -329,8 +346,14 @@ contains
             local_direction = direction(first:last)
             call encode_labels(labels, self%class_label(i), binary_labels, status)
             if (status%code /= FORTNUM_OK) return
-            call self%models(i)%elbo_jvp(x, binary_labels, local_direction, &
-                local_value, local_tangent, status, scale=multiplier)
+            if (present(sample_weight)) then
+                call self%models(i)%elbo_jvp(x, binary_labels, local_direction, &
+                    local_value, local_tangent, status, scale=multiplier, &
+                    sample_weight=sample_weight)
+            else
+                call self%models(i)%elbo_jvp(x, binary_labels, local_direction, &
+                    local_value, local_tangent, status, scale=multiplier)
+            end if
             if (status%code /= FORTNUM_OK) return
             value = value + local_value
             tangent = tangent + local_tangent
@@ -739,7 +762,8 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine gvmc_predict
 
-    subroutine gvmc_elbo_device(self, device, x, labels, value, status, scale)
+    subroutine gvmc_elbo_device(self, device, x, labels, value, status, scale, &
+            sample_weight)
         class(gp_variational_multiclass_classification_t), intent(inout) :: self
         type(fortml_device_t), intent(in) :: device
         real(dp), intent(in) :: x(:, :)
@@ -747,6 +771,7 @@ contains
         real(dp), intent(out) :: value
         type(fortnum_status_t), intent(out) :: status
         real(dp), intent(in), optional :: scale
+        real(dp), intent(in), optional :: sample_weight(:)
 
         value = 0.0_dp
         if (.not. device%selected .or. .not. device%available) then
@@ -756,8 +781,13 @@ contains
         end if
         select case (device%kind)
         case (FORTML_DEVICE_CPU)
-            if (present(scale)) then
+            if (present(scale) .and. present(sample_weight)) then
+                call self%elbo(x, labels, value, status, scale=scale, &
+                    sample_weight=sample_weight)
+            else if (present(scale)) then
                 call self%elbo(x, labels, value, status, scale=scale)
+            else if (present(sample_weight)) then
+                call self%elbo(x, labels, value, status, sample_weight=sample_weight)
             else
                 call self%elbo(x, labels, value, status)
             end if

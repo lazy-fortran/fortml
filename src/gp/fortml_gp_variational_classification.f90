@@ -222,7 +222,7 @@ contains
     end subroutine gvc_set_parameters
 
     subroutine gvc_elbo(self, x, labels, value, status, expected_log_likelihood, &
-            kl_value, scale)
+            kl_value, scale, sample_weight)
         class(gp_variational_classification_t), intent(inout) :: self
         real(dp), intent(in) :: x(:, :)
         integer, intent(in) :: labels(:)
@@ -230,7 +230,8 @@ contains
         type(fortnum_status_t), intent(out) :: status
         real(dp), intent(out), optional :: expected_log_likelihood, kl_value
         real(dp), intent(in), optional :: scale
-        real(dp), allocatable :: projection(:, :), mean(:), variance(:), latent(:)
+        real(dp), intent(in), optional :: sample_weight(:)
+        real(dp), allocatable :: projection(:, :), mean(:), variance(:), latent(:), weights(:)
         real(dp) :: likelihood, divergence, multiplier, term, unused_gradient
         integer :: i, s
 
@@ -254,6 +255,8 @@ contains
         if (status%code /= FORTNUM_OK) return
         call ensure_noise(self, size(x, 1), status)
         if (status%code /= FORTNUM_OK) return
+        call build_observation_weights(size(x, 1), sample_weight, weights, status)
+        if (status%code /= FORTNUM_OK) return
         allocate(latent(size(x, 1)))
         likelihood = 0.0_dp
         do s = 1, self%n_mc
@@ -261,7 +264,7 @@ contains
             do i = 1, size(x, 1)
                 call bernoulli_terms(labels(i), latent(i), self%likelihood, &
                     term, unused_gradient)
-                likelihood = likelihood + term
+                likelihood = likelihood + weights(i)*term
             end do
         end do
         likelihood = likelihood/real(self%n_mc, dp)
@@ -273,14 +276,17 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine gvc_elbo
 
-    subroutine gvc_elbo_gradient(self, x, labels, value, gradient, status, scale)
+    subroutine gvc_elbo_gradient(self, x, labels, value, gradient, status, scale, &
+            sample_weight)
         class(gp_variational_classification_t), intent(inout) :: self
         real(dp), intent(in) :: x(:, :)
         integer, intent(in) :: labels(:)
         real(dp), intent(out) :: value, gradient(:)
         type(fortnum_status_t), intent(out) :: status
         real(dp), intent(in), optional :: scale
+        real(dp), intent(in), optional :: sample_weight(:)
         real(dp), allocatable :: projection(:, :), mean(:), variance(:), latent(:)
+        real(dp), allocatable :: weights(:)
         real(dp), allocatable :: mean_gradient(:), factor_gradient(:, :), kl_mean(:), &
             kl_factor(:, :), solve_factor(:, :)
         real(dp) :: multiplier, likelihood, divergence, term, term_gradient, &
@@ -312,6 +318,8 @@ contains
         if (status%code /= FORTNUM_OK) return
         call ensure_noise(self, size(x, 1), status)
         if (status%code /= FORTNUM_OK) return
+        call build_observation_weights(size(x, 1), sample_weight, weights, status)
+        if (status%code /= FORTNUM_OK) return
         allocate(latent(size(x, 1)), mean_gradient(self%n_inducing), &
             factor_gradient(self%n_inducing, self%n_inducing), &
             kl_mean(self%n_inducing), kl_factor(self%n_inducing, self%n_inducing), &
@@ -324,10 +332,10 @@ contains
             do i = 1, size(x, 1)
                 call bernoulli_terms(labels(i), latent(i), self%likelihood, &
                     term, term_gradient)
-                likelihood = likelihood + term
-                mean_gradient = mean_gradient + term_gradient*projection(:, i)
+                likelihood = likelihood + weights(i)*term
+                mean_gradient = mean_gradient + weights(i)*term_gradient*projection(:, i)
                 tangent_factor = matmul(transpose(self%variational_factor), projection(:, i))
-                coefficient = term_gradient*self%noise(i, s)/sqrt(variance(i))
+                coefficient = weights(i)*term_gradient*self%noise(i, s)/sqrt(variance(i))
                 do j = 1, self%n_inducing
                     factor_gradient(:, j) = factor_gradient(:, j) + &
                         coefficient*tangent_factor(j)*projection(:, i)
@@ -359,7 +367,8 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine gvc_elbo_gradient
 
-    subroutine gvc_elbo_jvp(self, x, labels, direction, value, tangent, status, scale)
+    subroutine gvc_elbo_jvp(self, x, labels, direction, value, tangent, status, scale, &
+            sample_weight)
         class(gp_variational_classification_t), intent(inout) :: self
         real(dp), intent(in) :: x(:, :)
         integer, intent(in) :: labels(:)
@@ -367,7 +376,9 @@ contains
         real(dp), intent(out) :: value, tangent
         type(fortnum_status_t), intent(out) :: status
         real(dp), intent(in), optional :: scale
+        real(dp), intent(in), optional :: sample_weight(:)
         real(dp), allocatable :: projection(:, :), mean(:), variance(:), latent(:)
+        real(dp), allocatable :: weights(:)
         real(dp), allocatable :: mean_tangent(:), factor_tangent(:, :), solve_factor(:, :)
         real(dp), allocatable :: kl_mean(:), kl_factor(:, :), noise_factor(:)
         real(dp) :: multiplier, likelihood, likelihood_tangent, divergence, &
@@ -399,6 +410,8 @@ contains
         if (status%code /= FORTNUM_OK) return
         call ensure_noise(self, size(x, 1), status)
         if (status%code /= FORTNUM_OK) return
+        call build_observation_weights(size(x, 1), sample_weight, weights, status)
+        if (status%code /= FORTNUM_OK) return
         allocate(latent(size(x, 1)), mean_tangent(self%n_inducing), &
             factor_tangent(self%n_inducing, self%n_inducing), &
             solve_factor(self%n_inducing, self%n_inducing), kl_mean(self%n_inducing), &
@@ -427,8 +440,9 @@ contains
                     variance_tangent/sqrt(variance(i))
                 call bernoulli_terms(labels(i), latent(i), self%likelihood, &
                     term, term_gradient)
-                likelihood = likelihood + term
-                likelihood_tangent = likelihood_tangent + term_gradient*latent_tangent
+                likelihood = likelihood + weights(i)*term
+                likelihood_tangent = likelihood_tangent + &
+                    weights(i)*term_gradient*latent_tangent
             end do
         end do
         likelihood = likelihood/real(self%n_mc, dp)
@@ -1177,7 +1191,8 @@ contains
         end select
     end subroutine gvc_predict_proba_parameter_vjp_device
 
-    subroutine gvc_elbo_device(self, device, x, labels, value, status, scale)
+    subroutine gvc_elbo_device(self, device, x, labels, value, status, scale, &
+            sample_weight)
         class(gp_variational_classification_t), intent(inout) :: self
         type(fortml_device_t), intent(in) :: device
         real(dp), intent(in) :: x(:, :)
@@ -1185,6 +1200,7 @@ contains
         real(dp), intent(out) :: value
         type(fortnum_status_t), intent(out) :: status
         real(dp), intent(in), optional :: scale
+        real(dp), intent(in), optional :: sample_weight(:)
 
         value = 0.0_dp
         if (.not. device%selected .or. .not. device%available) then
@@ -1194,8 +1210,13 @@ contains
         end if
         select case (device%kind)
         case (FORTML_DEVICE_CPU)
-            if (present(scale)) then
+            if (present(scale) .and. present(sample_weight)) then
+                call self%elbo(x, labels, value, status, scale=scale, &
+                    sample_weight=sample_weight)
+            else if (present(scale)) then
                 call self%elbo(x, labels, value, status, scale=scale)
+            else if (present(sample_weight)) then
+                call self%elbo(x, labels, value, status, sample_weight=sample_weight)
             else
                 call self%elbo(x, labels, value, status)
             end if
@@ -1207,6 +1228,30 @@ contains
                 "variational GP classification device: device kind is invalid")
         end select
     end subroutine gvc_elbo_device
+
+    subroutine build_observation_weights(n_samples, sample_weight, weights, status)
+        integer, intent(in) :: n_samples
+        real(dp), intent(in), optional :: sample_weight(:)
+        real(dp), allocatable, intent(out) :: weights(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        allocate(weights(n_samples))
+        weights = 1.0_dp
+        if (present(sample_weight)) then
+            if (size(sample_weight) /= n_samples .or. &
+                any(.not. ieee_is_finite(sample_weight)) .or. &
+                any(sample_weight < 0.0_dp) .or. &
+                .not. ieee_is_finite(sum(sample_weight)) .or. &
+                sum(sample_weight) <= 0.0_dp) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "variational GP classification: sample weights must be finite, "// &
+                    "nonnegative, and have positive mass")
+                return
+            end if
+            weights = sample_weight
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine build_observation_weights
 
     logical function gvc_device_supported(self, device_kind) result(supported)
         class(gp_variational_classification_t), intent(in) :: self

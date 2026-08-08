@@ -32,8 +32,12 @@ reparameterization of the training marginals and subtracts the analytic
 `KL(q(u)||N(0,K_uu))`. `elbo_gradient` differentiates both terms in packed
 coordinates. `elbo_jvp` propagates an arbitrary packed direction directly
 through the latent mean and variance; its result agrees with a centered
-finite difference of `elbo`. An optional `scale` multiplies only the expected
-log likelihood, making minibatch scaling explicit without scaling the KL.
+finite difference of `elbo`. Optional nonnegative `sample_weight` values
+weight each row of the expected log likelihood (a positive total mass is
+required); `scale` multiplies the weighted likelihood, making minibatch
+scaling explicit without scaling the KL. The same row weights are propagated
+through `elbo_gradient`, `elbo_jvp`, and the bounded FortOpt training adapter.
+The reported `expected_log_likelihood` is the weighted, pre-`scale` sum.
 
 Fixed-state predictive kernel products are available through
 `predict_latent_kernel_parameter_jvp` and
@@ -55,10 +59,13 @@ integer zero/one values. The model exposes
 reduction are resident. No implicit host fallback is performed. Natural-
 gradient updates and resident GPU inference remain planned extensions.
 
-The independent behavioral oracles are `test_gp_variational_classification`
-and `test_gp_variational_kernel_products`. The latter checks centered finite
-differences, JVP/VJP dot-product identities, both likelihood paths, and the
-typed CUDA refusal.
+The independent behavioral oracles are `test_gp_variational_classification`,
+`test_gp_variational_classification_weights`, and
+`test_gp_variational_kernel_products`. The weighting fixture checks uniform
+likelihood scaling, nonuniform finite-difference gradients/JVPs, OVR
+composition, malformed-weight refusals, and the CPU/CUDA device boundary. The
+latter checks centered finite differences, JVP/VJP dot-product identities,
+both likelihood paths, and the typed CUDA refusal.
 It checks the prior KL identity, ELBO decomposition, every packed gradient
 coordinate against finite differences, a directional JVP, CPU dispatch, and
 the typed CUDA and invalid-label refusals.

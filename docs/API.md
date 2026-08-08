@@ -3136,13 +3136,17 @@ inducing mean followed by lower-Cholesky covariance columns, with each
 diagonal represented in log coordinates. `set_parameters` validates positive
 diagonals and finite values.
 
-`elbo(x,labels,value,status[,expected_log_likelihood,kl_value,scale])` uses
-the deterministic Monte Carlo expected Bernoulli log likelihood and the
-analytic `KL(q(u)||N(0,K_uu))`. `elbo_gradient` gives the analytic gradient of
-that same packed objective, including the variance reparameterization and KL
-terms. `elbo_jvp` is the matching forward directional product; finite
-differences of `elbo` therefore provide a direct independent oracle. `scale`
-scales only the likelihood term for minibatch callers. `predict_latent` returns
+`elbo(x,labels,value,status[,expected_log_likelihood,kl_value,scale,sample_weight])`
+uses the deterministic Monte Carlo expected Bernoulli log
+likelihood and the analytic `KL(q(u)||N(0,K_uu))`. `elbo_gradient` gives the
+analytic gradient of that same packed objective, including the variance
+reparameterization and KL terms. `elbo_jvp` is the matching forward
+directional product; finite differences of `elbo` therefore provide a direct
+independent oracle. Optional finite, nonnegative `sample_weight` values weight
+each row of the expected likelihood and require positive total mass; `scale`
+scales only that weighted likelihood for minibatch callers and never the KL.
+The same weights are accepted by the bounded
+`gp_variational_classification_optimize` FortOpt adapter. `predict_latent` returns
 the posterior latent mean and variance, while `predict_proba` applies the
 logistic variance correction or analytic probit Gaussian integral and returns
 columns `[negative,positive]`. Their parameter-JVP and parameter-VJP variants
@@ -3182,7 +3186,9 @@ around independent Bernoulli variational GPs. `initialize(inducing_points,
 classes,kernel,n_mc_samples,seed,status[,likelihood,jitter])` sorts and
 validates unique integer classes, creates one seeded model per class, and
 packs their mean/log-Cholesky vectors in sorted-class order. `elbo`,
-`elbo_gradient`, and `elbo_jvp` sum the independent binary objectives;
+`elbo_gradient`, and `elbo_jvp` sum the independent binary objectives; their
+optional `sample_weight` argument is validated once and shared by every class
+head, while `scale` multiplies each weighted likelihood term;
 `predict_latent` returns per-class margins/variances and `predict_proba`
 normalizes positive margins to a simplex. `predict_proba_parameter_jvp` and
 `predict_proba_parameter_vjp` provide the exact packed-parameter tangent and
