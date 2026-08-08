@@ -2404,12 +2404,23 @@ squared-log, Huber, or quantile objective. `restore_best` trims the fitted
 ensemble to the best round. `best_iteration()`, `best_validation_loss()`, and
 `early_stopped()` expose the resulting lifecycle state. Validation arguments
 must be supplied together and are shape-, weight-, target-, and NaN-checked.
-This is deterministic validation-based stopping. Warm-start continuation and
-serialized tree state remain separate contracts. `slice(n_trees,destination,
+This is deterministic validation-based stopping. Serialized tree state remains
+a separate contract. `slice(n_trees,destination,
 status)` copies the first fitted boosting rounds into a valid standalone model,
 preserving objective/link, base margin, routing, constraints, regularization,
 and diagnostics; the best-iteration diagnostic is clamped to the retained
 prefix. Invalid prefixes or malformed sources are refused transactionally.
+
+`fit_warm_start(x,y,status,options[,sample_weight,...])` continues a fitted
+`xgboost_t` to the larger total `options%n_estimators` without changing the
+existing tree prefix. Objective, tree method, regularisation, sampling seed,
+row/feature fractions, missing policy, and monotone constraints must match the
+original fit; a non-increasing target or changed control returns
+`FORTNUM_DOMAIN_ERROR` transactionally. The same training data, weights, and
+ranking groups must be supplied by the caller. Optional validation data may be
+used for stopping the appended suffix, with the same `restore_best` policy as
+ordinary fitting. `requested_estimator_count()` reports the requested total,
+while `estimator_count()` reports the retained fitted prefix.
 
 `fit_ranking(x,relevance,group,status[,options,sample_weight,...])` selects
 the `rank:pairwise` objective. Rows with the same positive integer query ID

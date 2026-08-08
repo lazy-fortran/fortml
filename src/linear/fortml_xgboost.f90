@@ -141,6 +141,7 @@ module fortml_xgboost
         logical :: initialized = .false.
     contains
         procedure, public :: fit => xgb_fit
+        procedure, public :: fit_warm_start => xgb_fit_warm_start
         procedure, public :: fit_regression => xgb_fit_regression
         procedure, public :: fit_binary => xgb_fit_binary
         procedure, public :: fit_poisson => xgb_fit_poisson
@@ -179,6 +180,7 @@ module fortml_xgboost
         procedure, public :: tree_depth => xgb_tree_depth
         procedure, public :: feature_count => xgb_feature_count
         procedure, public :: estimator_count => xgb_estimator_count
+        procedure, public :: requested_estimator_count => xgb_requested_estimator_count
         procedure, public :: base_margin => xgb_base_margin
         procedure, public :: objective_name => xgb_objective_name
         procedure, public :: objective_parameter_value => xgb_objective_parameter
@@ -636,6 +638,331 @@ contains
         self%initialized = .true.
         call status_set(status, FORTNUM_OK, "")
     end subroutine xgb_fit
+
+    !> Continue a fitted ensemble up to `options%n_estimators`.
+    !>
+    !> Warm-starting is a structural continuation: the existing trees are
+    !> retained byte-for-byte and only the requested suffix is grown.  The
+    !> data, objective, tree controls, sampling stream, and regularisation
+    !> must agree with the original fit; `n_estimators`, validation policy,
+    !> and `restore_best` may change.  Supplying the same sample weights and
+    !> ranking groups is the caller's responsibility because fitted models do
+    !> not retain training rows or weights.  A target no larger than the
+    !> current ensemble is rejected instead of silently refitting.
+    subroutine xgb_fit_warm_start(self, x, y, status, options, sample_weight, &
+            validation_x, validation_y, validation_weight, group, validation_group)
+        class(xgboost_t), intent(inout) :: self
+        real(dp), intent(in) :: x(:, :), y(:)
+        type(fortnum_status_t), intent(out) :: status
+        type(xgboost_options_t), intent(in), optional :: options
+        real(dp), intent(in), optional :: sample_weight(:)
+        real(dp), intent(in), optional :: validation_x(:, :), validation_y(:), &
+            validation_weight(:)
+        integer, intent(in), optional :: group(:), validation_group(:)
+        type(xgboost_options_t) :: settings
+        real(dp), allocatable :: prediction(:), gradient(:), hessian(:), correction(:)
+        real(dp), allocatable :: validation_prediction(:), validation_correction(:)
+        real(dp), allocatable :: observation_weight(:), validation_observation_weight(:)
+        type(xgb_tree_t), allocatable :: expanded_estimators(:), best_estimators(:)
+        integer, allocatable :: sample_index(:)
+        logical, allocatable :: feature_mask(:)
+        integer :: objective_code, tree_method_code, missing_code
+        integer :: n_samples, n_features, n_validation, start_estimators
+        integer :: target_estimators, i, completed_estimators, best_iteration, stale_rounds
+        integer :: expected_parameter
+        integer(int64) :: sampling_state
+        real(dp) :: weight_sum, validation_loss, best_validation_loss
+        logical :: have_validation, improved, is_ranking, early_stop
+
+        if (.not. self%initialized .or. .not. allocated(self%estimators) .or. &
+            .not. allocated(self%monotone_constraints)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost warm start: source is not a valid fitted model")
+            return
+        end if
+        if (.not. present(options)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost warm start: options with a larger n_estimators is required")
+            return
+        end if
+        settings = options
+        target_estimators = settings%n_estimators
+        start_estimators = self%n_estimators
+        if (target_estimators <= start_estimators .or. &
+            size(self%estimators) /= start_estimators .or. start_estimators < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost warm start: n_estimators must exceed the fitted prefix")
+            return
+        end if
+
+        objective_code = parse_objective(settings%objective)
+        tree_method_code = parse_tree_method(settings%tree_method)
+        missing_code = parse_missing_policy(settings%missing_policy)
+        is_ranking = self%objective_code == XGB_OBJECTIVE_RANK_PAIRWISE
+        if (objective_code /= self%objective_code .or. tree_method_code /= self%tree_method_code .or. &
+            missing_code /= self%missing_code .or. settings%max_bin /= self%max_bin .or. &
+            settings%max_depth /= self%max_depth_value .or. &
+            settings%min_samples_leaf /= self%min_samples_leaf_value .or. &
+            settings%learning_rate /= self%learning_rate .or. settings%l1 /= self%l1_value .or. &
+            settings%l2 /= self%l2_value .or. settings%gamma /= self%gamma_value .or. &
+            settings%min_child_weight /= self%min_child_weight_value .or. &
+            settings%subsample /= self%subsample_value .or. &
+            settings%colsample_bytree /= self%colsample_bytree_value .or. &
+            settings%seed /= self%seed_value) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost warm start: objective, tree, sampling, or regularisation controls differ")
+            return
+        end if
+        if (objective_code == 0 .or. tree_method_code == 0 .or. missing_code < 0) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost warm start: unsupported objective, tree method, or missing policy")
+            return
+        end if
+        if (allocated(settings%monotone_constraints)) then
+            if (size(settings%monotone_constraints) /= self%n_inputs .or. &
+                any(settings%monotone_constraints /= self%monotone_constraints)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "xgboost warm start: monotone constraints differ from the fitted model")
+                return
+            end if
+        else if (any(self%monotone_constraints /= 0)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost warm start: monotone constraints must be supplied unchanged")
+            return
+        end if
+        if (objective_code == XGB_OBJECTIVE_HUBER .and. &
+            settings%huber_delta /= self%objective_parameter) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost warm start: huber_delta differs from the fitted model")
+            return
+        end if
+        if (objective_code == XGB_OBJECTIVE_QUANTILE .and. &
+            settings%quantile_alpha /= self%objective_parameter) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost warm start: quantile_alpha differs from the fitted model")
+            return
+        end if
+
+        have_validation = present(validation_x) .or. present(validation_y) .or. &
+            present(validation_weight)
+        if (present(validation_x) .neqv. present(validation_y)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost warm start: validation_x and validation_y must be supplied together")
+            return
+        end if
+        if (present(validation_weight) .and. .not. present(validation_x)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost warm start: validation_weight requires validation data")
+            return
+        end if
+        if (settings%early_stopping_rounds < 0 .or. &
+            .not. ieee_is_finite(settings%early_stopping_min_delta) .or. &
+            settings%early_stopping_min_delta < 0.0_dp .or. &
+            (settings%early_stopping_rounds > 0 .and. .not. have_validation)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost warm start: invalid early-stopping configuration")
+            return
+        end if
+        n_samples = size(x, 1)
+        n_features = size(x, 2)
+        if (n_samples < 2 .or. n_features /= self%n_inputs .or. size(y) /= n_samples .or. &
+            settings%max_depth < 1 .or. settings%max_depth > n_samples .or. &
+            settings%min_samples_leaf < 1 .or. 2*settings%min_samples_leaf > n_samples .or. &
+            settings%max_bin < 2 .and. tree_method_code == XGB_TREE_HIST) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost warm start: input dimensions or tree controls are invalid")
+            return
+        end if
+        if (have_validation) then
+            n_validation = size(validation_x, 1)
+            if (n_validation < 1 .or. size(validation_x, 2) /= n_features .or. &
+                size(validation_y) /= n_validation) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "xgboost warm start: validation dimensions do not match training features")
+                return
+            end if
+        else
+            n_validation = 0
+        end if
+        if (is_ranking .neqv. present(group)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost warm start: rank:pairwise requires group IDs")
+            return
+        end if
+        if (is_ranking .and. have_validation .and. .not. present(validation_group)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost warm start: ranking validation requires validation group IDs")
+            return
+        end if
+        if (is_ranking) then
+            if (.not. valid_group_ids(group, n_samples)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "xgboost warm start: group IDs are invalid")
+                return
+            end if
+            if (have_validation .and. .not. valid_group_ids(validation_group, n_validation)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "xgboost warm start: validation group IDs are invalid")
+                return
+            end if
+        end if
+        if (any((.not. ieee_is_finite(x)) .and. (.not. ieee_is_nan(x))) .or. &
+            any(.not. ieee_is_finite(y)) .or. &
+            (missing_code == XGB_MISSING_ERROR .and. any(ieee_is_nan(x)))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost warm start: training inputs are invalid")
+            return
+        end if
+        if (have_validation) then
+            if (any((.not. ieee_is_finite(validation_x)) .and. &
+                (.not. ieee_is_nan(validation_x))) .or. any(.not. ieee_is_finite(validation_y)) .or. &
+                (missing_code == XGB_MISSING_ERROR .and. any(ieee_is_nan(validation_x)))) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "xgboost warm start: validation inputs are invalid")
+                return
+            end if
+        end if
+
+        allocate(observation_weight(n_samples))
+        observation_weight = 1.0_dp
+        if (present(sample_weight)) then
+            if (size(sample_weight) /= n_samples .or. any(.not. ieee_is_finite(sample_weight)) .or. &
+                any(sample_weight <= 0.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "xgboost warm start: sample_weight must be positive and finite")
+                return
+            end if
+            observation_weight = sample_weight
+        end if
+        weight_sum = sum(observation_weight)
+        if (.not. ieee_is_finite(weight_sum) .or. weight_sum <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost warm start: sample_weight has no positive mass")
+            return
+        end if
+        if (have_validation) then
+            allocate(validation_observation_weight(n_validation))
+            validation_observation_weight = 1.0_dp
+            if (present(validation_weight)) then
+                if (size(validation_weight) /= n_validation .or. &
+                    any(.not. ieee_is_finite(validation_weight)) .or. &
+                    any(validation_weight <= 0.0_dp)) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "xgboost warm start: validation_weight must be positive and finite")
+                    return
+                end if
+                validation_observation_weight = validation_weight
+            end if
+        end if
+
+        allocate(prediction(n_samples), correction(n_samples), gradient(n_samples), &
+            hessian(n_samples))
+        prediction = self%base_score
+        do i = 1, start_estimators
+            call tree_predict(self%estimators(i), x, correction, status)
+            if (status%code /= FORTNUM_OK) return
+            prediction = prediction + self%learning_rate*correction
+        end do
+        if (have_validation) then
+            allocate(validation_prediction(n_validation), validation_correction(n_validation))
+            validation_prediction = self%base_score
+            do i = 1, start_estimators
+                call tree_predict(self%estimators(i), validation_x, validation_correction, status)
+                if (status%code /= FORTNUM_OK) return
+                validation_prediction = validation_prediction + self%learning_rate*validation_correction
+            end do
+            call xgb_objective_loss(self%objective_code, validation_prediction, validation_y, &
+                validation_observation_weight, self%objective_parameter, &
+                merge(self%objective_parameter, 0.5_dp, self%objective_code == XGB_OBJECTIVE_QUANTILE), &
+                best_validation_loss, status, validation_group)
+            if (status%code /= FORTNUM_OK) return
+            best_iteration = start_estimators
+            stale_rounds = 0
+        else
+            best_validation_loss = huge(1.0_dp)
+            best_iteration = target_estimators
+            stale_rounds = 0
+        end if
+
+        allocate(expanded_estimators(target_estimators))
+        expanded_estimators(:start_estimators) = self%estimators
+        if (have_validation .and. settings%restore_best) best_estimators = self%estimators
+        sampling_state = settings%seed
+        do i = 1, start_estimators
+            call sample_training_rows(n_samples, settings%subsample, sampling_state, sample_index)
+            call sample_training_features(n_features, settings%colsample_bytree, sampling_state, feature_mask)
+        end do
+        completed_estimators = start_estimators
+        early_stop = .false.
+        do i = start_estimators + 1, target_estimators
+            call objective_derivatives(self%objective_code, prediction, y, gradient, hessian, &
+                merge(self%objective_parameter, 1.0_dp, self%objective_code == XGB_OBJECTIVE_HUBER), &
+                merge(self%objective_parameter, 0.5_dp, self%objective_code == XGB_OBJECTIVE_QUANTILE), &
+                status, group, observation_weight)
+            if (status%code /= FORTNUM_OK) return
+            if (is_ranking) hessian = max(hessian, 1.0e-12_dp)
+            if (.not. is_ranking) then
+                gradient = observation_weight*gradient
+                hessian = observation_weight*hessian
+            end if
+            call sample_training_rows(n_samples, settings%subsample, sampling_state, sample_index)
+            call sample_training_features(n_features, settings%colsample_bytree, sampling_state, feature_mask)
+            call build_tree(x, gradient, hessian, observation_weight, settings, sample_index, &
+                feature_mask, expanded_estimators(i), status)
+            if (status%code /= FORTNUM_OK) return
+            call tree_predict(expanded_estimators(i), x, correction, status)
+            if (status%code /= FORTNUM_OK) return
+            prediction = prediction + self%learning_rate*correction
+            completed_estimators = i
+            if (have_validation) then
+                call tree_predict(expanded_estimators(i), validation_x, validation_correction, status)
+                if (status%code /= FORTNUM_OK) return
+                validation_prediction = validation_prediction + self%learning_rate*validation_correction
+                call xgb_objective_loss(self%objective_code, validation_prediction, validation_y, &
+                    validation_observation_weight, self%objective_parameter, &
+                    merge(self%objective_parameter, 0.5_dp, self%objective_code == XGB_OBJECTIVE_QUANTILE), &
+                    validation_loss, status, validation_group)
+                if (status%code /= FORTNUM_OK) return
+                improved = validation_loss < best_validation_loss - settings%early_stopping_min_delta
+                if (improved) then
+                    best_validation_loss = validation_loss
+                    best_iteration = i
+                    stale_rounds = 0
+                    if (settings%restore_best) best_estimators = expanded_estimators(:i)
+                else
+                    stale_rounds = stale_rounds + 1
+                end if
+                if (settings%early_stopping_rounds > 0 .and. &
+                    stale_rounds >= settings%early_stopping_rounds) then
+                    early_stop = .true.
+                    exit
+                end if
+            end if
+        end do
+
+        if (have_validation .and. settings%restore_best .and. allocated(best_estimators)) then
+            call move_alloc(best_estimators, expanded_estimators)
+            completed_estimators = size(expanded_estimators)
+        else if (completed_estimators < target_estimators) then
+            block
+                type(xgb_tree_t), allocatable :: retained_estimators(:)
+                allocate(retained_estimators(completed_estimators))
+                retained_estimators = expanded_estimators(:completed_estimators)
+                call move_alloc(retained_estimators, expanded_estimators)
+            end block
+        end if
+        call move_alloc(expanded_estimators, self%estimators)
+        self%n_estimators = completed_estimators
+        self%requested_estimators = target_estimators
+        self%early_stopping_rounds_value = settings%early_stopping_rounds
+        self%early_stopping_min_delta_value = settings%early_stopping_min_delta
+        self%restore_best_value = settings%restore_best
+        self%best_iteration_value = min(max(best_iteration, 1), completed_estimators)
+        self%best_validation_loss_value = best_validation_loss
+        self%early_stopped_flag = early_stop
+        self%initialized = .true.
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine xgb_fit_warm_start
 
     subroutine xgb_fit_regression(self, x, y, status, options, sample_weight, &
             validation_x, validation_y, validation_weight)
@@ -1627,6 +1954,13 @@ contains
         class(xgboost_t), intent(in) :: self
         count = self%n_estimators
     end function xgb_estimator_count
+
+    integer function xgb_requested_estimator_count(self) result(count)
+        class(xgboost_t), intent(in) :: self
+
+        count = 0
+        if (self%initialized) count = self%requested_estimators
+    end function xgb_requested_estimator_count
 
     real(dp) function xgb_base_margin(self) result(margin)
         class(xgboost_t), intent(in) :: self
