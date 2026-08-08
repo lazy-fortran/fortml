@@ -2668,6 +2668,14 @@ trials remain visible in the result schema.
   over unconstrained logits, bias-correction derivatives, independent central
   differences, and the same FortOpt L-BFGS-B adapter. Mini-batch, schedule, and
   CUDA AdamW hypergradients remain explicit follow-up contracts.
+- [x] Add exact scheduled AdamW trajectory hypergradients over base rate, L2,
+  decoupled weight decay, beta logits, epsilon, and active typed schedule
+  coordinates. Constant, cosine, warmup-cosine, and exponential schedules use
+  analytic CPU value/gradient/JVP/VJP products through moment, bias-correction,
+  and shrinkage state and feed FortOpt L-BFGS-B directly. The independent
+  central-difference/NumPy release lane is
+  `fortml-bench/results/MLP_ADAMW_SCHEDULE_HYPERGRADIENT.md`; CUDA, lower
+  precision, zero-root, and outer-HVP requests are typed refusals.
 - [x] Add the exact fixed full-batch coupled-L2 Adam trajectory hypergradient
   objective over `[log(learning_rate), log(l2), logit(beta1), logit(beta2)]`.
   The regularized loss gradient feeds both moment states without AdamW's

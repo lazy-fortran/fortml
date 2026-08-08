@@ -80,6 +80,19 @@ independent log bounds. The behavioral test
 differences, the JVP, the scalar adjoint, and an L-BFGS-B solve. Mini-batch,
 schedule, beta, and CUDA AdamW trajectories remain explicit follow-up work.
 
+## Scheduled AdamW trajectory contract
+
+`mlp_adamw_schedule_hypergradient_objective_t` extends the fixed AdamW
+objective with constant, cosine, warmup-cosine, and exponential-decay typed
+schedules. The eight packed coordinates are
+`[log(base_rate), log(l2), log(weight_decay), logit(beta1), logit(beta2),
+log(epsilon), logit(min_rate_fraction), logit(decay_factor)]`. Exact CPU
+value/gradient, JVP, scalar VJP, and FortOpt L-BFGS-B products propagate the
+complete AdamW moment and decoupled-decay state. The fixture and benchmark use
+an independent central-difference/NumPy affine oracle. CUDA, lower precision,
+zero-square-root derivatives, and outer hyper-HVP requests are explicit typed
+refusals; no host fallback or hidden finite difference is used.
+
 ## RMSprop trajectory contract
 
 `mlp_rmsprop_hypergradient_objective_t` differentiates a fixed full-batch

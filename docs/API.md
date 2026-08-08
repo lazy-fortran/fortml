@@ -2241,6 +2241,17 @@ FortOpt L-BFGS-B with explicit log bounds. Mini-batch, schedules, beta
 hypergradients, and CUDA state remain refused until their complete state
 derivatives are specified.
 
+`mlp_adamw_schedule_hypergradient_objective_t` extends this contract with a
+fixed typed schedule. Its packed vector is
+`[log(base_rate),log(l2),log(weight_decay),logit(beta1),logit(beta2),
+log(epsilon),logit(min_rate_fraction),logit(decay_factor)]`. Constant, cosine,
+warmup-cosine, and exponential-decay schedules expose exact CPU
+`value_gradient`, `jvp`, scalar `vjp`, and FortOpt L-BFGS-B products through
+AdamW moments, bias correction, and decoupled decay. Schedule shape and integer
+update counts are fixed. The outer `hvp`, CUDA, and lower-precision requests
+are typed refusals until resident state and third network derivatives exist;
+see [`docs/MLP_ADAMW_SCHEDULE_HYPERGRADIENT.md`](MLP_ADAMW_SCHEDULE_HYPERGRADIENT.md).
+
 `mlp_rmsprop_hypergradient_objective_t` provides the exact fixed full-batch
 RMSprop trajectory contract. Its packed vector is
 `[log(learning_rate),log(l2),decay,log(epsilon),momentum]`. Square-average,
