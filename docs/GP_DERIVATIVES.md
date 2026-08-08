@@ -16,6 +16,7 @@ the requested pair is smooth and finite. A refusal is a typed
 | Kernel family | Mixed value/first-derivative fit and prediction | Parameter JVP/VJP/HVP products | Query-input JVP/VJP | Explicit boundary |
 | --- | --- | --- | --- | --- |
 | RBF | Yes | Yes, including analytic mixed-observation HVPs | Yes | none |
+| ARD RBF | Yes | Yes, including analytic mixed-observation HVPs for log variance and every log lengthscale | Yes | CUDA covariance/factorization remains `FORTNUM_NOT_IMPLEMENTED` |
 | Matérn 1/2 | Value-only, derivative blocks are singular at coincident points | Value-only and noncoincident gradient/JVP/VJP; mixed HVP refusal | No at coincident query blocks | `FORTNUM_DOMAIN_ERROR` at coincidence |
 | Matérn 3/2 | Yes | Gradient/JVP/VJP; mixed HVP refusal | Yes away from coincidence | Nonzero directional third derivative at coincidence is `FORTNUM_NOT_IMPLEMENTED` |
 | Matérn 5/2 | Yes | Gradient/JVP/VJP; mixed HVP refusal | Yes | mixed HVP `FORTNUM_NOT_IMPLEMENTED` |
@@ -76,6 +77,9 @@ query product does not invalidate a fitted value-only model.
 `test_derivative_gp_polynomial` additionally assembles polynomial covariance
 blocks independently and checks the likelihood gradient, mixed HVP, and
 query-input JVP/VJP products against finite differences and an adjoint identity.
+`test_derivative_gp_ard` independently assembles anisotropic RBF value,
+first-derivative, and mixed-Hessian covariance blocks, then checks the packed
+kernel/noise likelihood gradient and mixed HVP against central differences.
 The polynomial path is intentionally kept as a short closed-form expression
 (`b = offset + scale*dot(x1,x2)`, `k = variance*b**degree`) rather than a
 generated FortSym leaf. The independent block oracle covers every packed

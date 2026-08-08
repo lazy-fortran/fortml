@@ -4,7 +4,7 @@ program fortml_bench_derivative_gp
     use fortml_derivative_gaussian_process, only: gp_derivative_regression_t
     use fortml_kernels, only: kernel_t, make_periodic_kernel, &
         make_rational_quadratic_kernel, make_cosine_kernel, make_polynomial_kernel, &
-        make_spectral_mixture_kernel
+        make_spectral_mixture_kernel, make_rbf_ard_kernel
     use fortnum_status, only: fortnum_status_t, status_ok
     implicit none
 
@@ -15,7 +15,7 @@ program fortml_bench_derivative_gp
     real(dp) :: covariance(q, q), covariance_dot(q, q), covariance_bar(q, q)
     real(dp), allocatable :: parameter_direction(:), parameter_bar(:)
     integer :: components(n), query_components(q), i, j
-    type(kernel_t) :: periodic, rational_quadratic, cosine, polynomial, spectral_mixture
+    type(kernel_t) :: periodic, rational_quadratic, cosine, polynomial, spectral_mixture, ard_rbf
     real(dp) :: spectral_weights(2), spectral_means(2, 2), spectral_scales(2, 2)
     type(fortnum_status_t) :: status
     integer(int64) :: begin_clock, end_clock, rate
@@ -54,6 +54,8 @@ program fortml_bench_derivative_gp
     spectral_mixture = make_spectral_mixture_kernel(d, 2, spectral_weights, &
         spectral_means, spectral_scales, status)
     if (.not. status_ok(status)) error stop "spectral mixture constructor failed"
+    ard_rbf = make_rbf_ard_kernel(d, 1.3_dp, [0.75_dp, 1.25_dp], status)
+    if (.not. status_ok(status)) error stop "ARD RBF constructor failed"
     call benchmark(periodic, "periodic", status)
     if (.not. status_ok(status)) error stop "periodic derivative GP benchmark failed"
     call benchmark(rational_quadratic, "rational_quadratic", status)
@@ -64,6 +66,8 @@ program fortml_bench_derivative_gp
     if (.not. status_ok(status)) error stop "polynomial derivative GP benchmark failed"
     call benchmark(spectral_mixture, "spectral_mixture", status)
     if (.not. status_ok(status)) error stop "spectral mixture derivative GP benchmark failed"
+    call benchmark(ard_rbf, "ard_rbf", status)
+    if (.not. status_ok(status)) error stop "ARD RBF derivative GP benchmark failed"
 
 contains
 
@@ -152,7 +156,7 @@ contains
         write (*, '(a,a,a,es24.16,a,es24.16)') "derivative_gp,", trim(name), &
             ",joint_covariance_vjp,", seconds, ",", sum(parameter_bar)
 
-        if (trim(name) == "polynomial") then
+        if (trim(name) == "polynomial" .or. trim(name) == "ard_rbf") then
             call model%hyperparameter_hvp(parameter_direction, parameter_bar, final_status)
             if (.not. status_ok(final_status)) return
             call system_clock(begin_clock, rate)
