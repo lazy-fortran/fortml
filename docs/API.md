@@ -202,9 +202,9 @@ repeated resident-batch evidence.
 | `vae_t` | `elbo`, `reconstruct` | No | ELBO gradient | No |
 | `rnn_t` | `forward`, squared-error `loss` | No | Loss gradient by BPTT | No |
 | `kernel_t` | Scalar value and matrix | Parameter JVP | Parameter VJP | Parameter HVP |
-| `xgboost_t` | Squared/squared-log (RMSLE)/logistic/Poisson/fixed-shape Gamma/Tweedie/Huber/quantile/absolute/rank:pairwise margins, predictions, additive tree contributions, fitted-prefix slicing, and bounded ordered-gradient integer categorical partitions | Fixed-tree input JVP away from split boundaries; categorical models refuse discrete tangents | Fixed-tree input VJP away from split boundaries; categorical models refuse discrete cotangents | No |
+| `xgboost_t` | Squared/squared-log (RMSLE)/logistic/Poisson/fixed-shape Gamma/Tweedie/Huber/quantile/absolute/rank:pairwise margins, predictions, additive tree contributions, fitted-prefix slicing, bounded ordered-gradient integer categorical partitions, and packed fixed-structure base/leaf coordinates | Fixed-tree input JVP away from split boundaries; categorical models refuse discrete tangents; raw-margin leaf-coordinate JVP | Fixed-tree input VJP away from split boundaries; categorical models refuse discrete cotangents; raw-margin leaf-coordinate VJP | No |
 | `xgboost_classifier_t` | Binary integer labels, logistic `(n,2)` probabilities, staged margins, and feature diagnostics | Fixed-tree probability/input JVP away from split boundaries | Fixed-tree probability/input VJP away from split boundaries | No |
-| `lightgbm_t` | Weighted numeric regression/binary logistic histogram boosting with deterministic globally best-leaf growth, GOSS top/other-rate gradient/Hessian sampling, and seeded DART/dropout with persisted tree-normalisation scales | Fixed-tree input JVP away from split boundaries | Fixed-tree input VJP away from split boundaries | No |
+| `lightgbm_t` | Weighted numeric regression/binary logistic histogram boosting with deterministic globally best-leaf growth, GOSS top/other-rate gradient/Hessian sampling, seeded DART/dropout with persisted tree-normalisation scales, and packed fixed-structure base/leaf coordinates | Fixed-tree input JVP away from split boundaries; raw-margin leaf-coordinate JVP | Fixed-tree input VJP away from split boundaries; raw-margin leaf-coordinate VJP | No |
 | `random_forest_classifier_t` | Bootstrap-ensemble probabilities/labels plus transactional OOB decision probabilities, OOB accuracy, coverage, bootstrap-inclusion audit state, and deterministic fixed-state accuracy permutation importance | Refused: split routing and permutation membership are discrete | Refused: split routing and permutation membership are discrete | CPU OOB/permutation diagnostics; CUDA returns typed `FORTNUM_NOT_IMPLEMENTED` |
 | `extra_trees_classifier_t` | Randomized-threshold ensemble probabilities and labels | Refused: split routing is discrete | Refused: split routing is discrete | No |
 | `bagging_classifier_t` | Seeded bootstrap or without-replacement CART probabilities and labels | Refused: split routing is discrete | Refused: split routing is discrete | No |
@@ -2947,6 +2947,17 @@ refusal. `missing_policy()` and `accepts_missing()` report the fitted policy.
 returns a zero feature cotangent away from split boundaries and refuses the
 same discontinuities, nonfinite cotangents, and malformed shapes.
 
+`leaf_parameter_count()` and `leaf_parameters(status)` expose the continuous
+fixed-structure coordinates `[base_score, leaf weights in estimator/node
+order]`. `predict_leaf_jvp(x,parameter_dot,margin,margin_dot,status)` and
+`predict_leaf_vjp(x,output_bar,parameter_bar,status)` differentiate raw margins
+with respect to those coordinates while holding split routing, categorical
+partitions, DART choices, and tree scales fixed. The products are therefore
+defined on split surfaces; they do not make fit or routing differentiable.
+For logistic models apply the sigmoid product separately to obtain probability
+derivatives. CUDA leaf products remain an explicit refusal until resident tree
+state and transfer accounting are available.
+
 Every fit method also accepts an optional validation set through
 `validation_x`, `validation_y`, and `validation_weight`. Set
 `early_stopping_rounds` to a positive patience count and optionally set
@@ -4147,6 +4158,15 @@ contributions, prefix slices, warm starts, and schema-3 snapshots. The public
 accessors expose this state. DART fit/dropout selection is discrete and has no
 fit-time hyperparameter derivative; fixed-tree input JVP/VJP products retain
 the zero-away-from-splits contract. Invalid rates refuse transactionally.
+
+`leaf_parameter_count()` and `leaf_parameters(status)` expose the continuous
+fixed-structure coordinates `[base_score, leaf weights in estimator/node
+order]`. `predict_leaf_jvp(x,parameter_dot,margin,margin_dot,status)` and
+`predict_leaf_vjp(x,output_bar,parameter_bar,status)` differentiate raw margins
+with respect to those coordinates while holding split routing and persisted
+tree scales fixed. These products are defined on split surfaces; input
+JVP/VJP products retain their boundary refusal. CUDA leaf products remain a
+typed refusal until resident leaf-wise state and transfer accounting exist.
 
 The finite numeric contract is explicit: NaN and infinity inputs are refused,
 and categorical, missing-value-default, EFB, and distributed policies are not

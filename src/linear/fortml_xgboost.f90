@@ -216,6 +216,7 @@ module fortml_xgboost
         generic, public :: predict_margin => predict_margin_matrix, &
             predict_margin_vector
         procedure, public :: predict_jvp => xgb_predict_jvp
+        procedure, public :: predict_leaf_jvp => xgb_predict_leaf_jvp
         procedure, public :: predict_staged => xgb_predict_staged
         procedure, public :: predict_staged_margin => xgb_predict_staged_margin
         procedure, public :: slice => xgb_slice
@@ -228,8 +229,11 @@ module fortml_xgboost
         procedure, public :: predict_proba => xgb_predict_proba
         procedure, public :: decision_function => xgb_decision_function
         procedure, public :: predict_vjp => xgb_predict_vjp
+        procedure, public :: predict_leaf_vjp => xgb_predict_leaf_vjp
         procedure, public :: split_gain => xgb_split_gain
         procedure, public :: leaf_weights => xgb_leaf_weights
+        procedure, public :: leaf_parameter_count => xgb_leaf_parameter_count
+        procedure, public :: leaf_parameters => xgb_leaf_parameters
         procedure, public :: feature_importance => xgb_feature_importance
         procedure, public :: tree_node_count => xgb_tree_node_count
         procedure, public :: tree_depth => xgb_tree_depth
@@ -2403,6 +2407,155 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine xgb_predict_vjp
+
+    !> Number of continuous fitted coordinates in the fixed-structure margin.
+    !>
+    !> The packed layout is `[base_score, leaf weights in tree/node order]`.
+    !> Split thresholds, categorical partitions, and tree scales are discrete
+    !> fitted structure and are intentionally not included in this product.
+    integer function xgb_leaf_parameter_count(self) result(count)
+        class(xgboost_t), intent(in) :: self
+        integer :: i, node
+
+        count = 0
+        if (.not. self%initialized .or. .not. allocated(self%estimators)) return
+        count = 1
+        do i = 1, size(self%estimators)
+            do node = 1, self%estimators(i)%n_nodes
+                if (self%estimators(i)%leaf(node)) count = count + 1
+            end do
+        end do
+    end function xgb_leaf_parameter_count
+
+    !> Return the fixed-structure margin coordinates.
+    function xgb_leaf_parameters(self, status) result(parameters)
+        class(xgboost_t), intent(in) :: self
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: parameters(:)
+        integer :: i, node, position
+
+        allocate(parameters(max(0, self%leaf_parameter_count())))
+        if (.not. self%initialized .or. .not. allocated(self%estimators)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost leaf_parameters: model is not initialized")
+            return
+        end if
+        position = 1
+        parameters(position) = self%base_score
+        do i = 1, size(self%estimators)
+            do node = 1, self%estimators(i)%n_nodes
+                if (.not. self%estimators(i)%leaf(node)) cycle
+                position = position + 1
+                parameters(position) = self%estimators(i)%weight(node)
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end function xgb_leaf_parameters
+
+    !> JVP of the raw margin with respect to `[base_score, leaf weights]`.
+    !>
+    !> Tree routing is held fixed.  This is differentiable at every query,
+    !> including split surfaces, because no input tangent is involved.
+    subroutine xgb_predict_leaf_jvp(self, x, parameter_dot, y, y_dot, status)
+        class(xgboost_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), parameter_dot(:)
+        real(dp), intent(out) :: y(:), y_dot(:)
+        type(fortnum_status_t), intent(out) :: status
+        integer, allocatable :: offsets(:)
+        integer :: i, t, node, selected, position
+
+        if (.not. self%initialized .or. size(x, 2) /= self%n_inputs .or. &
+                size(y) /= size(x, 1) .or. size(y_dot) /= size(y) .or. &
+                size(parameter_dot) /= self%leaf_parameter_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost predict_leaf_jvp: model or shape is invalid")
+            return
+        end if
+        if (.not. valid_query_values(self%missing_code, x) .or. &
+                .not. valid_categorical_query(self, x) .or. &
+                any(.not. ieee_is_finite(parameter_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost predict_leaf_jvp: input or tangent has unsupported values")
+            return
+        end if
+        allocate(offsets(self%n_estimators))
+        position = 1
+        do t = 1, self%n_estimators
+            offsets(t) = position + 1
+            do node = 1, self%estimators(t)%n_nodes
+                if (self%estimators(t)%leaf(node)) position = position + 1
+            end do
+        end do
+        y = self%base_score
+        y_dot = parameter_dot(1)
+        do i = 1, size(x, 1)
+            do t = 1, self%n_estimators
+                selected = xgb_leaf_node_for_query(self%estimators(t), x(i, :))
+                y(i) = y(i) + self%learning_rate*self%estimators(t)%scale * &
+                    self%estimators(t)%weight(selected)
+                position = offsets(t)
+                do node = 1, selected
+                    if (self%estimators(t)%leaf(node)) then
+                        if (node == selected) exit
+                        position = position + 1
+                    end if
+                end do
+                y_dot(i) = y_dot(i) + self%learning_rate*self%estimators(t)%scale * &
+                    parameter_dot(position)
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine xgb_predict_leaf_jvp
+
+    !> VJP of the raw margin with respect to `[base_score, leaf weights]`.
+    subroutine xgb_predict_leaf_vjp(self, x, output_bar, parameter_bar, status)
+        class(xgboost_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), output_bar(:)
+        real(dp), intent(out) :: parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+        integer, allocatable :: offsets(:)
+        integer :: i, t, node, selected, position
+
+        parameter_bar = 0.0_dp
+        if (.not. self%initialized .or. size(x, 2) /= self%n_inputs .or. &
+                size(output_bar) /= size(x, 1) .or. &
+                size(parameter_bar) /= self%leaf_parameter_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost predict_leaf_vjp: model or shape is invalid")
+            return
+        end if
+        if (.not. valid_query_values(self%missing_code, x) .or. &
+                .not. valid_categorical_query(self, x) .or. &
+                any(.not. ieee_is_finite(output_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost predict_leaf_vjp: input or cotangent has unsupported values")
+            return
+        end if
+        allocate(offsets(self%n_estimators))
+        position = 1
+        do t = 1, self%n_estimators
+            offsets(t) = position + 1
+            do node = 1, self%estimators(t)%n_nodes
+                if (self%estimators(t)%leaf(node)) position = position + 1
+            end do
+        end do
+        parameter_bar(1) = sum(output_bar)
+        do i = 1, size(x, 1)
+            do t = 1, self%n_estimators
+                selected = xgb_leaf_node_for_query(self%estimators(t), x(i, :))
+                position = offsets(t)
+                do node = 1, selected
+                    if (self%estimators(t)%leaf(node)) then
+                        if (node == selected) exit
+                        position = position + 1
+                    end if
+                end do
+                parameter_bar(position) = parameter_bar(position) + &
+                    output_bar(i)*self%learning_rate*self%estimators(t)%scale
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine xgb_predict_leaf_vjp
 
     !> Copy the first `n_trees` fitted boosting rounds into a valid model.
     !>
@@ -4694,6 +4847,29 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine tree_predict
+
+    integer function xgb_leaf_node_for_query(tree, query) result(node)
+        type(xgb_tree_t), intent(in) :: tree
+        real(dp), intent(in) :: query(:)
+
+        node = 1
+        do while (.not. tree%leaf(node))
+            if (tree%categorical(node)) then
+                if (category_go_left(query(tree%feature(node)), &
+                        tree%category_values(node, :), tree%category_count(node), &
+                        tree%missing_left(node))) then
+                    node = tree%left_child(node)
+                else
+                    node = tree%right_child(node)
+                end if
+            else if (go_left(query(tree%feature(node)), &
+                    tree%node_threshold(node), tree%missing_left(node))) then
+                node = tree%left_child(node)
+            else
+                node = tree%right_child(node)
+            end if
+        end do
+    end function xgb_leaf_node_for_query
 
     real(dp) function regularized_leaf_weight(gradient, hessian, options) &
             result(weight)

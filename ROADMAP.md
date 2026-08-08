@@ -2345,6 +2345,15 @@ hyperparameter block. A deliberate train/validation leakage fixture must fail.
   test exact and weighted-histogram monotonicity on independent query grids.
   `predict_device` returns a typed CUDA refusal until a resident tree kernel is
   linked; no CPU fallback is counted as GPU execution.
+- [x] Add fixed-structure tree leaf-weight products to `xgboost_t` and
+  `lightgbm_t`. The packed `[base_score, leaf weights]` coordinates expose
+  raw-margin `predict_leaf_jvp`/`predict_leaf_vjp` products with learning-rate
+  and DART scale factors, deterministic tree/node ordering, finite/query and
+  shape guards, and a transactional malformed-tangent refusal. Split routing
+  remains held fixed: input products retain their split-boundary refusal, while
+  leaf products remain defined on the boundary. `test_tree_leaf_products` is
+  an independent hand stump oracle and `fortml-bench/results/TREE_LEAF_PRODUCTS.md`
+  records CPU correctness/timing plus the explicit resident-CUDA gap.
 - [x] Add the production Poisson log-link objective to `xgboost_t`.
   `fit_poisson` validates nonnegative finite targets, initializes a guarded log
   weighted mean, applies stable `exp(margin)-target` gradients and positive

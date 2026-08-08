@@ -149,6 +149,8 @@ module fortml_lightgbm
         procedure, public :: predict_device => lgbm_predict_device
         procedure, public :: predict_jvp => lgbm_predict_jvp
         procedure, public :: predict_vjp => lgbm_predict_vjp
+        procedure, public :: predict_leaf_jvp => lgbm_predict_leaf_jvp
+        procedure, public :: predict_leaf_vjp => lgbm_predict_leaf_vjp
         procedure, public :: device_supported => lgbm_device_supported
         procedure, public :: fitted => lgbm_fitted
         procedure, public :: objective_name => lgbm_objective_name
@@ -168,6 +170,8 @@ module fortml_lightgbm
         procedure, public :: dart_skip_drop => lgbm_dart_skip_drop
         procedure, public :: dart_max_drop => lgbm_dart_max_drop
         procedure, public :: tree_scale => lgbm_tree_scale
+        procedure, public :: leaf_parameter_count => lgbm_leaf_parameter_count
+        procedure, public :: leaf_parameters => lgbm_leaf_parameters
     end type lightgbm_t
 
 contains
@@ -1489,6 +1493,148 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine lgbm_predict_vjp
 
+    !> Number of continuous fitted coordinates in the fixed-structure margin.
+    !> The packed layout is `[base_score, leaf weights in tree/node order]`.
+    integer function lgbm_leaf_parameter_count(self) result(count)
+        class(lightgbm_t), intent(in) :: self
+        integer :: i, node
+
+        count = 0
+        if (.not. self%initialized .or. .not. allocated(self%estimator)) return
+        count = 1
+        do i = 1, size(self%estimator)
+            do node = 1, self%estimator(i)%n_nodes
+                if (self%estimator(i)%node(node)%leaf) count = count + 1
+            end do
+        end do
+    end function lgbm_leaf_parameter_count
+
+    !> Return fixed-structure raw-margin coordinates.
+    function lgbm_leaf_parameters(self, status) result(parameters)
+        class(lightgbm_t), intent(in) :: self
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: parameters(:)
+        integer :: i, node, position
+
+        allocate(parameters(max(0, self%leaf_parameter_count())))
+        if (.not. self%initialized .or. .not. allocated(self%estimator)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm leaf_parameters: model is not initialized")
+            return
+        end if
+        position = 1
+        parameters(position) = self%base_score
+        do i = 1, size(self%estimator)
+            do node = 1, self%estimator(i)%n_nodes
+                if (.not. self%estimator(i)%node(node)%leaf) cycle
+                position = position + 1
+                parameters(position) = self%estimator(i)%node(node)%weight
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end function lgbm_leaf_parameters
+
+    !> JVP of the raw margin with respect to `[base_score, leaf weights]`.
+    !> Tree routing is held fixed, so split surfaces are not a boundary here.
+    subroutine lgbm_predict_leaf_jvp(self, x, parameter_dot, y, y_dot, status)
+        class(lightgbm_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), parameter_dot(:)
+        real(dp), intent(out) :: y(:), y_dot(:)
+        type(fortnum_status_t), intent(out) :: status
+        integer, allocatable :: offsets(:)
+        integer :: i, t, node, selected, position
+
+        if (.not. self%initialized .or. size(x, 2) /= self%n_inputs .or. &
+                size(y) /= size(x, 1) .or. size(y_dot) /= size(y) .or. &
+                size(parameter_dot) /= self%leaf_parameter_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm predict_leaf_jvp: model or shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(x)) .or. &
+                any(.not. ieee_is_finite(parameter_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm predict_leaf_jvp: input or tangent has unsupported values")
+            return
+        end if
+        allocate(offsets(self%n_estimators))
+        position = 1
+        do t = 1, self%n_estimators
+            offsets(t) = position + 1
+            do node = 1, self%estimator(t)%n_nodes
+                if (self%estimator(t)%node(node)%leaf) position = position + 1
+            end do
+        end do
+        y = self%base_score
+        y_dot = parameter_dot(1)
+        do i = 1, size(x, 1)
+            do t = 1, self%n_estimators
+                selected = lgbm_leaf_node_for_query(self%estimator(t), x(i, :))
+                y(i) = y(i) + self%learning_rate*self%estimator(t)%scale * &
+                    self%estimator(t)%node(selected)%weight
+                position = offsets(t)
+                do node = 1, selected
+                    if (self%estimator(t)%node(node)%leaf) then
+                        if (node == selected) exit
+                        position = position + 1
+                    end if
+                end do
+                y_dot(i) = y_dot(i) + self%learning_rate*self%estimator(t)%scale * &
+                    parameter_dot(position)
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine lgbm_predict_leaf_jvp
+
+    !> VJP of the raw margin with respect to `[base_score, leaf weights]`.
+    subroutine lgbm_predict_leaf_vjp(self, x, output_bar, parameter_bar, status)
+        class(lightgbm_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), output_bar(:)
+        real(dp), intent(out) :: parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+        integer, allocatable :: offsets(:)
+        integer :: i, t, node, selected, position
+
+        parameter_bar = 0.0_dp
+        if (.not. self%initialized .or. size(x, 2) /= self%n_inputs .or. &
+                size(output_bar) /= size(x, 1) .or. &
+                size(parameter_bar) /= self%leaf_parameter_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm predict_leaf_vjp: model or shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(x)) .or. &
+                any(.not. ieee_is_finite(output_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm predict_leaf_vjp: input or cotangent has unsupported values")
+            return
+        end if
+        allocate(offsets(self%n_estimators))
+        position = 1
+        do t = 1, self%n_estimators
+            offsets(t) = position + 1
+            do node = 1, self%estimator(t)%n_nodes
+                if (self%estimator(t)%node(node)%leaf) position = position + 1
+            end do
+        end do
+        parameter_bar(1) = sum(output_bar)
+        do i = 1, size(x, 1)
+            do t = 1, self%n_estimators
+                selected = lgbm_leaf_node_for_query(self%estimator(t), x(i, :))
+                position = offsets(t)
+                do node = 1, selected
+                    if (self%estimator(t)%node(node)%leaf) then
+                        if (node == selected) exit
+                        position = position + 1
+                    end if
+                end do
+                parameter_bar(position) = parameter_bar(position) + &
+                    output_bar(i)*self%learning_rate*self%estimator(t)%scale
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine lgbm_predict_leaf_vjp
+
     logical function lgbm_device_supported(self, device_kind) result(supported)
         class(lightgbm_t), intent(in) :: self
         integer, intent(in) :: device_kind
@@ -1874,6 +2020,20 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine lgbm_tree_predict
+
+    integer function lgbm_leaf_node_for_query(tree, query) result(node)
+        type(lgbm_tree_t), intent(in) :: tree
+        real(dp), intent(in) :: query(:)
+
+        node = 1
+        do while (.not. tree%node(node)%leaf)
+            if (query(tree%node(node)%feature) < tree%node(node)%threshold) then
+                node = tree%node(node)%left_child
+            else
+                node = tree%node(node)%right_child
+            end if
+        end do
+    end function lgbm_leaf_node_for_query
 
     logical function leaf_boundary_hit(self, x) result(hit)
         class(lightgbm_t), intent(in) :: self
