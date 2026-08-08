@@ -7,16 +7,24 @@ program test_gp_multiclass_classification
         gp_multiclass_classification_state_t
     use fortml_kernels, only: kernel_t, make_rbf_kernel
     use fortml_kernels, only: clone_kernel
-    use fortnum_status, only: fortnum_status_t, status_ok
+    use fortml_gp_classification, only: gp_classification_t, &
+        gp_classification_options_t
+    use fortnum_cholesky, only: cholesky_factorization_t
+    use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU, FORTML_DEVICE_CUDA
+    use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_NOT_IMPLEMENTED
     implicit none
 
     type(gp_multiclass_classification_t) :: model, repeat_model, probit_model, unfitted
     type(gp_multiclass_classification_t) :: model_plus, model_minus
+    type(gp_classification_t) :: binary_oracle
     type(gp_multiclass_classification_options_t) :: options, probit_options
+    type(gp_classification_options_t) :: binary_options
     type(gp_multiclass_classification_state_t) :: state, repeat_state
     type(gp_multiclass_classification_state_t) :: state_plus, state_minus
     type(fortnum_status_t) :: status
     type(kernel_t) :: kernel, kernel_plus, kernel_minus
+    type(cholesky_factorization_t) :: factor
+    type(fortml_device_t) :: device
     real(dp) :: x(9, 2), query(6, 2), query_dot(6, 2), query_plus(6, 2)
     real(dp) :: query_minus(6, 2), probabilities(6, 3), probabilities_dot(6, 3)
     real(dp) :: probabilities_plus(6, 3), probabilities_minus(6, 3)
@@ -25,10 +33,17 @@ program test_gp_multiclass_classification
     real(dp) :: margins_bar(6, 3), margins_x_bar(6, 2), probabilities_bar(6, 3), &
         probabilities_x_bar(6, 2)
     real(dp) :: repeat_probabilities(6, 3), probit_probabilities(6, 3)
+    real(dp) :: probabilities_parameter_dot(6, 3), margins_parameter_dot(6, 3)
+    real(dp) :: margins_oracle(6), margins_plus_oracle(6), margins_minus_oracle(6)
+    real(dp) :: train_mean(9), train_variance(9), alpha(9), train_covariance(9, 9)
+    real(dp) :: cross_plus(9, 6), cross_minus(9, 6)
+    real(dp) :: h_parameter
     real(dp), allocatable :: kernel_parameters(:), model_parameters(:), gradient(:)
     real(dp), allocatable :: gradient_fd(:), theta_plus(:), theta_minus(:)
-    integer :: labels(9), predicted(9), query_predicted(6), classes(3)
+    real(dp), allocatable :: parameter_direction(:), parameter_bar(:)
+    integer :: labels(9), binary_labels(9), predicted(9), query_predicted(6), classes(3)
     integer :: failures, k, class_index
+    integer :: first_parameter, last_parameter
 
     x(1, :) = [-0.1_dp, 1.9_dp]
     x(2, :) = [0.1_dp, 2.1_dp]
@@ -148,6 +163,93 @@ program test_gp_multiclass_classification
     call check(status_ok(status) .and. abs(sum(probabilities_x_bar*query_dot) - &
         sum(probabilities_bar*probabilities_dot)) < 4.0e-6_dp, &
         "multiclass probability VJP dot-product identity", failures)
+
+    allocate(parameter_direction(model%parameter_count()), parameter_bar(model%parameter_count()))
+    do k = 1, size(parameter_direction)
+        parameter_direction(k) = 0.035_dp*real(mod(k, 3) - 1, dp)
+        if (parameter_direction(k) == 0.0_dp) parameter_direction(k) = -0.021_dp
+    end do
+    call model%decision_function_parameter_jvp(query, parameter_direction, margins, &
+        margins_parameter_dot, status)
+    call check(status_ok(status), "multiclass decision parameter JVP", failures)
+
+    ! Independent fixed-state oracle for the latent product: refit a binary
+    ! model for each sorted class, recover alpha from K^{-1}m_train, then
+    ! finite-difference only the train/query cross covariance while alpha is
+    ! held fixed.  This mirrors the binary product contract without reaching
+    ! into the multiclass model's private state.
+    h_parameter = 1.0e-6_dp
+    binary_options%likelihood = options%likelihood
+    binary_options%max_iterations = options%max_iterations
+    binary_options%tolerance = options%tolerance
+    binary_options%jitter = options%jitter
+    binary_options%damping = options%damping
+    call kernel%matrix(x, x, train_covariance, status)
+    call factor%factorize(train_covariance, status)
+    classes = model%classes()
+    do class_index = 1, model%class_count()
+        binary_labels = merge(1, 0, labels == classes(class_index))
+        call binary_oracle%fit(x, binary_labels, kernel, status, binary_options)
+        call binary_oracle%predict_latent(x, train_mean, train_variance, status)
+        alpha = train_mean
+        call factor%solve(alpha, status)
+        first_parameter = (class_index - 1)*size(kernel_parameters) + 1
+        last_parameter = first_parameter + size(kernel_parameters) - 1
+        theta_plus = kernel_parameters + h_parameter* &
+            parameter_direction(first_parameter:last_parameter)
+        theta_minus = kernel_parameters - h_parameter* &
+            parameter_direction(first_parameter:last_parameter)
+        kernel_plus = clone_kernel(kernel)
+        kernel_minus = clone_kernel(kernel)
+        call kernel_plus%set_parameters(theta_plus, status)
+        call kernel_minus%set_parameters(theta_minus, status)
+        call kernel_plus%matrix(x, query, cross_plus, status)
+        call kernel_minus%matrix(x, query, cross_minus, status)
+        margins_plus_oracle = matmul(transpose(cross_plus), alpha)
+        margins_minus_oracle = matmul(transpose(cross_minus), alpha)
+        margins_oracle = (margins_plus_oracle - margins_minus_oracle)/ &
+            (2.0_dp*h_parameter)
+        call check(maxval(abs(margins_parameter_dot(:, class_index) - margins_oracle)) < &
+            3.0e-7_dp, "multiclass latent parameter JVP fixed-state oracle", failures)
+    end do
+    margins_bar = 0.0_dp
+    margins_bar(:, 1) = [0.2_dp, -0.4_dp, 0.7_dp, -0.1_dp, 0.5_dp, -0.3_dp]
+    margins_bar(:, 2) = [-0.6_dp, 0.1_dp, 0.2_dp, 0.8_dp, -0.2_dp, 0.4_dp]
+    margins_bar(:, 3) = [0.3_dp, 0.5_dp, -0.3_dp, 0.2_dp, 0.6_dp, -0.7_dp]
+    call model%decision_function_parameter_vjp(query, margins_bar, parameter_bar, status)
+    call check(status_ok(status) .and. abs(dot_product(parameter_bar, parameter_direction) - &
+        sum(margins_bar*margins_parameter_dot)) < 5.0e-7_dp, &
+        "multiclass decision parameter JVP/VJP duality", failures)
+
+    call model%predict_proba_parameter_jvp(query, parameter_direction, probabilities, &
+        probabilities_parameter_dot, status)
+    call model%predict_proba_parameter_vjp(query, probabilities_bar, parameter_bar, status)
+    call check(status_ok(status) .and. maxval(abs(sum(probabilities, dim=2) - 1.0_dp)) < &
+        2.0e-14_dp .and. abs(dot_product(parameter_bar, parameter_direction) - &
+        sum(probabilities_bar*probabilities_parameter_dot)) < 7.0e-7_dp, &
+        "multiclass probability parameter JVP/VJP duality", failures)
+    call model%predict_proba_parameter_vjp(query(1:5, :), probabilities_bar, parameter_bar, &
+        status)
+    call check(.not. status_ok(status), "multiclass parameter VJP shape refusal", failures)
+
+    device%kind = FORTML_DEVICE_CPU
+    device%selected = .true.
+    device%available = .true.
+    call model%predict_proba_parameter_jvp_device(device, query, parameter_direction, &
+        probabilities_plus, probabilities_minus, status)
+    call check(status_ok(status), "CPU multiclass parameter JVP dispatch", failures)
+    call model%predict_proba_parameter_vjp_device(device, query, probabilities_bar, &
+        parameter_bar, status)
+    call check(status_ok(status), "CPU multiclass parameter VJP dispatch", failures)
+    device%kind = FORTML_DEVICE_CUDA
+    call model%predict_proba_parameter_jvp_device(device, query, parameter_direction, &
+        probabilities_plus, probabilities_minus, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
+        "CUDA multiclass parameter JVP refusal", failures)
+    call model%predict_proba_parameter_vjp_device(device, query, probabilities_bar, &
+        parameter_bar, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
+        "CUDA multiclass parameter VJP refusal", failures)
 
     call repeat_model%fit(x, labels, kernel, status, options, repeat_state)
     call repeat_model%predict_proba(query, repeat_probabilities, status)

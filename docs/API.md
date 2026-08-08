@@ -199,7 +199,7 @@ repeated resident-batch evidence.
 | `gp_regression_t` | Mean, variance, LML | Prediction and LML parameters | Prediction and LML parameters | Mean and LML parameters |
 | `gp_derivative_regression_t` | Mean, variance, and LML | Prediction and LML parameter JVP | Prediction parameter VJP and analytic LML hyperparameter gradient | Directional HVP (finite difference of the analytic gradient) |
 | `gp_classification_t` | Latent and observed probabilities | Input and fixed-state kernel-parameter JVP | Input and fixed-state kernel-parameter VJP; Laplace-mode kernel hyperparameter gradient | No |
-| `gp_multiclass_classification_t` | Latent one-vs-rest margins and normalized observed probabilities | Input JVP for margins and probabilities | Input VJP for margins and probabilities; packed one-vs-rest Laplace-mode kernel hyperparameter gradient | No |
+| `gp_multiclass_classification_t` | Latent one-vs-rest margins and normalized observed probabilities | Input and packed fixed-state kernel-parameter JVPs for margins and probabilities | Input and packed fixed-state kernel-parameter VJPs for margins and probabilities; packed one-vs-rest Laplace-mode kernel hyperparameter gradient | No |
 | `multi_output_gp_t` | Correlated mean and LML | Packed kernel/log-noise/output-major W/independent JVP; query-input JVP | Fitted posterior-mean parameter VJP and query-input VJP | No |
 | Approximate GP types | Mean, variance, or ELBO as listed below | No | No | No |
 
@@ -2804,6 +2804,14 @@ class order, before probability-simplex normalization; its
 `decision_function_jvp` and `decision_function_vjp` propagate query-feature
 tangents and cotangents through every binary GP. `predict_proba_vjp` applies
 the simplex normalization adjoint before accumulating binary GP input bars.
+`decision_function_parameter_jvp`/`_vjp` and
+`predict_proba_parameter_jvp`/`_vjp` provide packed fixed-state kernel-log
+parameter products. Each block follows the corresponding sorted class in
+`parameters()`, and the probability products include the simplex quotient
+rule before dispatching the binary fixed-state products. The explicit
+`predict_proba_parameter_jvp_device`/`_vjp_device` methods dispatch selected
+CPU contexts and return `FORTNUM_NOT_IMPLEMENTED` for CUDA until a resident
+OVR Laplace/reduction graph is linked; no host fallback is implied.
 `hyperparameter_gradient` concatenates the exact binary envelope gradients in
 sorted-class order. It is the gradient of the sum of the independent
 one-vs-rest Laplace-mode log posteriors; a shared coupled categorical objective
