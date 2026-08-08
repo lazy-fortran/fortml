@@ -13,18 +13,18 @@ The GitHub `v0.1.0` tag currently points to the earlier release-verification
 commit `a387cc5`; the trainer, calibration, variational-GP, transform, and CUDA
 VJP closure slices documented below are post-tag additions. The broad parity
 gate is still open, so this work does not move or recreate that tag.
-The checklist currently records 285 completed and 132 open items; open rows are
+The checklist currently records 288 completed and 132 open items; open rows are
 retained until their implementation, independent oracle, device/refusal
 behavior, and benchmark evidence land together.
 
 | Compiler | Command | Result |
 | --- | --- | --- |
-| GNU Fortran | `fo` | Static build, all 217 behavioral tests, and lint passed at the current FortML/FortAD-main revisions. The compiler still emits non-fatal array-temporary warnings; see [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
-| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded older compiler lane. The checked-in NVIDIA log predates the current 217-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
+| GNU Fortran | `fo` | Static build, all 220 behavioral tests, and lint passed at the current FortML/FortAD-main revisions. The compiler still emits non-fatal array-temporary warnings; see [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
+| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded older compiler lane. The checked-in NVIDIA log predates the current 220-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
 The checked-in GNU compiler log is the fresh 2026-08-08 run against FortML code
-revision `4af6a89`, FortAD `origin/main` at
+revision `11ab2317618994ef6b1ea24ef1de8cbd8fe104a3`, FortAD `origin/main` at
 `0e9a38ebb8c382530272aa3e51f44255e87c41d7`, and FortNum at
 `38bc0e578ec5c6c0e636e8fdd3844f54f9e3e473`, run from the clean checkout
 under `/mnt/storage/code/lazy-fortran/fortml`. The run includes the
@@ -50,7 +50,7 @@ variational-GP objective, multiclass variational-GP prediction/JVPs/VJPs, positi
 The build emits non-fatal GNU
 array-temporary warnings in FortFront query/generator calls, existing GP
 benchmark boundaries, variational-GP batch conversions, and basis-pipeline
-shape conversions. They are isolated to array construction; all 217 behavioral
+shape conversions. They are isolated to array construction; all 220 behavioral
 tests pass. Lint has zero unused-import findings and the full `fo` lint stage
 passes despite the non-fatal compiler warning corpus. The independent CUDA gate additionally covers the
 resident dense-affine value/JVP/VJP path and its single-layer MSE update with
@@ -59,7 +59,7 @@ compiler coverage remains an
 explicit older-build result.
 
 The companion benchmark harness is clean at FortML-bench revision
-`0d6399c931d3c95100657fd51d0248456500ed54`,
+`773e7cc7edd9c1c40007f57d1f53bd4bc69c6e39`,
 the trainer-checkpoint, unfactored-Adafactor, binary-objective,
 multiclass-calibration, variational-multiclass-GP, PINN/physics-objective,
 physics HVP, grouped K-fold, spectral-mixture, XGBoost-ranking,
@@ -94,6 +94,13 @@ parameter HVP rows in `results/DERIVATIVE_GP.md`; the RAdam trajectory lane is
 The random-Fourier feature lane records analytic value/JVP/VJP/HVP rows, and
 the Matérn-5/2 FortSym HVP lane adds its generated-kernel oracle row to the
 same derivative-GP workload.
+The current bounded release lanes also include the scalar Matérn-5/2
+second-derivative GP observation contract (`results/second_derivative_gp.csv`),
+production Lion trainer recurrence and resume/EMA checks
+(`results/lion_training.csv`), and named basis fan-out/fan-in JVP/VJP/HVP
+products (`results/basis_fanout_pipeline.csv`). Each row pins the current
+FortML and benchmark revisions and records CUDA as unavailable where no
+resident implementation exists.
 The latent-Gaussian ordinal GP and Student-t process lanes add independent
 NumPy/analytic contract rows with typed CUDA boundaries; the LightGBM lane now
 also records versioned text and binary persistence round trips and malformed-
@@ -137,8 +144,8 @@ optimizer-group execution, mixed precision, distributed state, and migration
 remain open. The source and benchmark pins for this earlier optimizer-group
 slice were FortML `05632ce8fa95268417c7a2d979fa1461a202abaa` and
 FortML-bench `0fb8ac7`; the current aggregate verification is the newer
-`4af6a89`/
-`0d6399c931d3c95100657fd51d0248456500ed54` pair recorded above.
+`11ab2317618994ef6b1ea24ef1de8cbd8fe104a3`/
+`773e7cc7edd9c1c40007f57d1f53bd4bc69c6e39` pair recorded above.
 
 The variational-GP classification and OVR wrappers now expose fixed-state
 kernel-log-parameter JVP/VJP products for latent margins and normalized
@@ -207,6 +214,29 @@ finite-difference/adjoint fixture; the `rho_t = 4` branch, zero square-root,
 and CUDA paths are typed refusals rather than hidden subgradients or host
 fallbacks. The benchmark report is
 `fortml-bench/results/RADAM_HYPERGRADIENT.md`.
+
+The deep-kernel GP slice adds `deep_kernel_gp_t`, which composes an MLP feature
+map with an exact dense GP whose base kernel is defined on the learned feature
+space. `initialize` validates the input/feature widths and keeps the final
+feature layer linear. `transform`, `fit`, `predict`, and
+`log_marginal_likelihood` expose the composition, while `feature_gradient` and
+`weight_gradient` implement the marginal-likelihood chain rule through the
+kernel and the MLP reverse pass. `test_deep_kernel_gp` checks identity-feature
+reduction to a plain GP, every-weight central differences, feature movement,
+and malformed/unfitted refusals. The implementation is a CPU exact-GP
+reference with dense cubic scaling. Joint FortOpt training of feature weights
+and kernel hyperparameters, KISS-GP/SKI approximations, and resident CUDA
+execution remain open.
+
+The scalar second-derivative GP reference now accepts Matérn-5/2 observations
+of orders zero through two, including exact order-four covariance blocks and
+order-five input JVP/VJP products away from coincidence points. Its typed
+coincidence, unsupported-order, non-RBF, and CUDA boundaries are covered by an
+independent oracle and the companion benchmark. The production MLP trainer
+also includes stateful Lion updates with decoupled weight decay, clipping,
+schedules, optimizer groups, EMA, validation, checkpointing, and text resume.
+The independent recurrence/resume lane records the CPU contract and an
+explicit CUDA-unavailable row.
 
 ### 2026-08-07 objective-trainer and tree-contribution slice
 
@@ -565,7 +595,7 @@ only listed as gaps:
 
 The FortBO and FortMC companion pins were rechecked against their remote
 `main` branches on 2026-08-08: FortBO
-`7b08571866c780a5a03b544216704ec2e674418e` and FortMC
+`598c956512a67e69d52e71fe3fc0073ce775b027` and FortMC
 `a75fc6bd952c6dacbcb3bd958e6386405f9fd58d`. Their roadmaps remain authoritative
 for acquisition and sampling algorithms; FortML owns the posterior/log-density
 protocols and does not embed sampler or acquisition state. FortBO additionally
@@ -594,12 +624,17 @@ posterior sampling, posterior-derivative local models, trust-region traces,
 and an indefinite-curvature bound-constrained quadratic subproblem, multi-objective
 Pareto archives with exact hypervolume and scalarizations, and stopping rules
 that report a machine-readable reason. qKG and batch Thompson/fantasy
-policies, predictive-entropy search, device execution, and wider sparse,
-variational, and multi-output adapters
-remain open. Any future adapter must add
+policies, predictive-entropy search, posterior-gradient device execution, and
+wider sparse/variational adapters remain open. Any future adapter must add
 a focused oracle, typed GPU/refusal row, and a benchmark record in the companion
 harness. The current FortBO pin also adds the 60-dimensional rover trajectory
-fixture and its independent oracle.
+fixture and its independent oracle. It routes FortML multi-output and
+deep-kernel GPs through `fortbo_structured` posterior adapters. Multi-task
+adoption requires an explicit `target_output`, and both adapters expose moments
+only, with named refusals for moment-gradient acquisition search. The pin also
+contains resident OpenACC candidate and TuRBO reductions with typed host/device
+provenance, a BoTorch/GPyTorch/JAX/NumPy cross-framework correctness and regret
+benchmark, and the 14D robot-pushing fixture.
 
 ## Bayesian ecosystem split
 
@@ -638,10 +673,13 @@ conditional search spaces, analytic EI/PI/UCB/log-EI, exact-envelope knowledge
 gradient, noisy expected improvement, and marginal Monte-Carlo EI/PI with CRN,
 antithetic, and pathwise-gradient products. It also supplies
 Sobol TuRBO candidates, discrete Thompson selection, a tested FortML
-value-only/derivative-observation GP adapter, and tested gradient-based
-DTuRBO mode-2 local models and in-region optimization, plus trust-region traces.
-Full batch, entropy and predictive-entropy search, device execution, and sparse/variational/
-multi-output adapters remain in its roadmap. Adapters map FortML posterior
+value-only/derivative-observation GP adapter, tested multi-task and deep-kernel
+FortML posterior adapters, and tested gradient-based DTuRBO mode-2 local models
+and in-region optimization, plus trust-region traces. Full batch, entropy and
+predictive-entropy search, posterior-gradient device execution, and
+sparse/variational adapters remain in its roadmap. Resident candidate and
+TuRBO reductions are available when OpenACC is present and otherwise return a
+typed refusal. Adapters map FortML posterior
 moments and derivative observations into those contracts without adding sampler
 or acquisition state to every estimator.
 
@@ -670,7 +708,7 @@ acquisition work packages:
 
 The companion repositories were checked on 2026-08-08 at FortMC
 `a75fc6bd952c6dacbcb3bd958e6386405f9fd58d` and FortBO
-`7b08571866c780a5a03b544216704ec2e674418e`, both on their `main` branches. The
+`598c956512a67e69d52e71fe3fc0073ce775b027`, both on their `main` branches. The
 FortBO pin now includes a versioned capability-gated posterior contract,
 gradient-aware observation history/checkpointing, normalized continuous/integer/
 categorical/mixed/conditional search spaces, a differentiable-coordinate mask,
@@ -692,12 +730,15 @@ adapter, FortML value/derivative-GP adapters, asynchronous worker bookkeeping
 with selectable fantasies and bounded retries, a Bayesian-linear posterior
 provider, fixed-choice/constraint-penalty feasibility utilities, constrained
 and multi-objective fixtures, paper-aligned PES C3 conditioning, and the 60D
-rover trajectory fixture;
+rover trajectory fixture, multi-task and deep-kernel posterior adapters,
+resident candidate/TuRBO reductions, cross-framework correctness/regret
+fixtures, and the 14D robot-pushing fixture;
 refresh these pins when
 their protocol or device contracts change.
 
-The current `7b08571` remote builds cleanly; a clean
-`FO_SCAN_FALLBACK=regex fo check --json=compact` passes all 39/39 test targets.
+The current `598c956` remote builds cleanly; a clean
+`FO_SCAN_FALLBACK=regex fo check --json=compact` passes all 44/44 test targets
+(86 modules).
 FortMC's current checkout builds cleanly and passes its one registered
 slice-sampler test (normal and correlated moments, bounded support,
 reproducibility, and refusal cases); the remaining samplers, diagnostics, and
@@ -705,7 +746,7 @@ checkpoint claims remain roadmap items rather than FortML verification evidence.
 
 This companion check was repeated from clean source trees on 2026-08-08:
 `origin/main` resolves exactly to the two pins above; FortBO's current clean
-run is 39/39 and FortMC's is 1/1, and neither repository has a runtime
+run is 44/44 and FortMC's is 1/1, and neither repository has a runtime
 dependency on the FortSym executable. These are boundary checks, not a
 claim that FortMC samplers or the remaining FortBO policy catalog are shipped.
 
@@ -1109,6 +1150,12 @@ when a lower-level primitive already exists.
   `fortml-bench/results/SECOND_DERIVATIVE_GP.md`. Hyperparameter products,
   arbitrary kernels/dimensions, higher orders, operator-valued outputs, and
   resident derivative covariance/factorization remain open.
+- [x] Add the bounded deep-kernel GP composition `deep_kernel_gp_t`. An MLP
+  feature map feeds an exact dense GP base kernel on feature space, with
+  identity-map reduction, exposed transforms/posterior, exact feature and
+  weight likelihood gradients, and malformed/unfitted refusals checked by
+  `test_deep_kernel_gp`. Joint FortOpt feature/kernel training, KISS-GP/SKI,
+  derivative-observation deep kernels, and resident CUDA execution remain open.
 - [ ] Generalize derivative observations to every supported smooth kernel,
   mixed orders beyond two, vector fields, Hessian observations, registered
   linear operators, operator-valued outputs, analytic higher-order query

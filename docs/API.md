@@ -68,7 +68,7 @@ can reject an incompatible estimator before consuming a fold.
 The companion repositories are optional consumers of FortML model and
 probability objects; FortML does not import either package. At the pinned
 2026-08-08 revisions (FortBO
-`7b08571866c780a5a03b544216704ec2e674418e`, FortMC
+`598c956512a67e69d52e71fe3fc0073ce775b027`, FortMC
 `a75fc6bd952c6dacbcb3bd958e6386405f9fd58d`), their public modules contain
 versioned contracts, tested acquisition/candidate-search foundations, and a
 FortML GP adapter. FortMC additionally ships a gradient-free univariate slice
@@ -78,10 +78,13 @@ candidate policies remain a partial catalog rather than a complete BO suite:
 | Companion | Current public protocol | Not yet supplied by the companion boundary |
 | --- | --- | --- |
 | FortMC `fortmc` | `fortmc_log_density_t%value(position,status)` and `%gradient(position,gradient,status)`, plus version constants, a default divergence threshold, and `fortmc_slice_sample`/`fortmc_slice_chain` for coordinate-sweep slice sampling | Chain state, transforms, packed parameter registries, HVPs, HMC/NUTS/SMC and other samplers, checkpoints, diagnostics, and device execution |
-| FortBO `fortbo` | Versioned `fortbo_posterior_t` with capability-gated moments, covariance, joint/reparameterized samples, predictive log density, moment gradients/Hessians; `fortbo_history_t` gradient-observation/checkpoint state; `fortbo_space_t` normalized continuous/integer/categorical/mixed/conditional spaces with differentiable masks; analytic EI/PI/UCB/log-EI; exact-envelope knowledge gradient; noisy expected improvement; joint qEI/qNEI/qUCB batch acquisitions; risk-sensitive and multi-fidelity criteria; constrained/cost-aware acquisitions; active-learning and level-set design; max-value entropy search; mixed-integer/categorical candidate search; per-evaluation benchmark metrics; marginal Monte-Carlo EI/PI with CRN, antithetic draws, and pathwise gradients; Sobol TuRBO candidates and Thompson selection; gradient-based DTuRBO in-region acquisition search; FortSym-derived trust-region length rescaling; exact posterior mean Hessians from derivative predictions; DTuRBO mode-2 posterior-derivative local models; an indefinite-curvature bound-constrained quadratic subproblem; Pareto archives with exact hypervolume and scalarizations; machine-readable stopping rules; trust-region traces; `fortbo_fit_from_history` value-only/derivative-GP adapters; asynchronous worker bookkeeping with fantasies/retries; Bayesian-linear posterior provider; fixed-choice and quadratic/exact constraint penalties; constrained/noisy/multi-objective fixtures; paper-aligned predictive-entropy C3 conditioning with a variance safeguard; 60D rover trajectory fixture | C1/C2 predictive-entropy search, qKG and batch Thompson/fantasy policies, wider sparse/variational/multi-output adapters, and device execution |
+| FortBO `fortbo` | Versioned `fortbo_posterior_t` with capability-gated moments, covariance, joint/reparameterized samples, predictive log density, moment gradients/Hessians; `fortbo_history_t` gradient-observation/checkpoint state; `fortbo_space_t` normalized continuous/integer/categorical/mixed/conditional spaces with differentiable masks; analytic EI/PI/UCB/log-EI; exact-envelope knowledge gradient; noisy expected improvement; joint qEI/qNEI/qUCB batch acquisitions; risk-sensitive and multi-fidelity criteria; constrained/cost-aware acquisitions; active-learning and level-set design; max-value entropy search; mixed-integer/categorical candidate search; per-evaluation benchmark metrics; marginal Monte-Carlo EI/PI with CRN, antithetic draws, and pathwise gradients; Sobol TuRBO candidates and Thompson selection; gradient-based DTuRBO in-region acquisition search; FortSym-derived trust-region length rescaling; exact posterior mean Hessians from derivative predictions; DTuRBO mode-2 posterior-derivative local models; an indefinite-curvature bound-constrained quadratic subproblem; Pareto archives with exact hypervolume and scalarizations; machine-readable stopping rules; trust-region traces; `fortbo_fit_from_history` value-only/derivative-GP adapters; `fortbo_structured` multi-task/deep-kernel moments adapters; asynchronous worker bookkeeping with fantasies/retries; Bayesian-linear posterior provider; fixed-choice and quadratic/exact constraint penalties; constrained/noisy/multi-objective fixtures; paper-aligned predictive-entropy C3 conditioning with a variance safeguard; 60D rover and 14D robot-pushing fixtures; resident OpenACC candidate/TuRBO reductions; BoTorch/GPyTorch/JAX/NumPy cross-framework correctness and regret fixtures | C1/C2 predictive-entropy search, qKG and batch Thompson/fantasy policies, wider sparse/variational adapters, posterior-gradient device execution, and full surrogate moment-gradient coverage |
 
-FortML does not yet ship FortMC samplers or a direct FortML-side BO policy; FortBO now ships the tested GP adapter described above. Do not claim HMC/NUTS, Bayesian-optimization,
-or GPU parity for a FortML model until the corresponding companion adapter has
+FortML does not yet ship FortMC samplers or a direct FortML-side BO policy; FortBO
+now ships the tested value/derivative-GP, multi-task, and deep-kernel posterior
+adapters described above. Its resident candidate and TuRBO reductions require
+OpenACC and otherwise return typed refusals. Do not claim HMC/NUTS,
+Bayesian-optimization, or GPU parity for a FortML model until the corresponding companion adapter has
 an independent behavioral oracle, explicit refusal behavior, and a benchmark
 record.
 
@@ -3052,6 +3055,27 @@ predict_hvp(x, mean_bar, direction, parameter_hvp, status)
 The HVP covers a weighted predictive mean. The LML methods are
 `log_marginal_likelihood`, `log_marginal_likelihood_jvp`,
 `hyperparameter_gradient`, and `hyperparameter_hvp`.
+
+### `fortml_deep_kernel_gp`
+
+`deep_kernel_gp_t` composes a dense MLP feature map `g(x,w)` with an exact GP
+base kernel on the feature space, following the construction in Wilson et al.,
+*Deep Kernel Learning* (arXiv:1511.02222). Call
+`initialize(layer_sizes,base_kernel,status[,hidden_activation,
+initialization_seed])`; the first layer width is the input dimension and the
+last is the base-kernel dimension. The output feature layer is linear, and a
+kernel whose input dimension does not equal the feature width is rejected.
+
+`fit(x,y,noise_variance,status[,jitter])` maps the training inputs and fits the
+ordinary dense GP. `transform`, `predict`, and `log_marginal_likelihood` expose
+the mapped features and posterior. `feature_gradient(x,y,gradient,status)`
+returns the exact log-marginal-likelihood gradient with respect to mapped
+features. `weight_gradient(x,y,gradient,status)` backpropagates that seed
+through the MLP weights. The independent `test_deep_kernel_gp` fixture checks
+the identity-map reduction, every-weight central differences, and refusal
+boundaries. The implementation is CPU-only with dense cubic GP scaling. It
+does not yet provide a joint feature/kernel FortOpt training loop, KISS-GP/SKI
+approximation, derivative-observation deep kernels, or resident CUDA execution.
 
 ### `fortml_gp_training`
 
