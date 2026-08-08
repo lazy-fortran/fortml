@@ -2199,7 +2199,9 @@ a bounded FortOpt L-BFGS-B adapter through
 `mlp_optimize_sgd_momentum_hyperparameters`. The Nesterov branch is a fixed
 discrete choice and requires a positive momentum bound. Mini-batch, schedules,
 clipping, stochastic/device-resident state, and CUDA products remain typed
-refusals until their full state derivatives are available. See
+refusals until their full state derivatives are available. The `hvp` entry
+point is exact for a one-layer MLP with linear output (constant network Hessian) and
+returns `FORTNUM_NOT_IMPLEMENTED` for nonlinear or multilayer models. See
 [`docs/MLP_SGD_MOMENTUM_HYPERGRADIENT.md`](MLP_SGD_MOMENTUM_HYPERGRADIENT.md).
 
 `mlp_adamw_hypergradient_objective_t` provides the corresponding exact
