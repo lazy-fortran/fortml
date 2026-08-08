@@ -13,20 +13,20 @@ The GitHub `v0.1.0` tag currently points to the earlier release-verification
 commit `a387cc5`; the trainer, calibration, variational-GP, transform, and CUDA
 VJP closure slices documented below are post-tag additions. The broad parity
 gate is still open, so this work does not move or recreate that tag.
-The checklist currently records 308 completed and 129 open items; open rows are
+The checklist currently records 311 completed and 129 open items; open rows are
 retained until their implementation, independent oracle, device/refusal
 behavior, and benchmark evidence land together.
 
 | Compiler | Command | Result |
 | --- | --- | --- |
-| GNU Fortran | `fo` | Static build, all 236 behavioral tests, and lint passed at the current FortML/FortAD-main revisions. The compiler still emits non-fatal array-temporary warnings; see [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
+| GNU Fortran | `fo` | Static build, all 239 behavioral tests, and lint passed at the current FortML/FortAD-main revisions. The compiler still emits non-fatal array-temporary warnings; see [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
 | NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded older compiler lane. The checked-in NVIDIA log predates the current 236-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
 The checked-in GNU compiler log is the fresh 2026-08-08 run against FortML code
-revision `7ff43f8` (the isotonic code integration is `e7ef912`; subsequent
-commits only refresh documentation), FortAD `origin/main` at
-`931dac5f39eb6ea5ab3854d5af49b346bea950af`, and FortNum at
+revision `2b2b3e1` (the current scheduled-RAdam, periodic derivative-GP, and
+LightGBM-GOSS code; subsequent commits only refresh documentation), FortAD
+`origin/main` at `4a4fdd1a855e0374bdb8465003fc935aae14852c`, and FortNum at
 `396c8f202ba45e97eecceaba2e6bf848a206b4d0`, run from the clean checkout
 under `/mnt/storage/code/lazy-fortran/fortml`. The run includes the
   kernel-catalog, weighted LDA/QDA, robust/absolute XGBoost, neural NLL, random-forest,
@@ -51,7 +51,7 @@ variational-GP objective, multiclass variational-GP prediction/JVPs/VJPs, positi
 The build emits non-fatal GNU
 array-temporary warnings in FortFront query/generator calls, existing GP
 benchmark boundaries, variational-GP batch conversions, and basis-pipeline
-shape conversions. They are isolated to array construction; all 236 behavioral
+shape conversions. They are isolated to array construction; all 239 behavioral
 tests pass. Lint has zero unused-import findings and the full `fo` lint stage
 passes despite the non-fatal compiler warning corpus. The independent CUDA gate additionally covers the
 resident dense-affine value/JVP/VJP path and its single-layer MSE update with
@@ -60,7 +60,7 @@ compiler coverage remains an
 explicit older-build result.
 
 The checked-in evidence is maintained on the clean FortML-bench revision
-`9aa9713`; each CSV records the exact clean benchmark revision used to produce
+`e307326`; each CSV records the exact clean benchmark revision used to produce
 its rows,
 the trainer-checkpoint, unfactored-Adafactor, binary-objective,
 multiclass-calibration, variational-multiclass-GP, PINN/physics-objective,
@@ -129,7 +129,7 @@ also records the scalar RBF second-derivative GP covariance/JVP/VJP lane,
 transactional LightGBM warm starts and persistence, and the fixed-active-set
 optimizer-group clipping trajectory with explicit HVP and CUDA boundaries.
 
-The current three-slice evidence is pinned to the clean revisions above. The
+The previous three-slice evidence is pinned to the clean revisions above. The
 multiclass `xgboost_multiclass_t` lane persists class metadata and tree state
 in one strict text file, rejects malformed or truncated records transactionally,
 and matches an independent stable-sigmoid NumPy oracle in
@@ -142,6 +142,19 @@ GP lane provides analytic value/first-derivative covariance products,
 coincident-safe input gradients and mixed Hessians, and parameter JVPs with
 finite-difference and adjoint checks in
 `fortml-bench/results/DERIVATIVE_GP_LOCAL_PERIODIC.md`.
+
+The latest closure slice adds scheduled-RAdam trajectory hypergradients,
+periodic-kernel derivative-observation mixed parameter HVPs, and deterministic
+LightGBM GOSS sampling. The RAdam objective differentiates log-rate, L2,
+beta, epsilon, and schedule coordinates through CPU trajectories and feeds
+FortOpt L-BFGS-B; the GP lane covers all periodic log-kernel/noise coordinates
+with coincidence-safe fourth-input products; GOSS records top/other gradient-
+Hessian reweighting, persistence, replay, and transactional rate validation.
+Their CSV rows pin clean source revisions `af6273b`, `4493428`, and `0fe7eff`
+to generating benchmark revisions `ef88c30`, `d10ce1f`, and `14afd70`,
+respectively. CPU products pass independent oracles (GOSS replay error is zero;
+the periodic HVP oracle error is `2.53e-6`), and unsupported CUDA/outer-HVP
+paths remain explicit typed refusals.
 
 The latest closure slice adds three independently oracle-backed lanes. Dense
 horizontal/sequential/fan-out basis pipelines now validate transactional input
