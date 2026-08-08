@@ -176,7 +176,7 @@ module fortml_mlp_training
         !! with its structural and continuous fields. Procedure pointers
         !! (custom schedules and callbacks) are intentionally not copied: the
         !! caller must install deterministic procedures again on resumed options.
-        integer :: format_version = 6
+        integer :: format_version = 7
         logical :: initialized = .false.
         logical :: resume_safe = .true.
         integer :: n_samples = 0
