@@ -202,7 +202,7 @@ repeated resident-batch evidence.
 | `gp_derivative_regression_t` | Mean, variance, and LML | Prediction and LML parameter JVP | Prediction parameter VJP and analytic LML hyperparameter gradient | Directional HVP (finite difference of the analytic gradient) |
 | `gp_classification_t` | Latent and observed probabilities | Input and fixed-state kernel-parameter JVP | Input and fixed-state kernel-parameter VJP; Laplace-mode kernel hyperparameter gradient | No |
 | `gp_multiclass_classification_t` | Latent one-vs-rest margins and normalized observed probabilities | Input and packed fixed-state kernel-parameter JVPs for margins and probabilities | Input and packed fixed-state kernel-parameter VJPs for margins and probabilities; packed one-vs-rest Laplace-mode kernel hyperparameter gradient | No |
-| `multi_output_gp_t` | Correlated mean and LML | Packed kernel/log-noise/output-major W/independent JVP; query-input JVP | Fitted posterior-mean parameter VJP and query-input VJP | No |
+| `multi_output_gp_t` | Correlated mean and LML; batched `(batch,query,output)` prediction | Packed kernel/log-noise/output-major W/independent JVP; query-input and batch-query JVP | Fitted posterior-mean parameter VJP; query-input and batch-query VJP | No |
 | Approximate GP types | Mean, variance, or ELBO as listed below | No | No | No |
 
 `xgboost_t%save_text(path,status)` and `load_text(path,status)` provide the
@@ -3088,7 +3088,12 @@ cross-covariance and the Cholesky solve. The independent
 adjoints, and the typed CUDA refusals. See
 [docs/MULTI_OUTPUT_GP_PRODUCTS.md](MULTI_OUTPUT_GP_PRODUCTS.md). Posterior
 variance, parameter HVPs, and resident CUDA covariance/derivative kernels remain
-open.
+open. The `predict_batch` family accepts `(batch,query,feature)` inputs and
+returns `(batch,query,output)` means; `predict_batch_input_jvp` and
+`predict_batch_input_vjp` apply the same fixed-fit query products independently
+to each batch member. CPU device wrappers are exact, while the batch CUDA
+wrappers return typed `FORTNUM_NOT_IMPLEMENTED` until resident
+coregionalized covariance, factorization, and derivative kernels exist.
 
 ## Approximate Gaussian processes
 

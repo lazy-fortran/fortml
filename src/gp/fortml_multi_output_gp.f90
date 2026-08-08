@@ -19,7 +19,7 @@ module fortml_multi_output_gp
         FORTNUM_DOMAIN_ERROR, FORTNUM_CONVERGENCE_ERROR, FORTNUM_NOT_IMPLEMENTED
     use fortnum_cholesky, only: cholesky_factorization_t
     use fortml_kernels, only: kernel_t
-    use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU
+    use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU, FORTML_DEVICE_CUDA
     implicit none
     private
 
@@ -41,16 +41,26 @@ module fortml_multi_output_gp
         procedure, public :: initialize => multi_output_initialize
         procedure, public :: fit => multi_output_fit
         procedure, public :: predict => multi_output_predict
+        procedure, public :: predict_batch => multi_output_predict_batch
         procedure, public :: parameter_count => multi_output_parameter_count
         procedure, public :: parameters => multi_output_parameters
         procedure, public :: predict_input_jvp => multi_output_predict_input_jvp
         procedure, public :: predict_input_vjp => multi_output_predict_input_vjp
+        procedure, public :: predict_batch_input_jvp => &
+            multi_output_predict_batch_input_jvp
+        procedure, public :: predict_batch_input_vjp => &
+            multi_output_predict_batch_input_vjp
         procedure, public :: predict_parameter_jvp => multi_output_predict_parameter_jvp
         procedure, public :: predict_parameter_vjp => multi_output_predict_parameter_vjp
         procedure, public :: predict_input_jvp_device => &
             multi_output_predict_input_jvp_device
         procedure, public :: predict_input_vjp_device => &
             multi_output_predict_input_vjp_device
+        procedure, public :: predict_batch_device => multi_output_predict_batch_device
+        procedure, public :: predict_batch_input_jvp_device => &
+            multi_output_predict_batch_input_jvp_device
+        procedure, public :: predict_batch_input_vjp_device => &
+            multi_output_predict_batch_input_vjp_device
         procedure, public :: predict_parameter_jvp_device => &
             multi_output_predict_parameter_jvp_device
         procedure, public :: predict_parameter_vjp_device => &
@@ -218,6 +228,79 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine multi_output_predict
+
+    subroutine multi_output_predict_batch(self, query, mean, status)
+        !! Posterior means for a batch of independent query sets.
+        !!
+        !! `query(batch,point,feature)` and `mean(batch,point,output)` retain
+        !! the public point-major ordering inside each batch member.  The
+        !! fitted state is shared, but each batch member is shape-checked.
+        class(multi_output_gp_t), intent(in) :: self
+        real(dp), intent(in) :: query(:, :, :)
+        real(dp), intent(out) :: mean(:, :, :)
+        type(fortnum_status_t), intent(out) :: status
+        integer :: batch
+
+        call multi_output_check_batch_query(self, query, mean, status)
+        if (status%code /= FORTNUM_OK) return
+        do batch = 1, size(query, 1)
+            call self%predict(query(batch, :, :), mean(batch, :, :), status)
+            if (status%code /= FORTNUM_OK) return
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine multi_output_predict_batch
+
+    subroutine multi_output_predict_batch_input_jvp(self, query, direction, mean, &
+            mean_dot, status)
+        !! Query-input JVP for a batch of independent query sets.
+        class(multi_output_gp_t), intent(in) :: self
+        real(dp), intent(in) :: query(:, :, :), direction(:, :, :)
+        real(dp), intent(out) :: mean(:, :, :), mean_dot(:, :, :)
+        type(fortnum_status_t), intent(out) :: status
+        integer :: batch
+
+        call multi_output_check_batch_query(self, query, mean, status)
+        if (status%code /= FORTNUM_OK) return
+        if (any(shape(direction) /= shape(query)) .or. &
+            any(shape(mean_dot) /= shape(mean)) .or. &
+            any(.not. ieee_is_finite(direction))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multi-output GP batch input JVP: direction or output shape is invalid")
+            return
+        end if
+        do batch = 1, size(query, 1)
+            call self%predict_input_jvp(query(batch, :, :), direction(batch, :, :), &
+                mean(batch, :, :), mean_dot(batch, :, :), status)
+            if (status%code /= FORTNUM_OK) return
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine multi_output_predict_batch_input_jvp
+
+    subroutine multi_output_predict_batch_input_vjp(self, query, mean_bar, query_bar, &
+            status)
+        !! Query-input VJP for a batch of independent query sets.
+        class(multi_output_gp_t), intent(in) :: self
+        real(dp), intent(in) :: query(:, :, :), mean_bar(:, :, :)
+        real(dp), intent(out) :: query_bar(:, :, :)
+        type(fortnum_status_t), intent(out) :: status
+        integer :: batch
+
+        query_bar = 0.0_dp
+        call multi_output_check_batch_query(self, query, mean_bar, status)
+        if (status%code /= FORTNUM_OK) return
+        if (any(shape(query_bar) /= shape(query)) .or. &
+            any(.not. ieee_is_finite(mean_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multi-output GP batch input VJP: cotangent or output shape is invalid")
+            return
+        end if
+        do batch = 1, size(query, 1)
+            call self%predict_input_vjp(query(batch, :, :), mean_bar(batch, :, :), &
+                query_bar(batch, :, :), status)
+            if (status%code /= FORTNUM_OK) return
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine multi_output_predict_batch_input_vjp
 
     integer function multi_output_parameter_count(self) result(count)
         !! Number of packed fitted-model coordinates.
@@ -653,6 +736,89 @@ contains
         end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine multi_output_check_query
+
+    subroutine multi_output_check_batch_query(self, query, output, status)
+        class(multi_output_gp_t), intent(in) :: self
+        real(dp), intent(in) :: query(:, :, :), output(:, :, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. self%fitted) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multi-output GP batch product: model is not fitted")
+            return
+        end if
+        if (size(query, 1) < 1 .or. size(query, 2) < 1 .or. &
+            size(query, 3) /= self%kernel%input_dim .or. &
+            any(shape(output) /= [size(query, 1), size(query, 2), self%n_outputs]) .or. &
+            any(.not. ieee_is_finite(query))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multi-output GP batch product: query or output shape is invalid")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine multi_output_check_batch_query
+
+    subroutine multi_output_predict_batch_device(self, device, query, mean, status)
+        !! Batch posterior means through the explicit device contract.
+        class(multi_output_gp_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: query(:, :, :)
+        real(dp), intent(out) :: mean(:, :, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_batch(query, mean, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "multi-output GP batch prediction: CUDA residency is not implemented")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multi-output GP batch prediction: device kind is invalid")
+        end select
+    end subroutine multi_output_predict_batch_device
+
+    subroutine multi_output_predict_batch_input_jvp_device(self, device, query, &
+            direction, mean, mean_dot, status)
+        !! Batch query-input JVP through the explicit device contract.
+        class(multi_output_gp_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: query(:, :, :), direction(:, :, :)
+        real(dp), intent(out) :: mean(:, :, :), mean_dot(:, :, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_batch_input_jvp(query, direction, mean, mean_dot, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "multi-output GP batch input JVP: CUDA residency is not implemented")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multi-output GP batch input JVP: device kind is invalid")
+        end select
+    end subroutine multi_output_predict_batch_input_jvp_device
+
+    subroutine multi_output_predict_batch_input_vjp_device(self, device, query, &
+            mean_bar, query_bar, status)
+        !! Batch query-input VJP through the explicit device contract.
+        class(multi_output_gp_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: query(:, :, :), mean_bar(:, :, :)
+        real(dp), intent(out) :: query_bar(:, :, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_batch_input_vjp(query, mean_bar, query_bar, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "multi-output GP batch input VJP: CUDA residency is not implemented")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multi-output GP batch input VJP: device kind is invalid")
+        end select
+    end subroutine multi_output_predict_batch_input_vjp_device
 
     subroutine multi_output_predict_input_jvp_device(self, device, query, direction, &
             mean, mean_dot, status)
