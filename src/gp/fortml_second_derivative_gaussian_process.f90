@@ -39,6 +39,10 @@ module fortml_second_derivative_gaussian_process
         procedure, public :: joint_covariance => second_derivative_joint_covariance
         procedure, public :: predict_input_jvp => second_derivative_predict_input_jvp
         procedure, public :: predict_input_vjp => second_derivative_predict_input_vjp
+        procedure, public :: predict_input_jvp_device => &
+            second_derivative_predict_input_jvp_device
+        procedure, public :: predict_input_vjp_device => &
+            second_derivative_predict_input_vjp_device
         procedure, public :: predict_device => second_derivative_predict_device
         procedure, public :: joint_covariance_device => &
             second_derivative_joint_covariance_device
@@ -280,6 +284,59 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine second_derivative_predict_input_vjp
+
+    subroutine second_derivative_predict_input_jvp_device(self, device, x, orders, direction, &
+            mean, mean_dot, variance, variance_dot, status)
+        class(second_derivative_gp_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :), direction(:)
+        integer, intent(in) :: orders(:)
+        real(dp), intent(out) :: mean(:), mean_dot(:), variance(:), variance_dot(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "second-derivative GP input JVP device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_input_jvp(x, orders, direction, mean, mean_dot, variance, &
+                variance_dot, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "second-derivative GP input JVP device: resident RBF order-two kernel is not linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "second-derivative GP input JVP device: device kind is invalid")
+        end select
+    end subroutine second_derivative_predict_input_jvp_device
+
+    subroutine second_derivative_predict_input_vjp_device(self, device, x, orders, mean_bar, &
+            variance_bar, x_bar, status)
+        class(second_derivative_gp_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :), mean_bar(:), variance_bar(:)
+        integer, intent(in) :: orders(:)
+        real(dp), intent(out) :: x_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "second-derivative GP input VJP device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_input_vjp(x, orders, mean_bar, variance_bar, x_bar, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "second-derivative GP input VJP device: resident RBF order-two kernel is not linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "second-derivative GP input VJP device: device kind is invalid")
+        end select
+    end subroutine second_derivative_predict_input_vjp_device
 
     subroutine second_derivative_predict_device(self, device, x, orders, mean, variance, status)
         class(second_derivative_gp_t), intent(in) :: self

@@ -31,8 +31,9 @@ not add observation noise. Parameters are the packed
 and interoperability; hyperparameter products are not yet exposed by this
 bounded type.
 
-The implementation is a CPU reference. `predict_device` and
-`joint_covariance_device` dispatch selected CPU contexts and return the typed
+The implementation is a CPU reference. `predict_device`,
+`joint_covariance_device`, `predict_input_jvp_device`, and
+`predict_input_vjp_device` dispatch selected CPU contexts and return the typed
 `FORTNUM_NOT_IMPLEMENTED` status for selected CUDA contexts until a resident
 derivative covariance/factorization kernel is linked. `device_supported` is
 therefore true only for a fitted CPU model. Non-RBF kernels, dimensions other
