@@ -2,6 +2,7 @@ program fortml_bench_derivative_gp
     !! Correctness-gated host timing app for exact derivative-GP query products.
     use, intrinsic :: iso_fortran_env, only: dp => real64, int64
     use fortml_derivative_gaussian_process, only: gp_derivative_regression_t
+    use fortml_generated_matern52_products, only: fortml_matern52_hvp
     use fortml_kernels, only: kernel_t, make_periodic_kernel, &
         make_rational_quadratic_kernel, make_cosine_kernel, make_polynomial_kernel, &
         make_spectral_mixture_kernel, make_rbf_ard_kernel
@@ -68,8 +69,30 @@ program fortml_bench_derivative_gp
     if (.not. status_ok(status)) error stop "spectral mixture derivative GP benchmark failed"
     call benchmark(ard_rbf, "ard_rbf", status)
     if (.not. status_ok(status)) error stop "ARD RBF derivative GP benchmark failed"
+    call benchmark_matern52_leaf()
 
 contains
+
+    subroutine benchmark_matern52_leaf()
+        real(dp), parameter :: distance = 0.73_dp, distance_d = 0.21_dp
+        real(dp), parameter :: lv = log(1.4_dp), lv_d = -0.17_dp
+        real(dp), parameter :: ll = log(0.82_dp), ll_d = 0.11_dp, y_bar = 0.83_dp
+        real(dp) :: y, y_d, distance_bar, distance_bar_d, lv_bar, lv_bar_d
+        real(dp) :: ll_bar, ll_bar_d, seconds
+        integer :: repetition
+
+        call fortml_matern52_hvp(distance, distance_d, lv, lv_d, ll, ll_d, y, y_d, &
+            y_bar, distance_bar, distance_bar_d, lv_bar, lv_bar_d, ll_bar, ll_bar_d)
+        call system_clock(begin_clock, rate)
+        do repetition = 1, repetitions
+            call fortml_matern52_hvp(distance, distance_d, lv, lv_d, ll, ll_d, y, y_d, &
+                y_bar, distance_bar, distance_bar_d, lv_bar, lv_bar_d, ll_bar, ll_bar_d)
+        end do
+        call system_clock(end_clock)
+        seconds = real(end_clock - begin_clock, dp)/real(rate, dp)/real(repetitions, dp)
+        write (*, '(a,es24.16,a,es24.16)') "derivative_gp,matern52,leaf_hvp,", &
+            seconds, ",", distance_bar_d + lv_bar_d + ll_bar_d
+    end subroutine benchmark_matern52_leaf
 
     subroutine benchmark(kernel, name, final_status)
         type(kernel_t), intent(in) :: kernel
