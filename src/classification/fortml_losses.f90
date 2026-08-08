@@ -2,7 +2,8 @@ module fortml_losses
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     use, intrinsic :: iso_fortran_env, only: dp => real64
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
-        FORTNUM_DOMAIN_ERROR
+        FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED
+    use fortml_device, only: FORTML_DEVICE_CPU, FORTML_DEVICE_CUDA
     implicit none
     private
 
@@ -17,17 +18,24 @@ module fortml_losses
     public :: multilabel_binary_cross_entropy_with_logits_vjp
     public :: multilabel_binary_cross_entropy_with_logits_hvp
     public :: softmax_value, softmax_jvp, softmax_vjp
+    public :: softmax_hvp
+    public :: softmax_value_device
     public :: log_softmax_value, log_softmax_jvp, log_softmax_vjp
+    public :: log_softmax_hvp
+    public :: log_softmax_value_device
     public :: softmax_cross_entropy_value
     public :: softmax_cross_entropy_jvp
     public :: softmax_cross_entropy_vjp
     public :: softmax_cross_entropy_hvp
+    public :: softmax_cross_entropy_value_device
     public :: weighted_mse_loss_value, weighted_mse_loss_jvp
     public :: weighted_mse_loss_vjp, weighted_mse_loss_hvp
     public :: mae_loss_value, mae_loss_jvp, mae_loss_vjp
     public :: focal_binary_cross_entropy_with_logits_value
     public :: focal_binary_cross_entropy_with_logits_jvp
     public :: focal_binary_cross_entropy_with_logits_vjp
+    public :: focal_binary_cross_entropy_with_logits_hvp
+    public :: focal_binary_cross_entropy_with_logits_value_device
     public :: mean_absolute_error_loss_value, mean_absolute_error_loss_jvp
     public :: mean_absolute_error_loss_vjp
     public :: binary_focal_cross_entropy_with_logits_value
@@ -653,6 +661,33 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine softmax_value
 
+    subroutine softmax_value_device(logits, probabilities, status, device_kind)
+        !! Device-dispatch boundary for softmax values.
+        !!
+        !! CPU executes the stable reference path.  CUDA is an explicit typed
+        !! refusal until a resident loss kernel owns the logits and result;
+        !! this routine never falls back to a host computation.
+        real(dp), intent(in) :: logits(:, :)
+        real(dp), intent(out) :: probabilities(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        integer, intent(in), optional :: device_kind
+        integer :: requested_device
+
+        requested_device = FORTML_DEVICE_CPU
+        if (present(device_kind)) requested_device = device_kind
+        if (requested_device == FORTML_DEVICE_CUDA) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "softmax value: resident CUDA kernel is not implemented")
+            return
+        end if
+        if (requested_device /= FORTML_DEVICE_CPU) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "softmax value: device kind is invalid")
+            return
+        end if
+        call softmax_value(logits, probabilities, status)
+    end subroutine softmax_value_device
+
     subroutine softmax_jvp(logits, logits_dot, probabilities, probabilities_dot, &
             status)
         real(dp), intent(in) :: logits(:, :), logits_dot(:, :)
@@ -715,6 +750,60 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine softmax_vjp
 
+    subroutine softmax_hvp(logits, logits_dot, probabilities_bar, logits_hvp, &
+            status)
+        !! Hessian-vector product for a cotangent-weighted softmax.
+        !!
+        !! The scalar represented by `probabilities_bar` is
+        !! `sum(probabilities_bar*softmax(logits))`.  This routine returns the
+        !! directional derivative of its logits VJP.  Keeping the cotangent
+        !! explicit makes the second product useful for nested objectives and
+        !! avoids silently choosing a scalar reduction for a vector-valued
+        !! softmax.
+        real(dp), intent(in) :: logits(:, :), logits_dot(:, :)
+        real(dp), intent(in) :: probabilities_bar(:, :)
+        real(dp), intent(out) :: logits_hvp(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: probabilities(:, :), probabilities_dot(:, :)
+        real(dp) :: row_bar, row_dot_bar
+        integer :: i
+
+        logits_hvp = 0.0_dp
+        if (any(shape(logits_dot) /= shape(logits)) .or. &
+                any(shape(probabilities_bar) /= shape(logits)) .or. &
+                any(shape(logits_hvp) /= shape(logits))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "softmax HVP: tangent, cotangent, or output shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(logits_dot)) .or. &
+                any(.not. ieee_is_finite(probabilities_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "softmax HVP: tangent and cotangent must be finite")
+            return
+        end if
+        allocate(probabilities(size(logits, 1), size(logits, 2)), &
+            probabilities_dot(size(logits, 1), size(logits, 2)))
+        call softmax_jvp(logits, logits_dot, probabilities, probabilities_dot, &
+            status)
+        if (status%code /= FORTNUM_OK) return
+        do i = 1, size(logits, 1)
+            row_bar = dot_product(probabilities(i, :), probabilities_bar(i, :))
+            row_dot_bar = dot_product(probabilities_dot(i, :), &
+                probabilities_bar(i, :))
+            logits_hvp(i, :) = probabilities_dot(i, :)* &
+                (probabilities_bar(i, :) - row_bar) - probabilities(i, :)* &
+                row_dot_bar
+        end do
+        if (any(.not. ieee_is_finite(logits_hvp))) then
+            logits_hvp = 0.0_dp
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "softmax HVP: product is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine softmax_hvp
+
     subroutine log_softmax_value(logits, log_probabilities, status)
         real(dp), intent(in) :: logits(:, :)
         real(dp), intent(out) :: log_probabilities(:, :)
@@ -738,6 +827,30 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine log_softmax_value
+
+    subroutine log_softmax_value_device(logits, log_probabilities, status, &
+            device_kind)
+        !! Device-dispatch boundary for log-softmax values.
+        real(dp), intent(in) :: logits(:, :)
+        real(dp), intent(out) :: log_probabilities(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        integer, intent(in), optional :: device_kind
+        integer :: requested_device
+
+        requested_device = FORTML_DEVICE_CPU
+        if (present(device_kind)) requested_device = device_kind
+        if (requested_device == FORTML_DEVICE_CUDA) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "log softmax value: resident CUDA kernel is not implemented")
+            return
+        end if
+        if (requested_device /= FORTML_DEVICE_CPU) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "log softmax value: device kind is invalid")
+            return
+        end if
+        call log_softmax_value(logits, log_probabilities, status)
+    end subroutine log_softmax_value_device
 
     subroutine log_softmax_jvp(logits, logits_dot, log_probabilities, &
             log_probabilities_dot, status)
@@ -801,16 +914,77 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine log_softmax_vjp
 
-    subroutine softmax_cross_entropy_value(logits, labels, value, status)
+    subroutine log_softmax_hvp(logits, logits_dot, log_probabilities_bar, &
+            logits_hvp, status)
+        !! Hessian-vector product for a cotangent-weighted log-softmax.
+        !!
+        !! The returned product is the directional derivative of the VJP of
+        !! `sum(log_probabilities_bar*log_softmax(logits))`.
+        real(dp), intent(in) :: logits(:, :), logits_dot(:, :)
+        real(dp), intent(in) :: log_probabilities_bar(:, :)
+        real(dp), intent(out) :: logits_hvp(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: log_probabilities(:, :), probabilities_dot(:, :)
+        real(dp) :: row_dot, row_bar
+        integer :: i
+
+        logits_hvp = 0.0_dp
+        if (any(shape(logits_dot) /= shape(logits)) .or. &
+                any(shape(log_probabilities_bar) /= shape(logits)) .or. &
+                any(shape(logits_hvp) /= shape(logits))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "log softmax HVP: tangent, cotangent, or output shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(logits_dot)) .or. &
+                any(.not. ieee_is_finite(log_probabilities_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "log softmax HVP: tangent and cotangent must be finite")
+            return
+        end if
+        allocate(log_probabilities(size(logits, 1), size(logits, 2)), &
+            probabilities_dot(size(logits, 1), size(logits, 2)))
+        call log_softmax_jvp(logits, logits_dot, log_probabilities, &
+            probabilities_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        do i = 1, size(logits, 1)
+            row_dot = dot_product(exp(log_probabilities(i, :)), logits_dot(i, :))
+            row_bar = sum(log_probabilities_bar(i, :))
+            logits_hvp(i, :) = -exp(log_probabilities(i, :))* &
+                (logits_dot(i, :) - row_dot)*row_bar
+        end do
+        if (any(.not. ieee_is_finite(logits_hvp))) then
+            logits_hvp = 0.0_dp
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "log softmax HVP: product is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine log_softmax_hvp
+
+    subroutine softmax_cross_entropy_value(logits, labels, value, status, &
+            sample_weight, reduction)
+        !! Weighted mean/sum softmax cross-entropy.
+        !!
+        !! The row weights are normalized by positive weight mass for the
+        !! default mean reduction.  Sum reduction leaves the weighted sum
+        !! unnormalized.  This is the same contract as the multilabel and
+        !! focal losses in this module.
         real(dp), intent(in) :: logits(:, :)
         integer, intent(in) :: labels(:)
         real(dp), intent(out) :: value
         type(fortnum_status_t), intent(out) :: status
-        real(dp) :: maximum, normalizer
+        real(dp), intent(in), optional :: sample_weight(:)
+        integer, intent(in), optional :: reduction
+        real(dp), allocatable :: weights(:)
+        real(dp) :: maximum, normalizer, normalization
         integer :: i, j
 
         value = 0.0_dp
         call validate_categorical_inputs(logits, labels, status)
+        if (status%code /= FORTNUM_OK) return
+        call prepare_loss_weights(size(logits, 1), sample_weight, reduction, &
+            weights, normalization, status)
         if (status%code /= FORTNUM_OK) return
         do i = 1, size(logits, 1)
             maximum = maxval(logits(i, :))
@@ -818,19 +992,57 @@ contains
             do j = 1, size(logits, 2)
                 normalizer = normalizer + exp(logits(i, j) - maximum)
             end do
-            value = value + maximum - logits(i, labels(i)) + log(normalizer)
+            value = value + weights(i)*(maximum - logits(i, labels(i)) + &
+                log(normalizer))
         end do
-        value = value/real(size(logits, 1), dp)
+        value = value/normalization
+        if (.not. ieee_is_finite(value)) then
+            value = 0.0_dp
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "softmax cross entropy: reduction is not finite")
+            return
+        end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine softmax_cross_entropy_value
 
+    subroutine softmax_cross_entropy_value_device(logits, labels, value, status, &
+            device_kind, sample_weight, reduction)
+        !! Device-dispatch boundary for weighted softmax cross-entropy.
+        real(dp), intent(in) :: logits(:, :)
+        integer, intent(in) :: labels(:)
+        real(dp), intent(out) :: value
+        type(fortnum_status_t), intent(out) :: status
+        integer, intent(in), optional :: device_kind
+        real(dp), intent(in), optional :: sample_weight(:)
+        integer, intent(in), optional :: reduction
+        integer :: requested_device
+
+        requested_device = FORTML_DEVICE_CPU
+        if (present(device_kind)) requested_device = device_kind
+        if (requested_device == FORTML_DEVICE_CUDA) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "softmax cross entropy: resident CUDA kernel is not implemented")
+            return
+        end if
+        if (requested_device /= FORTML_DEVICE_CPU) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "softmax cross entropy: device kind is invalid")
+            return
+        end if
+        call softmax_cross_entropy_value(logits, labels, value, status, &
+            sample_weight, reduction)
+    end subroutine softmax_cross_entropy_value_device
+
     subroutine softmax_cross_entropy_jvp(logits, labels, logits_dot, value, &
-            value_dot, status)
+            value_dot, status, sample_weight, reduction)
         real(dp), intent(in) :: logits(:, :), logits_dot(:, :)
         integer, intent(in) :: labels(:)
         real(dp), intent(out) :: value, value_dot
         type(fortnum_status_t), intent(out) :: status
-        real(dp) :: maximum, normalizer, weighted_dot
+        real(dp), intent(in), optional :: sample_weight(:)
+        integer, intent(in), optional :: reduction
+        real(dp), allocatable :: weights(:)
+        real(dp) :: maximum, normalizer, weighted_dot, normalization
         integer :: i, j
 
         value = 0.0_dp
@@ -845,7 +1057,10 @@ contains
                 "softmax cross entropy JVP: tangent must be finite")
             return
         end if
-        call softmax_cross_entropy_value(logits, labels, value, status)
+        call validate_categorical_inputs(logits, labels, status)
+        if (status%code /= FORTNUM_OK) return
+        call prepare_loss_weights(size(logits, 1), sample_weight, reduction, &
+            weights, normalization, status)
         if (status%code /= FORTNUM_OK) return
         do i = 1, size(logits, 1)
             maximum = maxval(logits(i, :))
@@ -856,19 +1071,33 @@ contains
                 weighted_dot = weighted_dot + &
                     exp(logits(i, j) - maximum)*logits_dot(i, j)
             end do
-            value_dot = value_dot + weighted_dot/normalizer - &
-                logits_dot(i, labels(i))
+            value = value + weights(i)*(maximum - logits(i, labels(i)) + &
+                log(normalizer))
+            value_dot = value_dot + weights(i)*(weighted_dot/normalizer - &
+                logits_dot(i, labels(i)))
         end do
-        value_dot = value_dot/real(size(logits, 1), dp)
+        value = value/normalization
+        value_dot = value_dot/normalization
+        if (.not. ieee_is_finite(value) .or. .not. ieee_is_finite(value_dot)) then
+            value = 0.0_dp
+            value_dot = 0.0_dp
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "softmax cross entropy JVP: reduction is not finite")
+            return
+        end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine softmax_cross_entropy_jvp
 
     subroutine softmax_cross_entropy_vjp(logits, labels, value_bar, logits_bar, &
-            status)
+            status, sample_weight, reduction)
         real(dp), intent(in) :: logits(:, :), value_bar
         integer, intent(in) :: labels(:)
         real(dp), intent(out) :: logits_bar(:, :)
         type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
+        integer, intent(in), optional :: reduction
+        real(dp), allocatable :: weights(:)
+        real(dp) :: normalization
         real(dp) :: maximum, normalizer
         integer :: i, j
 
@@ -885,6 +1114,9 @@ contains
         end if
         call validate_categorical_inputs(logits, labels, status)
         if (status%code /= FORTNUM_OK) return
+        call prepare_loss_weights(size(logits, 1), sample_weight, reduction, &
+            weights, normalization, status)
+        if (status%code /= FORTNUM_OK) return
         do i = 1, size(logits, 1)
             maximum = maxval(logits(i, :))
             normalizer = 0.0_dp
@@ -894,13 +1126,14 @@ contains
             end do
             logits_bar(i, :) = logits_bar(i, :)/normalizer
             logits_bar(i, labels(i)) = logits_bar(i, labels(i)) - 1.0_dp
+            logits_bar(i, :) = weights(i)*logits_bar(i, :)/normalization
         end do
-        logits_bar = value_bar*logits_bar/real(size(logits, 1), dp)
+        logits_bar = value_bar*logits_bar
         call status_set(status, FORTNUM_OK, "")
     end subroutine softmax_cross_entropy_vjp
 
     subroutine softmax_cross_entropy_hvp(logits, labels, logits_dot, logits_hvp, &
-            status)
+            status, sample_weight, reduction)
         !! Hessian-vector product of the mean softmax cross-entropy objective.
         !!
         !! For each sample the product is `J_softmax * logits_dot`; the
@@ -911,6 +1144,10 @@ contains
         integer, intent(in) :: labels(:)
         real(dp), intent(out) :: logits_hvp(:, :)
         type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
+        integer, intent(in), optional :: reduction
+        real(dp), allocatable :: weights(:)
+        real(dp) :: normalization
         real(dp), allocatable :: probabilities(:, :)
         real(dp) :: row_dot
         integer :: i
@@ -929,15 +1166,23 @@ contains
         end if
         call validate_categorical_inputs(logits, labels, status)
         if (status%code /= FORTNUM_OK) return
+        call prepare_loss_weights(size(logits, 1), sample_weight, reduction, &
+            weights, normalization, status)
+        if (status%code /= FORTNUM_OK) return
         allocate(probabilities(size(logits, 1), size(logits, 2)))
         call softmax_value(logits, probabilities, status)
         if (status%code /= FORTNUM_OK) return
         do i = 1, size(logits, 1)
             row_dot = dot_product(probabilities(i, :), logits_dot(i, :))
-            logits_hvp(i, :) = probabilities(i, :)* &
-                (logits_dot(i, :) - row_dot)
+            logits_hvp(i, :) = weights(i)*probabilities(i, :)* &
+                (logits_dot(i, :) - row_dot)/normalization
         end do
-        logits_hvp = logits_hvp/real(size(logits, 1), dp)
+        if (any(.not. ieee_is_finite(logits_hvp))) then
+            logits_hvp = 0.0_dp
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "softmax cross entropy HVP: product is not finite")
+            return
+        end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine softmax_cross_entropy_hvp
 
@@ -1223,6 +1468,34 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine focal_binary_cross_entropy_with_logits_value
 
+    subroutine focal_binary_cross_entropy_with_logits_value_device(logits, &
+            targets, alpha, gamma, value, status, device_kind, sample_weight, &
+            reduction)
+        !! Device-dispatch boundary for weighted focal BCE values.
+        real(dp), intent(in) :: logits(:, :), targets(:, :), alpha, gamma
+        real(dp), intent(out) :: value
+        type(fortnum_status_t), intent(out) :: status
+        integer, intent(in), optional :: device_kind
+        real(dp), intent(in), optional :: sample_weight(:)
+        integer, intent(in), optional :: reduction
+        integer :: requested_device
+
+        requested_device = FORTML_DEVICE_CPU
+        if (present(device_kind)) requested_device = device_kind
+        if (requested_device == FORTML_DEVICE_CUDA) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "focal BCE: resident CUDA kernel is not implemented")
+            return
+        end if
+        if (requested_device /= FORTML_DEVICE_CPU) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "focal BCE: device kind is invalid")
+            return
+        end if
+        call focal_binary_cross_entropy_with_logits_value(logits, targets, alpha, &
+            gamma, value, status, sample_weight, reduction)
+    end subroutine focal_binary_cross_entropy_with_logits_value_device
+
     subroutine focal_binary_cross_entropy_with_logits_jvp(logits, targets, &
             alpha, gamma, logits_dot, value, value_dot, status, sample_weight, &
             reduction)
@@ -1296,6 +1569,67 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine focal_binary_cross_entropy_with_logits_vjp
+
+    subroutine focal_binary_cross_entropy_with_logits_hvp(logits, targets, alpha, &
+            gamma, logits_dot, logits_hvp, status, sample_weight, reduction)
+        !! Exact logits Hessian-vector product of weighted focal BCE.
+        !!
+        !! The product is with respect to logits and uses the same relaxed
+        !! target, alpha, and gamma convention as the value/JVP/VJP routines.
+        !! At a representationally saturated probability (`1-p_t` below the
+        !! representable positive range), the limiting value and products are
+        !! returned as zero rather than manufacturing an overflow.
+        real(dp), intent(in) :: logits(:, :), targets(:, :), alpha, gamma
+        real(dp), intent(in) :: logits_dot(:, :)
+        real(dp), intent(out) :: logits_hvp(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
+        integer, intent(in), optional :: reduction
+        real(dp), allocatable :: weights(:)
+        real(dp) :: normalization, loss, derivative, second_derivative
+        integer :: i, j
+
+        logits_hvp = 0.0_dp
+        if (any(shape(logits_dot) /= shape(logits)) .or. &
+                any(shape(logits_hvp) /= shape(logits))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "focal BCE HVP: tangent or output shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(logits_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "focal BCE HVP: tangent must be finite")
+            return
+        end if
+        call validate_focal_inputs(logits, targets, alpha, gamma, status)
+        if (status%code /= FORTNUM_OK) return
+        call prepare_loss_weights(size(logits, 1), sample_weight, reduction, &
+            weights, normalization, status)
+        if (status%code /= FORTNUM_OK) return
+        do j = 1, size(logits, 2)
+            do i = 1, size(logits, 1)
+                call focal_terms_with_hessian(logits(i, j), targets(i, j), alpha, &
+                    gamma, loss, derivative, second_derivative)
+                if (.not. ieee_is_finite(loss) .or. &
+                        .not. ieee_is_finite(derivative) .or. &
+                        .not. ieee_is_finite(second_derivative)) then
+                    logits_hvp = 0.0_dp
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "focal BCE HVP: product is not finite")
+                    return
+                end if
+                logits_hvp(i, j) = weights(i)*second_derivative* &
+                    logits_dot(i, j)/normalization
+            end do
+        end do
+        if (any(.not. ieee_is_finite(logits_hvp))) then
+            logits_hvp = 0.0_dp
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "focal BCE HVP: reduction is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine focal_binary_cross_entropy_with_logits_hvp
 
     subroutine gaussian_nll_value(prediction, targets, log_variance, value, &
             status, sample_weight, reduction)
@@ -2185,6 +2519,56 @@ contains
             -target*log_probability - (1.0_dp - target)*log_one_probability) + &
             focal_factor*residual)
     end subroutine focal_terms
+
+    subroutine focal_terms_with_hessian(logit, target, alpha, gamma, loss, &
+            derivative, second_derivative)
+        !! Value, first derivative, and second derivative for one focal term.
+        !!
+        !! This helper mirrors `focal_terms` but carries the analytic second
+        !! derivative.  The direct formulas are used only while the focusing
+        !! probability remains representable; saturated rows use their finite
+        !! limiting zero products.
+        real(dp), intent(in) :: logit, target, alpha, gamma
+        real(dp), intent(out) :: loss, derivative, second_derivative
+        real(dp) :: probability, complement, residual, alpha_t, bce, bce_second
+        real(dp) :: one_minus_pt, log_one_minus_pt, focus, focus_first
+        real(dp) :: focus_second, pt_prime, pt_second, scale
+
+        probability = stable_sigmoid(logit)
+        complement = 1.0_dp - probability
+        residual = probability - target
+        alpha_t = alpha*target + (1.0_dp - alpha)*(1.0_dp - target)
+        bce = target*stable_softplus(-logit) + &
+            (1.0_dp - target)*stable_softplus(logit)
+        bce_second = probability*complement
+        one_minus_pt = target*complement + (1.0_dp - target)*probability
+        if (gamma == 0.0_dp) then
+            loss = alpha_t*bce
+            derivative = alpha_t*residual
+            second_derivative = alpha_t*bce_second
+            return
+        end if
+        if (one_minus_pt <= tiny(1.0_dp)) then
+            loss = 0.0_dp
+            derivative = 0.0_dp
+            second_derivative = 0.0_dp
+            return
+        end if
+        log_one_minus_pt = log(one_minus_pt)
+        focus = exp(gamma*log_one_minus_pt)
+        pt_prime = (2.0_dp*target - 1.0_dp)*bce_second
+        pt_second = (2.0_dp*target - 1.0_dp)*bce_second* &
+            (1.0_dp - 2.0_dp*probability)
+        scale = exp((gamma - 1.0_dp)*log_one_minus_pt)
+        focus_first = -gamma*scale*pt_prime
+        focus_second = gamma*(gamma - 1.0_dp)* &
+            exp((gamma - 2.0_dp)*log_one_minus_pt)*pt_prime*pt_prime - &
+            gamma*scale*pt_second
+        loss = alpha_t*focus*bce
+        derivative = alpha_t*(focus_first*bce + focus*residual)
+        second_derivative = alpha_t*(focus_second*bce + &
+            2.0_dp*focus_first*residual + focus*bce_second)
+    end subroutine focal_terms_with_hessian
 
     subroutine validate_elementwise(logits, output, operation, status)
         real(dp), intent(in) :: logits(:, :), output(:, :)
