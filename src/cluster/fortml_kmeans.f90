@@ -188,7 +188,7 @@ contains
         integer, intent(in), optional :: device_kind
 
         call self%fit(x, status, n_clusters, max_iter, tolerance, initialization_seed, device_kind)
-        if (status%code /= FORTNUM_OK .and. status%code /= FORTNUM_CONVERGENCE_ERROR) return
+        if (status%code /= FORTNUM_OK) return
         call self%transform(x, transformed, status)
     end subroutine kmeans_fit_transform
 

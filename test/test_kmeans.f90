@@ -93,7 +93,7 @@ contains
 
     subroutine test_refusals(failures)
         integer, intent(inout) :: failures
-        real(dp) :: x(6, 2), duplicate(4, 2), bad(2, 1)
+        real(dp) :: x(6, 2), duplicate(4, 2), bad(2, 1), transformed(4, 2)
         type(kmeans_t) :: model
         type(fortnum_status_t) :: status
 
@@ -105,6 +105,11 @@ contains
         call model%fit(duplicate, status, n_clusters=2, initialization_seed=1)
         call check(status%code == FORTNUM_CONVERGENCE_ERROR, &
             "empty cluster refusal", failures)
+        transformed = -1.0_dp
+        call model%fit_transform(duplicate, transformed, status, n_clusters=2, &
+            initialization_seed=1)
+        call check(status%code == FORTNUM_CONVERGENCE_ERROR, &
+            "fit_transform preserves convergence refusal", failures)
         bad = 0.0_dp
         bad(1, 1) = ieee_value(0.0_dp, ieee_quiet_nan)
         call model%fit(bad, status, n_clusters=1)
