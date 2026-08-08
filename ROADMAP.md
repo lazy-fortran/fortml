@@ -21,7 +21,7 @@ gate is still open, so this work does not move or recreate that tag.
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
 The checked-in GNU compiler log is the fresh 2026-08-08 run against FortML code
-revision `457c7b68c7dfc3f6218dae6ae55e9e80f1093b26`, FortAD `origin/main` at
+revision `83d088a8e428912b7b25dab7e4648627468547e3`, FortAD `origin/main` at
 `159e38d2ad085853a3e6b092c1c1fb0e300319ca`, and FortNum at
 `38bc0e578ec5c6c0e636e8fdd3844f54f9e3e473`, run from the clean checkout
 under `/mnt/storage/code/lazy-fortran/fortml`. The run includes the
