@@ -1527,6 +1527,24 @@ diagnostics without duplicating the pipeline's packing rules. Sequential
 transforms and DAG branches require separate input and output contracts and
 are not inferred from this horizontal union.
 
+### Versioned pipeline state
+
+`fortml_pipeline_persistence` supplies `basis_pipeline_state_t` plus
+`capture_basis_pipeline_state`, `restore_basis_pipeline_state`,
+`save_basis_pipeline_text`, and `load_basis_pipeline_text`. A state dictionary
+stores dimensions, fit state, input/stage/feature/parameter names, one-based
+stage offsets, and the packed parameter vector under
+`FORTML_PIPELINE_STATE_VERSION`. Load onto a preconfigured fitted topology:
+structural basis descriptors and callback procedures are never invented from
+untrusted text. Every name, offset, shape, and finite-value check runs before a
+candidate copy is committed, so malformed or mismatched state leaves the target
+unchanged. `save_basis_pipeline_device` and `load_basis_pipeline_device` route
+CPU text I/O and return `FORTNUM_NOT_IMPLEMENTED` for resident CUDA rather than
+hiding a host transfer. See
+[`docs/PIPELINE_PERSISTENCE.md`](PIPELINE_PERSISTENCE.md) and
+`test_pipeline_persistence` for the independent round-trip and derivative
+oracle.
+
 Each pipeline also carries a dense `basis_input_schema_t`. Its default names
 are `feature_1`, ..., `feature_n`; call `set_input_schema(names,status)` to
 install nonempty unique names such as `time` and `velocity`, then use
