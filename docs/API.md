@@ -3465,17 +3465,18 @@ product silently copies arrays to the host.
 Value-only covariances and their variance-parameter products remain defined at
 coincidence. The refusal applies only when an input derivative is requested.
 For mixed value/first-derivative observations, `hyperparameter_hvp` is analytic
-for RBF, linear, constant, polynomial, and sums/products built solely from
-those leaves. The polynomial path differentiates all four logarithmic kernel
-coordinates in closed form, including the degree-one limit, and returns a
-typed domain error when its positive base is invalid.
-Spectral-mixture value/first-derivative parameter gradients and query products
-are analytic, while its mixed parameter HVP remains a typed
-`FORTNUM_NOT_IMPLEMENTED` refusal until fourth input/parameter products are
-generated and independently checked. Other leaves likewise return
+for RBF, linear, constant, polynomial, spectral-mixture, and sums/products
+built solely from those leaves. The polynomial path differentiates all four
+logarithmic kernel coordinates in closed form, including the degree-one limit,
+and returns a typed domain error when its positive base is invalid.
+Spectral-mixture value/first-derivative parameter gradients, query products,
+and mixed parameter HVPs are analytic on the CPU reference path. Its
+four-jet factor rule differentiates each packed log-weight/log-scale/signed-
+mean coordinate along an arbitrary parameter direction. Other leaves return
 `FORTNUM_NOT_IMPLEMENTED` until their second input/parameter products are
-generated; the implementation never
-silently finite-differences the likelihood gradient. The RBF parameter JVP/VJP path uses the checked FortSym-generated
+generated; the implementation never silently finite-differences the likelihood
+gradient. CUDA mixed covariance/factorization remains an explicit typed refusal.
+The RBF parameter JVP/VJP path uses the checked FortSym-generated
 natural-leaf value and first derivatives (FortSym `f71a1aa`, 15 IR nodes, 7
 compound operations). The Matérn 1/2 HVP now uses a FortSym-generated leaf
 (`9482261`, 37 IR nodes, 28 compound operations), and the Matérn 3/2 HVP now

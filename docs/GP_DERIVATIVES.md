@@ -29,7 +29,7 @@ the requested pair is smooth and finite. A refusal is a typed
 | Local-periodic | Yes, including coincident radial limits | Gradient/JVP/VJP; mixed HVP refusal | Yes, including coincident query blocks | mixed HVP `FORTNUM_NOT_IMPLEMENTED`; CUDA covariance graph is not linked |
 | Linear, constant | Yes | Yes; mixed-observation HVPs are analytic | Yes | none |
 | Polynomial | Yes when the positive polynomial base is finite | Gradient/JVP/VJP and analytic mixed HVP (all four logarithmic parameters) | Yes when the positive base is finite | `FORTNUM_DOMAIN_ERROR` for a nonpositive base |
-| Spectral mixture | Yes | Gradient/JVP/VJP for packed log-weights, log-scales, and signed means; mixed HVP refusal | Yes | mixed HVP `FORTNUM_NOT_IMPLEMENTED` until fourth input/parameter products exist |
+| Spectral mixture | Yes | Gradient/JVP/VJP and analytic mixed-observation HVP for packed log-weights, log-scales, and signed means | Yes | CPU reference only; CUDA mixed covariance/factorization remains `FORTNUM_NOT_IMPLEMENTED` |
 | Sum/product composites | Yes when every child supports the requested product | Gradient/JVP/VJP for every supported child; mixed HVP analytic only for RBF/linear/constant/polynomial-only trees | Yes when every child supports it | Unsupported mixed HVP child returns `FORTNUM_NOT_IMPLEMENTED` |
 | Validated user formula | Yes for formulas with defined input derivatives | Variance and formula input products where defined; mixed HVP refusal | Not implemented | `push_distance` additionally refuses at coincident points |
 | White noise | Value-only | Value-only | Not a differentiable query covariance | Any derivative observation is refused as nonsmooth |
@@ -46,11 +46,12 @@ the implementation differentiates the dense covariance, Cholesky solve, and
 each parameter covariance block in one direction. Polynomial mixed HVPs now
 use a closed-form positive-base expression, including the degree-log tangent
 at degree one, and are checked against an independent finite-difference
-likelihood oracle. Matérn, periodic, rational-quadratic, cosine,
-spectral-mixture, user-formula, and other leaves return
-`FORTNUM_NOT_IMPLEMENTED` for a mixed HVP until their required second
-input/parameter products have generated kernels and independent oracles. A
-mixed HVP never silently central-differences the likelihood gradient.
+likelihood oracle. Matérn, periodic, rational-quadratic, cosine, user-formula,
+and other leaves return `FORTNUM_NOT_IMPLEMENTED` for a mixed HVP until their
+required second input/parameter products have generated kernels and independent
+oracles. The spectral-mixture leaf now carries an exact four-jet through each
+separable factor and provides the same mixed HVP contract on the CPU reference
+path. A mixed HVP never silently central-differences the likelihood gradient.
 The general derivative-GP type still stops at value/first-derivative
 components. A bounded companion, `second_derivative_gp_t`, covers mixed
 value/first/second-derivative observations for scalar one-dimensional RBF and
@@ -109,5 +110,6 @@ mixed value/first-derivative likelihood HVPs still return the typed refusal
 until their fourth input/parameter products are generated.
 The spectral-mixture derivative-GP gate independently assembles its dense
 two-dimensional value/first-derivative covariance blocks and checks packed
-parameter gradients, posterior covariance, query JVP/VJP, and the typed HVP
-refusal.
+parameter gradients, posterior covariance, query JVP/VJP, and the mixed HVP
+against a central-difference likelihood oracle. The HVP is CPU-only; CUDA
+requests remain a typed refusal before touching output buffers.

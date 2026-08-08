@@ -7,7 +7,7 @@ program test_derivative_gp_spectral_mixture
     use fortml_derivative_gaussian_process, only: gp_derivative_regression_t
     use fortml_kernels, only: kernel_t, make_spectral_mixture_kernel
     use fortnum_cholesky, only: cholesky_factorization_t
-    use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_NOT_IMPLEMENTED
+    use fortnum_status, only: fortnum_status_t, status_ok
     implicit none
 
     integer :: failures
@@ -33,10 +33,11 @@ contains
         real(dp) :: mean(3, 1), variance(3), mean_ref(3, 1), variance_ref(3)
         real(dp) :: posterior(3, 3), posterior_ref(3, 3)
         real(dp) :: theta(11), gradient(11), fd_gradient(11), direction(11)
+        real(dp) :: gradient_plus(11), gradient_minus(11), hvp_ref(11)
         real(dp) :: mean_dot(3, 1), variance_dot(3), mean_plus(3, 1), mean_minus(3, 1)
         real(dp) :: variance_plus(3), variance_minus(3), mean_bar(3, 1), variance_bar(3)
         real(dp) :: x_bar(3, 2), fd_bar(3, 2), objective_plus, objective_minus
-        real(dp) :: h, h_input, lhs, rhs, value, expected, hvp(11)
+        real(dp) :: h, h_hvp, h_input, lhs, rhs, value, expected, hvp(11)
         integer :: components(5), query_components(3), i, j
 
         weights = [1.15_dp, 0.63_dp]
@@ -113,9 +114,16 @@ contains
         direction = [0.13_dp, -0.08_dp, 0.11_dp, -0.05_dp, 0.07_dp, -0.04_dp, &
             0.09_dp, -0.06_dp, 0.12_dp, -0.03_dp, 0.17_dp]
         call model%hyperparameter_hvp(direction, hvp, status)
-        if (status%code /= FORTNUM_NOT_IMPLEMENTED) then
-            write (error_unit, '(a,i0)') &
-                "FAIL [spectral derivative GP] mixed HVP refusal code=", status%code
+        h_hvp = 1.0e-3_dp
+        call oracle_gradient(theta + h_hvp*direction, x_train, components, y_train, &
+            0.055_dp, 1.0e-10_dp, gradient_plus)
+        call oracle_gradient(theta - h_hvp*direction, x_train, components, y_train, &
+            0.055_dp, 1.0e-10_dp, gradient_minus)
+        hvp_ref = (gradient_plus - gradient_minus)/(2.0_dp*h_hvp)
+        if (.not. status_ok(status) .or. maxval(abs(hvp - hvp_ref)) > 3.0e-4_dp) then
+            write (error_unit, '(a,es12.4)') &
+                "FAIL [spectral derivative GP] mixed HVP finite difference oracle ", &
+                maxval(abs(hvp - hvp_ref))
             failures = failures + 1
         end if
 
@@ -192,6 +200,22 @@ contains
         value = -0.5_dp*sum(y*alpha) - 0.5_dp*logdet - &
             0.5_dp*real(size(x, 1), dp)*log(2.0_dp*acos(-1.0_dp))
     end function oracle_lml
+
+    subroutine oracle_gradient(theta, x, components, y, noise, jitter, gradient)
+        real(dp), intent(in) :: theta(:), x(:, :), y(:, :), noise, jitter
+        integer, intent(in) :: components(:)
+        real(dp), intent(out) :: gradient(:)
+        real(dp) :: h_gradient
+        integer :: i
+
+        h_gradient = 3.0e-6_dp
+        do i = 1, size(theta)
+            gradient(i) = (oracle_lml(theta + h_gradient*unit_vector(size(theta), i), x, &
+                components, y, noise, jitter) - oracle_lml(theta - &
+                h_gradient*unit_vector(size(theta), i), x, components, y, noise, jitter))/ &
+                (2.0_dp*h_gradient)
+        end do
+    end subroutine oracle_gradient
 
     subroutine oracle_predict(theta, x, components, y, x_query, query_components, noise, &
             jitter, mean, variance)

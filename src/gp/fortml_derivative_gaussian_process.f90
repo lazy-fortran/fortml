@@ -1851,6 +1851,11 @@ contains
                 parameter, direction, covariance, covariance_dot, covariance_parameter, &
                 covariance_parameter_dot, status)
             return
+        case (KERNEL_SPECTRAL_MIXTURE)
+            call spectral_derivative_parameter_hvp(kernel, x1, component1, x2, component2, &
+                parameter, direction, covariance, covariance_dot, covariance_parameter, &
+                covariance_parameter_dot, status)
+            return
         case default
             call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
                 "derivative GP mixed HVP: kernel leaf lacks analytic second products")
@@ -3063,6 +3068,272 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine local_periodic_input_parameter_jvp
+
+    subroutine spectral_derivative_parameter_hvp(kernel, x1, component1, x2, component2, &
+            parameter, direction, covariance, covariance_dot, covariance_parameter, &
+            covariance_parameter_dot, status)
+        !! Exact mixed-observation spectral-mixture parameter HVP block.
+        !!
+        !! Each one-dimensional factor is carried as a four-jet in (the
+        !! selected parameter, the full parameter direction).  Product rules
+        !! then provide the value, input derivative, parameter derivative, and
+        !! parameter/direction derivative without finite differences.  The
+        !! packed layout is [log(weight), log(scale(:)), mean(:)] per mixture.
+        type(kernel_t), intent(in) :: kernel
+        real(dp), intent(in) :: x1(:), x2(:), direction(:)
+        integer, intent(in) :: component1, component2, parameter
+        real(dp), intent(out) :: covariance, covariance_dot
+        real(dp), intent(out) :: covariance_parameter, covariance_parameter_dot
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: f(:, :), fd(:, :), fp(:, :), fpd(:, :)
+        real(dp), allocatable :: a0(:), ad(:), ap(:), apd(:)
+        real(dp) :: tau(size(x1)), block_value, block_dot, block_parameter
+        real(dp) :: block_parameter_dot, weight, weight_dot, weight_parameter
+        integer :: d, q, n_mixtures, block, base, local_parameter, target_q
+        integer :: i
+
+        covariance = 0.0_dp
+        covariance_dot = 0.0_dp
+        covariance_parameter = 0.0_dp
+        covariance_parameter_dot = 0.0_dp
+        d = size(x1)
+        block = 1 + 2*d
+        if (size(x2) /= d .or. size(direction) /= kernel%parameter_count() .or. &
+            component1 < 0 .or. component2 < 0 .or. component1 > d .or. component2 > d .or. &
+            parameter < 1 .or. parameter > kernel%parameter_count() .or. &
+            mod(kernel%parameter_count(), block) /= 0 .or. any(.not. ieee_is_finite(x1)) .or. &
+            any(.not. ieee_is_finite(x2)) .or. any(.not. ieee_is_finite(direction))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "spectral mixture mixed HVP: input or parameter layout is invalid")
+            return
+        end if
+
+        n_mixtures = kernel%parameter_count()/block
+        target_q = (parameter - 1)/block + 1
+        local_parameter = mod(parameter - 1, block) + 1
+        tau = x1 - x2
+        allocate(f(d, 3), fd(d, 3), fp(d, 3), fpd(d, 3))
+        allocate(a0(d), ad(d), ap(d), apd(d))
+        do q = 1, n_mixtures
+            base = (q - 1)*block
+            weight = exp(kernel%log_parameters(base + 1))
+            weight_dot = direction(base + 1)
+            weight_parameter = merge(1.0_dp, 0.0_dp, q == target_q .and. &
+                local_parameter == 1)
+            do i = 1, d
+                call spectral_one_dim_parameter_jets(kernel, base, i, tau(i), q, target_q, &
+                    local_parameter, direction, f(i, :), fd(i, :), fp(i, :), fpd(i, :), status)
+                if (status%code /= FORTNUM_OK) return
+            end do
+
+            a0 = f(:, 1)
+            ad = fd(:, 1)
+            ap = fp(:, 1)
+            apd = fpd(:, 1)
+            if (component1 == 0 .and. component2 == 0) then
+                ! Value block.
+            else if (component1 > 0 .and. component2 == 0) then
+                a0(component1) = f(component1, 2)
+                ad(component1) = fd(component1, 2)
+                ap(component1) = fp(component1, 2)
+                apd(component1) = fpd(component1, 2)
+            else if (component1 == 0 .and. component2 > 0) then
+                a0(component2) = f(component2, 2)
+                ad(component2) = fd(component2, 2)
+                ap(component2) = fp(component2, 2)
+                apd(component2) = fpd(component2, 2)
+            else if (component1 == component2) then
+                a0(component1) = f(component1, 3)
+                ad(component1) = fd(component1, 3)
+                ap(component1) = fp(component1, 3)
+                apd(component1) = fpd(component1, 3)
+            else
+                a0(component1) = f(component1, 2)
+                a0(component2) = f(component2, 2)
+                ad(component1) = fd(component1, 2)
+                ad(component2) = fd(component2, 2)
+                ap(component1) = fp(component1, 2)
+                ap(component2) = fp(component2, 2)
+                apd(component1) = fpd(component1, 2)
+                apd(component2) = fpd(component2, 2)
+            end if
+            call spectral_product_jets(a0, ad, ap, apd, block_value, block_dot, &
+                block_parameter, block_parameter_dot)
+            if (component1 == 0 .and. component2 > 0) then
+                block_value = -block_value
+                block_dot = -block_dot
+                block_parameter = -block_parameter
+                block_parameter_dot = -block_parameter_dot
+            else if (component1 > 0 .and. component2 > 0) then
+                ! The same-component mixed block uses f'' and is negative.
+                block_value = -block_value
+                block_dot = -block_dot
+                block_parameter = -block_parameter
+                block_parameter_dot = -block_parameter_dot
+            end if
+
+            covariance = covariance + weight*block_value
+            covariance_dot = covariance_dot + weight*(block_dot + weight_dot*block_value)
+            covariance_parameter = covariance_parameter + weight*(block_parameter + &
+                weight_parameter*block_value)
+            covariance_parameter_dot = covariance_parameter_dot + weight*(block_parameter_dot + &
+                weight_dot*block_parameter + weight_parameter*block_dot + &
+                weight_parameter*weight_dot*block_value)
+        end do
+        if (.not. ieee_is_finite(covariance) .or. .not. ieee_is_finite(covariance_dot) .or. &
+            .not. ieee_is_finite(covariance_parameter) .or. &
+            .not. ieee_is_finite(covariance_parameter_dot)) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "spectral mixture mixed HVP: nonfinite product")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine spectral_derivative_parameter_hvp
+
+    subroutine spectral_one_dim_parameter_jets(kernel, base, dimension_index, tau, mixture, &
+            target_mixture, local_parameter, direction, value, value_dot, value_parameter, &
+            value_parameter_dot, status)
+        type(kernel_t), intent(in) :: kernel
+        integer, intent(in) :: base, dimension_index, mixture, target_mixture, local_parameter
+        real(dp), intent(in) :: tau, direction(:)
+        real(dp), intent(out) :: value(3), value_dot(3), value_parameter(3)
+        real(dp), intent(out) :: value_parameter_dot(3)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: l(3), ld(3), lp(3), lpd(3), p(2), pd(2), pp(2), ppd(2)
+        real(dp) :: c(3), cd(3), cp(3), cpd(3), g(3), gd(3), gp(3), gpd(3)
+        real(dp) :: scale, mean, phase, sine_value, cosine_value, a, amplitude
+        real(dp) :: lsum, lsum_d, lsum_p, lsum_pd
+        real(dp) :: phase_cos_d, phase_cos_p, phase_cos_pd
+        real(dp) :: phase_sin_d, phase_sin_p, phase_sin_pd
+        real(dp) :: sdir, mdir
+        integer :: n
+
+        value = 0.0_dp
+        value_dot = 0.0_dp
+        value_parameter = 0.0_dp
+        value_parameter_dot = 0.0_dp
+        if (dimension_index < 1 .or. dimension_index > kernel%input_dim .or. &
+            mixture < 1 .or. target_mixture < 1 .or. size(direction) /= kernel%parameter_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "spectral mixture one-dimensional jet: index is invalid")
+            return
+        end if
+        a = 2.0_dp*acos(-1.0_dp)
+        scale = exp(kernel%log_parameters(base + 1 + dimension_index))
+        mean = kernel%log_parameters(base + 1 + kernel%input_dim + dimension_index)
+        sdir = direction(base + 1 + dimension_index)
+        mdir = direction(base + 1 + kernel%input_dim + dimension_index)
+        phase = a*tau*mean
+        sine_value = sin(phase)
+        cosine_value = cos(phase)
+        amplitude = exp(-0.5_dp*a*a*tau*tau*scale*scale)
+        l(1) = -0.5_dp*a*a*tau*tau*scale*scale
+        l(2) = -a*a*tau*scale*scale
+        l(3) = -a*a*scale*scale
+        ld = 2.0_dp*l*sdir
+        lp = 0.0_dp
+        lpd = 0.0_dp
+        if (mixture == target_mixture .and. local_parameter == dimension_index + 1) then
+            lp = 2.0_dp*l
+            lpd = 4.0_dp*l*sdir
+        end if
+        p(1) = phase
+        p(2) = a*mean
+        pd(1) = a*tau*mdir
+        pd(2) = a*mdir
+        pp = 0.0_dp
+        ppd = 0.0_dp
+        if (mixture == target_mixture .and. local_parameter == kernel%input_dim + 1 + &
+                dimension_index) then
+            pp(1) = a*tau
+            pp(2) = a
+        end if
+
+        c(1) = cosine_value
+        c(2) = -p(2)*sine_value
+        c(3) = -p(2)*p(2)*cosine_value
+        phase_cos_d = -sine_value*pd(1)
+        phase_sin_d = cosine_value*pd(1)
+        phase_cos_p = -sine_value*pp(1)
+        phase_sin_p = cosine_value*pp(1)
+        phase_cos_pd = -cosine_value*pp(1)*pd(1) - sine_value*ppd(1)
+        phase_sin_pd = -sine_value*pp(1)*pd(1) + cosine_value*ppd(1)
+        cd(1) = phase_cos_d
+        cd(2) = -pd(2)*sine_value - p(2)*phase_sin_d
+        cd(3) = -2.0_dp*p(2)*pd(2)*cosine_value + p(2)*p(2)*sine_value*pd(1)
+        cp(1) = phase_cos_p
+        cp(2) = -pp(2)*sine_value - p(2)*phase_sin_p
+        cp(3) = -2.0_dp*p(2)*pp(2)*cosine_value + p(2)*p(2)*sine_value*pp(1)
+        cpd(1) = phase_cos_pd
+        cpd(2) = -ppd(2)*sine_value - pp(2)*phase_sin_d - pd(2)*phase_sin_p - &
+            p(2)*phase_sin_pd
+        cpd(3) = -2.0_dp*(pp(2)*pd(2) + p(2)*ppd(2))*cosine_value + &
+            2.0_dp*p(2)*pp(2)*sine_value*pd(1) + &
+            2.0_dp*p(2)*pd(2)*sine_value*pp(1) + &
+            p(2)*p(2)*(-phase_cos_pd)
+
+        g(1) = c(1)
+        g(2) = l(2)*c(1) + c(2)
+        lsum = l(3) + l(2)*l(2)
+        g(3) = lsum*c(1) + 2.0_dp*l(2)*c(2) + c(3)
+        gd(1) = cd(1)
+        gd(2) = ld(2)*c(1) + l(2)*cd(1) + cd(2)
+        lsum_d = ld(3) + 2.0_dp*l(2)*ld(2)
+        gd(3) = lsum_d*c(1) + lsum*cd(1) + 2.0_dp*(ld(2)*c(2) + l(2)*cd(2)) + cd(3)
+        gp(1) = cp(1)
+        gp(2) = lp(2)*c(1) + l(2)*cp(1) + cp(2)
+        lsum_p = lp(3) + 2.0_dp*l(2)*lp(2)
+        gp(3) = lsum_p*c(1) + lsum*cp(1) + 2.0_dp*(lp(2)*c(2) + l(2)*cp(2)) + cp(3)
+        gpd(1) = cpd(1)
+        gpd(2) = lpd(2)*c(1) + lp(2)*cd(1) + ld(2)*cp(1) + l(2)*cpd(1) + cpd(2)
+        lsum_pd = lpd(3) + 2.0_dp*(lp(2)*ld(2) + l(2)*lpd(2))
+        gpd(3) = lsum_pd*c(1) + lsum_p*cd(1) + lsum_d*cp(1) + lsum*cpd(1) + &
+            2.0_dp*(lpd(2)*c(2) + lp(2)*cd(2) + ld(2)*cp(2) + l(2)*cpd(2)) + cpd(3)
+
+        do n = 1, 3
+            value(n) = amplitude*g(n)
+            value_dot(n) = amplitude*(ld(1)*g(n) + gd(n))
+            value_parameter(n) = amplitude*(lp(1)*g(n) + gp(n))
+            value_parameter_dot(n) = amplitude*((lpd(1) + lp(1)*ld(1))*g(n) + &
+                lp(1)*gd(n) + ld(1)*gp(n) + gpd(n))
+        end do
+        if (.not. all(ieee_is_finite(value)) .or. .not. all(ieee_is_finite(value_dot)) .or. &
+            .not. all(ieee_is_finite(value_parameter)) .or. &
+            .not. all(ieee_is_finite(value_parameter_dot))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "spectral mixture one-dimensional jet: nonfinite product")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine spectral_one_dim_parameter_jets
+
+    subroutine spectral_product_jets(value, value_dot, value_parameter, value_parameter_dot, &
+            product_value, product_dot, product_parameter, product_parameter_dot)
+        real(dp), intent(in) :: value(:), value_dot(:), value_parameter(:)
+        real(dp), intent(in) :: value_parameter_dot(:)
+        real(dp), intent(out) :: product_value, product_dot, product_parameter
+        real(dp), intent(out) :: product_parameter_dot
+        integer :: i, j
+
+        product_value = product(value)
+        product_dot = 0.0_dp
+        product_parameter = 0.0_dp
+        product_parameter_dot = 0.0_dp
+        do i = 1, size(value)
+            product_dot = product_dot + value_dot(i)*spectral_product_except_one(value, i)
+            product_parameter = product_parameter + value_parameter(i)* &
+                spectral_product_except_one(value, i)
+            product_parameter_dot = product_parameter_dot + value_parameter_dot(i)* &
+                spectral_product_except_one(value, i)
+            do j = 1, size(value)
+                if (i /= j) then
+                    product_parameter_dot = product_parameter_dot + &
+                        value_parameter(i)*value_dot(j)* &
+                        spectral_product_except_two(value, i, j)
+                end if
+            end do
+        end do
+    end subroutine spectral_product_jets
 
     real(dp) function ard_rbf_input_hessian_parameter_dot(kernel, x1, x2, i, j, &
             parameter, value) result(hessian_dot)
