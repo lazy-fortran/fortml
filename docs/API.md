@@ -2295,6 +2295,22 @@ differences, a directional product, the scalar adjoint, FortOpt integration,
 and both refusal contracts. See
 [`docs/MLP_RADAM_HYPERGRADIENT.md`](MLP_RADAM_HYPERGRADIENT.md).
 
+### `fortml_mlp_amsgrad_hypergradient`
+
+`mlp_amsgrad_hypergradient_objective_t` differentiates a fixed full-batch
+AMSGrad trajectory through the parameter, first-moment, second-moment, and
+elementwise maximum-second-moment state. The packed vector is
+`[log(learning_rate), log(l2), logit(beta1), logit(beta2), log(epsilon)]`.
+`value_gradient`, `jvp`, and scalar `vjp` are exact CPU products based on the
+MLP loss HVP. `fortopt` and `mlp_optimize_amsgrad_hyperparameters` expose the
+same callback to bounded FortOpt L-BFGS-B. A max active-set tie, zero
+second-moment square root, zero bias-correction or update denominator, and
+CUDA trajectory request return typed `FORTNUM_NOT_IMPLEMENTED` refusals. The
+independent `test_mlp_amsgrad_hypergradient` fixture checks central
+differences, a directional product, the scalar adjoint, FortOpt integration,
+and the nonsmooth/device boundaries. See
+[`docs/MLP_AMSGRAD_HYPERGRADIENT.md`](MLP_AMSGRAD_HYPERGRADIENT.md).
+
 ### `fortml_mlp_minibatch_hypergradient`
 
 `mlp_minibatch_hypergradient_objective_t` differentiates a fixed mini-batch
