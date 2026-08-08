@@ -110,16 +110,21 @@ and are not implied by this plan.
 ## Direct RMSprop state kernel
 
 The no-autodiff optimizer recurrence has a separate native CUDA C API in
-`src/mlp/fortml_cuda_rmsprop.cu`. `fortml_cuda_rmsprop_available` queries the
+`src/mlp/fortml_cuda_rmsprop.cu` (declarations are in
+`src/mlp/fortml_cuda_rmsprop.h`). `fortml_cuda_rmsprop_available` queries the
 CUDA runtime and returns zero when no device or usable driver is present.
 `fortml_cuda_rmsprop_plan_create` keeps the parameters, square average, centered
 mean, and momentum buffer resident.
 `fortml_cuda_rmsprop_plan_step` accepts a device-resident gradient and performs
 one update without a host state round trip. `plan_download` is an explicit
 inspection boundary. `test/run_cuda_rmsprop_state.sh` checks centered momentum
-updates against an independent CPU recurrence. This kernel does not provide
-MLP gradient or hypergradient evaluation. Those autodiff-sensitive paths stay
-on the FortAD/FortSym reference until a complete device graph exists.
+updates against an independent CPU recurrence. Creation validates finite
+parameters and state (including nonnegative square averages), and malformed
+hyperparameters, null step gradients, and null download destinations return a
+typed CUDA runtime refusal before state is changed. This kernel does not
+provide MLP gradient or hypergradient evaluation. Those autodiff-sensitive
+paths stay on the FortAD/FortSym reference until a complete device graph
+exists.
 
 ## Direct AdamW state kernel
 

@@ -1,8 +1,11 @@
+#include "fortml_cuda_rmsprop.h"
+
 #include <cuda_runtime.h>
 
 #include <cmath>
 #include <cstddef>
 #include <climits>
+#include <new>
 
 namespace {
 
@@ -100,6 +103,22 @@ bool valid_hyperparameters(int n_parameters, double learning_rate, double decay,
       momentum >= 0.0 && momentum < 1.0 && (centered == 0 || centered == 1);
 }
 
+bool valid_initial_state(const double* parameters, const double* square_average,
+                         const double* gradient_average,
+                         const double* momentum_buffer, int n_parameters) {
+  for (int i = 0; i < n_parameters; ++i) {
+    if (!std::isfinite(parameters[i])) return false;
+    if (square_average != nullptr &&
+        (!std::isfinite(square_average[i]) || square_average[i] < 0.0))
+      return false;
+    if (gradient_average != nullptr && !std::isfinite(gradient_average[i]))
+      return false;
+    if (momentum_buffer != nullptr && !std::isfinite(momentum_buffer[i]))
+      return false;
+  }
+  return true;
+}
+
 template <typename T>
 cudaError_t copy_or_zero(T* destination, const T* source, std::size_t count) {
   if (source == nullptr)
@@ -142,9 +161,13 @@ extern "C" int fortml_cuda_rmsprop_plan_create(
     return static_cast<int>(cudaErrorInvalidValue);
   }
 
+  if (!valid_initial_state(parameters, square_average, gradient_average,
+                           momentum_buffer, n_parameters))
+    return static_cast<int>(cudaErrorInvalidValue);
   cudaError_t error = cudaSetDevice(device_index);
   if (error != cudaSuccess) return static_cast<int>(error);
-  RmspropPlan* plan = new RmspropPlan;
+  RmspropPlan* plan = new (std::nothrow) RmspropPlan;
+  if (plan == nullptr) return static_cast<int>(cudaErrorMemoryAllocation);
   plan->n_parameters = n_parameters;
   plan->device_index = device_index;
   plan->learning_rate = learning_rate;
