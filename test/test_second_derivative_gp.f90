@@ -2,8 +2,7 @@ program test_second_derivative_gp
     !! Independent RBF order-two GP oracle and typed device-boundary checks.
     use, intrinsic :: iso_fortran_env, only: dp => real64, error_unit
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
-    use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_DOMAIN_ERROR, &
-        FORTNUM_NOT_IMPLEMENTED
+    use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_NOT_IMPLEMENTED
     use fortml_device, only: fortml_device_t, FORTML_DEVICE_CUDA
     use fortml_kernels, only: kernel_t, make_rbf_kernel, make_matern32_kernel, &
         make_matern52_kernel
@@ -159,9 +158,9 @@ program test_second_derivative_gp
     matern = make_matern32_kernel(1, 1.6_dp, 0.75_dp, status)
     call bad_model%fit(x, orders, y, matern, 0.035_dp, status)
     call check(status%code == FORTNUM_NOT_IMPLEMENTED, "non-RBF typed refusal", failures)
-    bad_orders = [0, 1, 3, 0]
+    bad_orders = [0, 1, 4, 0]
     call bad_model%fit(x, bad_orders, y, rbf, 0.035_dp, status)
-    call check(status%code == FORTNUM_DOMAIN_ERROR, "order-three domain refusal", failures)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED, "order-four generated-kernel refusal", failures)
 
     if (failures > 0) then
         write (error_unit, '(a,i0)') "FAIL second-derivative GP cases: ", failures

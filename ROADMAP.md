@@ -1524,16 +1524,22 @@ when a lower-level primitive already exists.
   lane `fortml-bench/results/GP_MULTILABEL.md`.
 - [x] Add `second_derivative_gp_t` as a bounded exact scalar 1-D RBF/Matérn-5/2
   reference for mixed value/first/second-derivative observations and
-  predictions. The explicit order vector uses `0:2`; exact covariance blocks
-  reach total derivative order four, query input JVP/VJP products use the fifth
-  derivative, and dense latent joint covariance is available on CPU. The
-  independent `test_second_derivative_gp` oracle checks both kernels, posterior
-  moments, mixed covariance, central-difference JVPs, adjoint duality, and typed
-  CUDA/coincident-fifth-derivative/non-RBF/order refusal boundaries; see
-  `docs/SECOND_DERIVATIVE_GP.md` and the release benchmark
-  `fortml-bench/results/SECOND_DERIVATIVE_GP.md`. Hyperparameter products,
-  arbitrary kernels/dimensions, higher orders, operator-valued outputs, and
-  resident derivative covariance/factorization remain open.
+  predictions. The explicit order vector uses `0:2` for both kernels and `3`
+  for RBF; RBF covariance blocks reach total derivative order six and query
+  input JVP/VJP products use order seven, while Matérn-5/2 retains order-four
+  covariance and order-five query products. Dense latent joint covariance is
+  available on CPU. `set_parameters`, likelihood value/JVP/VJP, analytic RBF
+  hyperparameter gradients, and RBF likelihood HVPs differentiate the fitted
+  Cholesky state transactionally. The independent
+  `test_second_derivative_gp` and `test_second_derivative_gp_rbf_order3`
+  oracles check both kernels, posterior moments, mixed covariance,
+  central-difference input products, likelihood gradient/HVP finite
+  differences, adjoint duality, and typed CUDA/coincidence/non-RBF/order
+  refusal boundaries; see `docs/SECOND_DERIVATIVE_GP.md` and the release
+  benchmarks `fortml-bench/results/SECOND_DERIVATIVE_GP.md` and
+  `fortml-bench/results/SECOND_DERIVATIVE_GP_RBF_ORDER3.md`. Higher orders,
+  arbitrary kernels/dimensions, operator-valued outputs, Matérn parameter
+  jets, and resident derivative covariance/factorization remain open.
 - [x] Add the bounded deep-kernel GP composition `deep_kernel_gp_t`. An MLP
   feature map feeds an exact dense GP base kernel on feature space, with
   identity-map reduction, exposed transforms/posterior, exact feature and
@@ -3378,9 +3384,9 @@ state phases are reported separately.
   RBF to Matérn-5/2. Mixed orders `0:2`, exact order-four covariance blocks,
   order-five query JVP/VJP products away from Matérn coincidences, dense latent
   covariance, and explicit CUDA/coincident-fifth-derivative/non-RBF/order
-  refusals are independently checked; see `docs/SECOND_DERIVATIVE_GP.md` and
-  the release benchmark lane. Hyperparameter products, higher orders,
-  operators, and resident derivative solves remain open.
+  refusals are independently checked. The later RBF order-three lane adds
+  order-six/seven products and analytic likelihood HVPs; see
+  `docs/SECOND_DERIVATIVE_GP.md` and the release benchmark lanes.
 - [ ] Add scalar objectives and parameter gradients for multi-output, sparse
   variational, local, SKI, Lanczos, and matrix-free GP paths. Inducing-point and
   local-gate training remain separate parameter blocks.

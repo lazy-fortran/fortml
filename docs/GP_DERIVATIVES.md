@@ -60,16 +60,20 @@ independent dense central-difference likelihood oracle.
 The general derivative-GP type still stops at value/first-derivative
 components. A bounded companion, `second_derivative_gp_t`, covers mixed
 value/first/second-derivative observations for scalar one-dimensional RBF and
-Matérn-5/2 kernels, including order-four covariance blocks, order-five query
-JVP/VJP products, and dense latent joint covariance. Matérn-5/2 order-five
-products at coincident inputs return `FORTNUM_NOT_IMPLEMENTED` because the
-fifth derivative is discontinuous. See
+Matérn-5/2 kernels, and RBF third-derivative observations. RBF covariance
+blocks reach order six and query JVP/VJP products reach order seven; the
+Matérn-5/2 path remains at order four/order five. RBF additionally exposes
+transactional packed likelihood state and analytic likelihood
+gradient/HVP products. Matérn-5/2 order-five products at coincident inputs
+return `FORTNUM_NOT_IMPLEMENTED` because the fifth derivative is
+discontinuous. See
 [`SECOND_DERIVATIVE_GP.md`](SECOND_DERIVATIVE_GP.md) for its explicit order
-vector and independent oracle. Higher orders, other kernels, operator-valued
-outputs, sparse/variational derivative inference, and resident CUDA
-covariance/factorization kernels remain open. `device_supported(FORTML_DEVICE_CUDA)`
-is false for the bounded companion and its device prediction/covariance entry
-points return `FORTNUM_NOT_IMPLEMENTED` without a host fallback.
+vector and independent oracle. Higher orders, other kernels, Matérn parameter
+jets, operator-valued outputs, sparse/variational derivative inference, and
+resident CUDA covariance/factorization kernels remain open.
+`device_supported(FORTML_DEVICE_CUDA)` is false for the bounded companion and
+its device prediction/covariance entry points return
+`FORTNUM_NOT_IMPLEMENTED` without a host fallback.
 
 `joint_covariance_jvp` and `joint_covariance_vjp` provide the same packed
 kernel-log/noise-log derivative contract for the dense latent posterior

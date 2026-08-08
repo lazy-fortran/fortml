@@ -22,6 +22,7 @@ module fortml_second_derivative_gaussian_process
     private
 
     real(dp), parameter :: MIN_VARIANCE = -1.0e-9_dp
+    real(dp), parameter :: LOG_TWO_PI = 1.837877066409345483560659472811_dp
 
     type, public :: second_derivative_gp_t
         private
@@ -51,6 +52,17 @@ module fortml_second_derivative_gaussian_process
         procedure, public :: device_supported => second_derivative_device_supported
         procedure, public :: observation_count => second_derivative_observation_count
         procedure, public :: parameters => second_derivative_parameters
+        procedure, public :: set_parameters => second_derivative_set_parameters
+        procedure, public :: log_marginal_likelihood => &
+            second_derivative_log_marginal_likelihood
+        procedure, public :: log_marginal_likelihood_jvp => &
+            second_derivative_log_marginal_likelihood_jvp
+        procedure, public :: log_marginal_likelihood_vjp => &
+            second_derivative_log_marginal_likelihood_vjp
+        procedure, public :: hyperparameter_gradient => &
+            second_derivative_hyperparameter_gradient
+        procedure, public :: hyperparameter_vjp => second_derivative_hyperparameter_vjp
+        procedure, public :: hyperparameter_hvp => second_derivative_hyperparameter_hvp
         procedure, public :: parameter_count => second_derivative_parameter_count
         procedure, public :: fitted => second_derivative_fitted
     end type second_derivative_gp_t
@@ -70,23 +82,35 @@ contains
 
         n = size(x, 1)
         if (n < 1 .or. size(x, 2) /= 1 .or. size(y) /= n .or. &
-                size(orders) /= n .or. noise_variance <= 0.0_dp) then
+            size(orders) /= n .or. noise_variance <= 0.0_dp) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "second-derivative GP fit: input or noise shape is invalid")
             return
         end if
         if (any(.not. ieee_is_finite(x)) .or. any(.not. ieee_is_finite(y)) .or. &
-                any(orders < 0) .or. any(orders > 2)) then
+            any(orders < 0)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "second-derivative GP fit: values or derivative orders are invalid")
             return
         end if
         if ((kernel%kind /= KERNEL_RBF .and. kernel%kind /= KERNEL_MATERN52) .or. &
-                kernel%input_dim /= 1 .or. &
-                kernel%parameter_count() /= 2) then
+            kernel%input_dim /= 1 .or. kernel%parameter_count() /= 2) then
             call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
                 "second-derivative GP fit: only one-dimensional RBF or Matern-5/2 is generated")
             return
+        end if
+        if (kernel%kind == KERNEL_RBF) then
+            if (any(orders > 3)) then
+                call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                    "second-derivative GP fit: RBF order is limited to three")
+                return
+            end if
+        else
+            if (any(orders > 2)) then
+                call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                    "second-derivative GP fit: Matern-5/2 order is limited to two")
+                return
+            end if
         end if
         if (present(jitter)) then
             if (jitter < 0.0_dp .or. .not. ieee_is_finite(jitter)) then
@@ -115,12 +139,6 @@ contains
             end do
             covariance(j, j) = covariance(j, j) + noise_variance + self%jitter
         end do
-        call solve_factor(covariance, self%alpha, self%y_train, status)
-        if (status%code /= FORTNUM_OK) then
-            self%is_fitted = .false.
-            return
-        end if
-        ! solve_factor stores only alpha; refactor once for prediction solves.
         call factorize_state(self, covariance, status)
         if (status%code /= FORTNUM_OK) then
             self%is_fitted = .false.
@@ -272,7 +290,7 @@ contains
         x_bar = 0.0_dp
         if (.not. valid_query(self, x, orders, mean_bar, variance_bar, status)) return
         if (size(x_bar) /= size(x, 1) .or. any(.not. ieee_is_finite(mean_bar)) .or. &
-                any(.not. ieee_is_finite(variance_bar))) then
+            any(.not. ieee_is_finite(variance_bar))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "second-derivative GP input VJP: cotangent shape is invalid")
             return
@@ -443,6 +461,274 @@ contains
         parameters = [log(self%kernel_variance), log(self%lengthscale), log(self%noise_variance)]
     end function second_derivative_parameters
 
+    subroutine second_derivative_set_parameters(self, parameters, status)
+        class(second_derivative_gp_t), intent(inout) :: self
+        real(dp), intent(in) :: parameters(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: old_parameters(:), covariance(:, :)
+        real(dp) :: old_noise, noise_variance
+        integer :: old_code
+        character(120) :: old_message
+
+        if (.not. self%is_fitted) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "second-derivative GP set_parameters: model is not fitted")
+            return
+        end if
+        if (size(parameters) /= 3 .or. any(.not. ieee_is_finite(parameters))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "second-derivative GP set_parameters: parameter shape or value is invalid")
+            return
+        end if
+        noise_variance = exp(parameters(3))
+        if (.not. ieee_is_finite(noise_variance) .or. noise_variance <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "second-derivative GP set_parameters: noise parameter is invalid")
+            return
+        end if
+
+        old_parameters = self%kernel%parameters()
+        old_noise = self%noise_variance
+        call self%kernel%set_parameters(parameters(:2), status)
+        if (status%code /= FORTNUM_OK) return
+        self%kernel_variance = exp(parameters(1))
+        self%lengthscale = exp(parameters(2))
+        self%noise_variance = noise_variance
+        allocate(covariance(self%n_observations, self%n_observations))
+        call second_derivative_build_covariance(self, covariance, status)
+        if (status%code == FORTNUM_OK) call factorize_state(self, covariance, status)
+        if (status%code == FORTNUM_OK) then
+            call status_set(status, FORTNUM_OK, "")
+            return
+        end if
+
+        ! Refactor the previous state before returning the original failure.
+        old_code = status%code
+        old_message = status%msg
+        call self%kernel%set_parameters(old_parameters, status)
+        self%kernel_variance = exp(old_parameters(1))
+        self%lengthscale = exp(old_parameters(2))
+        self%noise_variance = old_noise
+        call second_derivative_build_covariance(self, covariance, status)
+        if (status%code == FORTNUM_OK) call factorize_state(self, covariance, status)
+        call status_set(status, old_code, old_message)
+    end subroutine second_derivative_set_parameters
+
+    subroutine second_derivative_log_marginal_likelihood(self, value, status)
+        class(second_derivative_gp_t), intent(in) :: self
+        real(dp), intent(out) :: value
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: logdet
+
+        value = 0.0_dp
+        if (.not. self%is_fitted) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "second-derivative GP log marginal likelihood: model is not fitted")
+            return
+        end if
+        call self%factorization%log_determinant(logdet, status)
+        if (status%code /= FORTNUM_OK) return
+        value = -0.5_dp*dot_product(self%y_train, self%alpha) - 0.5_dp*logdet - &
+            0.5_dp*real(self%n_observations, dp)*LOG_TWO_PI
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine second_derivative_log_marginal_likelihood
+
+    subroutine second_derivative_log_marginal_likelihood_jvp(self, direction, value_dot, status)
+        class(second_derivative_gp_t), intent(in) :: self
+        real(dp), intent(in) :: direction(:)
+        real(dp), intent(out) :: value_dot
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: gradient(:)
+
+        value_dot = 0.0_dp
+        if (size(direction) /= self%parameter_count() .or. &
+            any(.not. ieee_is_finite(direction))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "second-derivative GP likelihood JVP: direction shape is invalid")
+            return
+        end if
+        allocate(gradient(size(direction)))
+        call self%hyperparameter_gradient(gradient, status)
+        if (status%code /= FORTNUM_OK) return
+        value_dot = dot_product(gradient, direction)
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine second_derivative_log_marginal_likelihood_jvp
+
+    subroutine second_derivative_log_marginal_likelihood_vjp(self, value_bar, parameter_bar, status)
+        class(second_derivative_gp_t), intent(in) :: self
+        real(dp), intent(in) :: value_bar
+        real(dp), intent(out) :: parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: gradient(:)
+
+        parameter_bar = 0.0_dp
+        if (size(parameter_bar) /= self%parameter_count() .or. &
+            .not. ieee_is_finite(value_bar)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "second-derivative GP likelihood VJP: cotangent or shape is invalid")
+            return
+        end if
+        allocate(gradient(size(parameter_bar)))
+        call self%hyperparameter_gradient(gradient, status)
+        if (status%code /= FORTNUM_OK) return
+        parameter_bar = value_bar*gradient
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine second_derivative_log_marginal_likelihood_vjp
+
+    subroutine second_derivative_hyperparameter_vjp(self, value_bar, parameter_bar, status)
+        class(second_derivative_gp_t), intent(in) :: self
+        real(dp), intent(in) :: value_bar
+        real(dp), intent(out) :: parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        call second_derivative_log_marginal_likelihood_vjp(self, value_bar, parameter_bar, status)
+    end subroutine second_derivative_hyperparameter_vjp
+
+    subroutine second_derivative_hyperparameter_gradient(self, gradient, status)
+        class(second_derivative_gp_t), intent(in) :: self
+        real(dp), intent(out) :: gradient(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: identity(:, :), inverse(:, :), matrix_bar(:, :), matrix(:, :)
+        integer :: i, j, n
+
+        gradient = 0.0_dp
+        if (.not. self%is_fitted) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "second-derivative GP hyperparameter_gradient: model is not fitted")
+            return
+        end if
+        if (size(gradient) /= self%parameter_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "second-derivative GP hyperparameter_gradient: output shape is invalid")
+            return
+        end if
+        if (self%kernel%kind /= KERNEL_RBF) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "second-derivative GP hyperparameter_gradient: Matern-5/2 parameter products are not generated")
+            return
+        end if
+        n = self%n_observations
+        allocate(identity(n, n), inverse(n, n), matrix_bar(n, n), matrix(n, n))
+        identity = 0.0_dp
+        do i = 1, n
+            identity(i, i) = 1.0_dp
+        end do
+        inverse = identity
+        call self%factorization%solve(inverse, status)
+        if (status%code /= FORTNUM_OK) return
+        matrix_bar = 0.5_dp*(outer_product(self%alpha, self%alpha) - inverse)
+        do j = 1, 2
+            call second_derivative_covariance_parameter_matrix(self, j, matrix, status)
+            if (status%code /= FORTNUM_OK) return
+            gradient(j) = sum(matrix_bar*matrix)
+        end do
+        gradient(3) = 0.0_dp
+        do i = 1, n
+            gradient(3) = gradient(3) + self%noise_variance*matrix_bar(i, i)
+        end do
+        if (any(.not. ieee_is_finite(gradient))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "second-derivative GP hyperparameter_gradient: nonfinite product")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine second_derivative_hyperparameter_gradient
+
+    subroutine second_derivative_hyperparameter_hvp(self, direction, parameter_hvp, status)
+        class(second_derivative_gp_t), intent(in) :: self
+        real(dp), intent(in) :: direction(:)
+        real(dp), intent(out) :: parameter_hvp(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: covariance(:, :), covariance_dot(:, :), alpha_dot(:)
+        real(dp), allocatable :: identity(:, :), inverse(:, :), inverse_dot(:, :)
+        real(dp), allocatable :: matrix_bar(:, :), matrix_bar_dot(:, :)
+        real(dp), allocatable :: parameter_matrix(:, :), parameter_matrix_dot(:, :)
+        real(dp) :: noise_dot, trace_bar, trace_bar_dot
+        integer :: i, j, k, n
+
+        parameter_hvp = 0.0_dp
+        if (.not. self%is_fitted) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "second-derivative GP hyperparameter_hvp: model is not fitted")
+            return
+        end if
+        if (size(direction) /= self%parameter_count() .or. size(parameter_hvp) /= &
+            self%parameter_count() .or. any(.not. ieee_is_finite(direction))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "second-derivative GP hyperparameter_hvp: parameter shape is invalid")
+            return
+        end if
+        if (self%kernel%kind /= KERNEL_RBF) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "second-derivative GP hyperparameter_hvp: Matern-5/2 parameter products are not generated")
+            return
+        end if
+        n = self%n_observations
+        allocate(covariance(n, n), covariance_dot(n, n), alpha_dot(n))
+        allocate(identity(n, n), inverse(n, n), inverse_dot(n, n))
+        allocate(matrix_bar(n, n), matrix_bar_dot(n, n))
+        allocate(parameter_matrix(n, n), parameter_matrix_dot(n, n))
+        call second_derivative_build_covariance(self, covariance, status)
+        if (status%code /= FORTNUM_OK) return
+        covariance_dot = 0.0_dp
+        do j = 1, n
+            do i = 1, n
+                covariance_dot(i, j) = direction(1)* &
+                    second_derivative_covariance_parameter(self%kernel%kind, &
+                    self%kernel_variance, self%lengthscale, self%x_train(i), self%orders(i), &
+                    self%x_train(j), self%orders(j), 1) + direction(2)* &
+                    second_derivative_covariance_parameter(self%kernel%kind, &
+                    self%kernel_variance, self%lengthscale, self%x_train(i), self%orders(i), &
+                    self%x_train(j), self%orders(j), 2)
+            end do
+        end do
+        noise_dot = self%noise_variance*direction(3)
+        do i = 1, n
+            covariance_dot(i, i) = covariance_dot(i, i) + noise_dot
+        end do
+        alpha_dot = -matmul(covariance_dot, self%alpha)
+        call self%factorization%solve(alpha_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        identity = 0.0_dp
+        do i = 1, n
+            identity(i, i) = 1.0_dp
+        end do
+        inverse = identity
+        call self%factorization%solve(inverse, status)
+        if (status%code /= FORTNUM_OK) return
+        inverse_dot = -matmul(inverse, matmul(covariance_dot, inverse))
+        matrix_bar = 0.5_dp*(outer_product(self%alpha, self%alpha) - inverse)
+        matrix_bar_dot = 0.5_dp*(outer_product(alpha_dot, self%alpha) + &
+            outer_product(self%alpha, alpha_dot) - inverse_dot)
+        do j = 1, 2
+            call second_derivative_covariance_parameter_matrix(self, j, parameter_matrix, status)
+            if (status%code /= FORTNUM_OK) return
+            do i = 1, n
+                do k = 1, n
+                    parameter_matrix_dot(i, k) = &
+                        second_derivative_covariance_parameter_dot(self%kernel%kind, &
+                        self%kernel_variance, self%lengthscale, self%x_train(i), self%orders(i), &
+                        self%x_train(k), self%orders(k), j, direction(:2))
+                end do
+            end do
+            parameter_hvp(j) = sum(matrix_bar_dot*parameter_matrix) + &
+                sum(matrix_bar*parameter_matrix_dot)
+        end do
+        trace_bar = 0.0_dp
+        trace_bar_dot = 0.0_dp
+        do i = 1, n
+            trace_bar = trace_bar + matrix_bar(i, i)
+            trace_bar_dot = trace_bar_dot + matrix_bar_dot(i, i)
+        end do
+        parameter_hvp(3) = self%noise_variance*(direction(3)*trace_bar + trace_bar_dot)
+        if (any(.not. ieee_is_finite(parameter_hvp))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "second-derivative GP hyperparameter_hvp: nonfinite product")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine second_derivative_hyperparameter_hvp
+
     logical function second_derivative_fitted(self) result(value)
         class(second_derivative_gp_t), intent(in) :: self
 
@@ -462,10 +748,15 @@ contains
             return
         end if
         if (size(x, 1) < 1 .or. size(x, 2) /= 1 .or. size(orders) /= size(x, 1) .or. &
-                size(mean) /= size(x, 1) .or. size(variance) /= size(x, 1) .or. &
-                any(orders < 0) .or. any(orders > 2) .or. any(.not. ieee_is_finite(x))) then
+            size(mean) /= size(x, 1) .or. size(variance) /= size(x, 1) .or. &
+            any(orders < 0) .or. any(.not. ieee_is_finite(x))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "second-derivative GP query: shape or order is invalid")
+            return
+        end if
+        if (.not. query_orders_supported(self, orders)) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "second-derivative GP query: requested derivative order is not generated")
             return
         end if
         value = .true.
@@ -485,36 +776,93 @@ contains
             return
         end if
         if (size(x, 1) < 1 .or. size(x, 2) /= 1 .or. size(orders) /= size(x, 1) .or. &
-                any(orders < 0) .or. any(orders > 2) .or. any(shape(covariance) /= &
-                [size(x, 1), size(x, 1)]) .or. any(.not. ieee_is_finite(x))) then
+            any(orders < 0) .or. any(shape(covariance) /= &
+            [size(x, 1), size(x, 1)]) .or. any(.not. ieee_is_finite(x))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "second-derivative GP covariance: shape or order is invalid")
+            return
+        end if
+        if (.not. query_orders_supported(self, orders)) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "second-derivative GP covariance: requested derivative order is not generated")
             return
         end if
         value = .true.
         call status_set(status, FORTNUM_OK, "")
     end function valid_joint_query
 
-    subroutine solve_factor(matrix, solution, rhs, status)
-        real(dp), intent(in) :: matrix(:, :), rhs(:)
-        real(dp), intent(out) :: solution(:)
-        type(fortnum_status_t), intent(out) :: status
-        type(cholesky_factorization_t) :: factor
+    logical function query_orders_supported(self, orders) result(value)
+        class(second_derivative_gp_t), intent(in) :: self
+        integer, intent(in) :: orders(:)
 
-        call factor%factorize(matrix, status)
-        if (status%code /= FORTNUM_OK) return
-        solution = rhs
-        call factor%solve(solution, status)
-    end subroutine solve_factor
+        if (self%kernel%kind == KERNEL_RBF) then
+            value = .not. any(orders > 3)
+        else
+            value = .not. any(orders > 2)
+        end if
+    end function query_orders_supported
 
     subroutine factorize_state(self, covariance, status)
         class(second_derivative_gp_t), intent(inout) :: self
         real(dp), intent(in) :: covariance(:, :)
         type(fortnum_status_t), intent(out) :: status
-        ! Re-factorization is intentionally local: solve_factor above is the
-        ! independent fit solve, while prediction owns this persistent factor.
         call self%factorization%factorize(covariance, status)
+        if (status%code /= FORTNUM_OK) return
+        self%alpha = self%y_train
+        call self%factorization%solve(self%alpha, status)
     end subroutine factorize_state
+
+    subroutine second_derivative_build_covariance(self, covariance, status)
+        class(second_derivative_gp_t), intent(in) :: self
+        real(dp), intent(out) :: covariance(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        integer :: i, j
+
+        if (any(shape(covariance) /= [self%n_observations, self%n_observations])) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "second-derivative GP covariance rebuild: output shape is invalid")
+            return
+        end if
+        do j = 1, self%n_observations
+            do i = 1, self%n_observations
+                covariance(i, j) = second_derivative_covariance(self%kernel%kind, &
+                    self%kernel_variance, self%lengthscale, self%x_train(i), self%orders(i), &
+                    self%x_train(j), self%orders(j))
+            end do
+            covariance(j, j) = covariance(j, j) + self%noise_variance + self%jitter
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine second_derivative_build_covariance
+
+    pure function outer_product(left, right) result(value)
+        real(dp), intent(in) :: left(:), right(:)
+        real(dp) :: value(size(left), size(right))
+
+        value = spread(left, 2, size(right))*spread(right, 1, size(left))
+    end function outer_product
+
+    subroutine second_derivative_covariance_parameter_matrix(self, parameter, matrix, status)
+        class(second_derivative_gp_t), intent(in) :: self
+        integer, intent(in) :: parameter
+        real(dp), intent(out) :: matrix(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        integer :: i, j
+
+        if (any(shape(matrix) /= [self%n_observations, self%n_observations]) .or. &
+            parameter < 1 .or. parameter > 2) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "second-derivative GP covariance parameter: shape or index is invalid")
+            return
+        end if
+        do j = 1, self%n_observations
+            do i = 1, self%n_observations
+                matrix(i, j) = second_derivative_covariance_parameter(self%kernel%kind, &
+                    self%kernel_variance, self%lengthscale, self%x_train(i), self%orders(i), &
+                    self%x_train(j), self%orders(j), parameter)
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine second_derivative_covariance_parameter_matrix
 
     subroutine solve_factor_matrix(self, matrix, status)
         class(second_derivative_gp_t), intent(in) :: self
@@ -556,6 +904,41 @@ contains
         end select
     end function second_derivative_covariance_input_dot
 
+    pure real(dp) function second_derivative_covariance_parameter(kind, variance, lengthscale, &
+            x1, order1, x2, order2, parameter) result(value)
+        integer, intent(in) :: kind, order1, order2, parameter
+        real(dp), intent(in) :: variance, lengthscale, x1, x2
+
+        value = 0.0_dp
+        if (kind /= KERNEL_RBF) return
+        if (parameter == 1) then
+            value = rbf_derivative_covariance(variance, lengthscale, x1, order1, x2, order2)
+        else if (parameter == 2) then
+            value = (-1.0_dp)**order2*rbf_log_lengthscale_derivative(variance, lengthscale, &
+                x1 - x2, order1 + order2)
+        end if
+    end function second_derivative_covariance_parameter
+
+    pure real(dp) function second_derivative_covariance_parameter_dot(kind, variance, lengthscale, &
+            x1, order1, x2, order2, parameter, direction) result(value)
+        integer, intent(in) :: kind, order1, order2, parameter
+        real(dp), intent(in) :: variance, lengthscale, x1, x2, direction(:)
+        real(dp) :: covariance, length_dot
+
+        value = 0.0_dp
+        if (kind /= KERNEL_RBF .or. size(direction) /= 2) return
+        covariance = rbf_derivative_covariance(variance, lengthscale, x1, order1, x2, order2)
+        length_dot = (-1.0_dp)**order2*rbf_log_lengthscale_derivative(variance, lengthscale, &
+            x1 - x2, order1 + order2)
+        if (parameter == 1) then
+            value = direction(1)*covariance + direction(2)*length_dot
+        else if (parameter == 2) then
+            value = direction(1)*length_dot + direction(2)*(-1.0_dp)**order2* &
+                rbf_log_lengthscale_second_derivative(variance, lengthscale, x1 - x2, &
+                order1 + order2)
+        end if
+    end function second_derivative_covariance_parameter_dot
+
     logical function input_jvp_supported(self, x, orders) result(supported)
         class(second_derivative_gp_t), intent(in) :: self
         real(dp), intent(in) :: x(:, :)
@@ -569,7 +952,7 @@ contains
         do j = 1, size(x, 1)
             do i = 1, self%n_observations
                 if (self%orders(i) + orders(j) + 1 == 5 .and. &
-                        abs(self%x_train(i) - x(j, 1)) <= tolerance) then
+                    abs(self%x_train(i) - x(j, 1)) <= tolerance) then
                     supported = .false.
                     return
                 end if
@@ -643,7 +1026,7 @@ contains
     pure real(dp) function rbf_distance_derivative(base, d, lengthscale, order) result(value)
         real(dp), intent(in) :: base, d, lengthscale
         integer, intent(in) :: order
-        real(dp) :: inv2, inv4, inv6, inv8, inv10, inv12
+        real(dp) :: inv2, inv4, inv6, inv8, inv10, inv12, inv14
 
         inv2 = 1.0_dp/(lengthscale*lengthscale)
         inv4 = inv2*inv2
@@ -651,6 +1034,7 @@ contains
         inv8 = inv4*inv4
         inv10 = inv8*inv2
         inv12 = inv10*inv2
+        inv14 = inv12*inv2
         select case (order)
         case (0)
             value = base
@@ -664,9 +1048,58 @@ contains
             value = (d**4*inv8 - 6.0_dp*d*d*inv6 + 3.0_dp*inv4)*base
         case (5)
             value = (-d**5*inv10 + 10.0_dp*d**3*inv8 - 15.0_dp*d*inv6)*base
+        case (6)
+            value = (d**6*inv12 - 15.0_dp*d**4*inv10 + 45.0_dp*d*d*inv8 - &
+                15.0_dp*inv6)*base
+        case (7)
+            value = (-d**7*inv14 + 21.0_dp*d**5*inv12 - 105.0_dp*d**3*inv10 + &
+                105.0_dp*d*inv8)*base
         case default
             value = 0.0_dp
         end select
     end function rbf_distance_derivative
+
+    pure real(dp) function rbf_log_lengthscale_derivative(variance, lengthscale, d, order) result(value)
+        real(dp), intent(in) :: variance, lengthscale, d
+        integer, intent(in) :: order
+        real(dp) :: base, first, second, coefficient
+
+        base = variance*exp(-0.5_dp*d*d/(lengthscale*lengthscale))
+        first = rbf_distance_derivative(base, d, lengthscale, order)
+        second = 0.0_dp
+        if (order >= 1) second = 2.0_dp*real(order, dp)*d/(lengthscale*lengthscale)* &
+            rbf_distance_derivative(base, d, lengthscale, order - 1)
+        if (order >= 2) second = second + real(order*(order - 1), dp)/ &
+            (lengthscale*lengthscale)*rbf_distance_derivative(base, d, lengthscale, order - 2)
+        coefficient = d*d/(lengthscale*lengthscale)
+        value = coefficient*first + second
+    end function rbf_log_lengthscale_derivative
+
+    pure real(dp) function rbf_log_lengthscale_second_derivative(variance, lengthscale, d, order) &
+            result(value)
+        real(dp), intent(in) :: variance, lengthscale, d
+        integer, intent(in) :: order
+        real(dp) :: base, first, first_dot, second, second_dot, coefficient
+
+        base = variance*exp(-0.5_dp*d*d/(lengthscale*lengthscale))
+        first = rbf_distance_derivative(base, d, lengthscale, order)
+        first_dot = rbf_log_lengthscale_derivative(variance, lengthscale, d, order)
+        coefficient = d*d/(lengthscale*lengthscale)
+        value = -2.0_dp*coefficient*first + coefficient*first_dot
+        if (order >= 1) then
+            second = 2.0_dp*real(order, dp)*d/(lengthscale*lengthscale)* &
+                rbf_distance_derivative(base, d, lengthscale, order - 1)
+            second_dot = -2.0_dp*second + 2.0_dp*real(order, dp)*d/(lengthscale*lengthscale)* &
+                rbf_log_lengthscale_derivative(variance, lengthscale, d, order - 1)
+            value = value + second_dot
+        end if
+        if (order >= 2) then
+            second = real(order*(order - 1), dp)/(lengthscale*lengthscale)* &
+                rbf_distance_derivative(base, d, lengthscale, order - 2)
+            second_dot = -2.0_dp*second + real(order*(order - 1), dp)/ &
+                (lengthscale*lengthscale)*rbf_log_lengthscale_derivative(variance, lengthscale, d, order - 2)
+            value = value + second_dot
+        end if
+    end function rbf_log_lengthscale_second_derivative
 
 end module fortml_second_derivative_gaussian_process
