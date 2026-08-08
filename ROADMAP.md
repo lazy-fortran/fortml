@@ -1,6 +1,6 @@
 # fortml roadmap
 
-Verified on 2026-08-08. Interfaces are documented in
+Verified on 2026-08-09. Interfaces are documented in
 [`docs/API.md`](docs/API.md), examples in [`docs/EXAMPLES.md`](docs/EXAMPLES.md),
 and implementation limits in [`docs/DESIGN.md`](docs/DESIGN.md) and
 [`docs/ML_ARCHITECTURE.md`](docs/ML_ARCHITECTURE.md).
@@ -15,11 +15,11 @@ attribution, binary-GP log-probability, fixed-leaf-product, plateau-trainer,
 and CUDA VJP closure slices documented below are post-tag additions.
 The broad parity
 gate is still open, so this work does not move or recreate that tag.
-The checklist currently records 326 completed and 127 open items; open rows are
+The checklist currently records 330 completed and 127 open items; open rows are
 retained until their implementation, independent oracle, device/refusal
 behavior, and benchmark evidence land together.
 
-The 2026-08-08 multi-output boosting slice adds transactional
+The 2026-08-09 multi-output boosting slice adds transactional
 `xgboost_multioutput_t` and `lightgbm_multioutput_t` adapters.  Each adapter
 fits one deterministic regression child per target, preserves row-oriented
 sample/output conventions, exposes staged margins and output/feature/stage
@@ -32,17 +32,25 @@ refusals.  `fortml-bench` records the CPU NumPy oracle and typed CUDA rows.
 Resident multi-output CUDA tree/histogram kernels, distributed output
 parallelism, and differentiable split topology remain open.
 
+The same closure wave adds `basis_residual_pipeline_t`, a named two-branch
+residual-sum DAG with transactional branch configuration, stable feature and
+parameter offsets, CPU value/JVP/VJP/HVP products, and output-preserving typed
+CUDA refusals. `test_basis_residual_pipeline` and the independent NumPy lane in
+`fortml-bench/results/BASIS_RESIDUAL_PIPELINE.md` cover the sum, adjoint, mixed
+HVP, metadata, and refusal contracts. Conditional/cyclic graphs, sparse/device
+graphs, and resident GPU execution remain open.
+
 | Compiler | Command | Result |
 | --- | --- | --- |
-| GNU Fortran | `fo` | Static build, all 250 behavioral tests, and lint passed at the current FortML/FortAD-main revisions. The compiler still emits non-fatal array-temporary warnings; see [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
+| GNU Fortran | `fo` | Static build, all 254 behavioral tests, and lint passed at the current FortML/FortAD-main revisions. The compiler still emits non-fatal array-temporary warnings; see [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
 | NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded older compiler lane. The checked-in NVIDIA log predates the current 250-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
-The checked-in GNU compiler log is the fresh 2026-08-08 run against FortML code
-revision `ce151ef` (including scheduled AdamW trajectory hypergradients,
+The checked-in GNU compiler log is the fresh 2026-08-09 run against FortML code
+revision `cd3e64c` (including scheduled AdamW trajectory hypergradients,
 calibrated-softmax OOF policies, affine schedule
 outer HVPs, and seeded XGBoost DART), FortAD `origin/main` at
-`7c65a88194b4cce796d58f90e12f147be29cd63e`, FortFront at
+`bfe204d2905fd3159ca218895b9cc76dfff8b2a3`, FortFront at
 `0bce426a0b69920e867d580b163508afba51d439`, and FortNum at
 `7ced2f7aa272920916789fa82a35bfcb2e792d45`, run from the clean checkout
 under an isolated clean-dependency checkout that was removed after verification.
@@ -75,7 +83,7 @@ attributions, and model-agnostic trainer validation diagnostics.
 The build emits non-fatal GNU
 array-temporary warnings in FortFront query/generator calls, existing GP
 benchmark boundaries, variational-GP batch conversions, and basis-pipeline
-shape conversions. They are isolated to array construction; all 250 behavioral
+shape conversions. They are isolated to array construction; all 254 behavioral
 tests pass. Lint has zero unused-import findings and the full `fo` lint stage
 passes despite the non-fatal compiler warning corpus. The independent CUDA gate additionally covers the
 resident dense-affine value/JVP/VJP path and its single-layer MSE update with
@@ -84,7 +92,7 @@ compiler coverage remains an
 explicit older-build result.
 
 The checked-in evidence is maintained on the clean FortML-bench revision
-`f2f8642`; each CSV records the exact clean benchmark revision used to produce
+`8e5a181`; each CSV records the exact clean benchmark revision used to produce
 its rows,
 the trainer-checkpoint, unfactored-Adafactor, binary-objective,
 multiclass-calibration, variational-multiclass-GP, PINN/physics-objective,
@@ -129,8 +137,8 @@ input/parameter JVP/VJP products with transactional fixed-state updates,
 fixed-structure XGBoost/LightGBM leaf-coordinate JVP/VJP products, and
 metric-aware plateau training with persisted diagnostics and deterministic
 split/resume recurrence. Their independent NumPy or hand oracles and typed
-CUDA-unavailable rows are pinned in the benchmark data head `f2f8642` and
-carried by the documentation head `3999ffc`.
+CUDA-unavailable rows are pinned in the benchmark data and documentation head
+`8e5a181`.
 The ARD derivative-GP lane adds dense mixed-observation input JVP/VJP and
 parameter HVP rows in `results/DERIVATIVE_GP.md`; the RAdam trajectory lane is
 `results/MLP_RADAM_HYPERGRADIENT.md`, and the Tweedie tree lane is
@@ -280,7 +288,7 @@ optimizer-group execution, mixed precision, distributed state, and migration
 remain open. The source and benchmark pins for this earlier optimizer-group
 slice were FortML `05632ce8fa95268417c7a2d979fa1461a202abaa` and
 FortML-bench `0fb8ac7`; the current aggregate verification is the newer
-`ce151ef`/`f2f8642` pair recorded above.
+`cd3e64c`/`8e5a181` pair recorded above.
 
 The variational-GP classification and OVR wrappers now expose fixed-state
 kernel-log-parameter JVP/VJP products for latent margins and normalized
@@ -1113,7 +1121,7 @@ remains open.
 | Area | Current state | Production target |
 | --- | --- | --- |
 | Linear regression and generalized linear models | Linear regression, weighted ridge and weighted elastic-net/lasso coordinate descent, weighted Poisson/Gamma log-link GLMs with bounded FortOpt L-BFGS-B, and logistic/softmax sample and positive sorted-class weights are implemented | Robust, quantile/Tweedie, multinomial, calibrated and regularized classifiers with shared solver and derivative contracts; resident GLM GPU kernels |
-| Feature transforms and basis maps | Polynomial, interaction-polynomial, Chebyshev, Fourier, fixed-state random Fourier, radial, B-spline, callback bases, standard/min-max/median-IQR scalers, sparse-safe CSC standard scaling, integer categorical one-hot encoding, transactional dense input schemas with unique names, horizontal/sequential/column pipelines, analytic basis/pipeline HVPs, a fitted basis-to-linear estimator, and a joint differentiable basis-pipeline training objective are implemented. The objective can also pack a nonnegative ridge coordinate with exact gradient and mixed HVP blocks | CSR/CSC categorical and indicator views, residual/conditional DAGs, estimator-wide metadata routing, leakage-safe cross-validation, callback second derivatives, and resident GPU transforms |
+| Feature transforms and basis maps | Polynomial, interaction-polynomial, Chebyshev, Fourier, fixed-state random Fourier, radial, B-spline, callback bases, standard/min-max/median-IQR scalers, sparse-safe CSC standard scaling, integer categorical one-hot encoding, transactional dense input schemas with unique names, horizontal/sequential/column pipelines, named residual-sum DAGs, analytic basis/pipeline HVPs, a fitted basis-to-linear estimator, and a joint differentiable basis-pipeline training objective are implemented. The objective can also pack a nonnegative ridge coordinate with exact gradient and mixed HVP blocks | CSR/CSC categorical and indicator views, conditional/cyclic DAGs, estimator-wide metadata routing, leakage-safe cross-validation, callback second derivatives, and resident GPU transforms |
 | Nearest-neighbor and margin methods | Dense exact kNN and closed-radius classification plus scalar and multi-output regression, weighted linear SVM/SVR, and dense RBF one-class SVM | KD-tree or ball-tree search, sparse inputs, kernel SVM/SVR, calibrated probabilities, resident GPU kernels, and differentiable soft-neighbor policies |
 | Trees and ensembles | Partial | Deterministic finite-only regression stumps, weighted depth-limited CART regression and classification, seeded bootstrap random-forest classification with stored inclusion state, OOB decision probabilities/accuracy/coverage and explicit insufficient-coverage refusal, fixed-state deterministic accuracy permutation importance with transactional output and typed CUDA refusal, seeded randomized-threshold Extra-Trees classification, seeded bootstrap bagging classification, binary and multiclass SAMME AdaBoost over weighted CART, squared-loss stump boosting, exact/histogram depth-limited second-order squared/logistic/Poisson/Tweedie/squared-log/Huber/quantile boosting, and bounded `rank:pairwise` boosting are implemented. XGBoost-style trees support weighted quantile cuts, bounded histograms, explicit NaN rejection, learned default directions, forced-left/right routing, per-feature monotonic and interaction-group constraints with recursive leaf bounds/masks, bounded ordered-gradient integer categorical partitions with explicit max-category refusal, staged predictions, contributions, serialization, transactional fitted-prefix slicing, and seeded DART/dropout scales through staged/contribution/slice/warm-start/schema-5 persistence; bounded seeded LightGBM DART/dropout also persists tree-normalisation scales; SHAP workflows, SAMME.R probability updates, categorical policies beyond ordered partitions, XGBoost EFB, distributed growth, differentiable routing, and resident GPU histograms remain planned |
 | Clustering and unsupervised learning | Centered dense `pca_t` is implemented with deterministic SVD signs, rank selection, whitening, reconstruction, variance metadata, and fixed-state input products; `linear_autoencoder_t` reuses fitted PCA as the tied linear optimum with exact encode/reconstruction JVPs; deterministic dense seeded `kmeans_t` provides fit/predict/transform, inertia, and fixed-center input products with explicit empty-cluster and device refusals | Incremental/randomized/sparse/kernel PCA, ICA, NMF, minibatch k-means, Gaussian mixtures/EM, density and graph clustering, manifold methods, outlier detection, matrix factorization, and density metrics |
@@ -1189,7 +1197,7 @@ workflow yet.
 | Gaussian processes | RBF, ARD, Matérn, periodic, locally periodic, rational-quadratic, cosine, polynomial, linear, constant, white-noise, spectral-mixture, change-point, sum/product, user, neural, graph, physics-consistent, and operator-valued kernels; value/derivative/operator observations; Gaussian, Bernoulli, categorical, multinomial, Poisson/count, Student-t, heteroskedastic, censored, ordinal, and warped likelihoods; exact, Laplace, variational, sparse, SKI, lazy, local, multitask, matrix-free, and deep-kernel inference. Each selected coordinate has value, input JVP/VJP, parameter/hyperparameter JVP/VJP/HVP, solve-state, serialization, and device rows. | `partial`: broad CPU kernel and inference coverage exists. Batch/multitask likelihoods, higher derivative operators, inducing/likelihood hyperproducts, natural gradients, state serialization, and resident GPU solves remain open. |
 | Neural networks | Dense and structured module trees with buffers, aliases, tied/frozen parameters, train/eval mode, residual and normalization blocks, convolution/pooling, embeddings, attention/transformers, RNN/GRU/LSTM, temporal and graph modules, neural operators, BNN/VAE/HNN/LNN/SympNet/PINN/physics-consistent networks, and composable basis encoders. Losses include regression, softmax/log-softmax, BCE/multilabel/focal, Poisson/count, Huber/quantile, contrastive/triplet, sequence/CTC, ELBO, and physics residuals. | `partial`: dense MLP, selected recurrent/variational/physics primitives, and many optimizer trajectories exist. Full module/loss tree, mixed precision, distributed state, and resident multilayer GPU training remain open. |
 | Training and search | One trainer owns deterministic loaders, weighted reduction, accumulation, clipping, validation, early stopping, callbacks, checkpoint/resume, RNG state, optimizer groups, schedules, and device plans. Adam/AdamW/SGD/RMSprop/Adagrad/Adafactor/AMSGrad/RAdam/Lion and FortOpt L-BFGS-B share one parameter registry. Hyperparameter optimization uses the same value/gradient/JVP/VJP/HVP callbacks, including optimizer, schedule, validation, basis, kernel, likelihood, and initialization coordinates. | `partial`: CPU full-batch and selected mini-batch trajectories are verified. Stochastic/device hypergradients, implicit differentiation through optima, AMP/loss scaling, distributed reduction, and full resident state are open. |
-| Bases and pipelines | Polynomial, interaction-polynomial, spline, Fourier, random Fourier, radial, Chebyshev, PCA/autoencoder, GP/NNP/NTK, preprocessing, imputation, one-hot, feature names, metadata routing, residual/conditional DAGs, sparse views, cross-validation, and estimator composition share named feature and parameter offsets. | `partial`: maps, sequential/column/fan-out pipelines, and joint HVP objectives exist. Residual DAGs, sparse/device graphs, cloning, serialization, metadata routing, and leakage-safe search integration remain open. |
+| Bases and pipelines | Polynomial, interaction-polynomial, spline, Fourier, random Fourier, radial, Chebyshev, PCA/autoencoder, GP/NNP/NTK, preprocessing, imputation, one-hot, feature names, metadata routing, residual/conditional DAGs, sparse views, cross-validation, and estimator composition share named feature and parameter offsets. | `partial`: maps, sequential/column/fan-out pipelines, a bounded residual-sum DAG, and joint HVP objectives exist. Conditional/cyclic graphs, sparse/device graphs, cloning, serialization, metadata routing, and leakage-safe search integration remain open. |
 | Trees and boosting | Exact and histogram growth, quantile sketches, missing-value policies, monotone and interaction constraints, categorical partitions, EFB, ranking, DART/GOSS, staged/contribution/SHAP/interaction explanations, validation/warm starts, serialization, distributed workers, and resident GPU histograms. Split topology is an explicit nonsmooth state; leaf and fixed-structure products remain differentiable. | `partial`: broad deterministic CPU XGBoost/LightGBM-style behavior and leaf products exist. Full categorical/EFB/distributed/GPU histogram and interaction-explanation parity remains open. |
 
 This matrix is intentionally wider than the current source tree. It prevents a
