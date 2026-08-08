@@ -2595,7 +2595,7 @@ contains
         class(basis_residual_pipeline_t), intent(in) :: self
         type(fortml_device_t), intent(in) :: device
         real(dp), intent(in) :: x(:, :)
-        real(dp), intent(out) :: phi(:, :)
+        real(dp), intent(inout) :: phi(:, :)
         type(fortnum_status_t), intent(out) :: status
 
         if (.not. residual_pipeline_device_ready(self, device, status, &
@@ -2617,7 +2617,7 @@ contains
         class(basis_residual_pipeline_t), intent(in) :: self
         type(fortml_device_t), intent(in) :: device
         real(dp), intent(in) :: x(:, :), theta_dot(:), x_dot(:, :)
-        real(dp), intent(out) :: phi(:, :), phi_dot(:, :)
+        real(dp), intent(inout) :: phi(:, :), phi_dot(:, :)
         type(fortnum_status_t), intent(out) :: status
 
         if (.not. residual_pipeline_device_ready(self, device, status, &
@@ -2639,7 +2639,7 @@ contains
         class(basis_residual_pipeline_t), intent(in) :: self
         type(fortml_device_t), intent(in) :: device
         real(dp), intent(in) :: x(:, :), u(:, :)
-        real(dp), intent(out) :: theta_bar(:), x_bar(:, :)
+        real(dp), intent(inout) :: theta_bar(:), x_bar(:, :)
         type(fortnum_status_t), intent(out) :: status
 
         if (.not. residual_pipeline_device_ready(self, device, status, &
@@ -2661,7 +2661,7 @@ contains
         class(basis_residual_pipeline_t), intent(in) :: self
         type(fortml_device_t), intent(in) :: device
         real(dp), intent(in) :: x(:, :), u(:, :), theta_dot(:), x_dot(:, :)
-        real(dp), intent(out) :: theta_hvp(:), x_hvp(:, :)
+        real(dp), intent(inout) :: theta_hvp(:), x_hvp(:, :)
         type(fortnum_status_t), intent(out) :: status
 
         if (.not. residual_pipeline_device_ready(self, device, status, &
