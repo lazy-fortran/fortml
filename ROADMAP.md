@@ -435,6 +435,35 @@ remain open. New work must select one bounded row, add its behavioral oracle,
 and update the corresponding benchmark and provenance record in the same
 change.
 
+### Next production parity wave
+
+The next implementation wave uses the family adapters and state dictionary
+defined in [`docs/ML_ARCHITECTURE.md`](docs/ML_ARCHITECTURE.md). The priority
+order is:
+
+1. Classification wrappers share labels, weights, calibration, and probability
+   policies across linear, neural, Laplace-GP, variational-GP, and tree heads.
+   Multilabel, multioutput, ordinal, calibrated, and chain variants retain the
+   same packed-state and refusal rules.
+2. GP workflows close the likelihood, batch-shape, derivative-observation,
+   inducing-state, and hyperparameter-product gaps. Every smooth kernel gets a
+   FortSym-derived or hand-proved product and an independent dense oracle.
+3. Neural training promotes the current MLP trainer into a reusable module-tree
+   trainer. Optimizer, schedule, validation, checkpoint, and callback state
+   share one registry. FortOpt L-BFGS-B consumes the same exact hyperparameter
+   derivatives used by training, including trajectory and implicit products.
+4. Boosting adapters add the remaining validation-aware, categorical, missing,
+   distributed, SHAP-compatible, and resident-GPU workflows for XGBoost and
+   LightGBM. Split topology and stochastic sampling remain declared fit-time
+   boundaries.
+5. Basis and pipeline graphs route named features and derivatives into every
+   estimator. Polynomial, spline, Fourier, radial, GP, and learned features
+   use the same transform registry and device plan.
+
+Each slice ships source, tests, documentation, an independent benchmark oracle,
+and a clean provenance row. A CUDA row is either resident and transfer-accounted
+or an explicit typed refusal. A CPU timing never closes a GPU requirement.
+
 The external feature inventory is maintained in
 [`docs/PARITY_REFERENCE.md`](docs/PARITY_REFERENCE.md). It tracks the current
 scikit-learn, PyTorch, JAX, GPyTorch, GPflow, XGBoost, LightGBM, Flux, and Lux
