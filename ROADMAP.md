@@ -54,7 +54,7 @@ compiler coverage remains an
 explicit older-build result.
 
 The companion benchmark harness is clean at FortML-bench revision
-`f37f8020e65d60417a0d736c12ec2f5fb538e3b0`,
+`6eeb9c5cdd1045087aaf2f3434232112de137213`,
 the trainer-checkpoint, unfactored-Adafactor, binary-objective,
 multiclass-calibration, variational-multiclass-GP, PINN/physics-objective,
 physics HVP, grouped K-fold, spectral-mixture, XGBoost-ranking,
@@ -122,7 +122,7 @@ remain open. The source and benchmark pins for this earlier optimizer-group
 slice were FortML `05632ce8fa95268417c7a2d979fa1461a202abaa` and
 FortML-bench `0fb8ac7`; the current aggregate verification is the newer
 `5ff07af43e809b404afb14d015c12bc41f75a595`/
-`f37f8020e65d60417a0d736c12ec2f5fb538e3b0` pair recorded above.
+`6eeb9c5cdd1045087aaf2f3434232112de137213` pair recorded above.
 
 The variational-GP classification and OVR wrappers now expose fixed-state
 kernel-log-parameter JVP/VJP products for latent margins and normalized
@@ -540,7 +540,7 @@ only listed as gaps:
 
 The FortBO and FortMC companion pins were rechecked against their remote
 `main` branches on 2026-08-08: FortBO
-`4266ce699585915a2ffe125a15b301379b9cd077` and FortMC
+`b758dc807029938e149c68e0fbd498a9d2a96306` and FortMC
 `4dde0ccdc37b4c331126605406b08e1f3bda4f59`. Their roadmaps remain authoritative
 for acquisition and sampling algorithms; FortML owns the posterior/log-density
 protocols and does not embed sampler or acquisition state. FortBO additionally
@@ -553,16 +553,18 @@ acquisition search end to end with Sobol multistarts and FortOpt L-BFGS-B,
 beating random search on the Branin fixture at equal budget. The current pin
 also supplies preference learning and noisy-dominance probabilities with
 FortSym-generated Gaussian-comparison derivatives, noisy expected improvement,
-joint qEI/qNEI/qUCB batch acquisitions, FortSym-derived trust-region length
-rescaling, exact posterior mean and
+joint qEI/qNEI/qUCB batch acquisitions, risk-sensitive and multi-fidelity
+criteria, constrained/cost-aware acquisitions, active-learning and level-set
+design, max-value entropy search, mixed-integer/categorical candidate search,
+FortSym-derived trust-region length rescaling, exact posterior mean and
 standard-deviation Hessians from derivative predictions, and tested TuRBO-1/
 TuRBO-m and DTuRBO mode-2 drivers with deterministic region updates,
 posterior sampling, posterior-derivative local models, trust-region traces,
 and an indefinite-curvature bound-constrained quadratic subproblem, multi-objective
 Pareto archives with exact hypervolume and scalarizations, and stopping rules
 that report a machine-readable reason. qKG and batch Thompson/fantasy
-policies, entropy and predictive-entropy search, device execution, and wider
-sparse, variational, and multi-output adapters
+policies, predictive-entropy search, device execution, and wider sparse,
+variational, and multi-output adapters
 remain open. Any future adapter must add
 a focused oracle, typed GPU/refusal row, and a benchmark record in the companion
 harness.
@@ -634,14 +636,16 @@ acquisition work packages:
 
 The companion repositories were checked on 2026-08-08 at FortMC
 `4dde0ccdc37b4c331126605406b08e1f3bda4f59` and FortBO
-`4266ce699585915a2ffe125a15b301379b9cd077`, both on their `main` branches. The
+`b758dc807029938e149c68e0fbd498a9d2a96306`, both on their `main` branches. The
 FortBO pin now includes a versioned capability-gated posterior contract,
 gradient-aware observation history/checkpointing, normalized continuous/integer/
 categorical/mixed/conditional search spaces, a differentiable-coordinate mask,
 analytic EI/PI/UCB/log-EI, exact-envelope knowledge gradient, noisy expected
-improvement, joint qEI/qNEI/qUCB batch acquisitions, marginal Monte-Carlo EI/PI
-with CRN, antithetic draws and pathwise gradients, Sobol TuRBO candidates,
-Thompson selection,
+improvement, joint qEI/qNEI/qUCB batch acquisitions, risk-sensitive and
+multi-fidelity criteria, constrained/cost-aware acquisitions, active-learning
+and level-set design, max-value entropy search, mixed-integer/categorical
+candidate search, marginal Monte-Carlo EI/PI with CRN, antithetic draws and
+pathwise gradients, Sobol TuRBO candidates, Thompson selection,
 gradient-based DTuRBO in-region acquisition search, FortSym-derived
 trust-region length rescaling, exact posterior mean and
 standard-deviation Hessians, tested TuRBO-1/TuRBO-m and DTuRBO mode-2 drivers,
@@ -653,17 +657,20 @@ adapter, and FortML value/derivative-GP adapters;
 refresh these pins when
 their protocol or device contracts change.
 
-The current FortBO checkout builds and runs all 20 registered tests with `fo
-test`, including knowledge-gradient and qEI/qNEI/qUCB batch acquisitions,
-TuRBO/DTuRBO drivers, trust-region trace/rescaling, preference-learning, and
-noisy-dominance oracles. FortMC's current
+The preceding FortBO `4266ce6` pin built and ran 20/20 tests, including
+knowledge-gradient and qEI/qNEI/qUCB batch acquisitions, TuRBO/DTuRBO drivers,
+trust-region trace/rescaling, preference-learning, and noisy-dominance oracles.
+The current `b758dc8` remote registers 25 tests; a clean `fo test` run passes
+13 and reports 12 generated-leaf link failures in the upstream acquisition,
+trust-region, and preference fixtures. FortMC's current
 checkout builds cleanly and reports zero registered
 tests, so its sampler and diagnostics claims remain roadmap items rather than
 FortML verification evidence.
 
 This companion check was repeated from clean source trees on 2026-08-08:
-`origin/main` resolves exactly to the two pins above, `fo test` reports 20/20
-for FortBO and 0 registered tests for FortMC, and neither repository has a
+`origin/main` resolves exactly to the two pins above; FortBO's current clean
+run is the 13-pass/12-link-failure result above, while FortMC has 0 registered
+tests, and neither repository has a
 runtime dependency on the FortSym executable. These are boundary checks, not a
 claim that FortMC samplers or the remaining FortBO policy catalog are shipped.
 
