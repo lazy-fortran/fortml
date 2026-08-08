@@ -127,6 +127,26 @@ module fortml_basis_impl
         procedure :: valid => polynomial_valid
     end type polynomial_basis_impl_t
 
+    ! Chebyshev polynomials of the first kind, T_k(x), k=1..degree.  The
+    ! recurrence is evaluated directly so the map remains parameter-free and
+    ! has exact input JVP/VJP/HVP products.  A caller can request the constant
+    ! T_0 feature through basis_map_t's include_intercept flag.
+    type, extends(basis_impl_t) :: chebyshev_basis_impl_t
+        integer :: n_inputs = 0
+        integer :: degree = 0
+    contains
+        procedure :: input_count => chebyshev_input_count
+        procedure :: feature_count => chebyshev_feature_count
+        procedure :: parameter_count => chebyshev_parameter_count
+        procedure :: parameters => chebyshev_parameters
+        procedure :: set_parameters => chebyshev_set_parameters
+        procedure :: evaluate => chebyshev_evaluate
+        procedure :: jvp => chebyshev_jvp
+        procedure :: vjp => chebyshev_vjp
+        procedure :: hvp => chebyshev_hvp
+        procedure :: valid => chebyshev_valid
+    end type chebyshev_basis_impl_t
+
     type, extends(basis_impl_t) :: fourier_basis_impl_t
         integer :: n_inputs = 0
         integer :: n_harmonics = 0
@@ -224,7 +244,7 @@ module fortml_basis_impl
     end type callback_basis_impl_t
 
     public :: basis_value_callback, basis_jvp_callback, basis_vjp_callback
-    public :: create_polynomial_impl, create_fourier_impl, &
+    public :: create_polynomial_impl, create_chebyshev_impl, create_fourier_impl, &
         create_random_fourier_impl, create_radial_impl
     public :: create_spline_impl, create_callback_impl
 
@@ -279,6 +299,23 @@ contains
         allocate(impl, source=value)
         call status_set(status, FORTNUM_OK, "")
     end subroutine create_polynomial_impl
+
+    subroutine create_chebyshev_impl(n_inputs, degree, impl, status)
+        integer, intent(in) :: n_inputs, degree
+        class(basis_impl_t), allocatable, intent(out) :: impl
+        type(fortnum_status_t), intent(out) :: status
+        type(chebyshev_basis_impl_t) :: value
+
+        if (n_inputs < 1 .or. degree < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "basis Chebyshev: n_inputs and degree must be positive")
+            return
+        end if
+        value%n_inputs = n_inputs
+        value%degree = degree
+        allocate(impl, source=value)
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine create_chebyshev_impl
 
     subroutine build_polynomial_exponents(self, status)
         type(polynomial_basis_impl_t), intent(inout) :: self
@@ -741,6 +778,212 @@ contains
         class(polynomial_basis_impl_t), intent(in) :: self
         valid = self%n_inputs > 0 .and. self%degree > 0
     end function polynomial_valid
+
+    integer function chebyshev_input_count(self) result(count)
+        class(chebyshev_basis_impl_t), intent(in) :: self
+        count = self%n_inputs
+    end function chebyshev_input_count
+
+    integer function chebyshev_feature_count(self) result(count)
+        class(chebyshev_basis_impl_t), intent(in) :: self
+        count = self%n_inputs*self%degree
+    end function chebyshev_feature_count
+
+    integer function chebyshev_parameter_count(self) result(count)
+        class(chebyshev_basis_impl_t), intent(in) :: self
+        count = 0
+    end function chebyshev_parameter_count
+
+    function chebyshev_parameters(self) result(theta)
+        class(chebyshev_basis_impl_t), intent(in) :: self
+        real(dp), allocatable :: theta(:)
+        allocate(theta(0))
+    end function chebyshev_parameters
+
+    subroutine chebyshev_set_parameters(self, theta, status)
+        class(chebyshev_basis_impl_t), intent(inout) :: self
+        real(dp), intent(in) :: theta(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (size(theta) /= 0) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "basis Chebyshev: parameter shape is invalid")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine chebyshev_set_parameters
+
+    subroutine chebyshev_evaluate(self, x, phi, status)
+        class(chebyshev_basis_impl_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: phi(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        integer :: i, j, k, column
+        real(dp) :: t_previous, t_current, t_next
+
+        if (size(x, 2) /= self%n_inputs .or. &
+                size(phi, 2) /= self%feature_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "basis Chebyshev: array shape is invalid")
+            return
+        end if
+        phi = 0.0_dp
+        column = 1
+        do j = 1, self%n_inputs
+            do i = 1, size(x, 1)
+                t_previous = 1.0_dp
+                t_current = x(i, j)
+                phi(i, column) = t_current
+                do k = 2, self%degree
+                    t_next = 2.0_dp*x(i, j)*t_current - t_previous
+                    phi(i, column + k - 1) = t_next
+                    t_previous = t_current
+                    t_current = t_next
+                end do
+            end do
+            column = column + self%degree
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine chebyshev_evaluate
+
+    subroutine chebyshev_jvp(self, x, theta_dot, x_dot, phi, phi_dot, status)
+        class(chebyshev_basis_impl_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), theta_dot(:), x_dot(:, :)
+        real(dp), intent(out) :: phi(:, :), phi_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        integer :: i, j, k, column
+        real(dp) :: t_previous, t_current, t_next
+        real(dp) :: d_previous, d_current, d_next
+
+        if (size(theta_dot) /= 0 .or. any(shape(x_dot) /= shape(x))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "basis Chebyshev: tangent shape is invalid")
+            return
+        end if
+        call self%evaluate(x, phi, status)
+        if (status%code /= FORTNUM_OK) return
+        phi_dot = 0.0_dp
+        column = 1
+        do j = 1, self%n_inputs
+            do i = 1, size(x, 1)
+                t_previous = 1.0_dp
+                t_current = x(i, j)
+                d_previous = 0.0_dp
+                d_current = 1.0_dp
+                phi_dot(i, column) = d_current*x_dot(i, j)
+                do k = 2, self%degree
+                    t_next = 2.0_dp*x(i, j)*t_current - t_previous
+                    d_next = 2.0_dp*t_current + 2.0_dp*x(i, j)*d_current - &
+                        d_previous
+                    phi_dot(i, column + k - 1) = d_next*x_dot(i, j)
+                    t_previous = t_current
+                    t_current = t_next
+                    d_previous = d_current
+                    d_current = d_next
+                end do
+            end do
+            column = column + self%degree
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine chebyshev_jvp
+
+    subroutine chebyshev_vjp(self, x, u, theta_bar, x_bar, status)
+        class(chebyshev_basis_impl_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), u(:, :)
+        real(dp), intent(out) :: theta_bar(:), x_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        integer :: i, j, k, column
+        real(dp) :: t_previous, t_current, t_next
+        real(dp) :: d_previous, d_current, d_next
+
+        if (size(u, 2) /= self%feature_count() .or. &
+                size(theta_bar) /= 0 .or. any(shape(x_bar) /= shape(x))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "basis Chebyshev: cotangent shape is invalid")
+            return
+        end if
+        theta_bar = 0.0_dp
+        x_bar = 0.0_dp
+        column = 1
+        do j = 1, self%n_inputs
+            do i = 1, size(x, 1)
+                t_previous = 1.0_dp
+                t_current = x(i, j)
+                d_previous = 0.0_dp
+                d_current = 1.0_dp
+                x_bar(i, j) = x_bar(i, j) + u(i, column)*d_current
+                do k = 2, self%degree
+                    t_next = 2.0_dp*x(i, j)*t_current - t_previous
+                    d_next = 2.0_dp*t_current + 2.0_dp*x(i, j)*d_current - &
+                        d_previous
+                    x_bar(i, j) = x_bar(i, j) + &
+                        u(i, column + k - 1)*d_next
+                    t_previous = t_current
+                    t_current = t_next
+                    d_previous = d_current
+                    d_current = d_next
+                end do
+            end do
+            column = column + self%degree
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine chebyshev_vjp
+
+    subroutine chebyshev_hvp(self, x, u, theta_dot, x_dot, theta_hvp, &
+            x_hvp, status)
+        class(chebyshev_basis_impl_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), u(:, :), theta_dot(:), x_dot(:, :)
+        real(dp), intent(out) :: theta_hvp(:), x_hvp(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        integer :: i, j, k, column
+        real(dp) :: t_previous, t_current, t_next
+        real(dp) :: d_previous, d_current, d_next
+        real(dp) :: dd_previous, dd_current, dd_next
+
+        if (size(u, 2) /= self%feature_count() .or. &
+                size(theta_dot) /= 0 .or. size(theta_hvp) /= 0 .or. &
+                any(shape(x_dot) /= shape(x)) .or. &
+                any(shape(x_hvp) /= shape(x))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "basis Chebyshev HVP: array shape is invalid")
+            return
+        end if
+        theta_hvp = 0.0_dp
+        x_hvp = 0.0_dp
+        column = 1
+        do j = 1, self%n_inputs
+            do i = 1, size(x, 1)
+                t_previous = 1.0_dp
+                t_current = x(i, j)
+                d_previous = 0.0_dp
+                d_current = 1.0_dp
+                dd_previous = 0.0_dp
+                dd_current = 0.0_dp
+                do k = 2, self%degree
+                    t_next = 2.0_dp*x(i, j)*t_current - t_previous
+                    d_next = 2.0_dp*t_current + 2.0_dp*x(i, j)*d_current - &
+                        d_previous
+                    dd_next = 4.0_dp*d_current + 2.0_dp*x(i, j)*dd_current - &
+                        dd_previous
+                    x_hvp(i, j) = x_hvp(i, j) + &
+                        u(i, column + k - 1)*dd_next*x_dot(i, j)
+                    t_previous = t_current
+                    t_current = t_next
+                    d_previous = d_current
+                    d_current = d_next
+                    dd_previous = dd_current
+                    dd_current = dd_next
+                end do
+            end do
+            column = column + self%degree
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine chebyshev_hvp
+
+    logical function chebyshev_valid(self) result(valid)
+        class(chebyshev_basis_impl_t), intent(in) :: self
+        valid = self%n_inputs > 0 .and. self%degree > 0
+    end function chebyshev_valid
 
     integer function fourier_input_count(self) result(count)
         class(fourier_basis_impl_t), intent(in) :: self

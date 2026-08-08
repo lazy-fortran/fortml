@@ -112,6 +112,8 @@ The implemented basis families are:
 - separate polynomial powers for each input with degree/ordering recorded;
   `make_polynomial_interaction_basis` additionally enumerates all nonconstant
   total-degree monomials in deterministic graded order.
+- Chebyshev first-kind features `T_1` through `T_degree`, evaluated with the
+  three-term recurrence and carrying exact input JVP/VJP/HVP products.
 - Fourier sine/cosine features with explicit angular frequencies.
 - fixed-state random Fourier features with explicit frequency vectors and
   phases (`sqrt(2/m) cos(w dot x + b)`).
@@ -125,7 +127,7 @@ linear model to know which family produced it. A map's differentiable
 parameters are explicit. Fourier frequencies are positive log parameters.
 Random Fourier frequencies and phases are fixed transform state with an
 explicit zero-parameter derivative block.
-Radial centers and log scales are parameters. Polynomial and spline maps have
+Radial centers and log scales are parameters. Polynomial, Chebyshev, and spline maps have
 no active parameter vector. Spline breakpoints are configuration.
 
 Callback maps own a flat parameter vector and receive it in every product
