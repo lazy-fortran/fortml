@@ -995,10 +995,11 @@ when a lower-level primitive already exists.
   first-class tie handling, empty-bin zeros, and an independent metric oracle.
   `classification_reliability_diagram` is covered by
   `test_classification_metrics` and the companion reliability-diagram benchmark.
-- [ ] Complete calibration workflows with class weighting and
-  calibration-aware cross-validation. Positive-temperature, Platt/sigmoid,
-  and weighted isotonic fitting have independent derivative/refusal tests;
-  multiclass temperature maps and cross-validation remain.
+- [ ] Complete multiclass and generic calibration workflows with class
+  weighting and estimator routing. Positive-temperature, Platt/sigmoid,
+  weighted isotonic fitting, and leakage-safe binary out-of-fold calibration
+  have independent derivative/refusal tests; multiclass calibrated
+  cross-validation and broader class-weight policies remain.
 - [x] Deterministic seeded random-forest and randomized-threshold Extra-Trees
   classifiers provide aligned probabilities, arbitrary integer labels, Gini or
   entropy criteria, depth/leaf controls, positive sample weights, seeded
