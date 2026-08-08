@@ -47,9 +47,15 @@ module fortml_random_forest_classifier
         procedure, public :: predict_proba => random_forest_classifier_predict_proba
         procedure, public :: oob_decision_function => &
             random_forest_classifier_oob_decision_function
+        procedure, public :: oob_predict_proba => &
+            random_forest_classifier_oob_decision_function
         procedure, public :: predict_proba_oob => &
             random_forest_classifier_oob_decision_function
         procedure, public :: oob_decision_function_device => &
+            random_forest_classifier_oob_decision_function_device
+        procedure, public :: oob_predict_proba_device => &
+            random_forest_classifier_oob_decision_function_device
+        procedure, public :: predict_proba_oob_device => &
             random_forest_classifier_oob_decision_function_device
         procedure, public :: oob_score => random_forest_classifier_oob_score
         procedure, public :: oob_score_device => random_forest_classifier_oob_score_device

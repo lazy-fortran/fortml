@@ -2557,7 +2557,8 @@ feature, tree, depth, criterion, seed, and fitted metadata.
 
 The fitted bootstrap-inclusion matrix is retained for audit through
 `bootstrap_inclusion()` and `oob_coverage()`. `oob_decision_function(x,p,status)`
-(also named `predict_proba_oob`) requires the original training row set and
+(also named `oob_predict_proba` and `predict_proba_oob`) requires the original
+training row set and
 averages only trees that did not include each row; `oob_score(x,labels,score,
 status)` computes accuracy from that same transactional product. Every OOB row
 must have at least one excluded tree. Otherwise both methods leave caller
