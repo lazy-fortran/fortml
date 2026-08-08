@@ -9,7 +9,7 @@ program fortml_bench_mlp_last_layer_gp
     integer, parameter :: n_samples = 256, n_features = 8
     integer, parameter :: n_hidden = 16, n_outputs = 2, repetitions = 8
     real(dp) :: x(n_samples, n_features), target(n_samples, n_outputs)
-    real(dp), allocatable :: prediction(:, :)
+    real(dp) :: prediction(n_samples, n_outputs)
     real(dp) :: mse, fit_seconds, predict_seconds
     integer(int64) :: clock_start, clock_end, clock_rate
     integer :: i, j, repetition
