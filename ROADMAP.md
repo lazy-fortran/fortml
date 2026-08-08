@@ -399,19 +399,19 @@ this format.
 
 ### 2026-08-08 generic validation-state slice
 
-The model-agnostic \`fortml_trainer\` now accepts a process-local validation
+The model-agnostic `fortml_trainer` now accepts a process-local validation
 callback that evaluates a finite scalar after each full-batch update. The
 trainer records validation history, best value and step, consecutive
 non-improvement count, and a copy of the best packed parameter vector.
-\`validation_min_delta\`, \`validation_patience\`, and
-\`validation_restore_best\` provide deterministic early stopping and
+`validation_min_delta`, `validation_patience`, and
+`validation_restore_best` provide deterministic early stopping and
 transactional best-state restoration. The schema-4 text checkpoint persists
 the complete validation state and refuses a missing or unexpected callback
 because procedure pointers cannot be serialized. The independent quadratic
 oracle covers known-answer patience transitions, restoration, split
 continuation, and callback-presence refusal. The generic callback remains
 host-owned, so CUDA execution is an explicit typed boundary. Release evidence
-is \`fortml-bench/results/TRAINER_VALIDATION.md\`.
+is `fortml-bench/results/TRAINER_VALIDATION.md`.
 
 Behavioral oracles include dense or analytic references, finite differences,
 adjoint identities, convergence checks, and seeded known-answer cases.
