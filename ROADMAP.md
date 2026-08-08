@@ -26,7 +26,8 @@ behavior, and benchmark evidence land together.
 The checked-in GNU compiler log is the fresh 2026-08-08 run against FortML code
 revision `2b2b3e1` (the current scheduled-RAdam, periodic derivative-GP, and
 LightGBM-GOSS code; subsequent commits only refresh documentation), FortAD
-`origin/main` at `4a4fdd1a855e0374bdb8465003fc935aae14852c`, and FortNum at
+`origin/main` at `7fb0c5f7d9e6a0f3adef1b2a666f681f589779c2` (a docs-only
+refresh after the gate's source-equivalent `4a4fdd1`), and FortNum at
 `396c8f202ba45e97eecceaba2e6bf848a206b4d0`, run from the clean checkout
 under `/mnt/storage/code/lazy-fortran/fortml`. The run includes the
   kernel-catalog, weighted LDA/QDA, robust/absolute XGBoost, neural NLL, random-forest,
