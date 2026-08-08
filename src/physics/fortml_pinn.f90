@@ -50,7 +50,14 @@ contains
         integer, intent(in), optional :: device_kind
         integer :: requested
 
-        self%objective = physics_objective_t()
+        ! `self` is intent(out), so every component already holds its default
+        ! initialization on entry; assigning an empty structure constructor
+        ! here restated that and was redundant.
+        !
+        ! It also crashed nvfortran 26.5 outright -- fort1 terminated by signal
+        ! 11, with no line number and at every optimization level -- which
+        ! blocked the OpenACC build of the whole stack. Found by bisecting the
+        ! module procedure by procedure and then statement by statement.
         self%device_kind = FORTML_DEVICE_CPU
         self%ready = .false.
         requested = FORTML_DEVICE_CPU
