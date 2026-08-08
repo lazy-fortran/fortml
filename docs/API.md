@@ -68,7 +68,7 @@ can reject an incompatible estimator before consuming a fold.
 The companion repositories are optional consumers of FortML model and
 probability objects; FortML does not import either package. At the pinned
 2026-08-08 revisions (FortBO
-`559c85edc2d78bed457c400edf16758d97444dd1`, FortMC
+`b62a1a0bae1c0766fb35a3127957a39758705160`, FortMC
 `e5e42a0ac1d4a4d92fa6b2ee2750b50723342a48`), their public modules contain
 versioned contracts, tested acquisition/candidate-search foundations, and a
 FortML GP adapter. FortMC additionally ships a gradient-free univariate slice

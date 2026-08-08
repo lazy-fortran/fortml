@@ -26,7 +26,7 @@ behavior, and benchmark evidence land together.
 The checked-in GNU compiler log is the fresh 2026-08-08 run against FortML code
 revision `436664a`, FortAD `origin/main` at
 `931dac5f39eb6ea5ab3854d5af49b346bea950af`, and FortNum at
-`ba91a8ff3dcda38af821034f78cadd0f7f8278ab`, run from the clean checkout
+`396c8f202ba45e97eecceaba2e6bf848a206b4d0`, run from the clean checkout
 under `/mnt/storage/code/lazy-fortran/fortml`. The run includes the
   kernel-catalog, weighted LDA/QDA, robust/absolute XGBoost, neural NLL, random-forest,
 Extra-Trees, grouped MLP HVP and L-BFGS-B, basis/pipeline HVP, cosine
@@ -610,7 +610,7 @@ only listed as gaps:
 
 The FortBO and FortMC companion pins were rechecked against their remote
 `main` branches on 2026-08-08: FortBO
-`559c85edc2d78bed457c400edf16758d97444dd1` and FortMC
+`b62a1a0bae1c0766fb35a3127957a39758705160` and FortMC
 `e5e42a0ac1d4a4d92fa6b2ee2750b50723342a48`. Their roadmaps remain authoritative
 for acquisition and sampling algorithms; FortML owns the posterior/log-density
 protocols and does not embed sampler or acquisition state. FortBO additionally
@@ -723,7 +723,7 @@ fixed no-autodiff hot loops where OpenACC cannot.
 
 The dependency pins used by the current GNU verification are FortAD `931dac5`,
 FortFront `7139a94`, FortSym `26250ce`, FortOpt `883aa7e`
-(`release/context-objective`), and FortNum `ba91a8f`, all checked against
+(`release/context-objective`), and FortNum `396c8f2`, all checked against
 their corresponding remote branches on 2026-08-08. Generated derivatives
 record the exact FortSym revision and source hash; model-level autodiff uses
 the same FortAD `main` pin.
@@ -736,7 +736,7 @@ acquisition work packages:
 
 The companion repositories were checked on 2026-08-08 at FortMC
 `e5e42a0ac1d4a4d92fa6b2ee2750b50723342a48` and FortBO
-`559c85edc2d78bed457c400edf16758d97444dd1`, both on their `main` branches. The
+`b62a1a0bae1c0766fb35a3127957a39758705160`, both on their `main` branches. The
 FortBO pin now includes a versioned capability-gated posterior contract,
 gradient-aware observation history/checkpointing, normalized continuous/integer/
 categorical/mixed/conditional search spaces, a differentiable-coordinate mask,
@@ -772,8 +772,10 @@ The FortBO pin includes a standalone OpenACC hardware probe and an
 acquisition-level wall-clock benchmark; these are separate from the
 auto-discovered test tree and require a dependency-complete GPU host before
 publishing device timings. The 14D ordering harness is a separate slow fixture
-and remains limited to the pushing arm. Any build or link failures are
-recorded as a FortBO boundary failure, not FortML verification evidence.
+and remains limited to the pushing arm. Against the current b62a1a0 tip,
+`fo check --json=compact` stops at the build stage because the generated
+`fortbo_generated_acquisition_leaf_` symbol is not linked; this is a FortBO
+boundary failure, not FortML verification evidence.
 FortMC's current checkout builds cleanly and passes its one registered
 slice-sampler test (normal and correlated moments, bounded support,
 reproducibility, and refusal cases); the remaining samplers, diagnostics, and
