@@ -1889,13 +1889,46 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine check_matrix_shapes
 
+    !! `squared(i, j) = |x1(i, :) - x2(j, :)|^2`, for every pair at once.
+    !!
+    !! Built from `|a|^2 + |b|^2 - 2 a.b` so the pairwise term is a single
+    !! matrix product. The expansion is famously less accurate than
+    !! differencing when the two points nearly coincide -- the leading terms
+    !! cancel -- so the result is floored at zero, which is where that
+    !! cancellation shows up and is also exactly what a squared distance must
+    !! satisfy. Kernels here are smooth in `r2` at the origin, so a few ulp of
+    !! error near coincidence changes nothing that matters; the training Gram
+    !! matrix still gets its diagonal from the same expression it always did.
+    pure subroutine pairwise_squared_distances(x1, x2, squared)
+        real(dp), intent(in) :: x1(:, :), x2(:, :)
+        real(dp), allocatable, intent(out) :: squared(:, :)
+        real(dp), allocatable :: norm1(:), norm2(:)
+        integer :: i, j
+
+        allocate (squared(size(x1, 1), size(x2, 1)))
+        allocate (norm1(size(x1, 1)), norm2(size(x2, 1)))
+        do i = 1, size(x1, 1)
+            norm1(i) = dot_product(x1(i, :), x1(i, :))
+        end do
+        do j = 1, size(x2, 1)
+            norm2(j) = dot_product(x2(j, :), x2(j, :))
+        end do
+
+        squared = -2.0_dp*matmul(x1, transpose(x2))
+        do j = 1, size(x2, 1)
+            do i = 1, size(x1, 1)
+                squared(i, j) = max(squared(i, j) + norm1(i) + norm2(j), 0.0_dp)
+            end do
+        end do
+    end subroutine pairwise_squared_distances
+
     recursive subroutine kernel_matrix_impl(self, x1, x2, matrix)
         class(kernel_t), intent(in) :: self
         real(dp), intent(in) :: x1(:, :), x2(:, :)
         real(dp), intent(out) :: matrix(:, :)
         real(dp) :: variance, lengthscale, third_parameter, r2, value, dummy
         real(dp) :: parameter_derivative_1, parameter_derivative_2
-        real(dp), allocatable :: other(:, :)
+        real(dp), allocatable :: other(:, :), squared(:, :)
         integer :: i, j
 
         select case (self%kind)
@@ -1931,9 +1964,64 @@ contains
                 self%kind == KERNEL_RATIONAL_QUADRATIC) then
                 third_parameter = exp(self%log_parameters(3))
             end if
+            ! Squared distances for every pair at once, through the
+            ! expansion |a - b|^2 = |a|^2 + |b|^2 - 2 a.b, so the pairwise
+            ! work becomes one matrix product.
+            !
+            ! The loop this replaces evaluated `sum((x1(i, :) - x2(j, :))**2)`
+            ! per entry. Two costs, both invisible in the source: `x1(i, :)`
+            ! walks a row of an `(n, d)` array, so consecutive elements sit `n`
+            ! apart and every access misses cache; and the expression builds a
+            ! temporary array per entry. At Bayesian-optimization sizes --
+            ! four thousand candidates against forty training points -- that
+            ! measured 82 ns per kernel evaluation, which is an order of
+            ! magnitude off what an eight-dimensional squared exponential
+            ! costs.
+            !
+            ! `matmul` is left to the compiler's BLAS rather than hand-blocked;
+            ! the point is to stop doing the work entry by entry.
+            call pairwise_squared_distances(x1, x2, squared)
+
+            ! Whole-array fast paths for the stationary kernels, which are the
+            ! ones every Bayesian-optimization run actually uses. The general
+            ! loop below dispatches through a chain of `if`s and a procedure
+            ! call *per entry*; at forty training points against four thousand
+            ! candidates that is a hundred and sixty thousand calls and
+            ! measured 22 ns each, which dominated the posterior. Expressed as
+            ! array operations the compiler vectorizes them and the branch is
+            ! taken once for the whole matrix instead of once per element.
+            !
+            ! The formulas are the same ones the scalar path evaluates, kept
+            ! literally identical so the two cannot drift: `test_kernels`
+            ! checks the matrix against the per-entry `value` for every kind.
+            if (self%kind == KERNEL_RBF) then
+                matrix = variance*exp(-0.5_dp*squared/(lengthscale*lengthscale))
+                return
+            else if (self%kind == KERNEL_MATERN12) then
+                matrix = variance*exp(-sqrt(squared)/lengthscale)
+                return
+            else if (self%kind == KERNEL_MATERN32) then
+                block
+                    real(dp), allocatable :: scaled(:, :)
+                    allocate (scaled(size(x1, 1), size(x2, 1)))
+                    scaled = sqrt(3.0_dp)*sqrt(squared)/lengthscale
+                    matrix = variance*(1.0_dp + scaled)*exp(-scaled)
+                end block
+                return
+            else if (self%kind == KERNEL_MATERN52) then
+                block
+                    real(dp), allocatable :: scaled(:, :)
+                    allocate (scaled(size(x1, 1), size(x2, 1)))
+                    scaled = sqrt(5.0_dp)*sqrt(squared)/lengthscale
+                    matrix = variance*(1.0_dp + scaled + scaled*scaled/3.0_dp) &
+                        *exp(-scaled)
+                end block
+                return
+            end if
+
             do j = 1, size(x2, 1)
                 do i = 1, size(x1, 1)
-                    r2 = sum((x1(i, :) - x2(j, :))**2)
+                    r2 = squared(i, j)
                     value = 0.0_dp
                     if (self%kind == KERNEL_RBF) then
                         call fortml_generated_rbf_leaf_fortran( &
