@@ -292,7 +292,9 @@ contains
                 "lightgbm warm start: sample weights have no positive mass")
             return
         end if
-        if (settings%seed <= 0_int64 .or. (boosting_type_code == LIGHTGBM_BOOSTING_GOSS .and. &
+        if (settings%seed <= 0_int64 .or. .not. ieee_is_finite(settings%top_rate) .or. &
+            .not. ieee_is_finite(settings%other_rate) .or. &
+            (boosting_type_code == LIGHTGBM_BOOSTING_GOSS .and. &
             (settings%top_rate <= 0.0_dp .or. settings%top_rate >= 1.0_dp .or. &
             settings%other_rate <= 0.0_dp .or. settings%other_rate > 1.0_dp .or. &
             settings%top_rate + settings%other_rate >= 1.0_dp))) then
@@ -431,10 +433,10 @@ contains
             .not. ieee_is_finite(settings%l2) .or. settings%l2 < 0.0_dp .or. &
             .not. ieee_is_finite(settings%min_gain_to_split) .or. &
             settings%min_gain_to_split < 0.0_dp .or. settings%seed <= 0_int64 .or. &
+            .not. ieee_is_finite(settings%top_rate) .or. .not. ieee_is_finite(settings%other_rate) .or. &
             (boosting_type_code == LIGHTGBM_BOOSTING_GOSS .and. &
-            (.not. ieee_is_finite(settings%top_rate) .or. &
-            .not. ieee_is_finite(settings%other_rate) .or. settings%top_rate <= 0.0_dp .or. &
-            settings%top_rate >= 1.0_dp .or. settings%other_rate <= 0.0_dp .or. &
+            (settings%top_rate <= 0.0_dp .or. settings%top_rate >= 1.0_dp .or. &
+            settings%other_rate <= 0.0_dp .or. &
             settings%other_rate > 1.0_dp .or. settings%top_rate + settings%other_rate >= 1.0_dp))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "lightgbm fit: invalid dimensions or options")
