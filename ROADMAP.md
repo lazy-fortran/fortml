@@ -16,8 +16,8 @@ gate is still open, so this work does not move or recreate that tag.
 
 | Compiler | Command | Result |
 | --- | --- | --- |
-| GNU Fortran | `fo` | Static build, all 204 behavioral tests, and lint passed at the current FortML/FortAD-main revisions. The compiler still emits non-fatal array-temporary warnings; see [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
-| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded older compiler lane. The checked-in NVIDIA log predates the current 204-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
+| GNU Fortran | `fo` | Static build, all 205 behavioral tests, and lint passed at the current FortML/FortAD-main revisions. The compiler still emits non-fatal array-temporary warnings; see [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
+| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded older compiler lane. The checked-in NVIDIA log predates the current 205-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
 The checked-in GNU compiler log is the fresh 2026-08-08 run against FortML code
@@ -45,7 +45,7 @@ variational-GP objective, multiclass variational-GP prediction/JVPs/VJPs, positi
  training objective. The build emits non-fatal GNU
 array-temporary warnings in FortFront query/generator calls, existing GP
 benchmark boundaries, variational-GP batch conversions, and basis-pipeline
-shape conversions. They are isolated to array construction; all 204 behavioral
+shape conversions. They are isolated to array construction; all 205 behavioral
 tests pass. Lint has zero unused-import findings and the full `fo` lint stage
 passes despite the non-fatal compiler warning corpus. The independent CUDA gate additionally covers the
 resident dense-affine value/JVP/VJP path and its single-layer MSE update with
@@ -738,12 +738,13 @@ multiclass, weighted, probabilistic, derivative, or GPU coverage.
 
 Calibration update (2026-08-07): `CALIBRATION_TEMPERATURE` now fits a positive
 scalar temperature for binary, pre-oriented logits and exposes exact score and
-temperature-parameter JVP/VJP products. Multiclass temperature scaling,
-reliability diagrams, and calibration-aware cross-validation remain open.
+temperature-parameter JVP/VJP products. Weighted equal-width reliability
+diagrams now have a deterministic metric/API and benchmark oracle; multiclass
+temperature scaling and calibration-aware cross-validation remain open.
 
 | Family | Required variants | Current FortML baseline | Missing production gates |
 | --- | --- | --- | --- |
-| Classification | binary, multinomial/softmax, OVR, OVO, multilabel, Naive Bayes, LDA/QDA, tree, neural, dense RBF one-class SVM, Laplace GP, variational GP, calibrated, ordinal | binary/softmax/OVR/OVO/multilabel and weighted ordinal cumulative-logit heads, weighted Gaussian/Bernoulli/Multinomial/Complement/Categorical NB, weighted LDA/QDA, CART, MLP, dense RBF nu-SVM, weighted binary/OVR Laplace GP, bounded Bernoulli variational GP (logistic/probit) including sorted-label OVR multiclass, positive temperature, Platt sigmoid, and weighted PAVA isotonic calibration, exact and histogram boosted trees | sparse/multioutput multilabel, ordinal GP and coupled/categorical variational GP likelihoods, kernel-SVM parity, resident GPU training, shared preprocessing/search |
+| Classification | binary, multinomial/softmax, OVR, OVO, multilabel, Naive Bayes, LDA/QDA, tree, neural, dense RBF one-class SVM, Laplace GP, variational GP, calibrated, ordinal | binary/softmax/OVR/OVO/multilabel and weighted ordinal cumulative-logit heads, weighted Gaussian/Bernoulli/Multinomial/Complement/Categorical NB, weighted LDA/QDA, CART, MLP, dense RBF nu-SVM, weighted binary/OVR Laplace GP, bounded Bernoulli variational GP (logistic/probit) including sorted-label OVR multiclass, positive temperature, Platt sigmoid, weighted PAVA isotonic calibration, weighted reliability-diagram points, exact and histogram boosted trees | sparse/multioutput multilabel, ordinal GP and coupled/categorical variational GP likelihoods, kernel-SVM parity, resident GPU training, shared preprocessing/search |
 | Regression | OLS, weighted/ridge/lasso/elastic-net, robust, quantile, GLM, multi-output, partial-fit | dense OLS, weighted ridge, weighted elastic-net/lasso, weighted linear SVR, weighted Poisson/Gamma log-link GLM, exact/histogram XGBoost-style squared/squared-log (RMSLE)/Huber/quantile/absolute/Tweedie regression with fixed-state products, multi-output fixed-fit products | positive/Bayesian/ARD, partial-fit, fit-time/hyperparameter products, resident GPU kernels |
 | Ensembles | CART, random/extra forests, bagging, AdaBoost, histogram boosting, XGBoost/LightGBM ranking/categorical/DART | weighted CART, deterministic seeded random-forest and randomized-threshold Extra-Trees classification, seeded bootstrap bagging over CART, binary and multiclass SAMME AdaBoost over weighted CART, squared/squared-log/Huber/quantile/absolute/Tweedie boosting, exact and bounded histogram second-order XGBoost-style binary/OVR, bounded `rank:pairwise`, exact/histogram per-feature monotonic and interaction-group constraints, bounded ordered-gradient integer categorical partitions with explicit cardinality refusal, and a bounded weighted LightGBM-style leaf-wise regression/binary path with validation loss, patience/min-delta early stopping, best-iteration metadata, restore-best slicing, and weighted validation objectives | OOB/permutation/SHAP workflows, SAMME.R probability updates, categorical policies beyond ordered partitions, DART/GOSS/EFB, distributed and resident GPU histograms |
 | Gaussian processes | exact, derivative observations, multitask, sparse/variational, SKI/lazy, local experts, classification | exact and derivative GPs with RBF, Matérn, periodic, rational-quadratic, cosine, polynomial, linear, constant, white-noise, user, sum, and product leaves, sparse/local/SKI/structured operators, weighted binary/OVR Laplace classification, bounded weighted Bernoulli variational classification with logistic/probit ELBOs, packed sparse-GP mean/log-Cholesky ELBO gradients/JVPs/VJPs, weighted envelope kernel hypergradients, fixed-state binary and OVR Laplace latent/probability kernel-parameter JVP/VJP products, and fixed-state binary/OVR variational kernel-log products | full likelihood/kernel catalog, batch/multitask/coupled variational classification, inducing-state and likelihood hyperparameter products, implicit derivatives, natural gradients, resident GPU solves |
@@ -875,10 +876,14 @@ when a lower-level primitive already exists.
   affine prediction JVP/VJP products, exact objective hypergradients, ordinary
   epsilon-kink refusal, and explicit CUDA refusal. Kernel SVR, one-class SVM,
   and support-vector metadata remain open.
-- [ ] Calibration workflows: reliability diagrams, class weighting, and
+- [x] Add weighted reliability-diagram points with equal-width bins, deterministic
+  first-class tie handling, empty-bin zeros, and an independent metric oracle.
+  `classification_reliability_diagram` is covered by
+  `test_classification_metrics` and the companion reliability-diagram benchmark.
+- [ ] Complete calibration workflows with class weighting and
   calibration-aware cross-validation. Positive-temperature, Platt/sigmoid,
-  and weighted isotonic fitting now have independent derivative/refusal tests;
-  multiclass temperature maps, calibration curves, and cross-validation remain.
+  and weighted isotonic fitting have independent derivative/refusal tests;
+  multiclass temperature maps and cross-validation remain.
 - [x] Deterministic seeded random-forest and randomized-threshold Extra-Trees
   classifiers provide aligned probabilities, arbitrary integer labels, Gini or
   entropy criteria, depth/leaf controls, positive sample weights, seeded
@@ -1629,11 +1634,17 @@ return status errors.
   exact input JVPs. `test_preprocessing` checks an independent percentile
   interpolation oracle, reconstruction, constant-column behavior, and the
   unfitted/nonfinite refusal boundary. Sparse and device variants remain open.
-- [ ] Add quantile and power transforms, normalization,
-  ordinal encoding, target encoding with leakage guards, polynomial
-  interactions, hashing, and sparse CSR/CSC feature views.
+- [ ] Add quantile and power transforms, normalization, ordinal encoding,
+  target encoding with leakage guards, hashing, and sparse CSR/CSC feature
+  views. The total-degree `make_polynomial_interaction_basis` now provides
+  deterministic polynomial interactions with analytic value/JVP/VJP/HVP
+  products; fitted interaction transforms and sparse views remain open.
   Every fitted transform records statistics, feature names, dtypes, and the
   treatment of unseen or missing categories.
+- [x] Add a total-degree `make_polynomial_interaction_basis` with deterministic
+  exponent enumeration and analytic value/JVP/VJP/HVP products. The independent
+  `test_basis_polynomial_interactions` oracle and companion benchmark gate the
+  feature; fitted interaction transforms and sparse views remain open.
 - [x] Add sequential basis pipelines. Basis maps work as fitted or fixed
   pipeline stages and propagate chained JVP/VJP products.
 - [x] Add column-selecting basis feature unions. `column_basis_pipeline_t`
@@ -2553,6 +2564,9 @@ count as a production lazy implementation.
   byte/event counters, and recoverable refusal for unavailable CUDA kernels or
   unsupported streams. The metadata layer does not allocate buffers or claim
   complete GPU execution; operator data regions remain explicit.
+- [x] Refuse `end_residency` when no residency is active with a typed domain
+  status, preserving ownership and transfer counters. The lifecycle assertion
+  is covered by `test_device_contract`; no kernel timing is claimed.
 - [x] Add a resident native-CUDA kNN training-set plan with deterministic
   stable ties and one-based class-index parity, plus a resident no-autodiff
   RMSprop state plan. Both have independent host/NumPy recurrence oracles,
