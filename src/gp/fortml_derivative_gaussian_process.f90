@@ -10,7 +10,7 @@ module fortml_derivative_gaussian_process
         KERNEL_MATERN32, KERNEL_MATERN52, KERNEL_LINEAR, KERNEL_CONSTANT, &
         KERNEL_WHITE_NOISE, KERNEL_SUM, KERNEL_PRODUCT, KERNEL_USER, &
         KERNEL_PERIODIC, KERNEL_RATIONAL_QUADRATIC, KERNEL_COSINE, KERNEL_POLYNOMIAL, &
-        KERNEL_SPECTRAL_MIXTURE
+        KERNEL_RBF_ARD, KERNEL_SPECTRAL_MIXTURE
     implicit none
     private
 
@@ -2341,7 +2341,7 @@ contains
         real(dp) :: variance_log_dot, scale_log_dot, offset_log_dot, degree_log_dot
         real(dp) :: coefficient, coefficient_dot, curvature_dot_input, log_direction
         integer :: i, j
-        real(dp) :: weighted_squared_distance, difference, q, q_dot, log_direction_ard
+        real(dp) :: weighted_squared_distance, q, q_dot, log_direction_ard
 
         value = 0.0_dp
         value_dot = 0.0_dp
