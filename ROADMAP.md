@@ -536,7 +536,7 @@ only listed as gaps:
 
 The FortBO and FortMC companion pins were rechecked against their remote
 `main` branches on 2026-08-08: FortBO
-`3dc4970ec3fab754746b7abd454965d959669666` and FortMC
+`e4263475fcff6860528b7c8576f0d4399372f262` and FortMC
 `4dde0ccdc37b4c331126605406b08e1f3bda4f59`. Their roadmaps remain authoritative
 for acquisition and sampling algorithms; FortML owns the posterior/log-density
 protocols and does not embed sampler or acquisition state. FortBO additionally
@@ -548,15 +548,16 @@ history contract. FortBO now also runs its gradient-based DTuRBO in-region
 acquisition search end to end with Sobol multistarts and FortOpt L-BFGS-B,
 beating random search on the Branin fixture at equal budget. The current pin
 also supplies preference learning and noisy-dominance probabilities with
-FortSym-generated Gaussian-comparison derivatives, exact posterior mean and
+FortSym-generated Gaussian-comparison derivatives, noisy expected improvement,
+exact posterior mean and
 standard-deviation Hessians from derivative predictions, and tested TuRBO-1/
 TuRBO-m and DTuRBO mode-2 drivers with deterministic region updates,
 posterior sampling, posterior-derivative local models, trust-region traces,
-and an
-indefinite-curvature bound-constrained quadratic subproblem, multi-objective
+and an indefinite-curvature bound-constrained quadratic subproblem, multi-objective
 Pareto archives with exact hypervolume and scalarizations, and stopping rules
-that report a machine-readable reason. Full batch, entropy/noisy acquisitions,
-device execution, and wider sparse, variational, and multi-output adapters
+that report a machine-readable reason. Full batch, entropy and predictive
+entropy search, device execution, and wider sparse, variational, and
+multi-output adapters
 remain open. Any future adapter must add
 a focused oracle, typed GPU/refusal row, and a benchmark record in the companion
 harness.
@@ -592,12 +593,13 @@ only a position-valued `value` and a position-gradient `gradient`; packed
 parameter registries, transforms, HVPs, samplers, and chain state remain in its
 roadmap. FortBO now exposes a capability-gated posterior protocol, durable
 gradient-aware history, and normalized continuous/integer/categorical/mixed/
-conditional search spaces, analytic EI/PI/UCB/log-EI, and marginal Monte-Carlo
-EI/PI with CRN, antithetic, and pathwise-gradient products. It also supplies
+conditional search spaces, analytic EI/PI/UCB/log-EI, exact-envelope knowledge
+gradient, noisy expected improvement, and marginal Monte-Carlo EI/PI with CRN,
+antithetic, and pathwise-gradient products. It also supplies
 Sobol TuRBO candidates, discrete Thompson selection, a tested FortML
 value-only/derivative-observation GP adapter, and tested gradient-based
-DTuRBO mode-2 local models and in-region optimization. Full batch and
-knowledge/entropy/noisy acquisitions, device execution, and sparse/variational/
+DTuRBO mode-2 local models and in-region optimization, plus trust-region traces.
+Full batch, entropy and predictive-entropy search, device execution, and sparse/variational/
 multi-output adapters remain in its roadmap. Adapters map FortML posterior
 moments and derivative observations into those contracts without adding sampler
 or acquisition state to every estimator.
@@ -627,13 +629,13 @@ acquisition work packages:
 
 The companion repositories were checked on 2026-08-08 at FortMC
 `4dde0ccdc37b4c331126605406b08e1f3bda4f59` and FortBO
-`3dc4970ec3fab754746b7abd454965d959669666`, both on their `main` branches. The
+`e4263475fcff6860528b7c8576f0d4399372f262`, both on their `main` branches. The
 FortBO pin now includes a versioned capability-gated posterior contract,
 gradient-aware observation history/checkpointing, normalized continuous/integer/
 categorical/mixed/conditional search spaces, a differentiable-coordinate mask,
-analytic EI/PI/UCB/log-EI, exact-envelope knowledge gradient, marginal
-Monte-Carlo EI/PI with CRN, antithetic draws and pathwise gradients, Sobol
-TuRBO candidates, Thompson selection,
+analytic EI/PI/UCB/log-EI, exact-envelope knowledge gradient, noisy expected
+improvement, marginal Monte-Carlo EI/PI with CRN, antithetic draws and
+pathwise gradients, Sobol TuRBO candidates, Thompson selection,
 gradient-based DTuRBO in-region acquisition search, exact posterior mean and
 standard-deviation Hessians, tested TuRBO-1/TuRBO-m and DTuRBO mode-2 drivers,
 trust-region traces, and an
