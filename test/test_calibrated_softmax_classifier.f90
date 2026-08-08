@@ -127,6 +127,16 @@ program test_calibrated_softmax_classifier
         2.0e-13_dp, &
         "deterministic OOF calibration", failures)
 
+    ! A rejected refit must not clear a previously deployed classifier.  This
+    ! is especially important for OOF calibration because the candidate can
+    ! fail before or after allocating fold/calibration buffers.
+    call model%fit(x, labels(1:2), status, options=options)
+    call check(.not. status_ok(status) .and. model%fitted(), &
+        "malformed OOF refit preserves fitted state", failures)
+    call model%predict_proba(x, probabilities_minus, status)
+    call check(status_ok(status) .and. maxval(abs(probabilities_minus-probabilities)) < &
+        2.0e-13_dp, "malformed OOF refit preserves probabilities", failures)
+
     cuda%kind = FORTML_DEVICE_CUDA
     cuda%selected = .true.
     cuda%available = .true.

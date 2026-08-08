@@ -11,7 +11,9 @@ module fortml_calibrated_softmax_classifier
     !! Platt slope/intercept coordinates.  Isotonic knots are fitted buffers,
     !! not trainable parameters.  CPU prediction and exact fixed-state
     !! input/parameter JVP and VJP products are available for temperature and
-    !! Platt; isotonic active-set products return a typed refusal.  CUDA
+    !! Platt; isotonic active-set products return a typed refusal.  A failed
+    !! fit leaves an existing deployment untouched because OOF folds and
+    !! calibration maps are committed from an isolated candidate.  CUDA
     !! requests return a typed refusal until a resident softmax-plus-
     !! calibration kernel is linked.
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
@@ -121,6 +123,43 @@ module fortml_calibrated_softmax_classifier
 contains
 
     subroutine calibrated_softmax_fit(self, x, labels, status, options, state, &
+            sample_weight, class_weight)
+        !! Fit transactionally, preserving a previous deployment on refusal.
+        !!
+        !! The implementation below fits an isolated candidate because the
+        !! base softmax estimator has an ``intent(out)`` fit contract.  A
+        !! malformed OOF request therefore cannot clear a previously fitted
+        !! calibrated classifier or leave half-updated calibration buffers.
+        class(calibrated_softmax_classifier_t), intent(inout) :: self
+        real(dp), intent(in) :: x(:, :)
+        integer, intent(in) :: labels(:)
+        type(fortnum_status_t), intent(out) :: status
+        type(calibrated_softmax_classifier_options_t), intent(in), optional :: options
+        type(calibrated_softmax_classifier_state_t), intent(out), optional :: state
+        real(dp), intent(in), optional :: sample_weight(:), class_weight(:)
+        type(calibrated_softmax_classifier_t) :: candidate
+        type(calibrated_softmax_classifier_state_t) :: candidate_state
+
+        call calibrated_softmax_fit_impl(candidate, x, labels, status, options, &
+            candidate_state, sample_weight, class_weight)
+        if (present(state)) state = candidate_state
+        if (status%code == FORTNUM_OK) call commit_calibrated_candidate(self, candidate)
+    end subroutine calibrated_softmax_fit
+
+    subroutine commit_calibrated_candidate(self, candidate)
+        class(calibrated_softmax_classifier_t), intent(inout) :: self
+        type(calibrated_softmax_classifier_t), intent(in) :: candidate
+
+        self%classifier = candidate%classifier
+        self%calibrator = candidate%calibrator
+        self%calibration_method_code = candidate%calibration_method_code
+        self%cv_fold_count = candidate%cv_fold_count
+        self%oof_log_loss_value = candidate%oof_log_loss_value
+        self%calibrated_oof_log_loss_value = candidate%calibrated_oof_log_loss_value
+        self%is_fitted = candidate%is_fitted
+    end subroutine commit_calibrated_candidate
+
+    subroutine calibrated_softmax_fit_impl(self, x, labels, status, options, state, &
             sample_weight, class_weight)
         class(calibrated_softmax_classifier_t), intent(out) :: self
         real(dp), intent(in) :: x(:, :)
@@ -288,7 +327,7 @@ contains
         self%is_fitted = .true.
         if (present(state)) state = result
         call status_set(status, FORTNUM_OK, "")
-    end subroutine calibrated_softmax_fit
+    end subroutine calibrated_softmax_fit_impl
 
     subroutine calibrated_softmax_decision(self, x, scores, status)
         class(calibrated_softmax_classifier_t), intent(in) :: self

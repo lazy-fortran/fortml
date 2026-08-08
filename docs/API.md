@@ -954,16 +954,22 @@ the JVP/VJP adjoint identity, isotonic refusal, and the CUDA boundary.
 `calibrated_softmax_classifier_t%fit(x,labels,status[,options,state,
 sample_weight,class_weight])` implements the multiclass analogue. It performs
 deterministic stratified out-of-fold softmax fits, fits one positive
-temperature on held-out logits, and refits the deployment softmax model on all
-rows. Sorted integer classes, nonnegative sample weights, positive class
-weights, and a minimum positive-weight count per fold are validated before any
-state is replaced. The packed deployment vector contains the softmax
-coefficients, intercepts, and temperature. Prediction and packed input or
-parameter JVP/VJP products are exact on the smooth temperature path. The
-implementation is CPU-only and returns `FORTNUM_NOT_IMPLEMENTED` for CUDA or
-unsupported multiclass Platt/isotonic policies. `test_calibrated_softmax_classifier`
-checks OOF replay, temperature products, malformed weights, and transactional
-refusals.
+temperature, one-vs-rest Platt sigmoid, or weighted one-vs-rest isotonic maps on
+held-out logits, and refits the deployment softmax model on all rows. Sorted
+integer classes, nonnegative sample weights, positive class weights, and a
+minimum positive-weight count per fold are validated before any state is
+replaced. The packed deployment vector contains the softmax coefficients,
+intercepts, and either `[temperature]`, interleaved `[slope,intercept]` Platt
+coordinates, or no calibration coordinates for isotonic. Prediction and
+packed input or parameter JVP/VJP products are exact on the smooth temperature
+and Platt paths. Isotonic values and labels are complete, while active-set
+products return `FORTNUM_NOT_IMPLEMENTED`. A failed fit is transactional: a
+previously fitted deployment remains usable when malformed inputs or options
+are refused. Selected CPU prediction is supported; every CUDA request returns
+a typed `FORTNUM_NOT_IMPLEMENTED` refusal until a resident softmax-plus-
+calibration kernel is linked. `test_calibrated_softmax_classifier` checks OOF
+replay for all policies, sorted labels, smooth products, malformed weights,
+transactional refits, isotonic refusals, and the CUDA boundary.
 
 ### `fortml_regression_metrics`
 

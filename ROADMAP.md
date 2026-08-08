@@ -1066,7 +1066,11 @@ The standalone `multiclass_probability_calibrator_t` now fits weighted
 one-vs-rest Platt sigmoid and isotonic maps with simplex normalization.
 `calibrated_softmax_classifier_t` routes both policies through deterministic
 stratified out-of-fold logits and refits the deployment softmax on all rows;
-multiclass generic estimator routing remains open.
+temperature, one-vs-rest Platt, and weighted one-vs-rest isotonic are all
+available. Smooth temperature/Platt products are exact, isotonic active-set
+products and all CUDA paths are typed refusals, and failed OOF fits preserve a
+previous deployment transactionally. Multiclass generic estimator routing
+remains open.
 
 | Family | Required variants | Current FortML baseline | Missing production gates |
 | --- | --- | --- | --- |
@@ -2119,6 +2123,13 @@ CUDA refusal until private CART storage is safely bound to the C ABI.
   return typed refusals. `test_calibrated_softmax_classifier` and
   `fortml-bench/results/CALIBRATED_SOFTMAX_CV.md` provide independent oracles
   and clean multi-policy provenance.
+- [x] Make multiclass calibrated-softmax OOF fitting transactional. The public
+  `fit` method now trains an isolated candidate and commits the softmax,
+  calibration buffers, method metadata, and OOF diagnostics only after every
+  fold, calibration map, and deployment refit succeeds. Malformed dimensions,
+  weights, options, and class support therefore leave an existing deployment
+  fitted and numerically unchanged; `test_calibrated_softmax_classifier`
+  checks this preservation contract independently.
 - [x] Add leakage-safe binary calibration-aware cross-validation through
   `calibrated_logistic_classifier_t`. Each deterministic stratified fold fits
   an independent logistic model, produces held-out margins for every sample,

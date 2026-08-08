@@ -11,13 +11,15 @@ program fortml_bench_calibrated_softmax_cv
     integer, parameter :: n_samples = 96, n_features = 2, n_classes = 3
     integer, parameter :: prediction_repetitions = 128
     real(dp) :: x(n_samples, n_features), probabilities(n_samples, n_classes)
-    integer :: labels(n_samples), predicted(n_samples)
+    real(dp) :: probabilities_after(n_samples, n_classes)
+    integer :: labels(n_samples), predicted(n_samples), predicted_after(n_samples)
     real(dp), allocatable :: parameters(:)
     type(calibrated_softmax_classifier_t) :: model
     type(calibrated_softmax_classifier_options_t) :: options
-    type(fortnum_status_t) :: status
+    type(fortnum_status_t) :: status, refit_status
     integer(int64) :: clock_start, clock_end, clock_rate
     real(dp) :: fit_seconds, predict_seconds
+    logical :: transactional_preserved
     character(len=1024) :: oracle_path
     character(len=32) :: method_name
     integer :: environment_status, unit, i, j, repetition
@@ -68,6 +70,13 @@ program fortml_bench_calibrated_softmax_cv
     call model%predict_proba(x, probabilities, status)
     call model%predict(x, predicted, status)
     if (.not. status_ok(status)) error stop "calibrated softmax prediction failed"
+    call model%fit(x, labels(1:2), refit_status, options=options)
+    call model%predict_proba(x, probabilities_after, status)
+    call model%predict(x, predicted_after, status)
+    transactional_preserved = .not. status_ok(refit_status) .and. model%fitted() .and. &
+        maxval(abs(probabilities_after - probabilities)) <= 2.0e-13_dp .and. &
+        all(predicted_after == predicted)
+    if (.not. status_ok(status)) error stop "transactional calibrated-softmax probe failed"
     call system_clock(clock_start, clock_rate)
     do repetition = 1, prediction_repetitions
         call model%predict_proba(x, probabilities, status)
@@ -94,6 +103,8 @@ program fortml_bench_calibrated_softmax_cv
         "oof_log_loss,", 1, ",", 1, ",", model%oof_log_loss()
     write (unit, '(a,i0,a,i0,a,es26.17e3)') &
         "calibrated_oof_log_loss,", 1, ",", 1, ",", model%calibrated_oof_log_loss()
+    write (unit, '(a,i0,a,i0,a,es26.17e3)') &
+        "transactional_preserved,", 1, ",", 1, ",", merge(1.0_dp, 0.0_dp, transactional_preserved)
     close (unit)
     write (*, '(a,a,a,es24.16)') "calibrated_softmax_cv_fit,", trim(method_name), ",", fit_seconds
     write (*, '(a,a,a,es24.16)') "calibrated_softmax_cv_predict,", trim(method_name), ",", predict_seconds
