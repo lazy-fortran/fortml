@@ -58,11 +58,6 @@ program test_symplectic
         (2.0_dp*epsilon))) < 2.0e-10_dp, "Verlet Jacobian derivative oracle", failures)
 
     residual_bar = [0.4_dp, -0.7_dp, 0.2_dp, 0.9_dp]
-    call symplectic_form_residual_vjp(jacobian, residual, jacobian_bar_fd, status)
-    lhs = sum(jacobian_bar*jacobian_dot)
-    rhs = sum(residual*0.0_dp)
-    rhs = sum(jacobian_bar_fd*jacobian_dot)
-    call check(status_ok(status), "Verlet residual VJP status", failures)
     ! Reuse an arbitrary residual cotangent for the adjoint identity.
     call symplectic_form_residual_vjp(jacobian, residual_bar, jacobian_bar_fd, status)
     call symplectic_form_residual_jvp(jacobian, jacobian_dot, residual, residual_dot, status)
