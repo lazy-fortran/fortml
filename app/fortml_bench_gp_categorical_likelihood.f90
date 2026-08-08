@@ -59,13 +59,6 @@ program fortml_bench_gp_categorical_likelihood
     if (.not. status_ok(status)) error stop "categorical likelihood probability JVP failed"
     call model%predict_proba_likelihood_parameter_vjp(x, probabilities_bar, parameter_bar, status)
     if (.not. status_ok(status)) error stop "categorical likelihood probability VJP failed"
-    cuda%kind = FORTML_DEVICE_CUDA
-    cuda%selected = .true.
-    cuda%available = .true.
-    call model%predict_proba_likelihood_parameter_jvp_device(cuda, x, [1.0_dp], probabilities, &
-        probabilities_dot, status)
-    cuda_code = status%code
-
     write (*, '(a,es24.16)') "gp_categorical_likelihood_scale,", model%likelihood_scale()
     write (*, '(a,es24.16)') "gp_categorical_likelihood_fit_seconds,", fit_seconds
     write (*, '(a,i0)') "gp_categorical_likelihood_iterations,", fit_state%iterations
@@ -80,5 +73,11 @@ program fortml_bench_gp_categorical_likelihood
                 i, ",", j, ",", probabilities(i, j), ",", probabilities_dot(i, j)
         end do
     end do
+    cuda%kind = FORTML_DEVICE_CUDA
+    cuda%selected = .true.
+    cuda%available = .true.
+    call model%predict_proba_likelihood_parameter_jvp_device(cuda, x, [1.0_dp], probabilities, &
+        probabilities_dot, status)
+    cuda_code = status%code
     write (*, '(a,i0)') "gp_categorical_likelihood_cuda_jvp,", cuda_code
 end program fortml_bench_gp_categorical_likelihood
