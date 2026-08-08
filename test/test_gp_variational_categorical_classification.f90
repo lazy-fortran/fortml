@@ -5,7 +5,7 @@ program test_gp_variational_categorical_classification
         gp_variational_categorical_classification_t, &
         gp_variational_categorical_options_t, gp_variational_categorical_state_t
     use fortml_kernels, only: kernel_t, make_rbf_kernel
-    use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU, FORTML_DEVICE_CUDA
+    use fortml_device, only: fortml_device_t, FORTML_DEVICE_CUDA
     use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_NOT_IMPLEMENTED
     implicit none
 
