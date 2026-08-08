@@ -12,7 +12,8 @@ if ! nvidia-smi >/dev/null 2>&1; then
 fi
 build_dir=$(mktemp -d /mnt/storage/fortml-cuda-adagrad.XXXXXX)
 trap 'rm -rf "$build_dir"' EXIT
-nvcc ${NVCCFLAGS:--O3 -arch=native} \
+read -r -a nvcc_flags <<< "${NVCCFLAGS:--O3 -arch=native}"
+nvcc "${nvcc_flags[@]}" \
     "$repo_dir/src/mlp/fortml_cuda_adagrad.cu" \
     "$repo_dir/test/test_cuda_adagrad_state.cu" \
     -o "$build_dir/test_cuda_adagrad_state"
