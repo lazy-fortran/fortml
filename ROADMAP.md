@@ -48,7 +48,7 @@ parameter snapshots and transfer counters. NVIDIA
 compiler coverage remains an
 explicit older-build result.
 
-The companion benchmark harness is clean at FortML-bench revision `5cc6da2`;
+The companion benchmark harness is clean at FortML-bench revision `280bc57`;
 the trainer-checkpoint, unfactored-Adafactor, binary-objective,
 multiclass-calibration, variational-multiclass-GP, PINN/physics-objective,
 physics HVP, grouped K-fold, spectral-mixture, XGBoost-ranking,
