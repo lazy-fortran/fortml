@@ -2317,12 +2317,19 @@ return status errors.
   graph is deliberately acyclic with no residual or conditional edges;
   `test_basis_fanout_pipeline` and the companion correctness-gated benchmark
   record this bounded contract.
+- [x] Add `basis_residual_pipeline_t` as a bounded named residual-sum DAG. A
+  main and residual `sequential_basis_pipeline_t` must agree on input and
+  feature shapes; value products sum the branches, reverse products sum input
+  cotangents, and packed branch parameters retain stable names and offsets.
+  CPU value/JVP/VJP/HVP products, metadata, and transactional typed CUDA
+  refusals are covered by `test_basis_residual_pipeline` and the independent
+  `results/BASIS_RESIDUAL_PIPELINE.md` lane.
 - [ ] Add parallel feature-union execution, device-resident transforms, and
   general column-wise transformer graphs beyond fixed basis maps.
-- [ ] Extend the bounded named fan-out/fan-in layer with residual branches,
-  conditional stages, explicit cycle detection, and parallel/device-resident
-  execution. Pipeline nodes expose local parameter blocks so hyperparameter
-  derivatives and optimizer routing remain composable through the full graph.
+- [ ] Extend the bounded named fan-out/fan-in layer with conditional stages,
+  explicit cycle detection, and parallel/device-resident execution. Pipeline
+  nodes expose local parameter blocks so hyperparameter derivatives and
+  optimizer routing remain composable through the full graph.
 - [x] Add bounded dense input-schema propagation to horizontal, sequential,
   and fan-out basis pipelines. `basis_input_schema_t` gives every input column
   a deterministic default or caller-supplied unique name, validates candidate
