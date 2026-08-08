@@ -122,3 +122,24 @@ directional JVP, the scalar adjoint, optimizer convergence, and typed refusal
 for unsupported optimizer/device choices. Mini-batch, schedules, clipping,
 and CUDA-resident Adagrad state remain separate contracts until their state and
 reproducibility derivatives are implemented.
+
+## Unfactored Adafactor trajectory contract
+
+`mlp_adafactor_hypergradient_objective_t` differentiates a fixed full-batch
+unfactored Adafactor trajectory. Its packed outer vector is
+
+```text
+[ log_learning_rate, log_l2, decay, log_epsilon, log_clip_threshold ]
+```
+
+The squared-gradient state, update-RMS clipping, and stabilized denominator are
+propagated with the MLP analytic HVP. Setting `relative_step` enables the
+deterministic `min(learning_rate, 1/sqrt(step))` rate branch; setting
+`scale_parameter` multiplies that rate by `max(parameter_rms, epsilon)`. Both
+branches include exact smooth-state JVP/VJP products and are accepted by the
+FortOpt L-BFGS-B adapter. A trajectory that lands on a clip, relative-rate, or
+parameter-scale transition returns `FORTNUM_NOT_IMPLEMENTED`, preserving the
+fixed active-set contract. Matrix-factored state and CUDA remain explicit
+refusals. `test_mlp_adafactor_hypergradient` independently checks central
+differences for the relative-step and parameter-scale branches, as well as
+the CUDA refusal.

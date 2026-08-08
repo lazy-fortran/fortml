@@ -96,17 +96,58 @@ program test_mlp_adafactor_hypergradient
     call check(status_ok(status), "Adafactor FortOpt context adapter", failures)
 
     bad_options = options
+    bad_options%relative_step = .true.
+    bad_options%learning_rate = 1.2_dp
+    bad_options%upper_log_learning_rate = 1.0_dp
+    call objective%initialize(model, train_x, train_target, validation_x, &
+        validation_target, bad_options, status)
+    call check(status_ok(status), "relative-step Adafactor initialization", failures)
+    metadata = objective%metadata()
+    call check(metadata%relative_step, "relative-step metadata", failures)
+    parameters = objective%parameters()
+    call objective%value_gradient(parameters, value, gradient, status)
+    call check(status_ok(status), "relative-step Adafactor value/gradient", failures)
+    h = 2.0e-6_dp
+    parameters(MLP_ADAFACTOR_LOG_LEARNING_RATE) = &
+        parameters(MLP_ADAFACTOR_LOG_LEARNING_RATE) + h
+    call objective%value_gradient(parameters, value_plus, vjp_gradient, status)
+    parameters(MLP_ADAFACTOR_LOG_LEARNING_RATE) = &
+        parameters(MLP_ADAFACTOR_LOG_LEARNING_RATE) - 2.0_dp*h
+    call objective%value_gradient(parameters, value_minus, vjp_gradient, status)
+    parameters(MLP_ADAFACTOR_LOG_LEARNING_RATE) = &
+        parameters(MLP_ADAFACTOR_LOG_LEARNING_RATE) + h
+    call check(status_ok(status) .and. &
+        abs(gradient(MLP_ADAFACTOR_LOG_LEARNING_RATE) - &
+        (value_plus-value_minus)/(2.0_dp*h)) < 4.0e-6_dp, &
+        "relative-step active branch central difference", failures)
+
+    bad_options = options
+    bad_options%scale_parameter = .true.
+    call objective%initialize(model, train_x, train_target, validation_x, &
+        validation_target, bad_options, status)
+    call check(status_ok(status), "parameter-scale Adafactor initialization", failures)
+    metadata = objective%metadata()
+    call check(metadata%scale_parameter, "parameter-scale metadata", failures)
+    parameters = objective%parameters()
+    call objective%value_gradient(parameters, value, gradient, status)
+    call check(status_ok(status), "parameter-scale Adafactor value/gradient", failures)
+    do i = 1, MLP_ADAFACTOR_HYPERPARAMETER_COUNT
+        parameters(i) = parameters(i) + h
+        call objective%value_gradient(parameters, value_plus, vjp_gradient, status)
+        parameters(i) = parameters(i) - 2.0_dp*h
+        call objective%value_gradient(parameters, value_minus, vjp_gradient, status)
+        parameters(i) = parameters(i) + h
+        call check(status_ok(status), "parameter-scale central-difference evaluations", failures)
+        call check(abs(gradient(i) - (value_plus-value_minus)/(2.0_dp*h)) < 6.0e-6_dp, &
+            "parameter-scale Adafactor central difference", failures)
+    end do
+
+    bad_options = options
     bad_options%device_kind = FORTML_DEVICE_CUDA
     call objective%initialize(model, train_x, train_target, validation_x, &
         validation_target, bad_options, status)
     call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
         "CUDA Adafactor hypergradient refusal", failures)
-    bad_options = options
-    bad_options%relative_step = .true.
-    call objective%initialize(model, train_x, train_target, validation_x, &
-        validation_target, bad_options, status)
-    call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
-        "relative-step Adafactor refusal", failures)
 
     ! Retain an import-level guard against accidentally confusing this packed
     ! layout with another optimizer's outer vector in client code.
