@@ -138,6 +138,7 @@ current surface is:
 | Exact GP regression | Kernel-parameter products, input derivatives, prediction products, and differentiated-solve HVPs; RBF, Matérn 1/2, 3/2, and 5/2, periodic, and rational-quadratic products use analytic leaves, with RBF and Matérn products cross-checked against FortSym-generated forms; `deep_kernel_gp_t` composes an MLP feature map with a dense exact GP and exposes feature/weight likelihood gradients | Approximate and matrix-free training products are partial; joint feature/kernel FortOpt training, KISS-GP/SKI, and resident CUDA execution remain open |
 | Derivative-observation GP | Mixed value/first-derivative observations, dense joint latent covariance, analytic parameter JVP/VJP products, exact query-input JVP/VJP products for RBF, Matérn 3/2 and 5/2, periodic, rational-quadratic, cosine, linear, constant, and supported sum/product leaves; validated user formulas carry analytic value/gradient/Hessian products; bounded scalar 1-D RBF/Matérn-5/2 `second_derivative_gp_t` supports mixed value/gradient/Hessian observations, order-four covariance blocks, order-five query JVP/VJP products, and latent joint covariance | The likelihood hyperparameter HVP is a documented deterministic central difference. Matérn 1/2 coincident derivative blocks, user-formula third-input products, polynomial derivative-GP parameter/query products, higher-order observations beyond the `0:2` reference, and resident CUDA covariance/solve kernels remain typed refusals |
 | Trees, boosting, and classifiers | Piecewise JVPs where declared, with split-boundary refusals; weighted LDA/QDA exposes smooth Gaussian probability products | Classifier HVPs, smooth split derivatives, and resident classifier GPU kernels remain open |
+| BNN, VAE, RNN, and most approximate GP paths | Value or model-specific gradient surfaces | Full JVP/VJP/HVP coverage is a roadmap item |
 
 `basis_fanout_pipeline_t` now supplies a bounded named DAG composition: each
 branch is an arbitrary sequential basis pipeline, forward features concatenate
@@ -153,7 +154,6 @@ wrong-count names are refused without mutating the previous schema. Dtype,
 sparse-layout, and estimator-wide metadata routing remain explicit roadmap
 boundaries; the CPU contract and typed device boundary are benchmarked in
 `fortml-bench/results/PIPELINE_SCHEMA.md`.
-| BNN, VAE, RNN, and most approximate GP paths | Value or model-specific gradient surfaces | Full JVP/VJP/HVP coverage is a roadmap item |
 
 `fortsym` is used when it proves a smaller or more stable closed form for a
 kernel or derivative leaf. `fortad` remains the general source-transformation
