@@ -1426,6 +1426,17 @@ when a lower-level primitive already exists.
   are independently certified. `test_mlp_weighted_validation_hypergradient`
   provides central-difference, adjoint, uniform-HVP, malformed-weight, and
   CUDA refusal oracles; see `docs/MLP_WEIGHTED_VALIDATION_HYPERGRADIENT.md`.
+- [x] Close the first exact outer-HVP slice for scheduled MLP trajectories.
+  A single affine dense layer with a constant typed learning-rate schedule now
+  propagates mixed second tangents through the fixed full-batch recurrence and
+  exposes an exact FortOpt-consumable `hvp` over log base rate and log L2.
+  Inactive schedule coordinates are exact zeros; nonlinear networks and
+  nonconstant schedules retain typed third-derivative/rate-second-product
+  refusals, and CUDA remains an explicit resident-kernel boundary. Central-FD,
+  Hessian-symmetry, FortOpt-callback, and typed-boundary tests plus the
+  independent NumPy release gate live in
+  `docs/MLP_CONSTANT_SCHEDULE_HVP.md` and
+  `fortml-bench/results/MLP_CONSTANT_SCHEDULE_HVP.md`.
 - [x] Add production Lion to `mlp_train`. The stateful CPU trainer now uses
   the beta1 interpolation and beta2 momentum recurrence, decoupled weight
   decay, clipping, schedules, EMA, validation, optimizer groups, and exact

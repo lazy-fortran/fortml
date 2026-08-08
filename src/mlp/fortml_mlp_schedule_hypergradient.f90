@@ -24,8 +24,9 @@ module fortml_mlp_schedule_hypergradient
         FORTNUM_OK, FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED, &
         FORTNUM_CONVERGENCE_ERROR
     use fortml_device, only: FORTML_DEVICE_CPU
-    use fortml_mlp, only: mlp_t
-    use fortml_mlp_schedules, only: mlp_learning_rate_schedule_t, MLP_SCHEDULE_ONE_CYCLE
+    use fortml_mlp, only: mlp_t, MLP_LINEAR
+    use fortml_mlp_schedules, only: mlp_learning_rate_schedule_t, &
+        MLP_SCHEDULE_CONSTANT, MLP_SCHEDULE_ONE_CYCLE
     use fortml_mlp_training, only: mlp_loss_value_gradient, mlp_loss_hvp
     use fortopt_objective, only: objective_t
     use fortopt_lbfgsb, only: lbfgsb_t, lbfgsb_options_t, lbfgsb_result_t
@@ -295,15 +296,14 @@ contains
     end subroutine schedule_hypergradient_vjp
 
     subroutine schedule_hypergradient_hvp(self, parameters, direction, product, status)
-        !! Refuse an outer hyper-HVP until third network derivatives are available.
+        !! Exact outer HVP for a constant-rate affine trajectory.
         !!
-        !! The inner trajectory already consumes the exact MLP HVP.  A Hessian
-        !! of the outer schedule objective additionally differentiates that HVP
-        !! with respect to the trajectory, which is a third derivative of a
-        !! nonlinear network loss.  Returning a typed refusal keeps callers
-        !! from accidentally treating a finite-difference approximation as an
-        !! exact product.
-        class(mlp_schedule_hypergradient_objective_t), intent(in) :: self
+        !! A one-layer linear MLP has a parameter-independent MSE Hessian, so
+        !! mixed second tangents through the fixed constant-rate schedule can
+        !! be propagated analytically.  Other schedule families retain a typed
+        !! refusal until their rate second products are specified; nonlinear
+        !! networks retain the third-derivative boundary.
+        class(mlp_schedule_hypergradient_objective_t), intent(inout) :: self
         real(dp), intent(in) :: parameters(:), direction(:)
         real(dp), intent(out) :: product(:)
         type(fortnum_status_t), intent(out) :: status
@@ -323,9 +323,123 @@ contains
                 "MLP schedule hypergradient HVP: objective is not initialized")
             return
         end if
-        call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
-            "MLP schedule hypergradient HVP requires third network derivatives")
+        if (self%layout%schedule_kind /= MLP_SCHEDULE_CONSTANT) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "MLP schedule hypergradient HVP requires schedule rate second products")
+            return
+        end if
+        if (.not. affine_one_layer(self%model)) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "MLP schedule hypergradient HVP requires one linear dense layer")
+            return
+        end if
+        call constant_schedule_affine_hvp(self, parameters, direction, product, status)
     end subroutine schedule_hypergradient_hvp
+
+    subroutine constant_schedule_affine_hvp(self, parameters, direction, product, status)
+        !! Mixed second tangent for the constant-rate affine branch.
+        class(mlp_schedule_hypergradient_objective_t), intent(inout) :: self
+        real(dp), intent(in) :: parameters(:), direction(:)
+        real(dp), intent(out) :: product(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: theta(:), theta_dot(:, :), theta_ddot(:, :)
+        real(dp), allocatable :: gradient(:), gradient_dot(:, :), gradient_ddot(:)
+        real(dp), allocatable :: theta_direction(:), gradient_direction(:)
+        real(dp), allocatable :: validation_gradient(:), validation_hvp(:)
+        real(dp) :: base_rate, l2, min_fraction, decay_factor
+        real(dp) :: base_direction, l2_direction, base_second, l2_second
+        real(dp) :: base_tangent, l2_tangent
+        real(dp) :: train_value, validation_value, l2_gradient, scalar_hvp
+        integer :: n_parameters, step, i
+
+        product = 0.0_dp
+        call unpack_parameters(parameters, base_rate, l2, min_fraction, decay_factor, status)
+        if (.not. status_ok(status)) return
+        n_parameters = size(self%initial_parameters)
+        allocate(theta, source=self%initial_parameters)
+        allocate(theta_dot(n_parameters, MLP_SCHEDULE_HYPERPARAMETER_COUNT))
+        allocate(theta_ddot(n_parameters, MLP_SCHEDULE_HYPERPARAMETER_COUNT))
+        allocate(gradient(n_parameters), gradient_dot(n_parameters, &
+            MLP_SCHEDULE_HYPERPARAMETER_COUNT), gradient_ddot(n_parameters))
+        allocate(theta_direction(n_parameters), gradient_direction(n_parameters))
+        theta_dot = 0.0_dp
+        theta_ddot = 0.0_dp
+        do step = 1, self%layout%inner_steps
+            call self%model%set_parameters(theta, status)
+            if (.not. status_ok(status)) return
+            call mlp_loss_value_gradient(self%model, self%train_x, self%train_target, &
+                l2, train_value, gradient, l2_gradient, status)
+            if (.not. status_ok(status)) return
+            theta_direction = matmul(theta_dot, direction)
+            gradient_direction = 0.0_dp
+            do i = 1, MLP_SCHEDULE_HYPERPARAMETER_COUNT
+                base_tangent = 0.0_dp
+                l2_tangent = 0.0_dp
+                if (i == MLP_SCHEDULE_LOG_BASE_RATE) then
+                    base_tangent = base_rate
+                else if (i == MLP_SCHEDULE_LOG_L2) then
+                    l2_tangent = l2
+                end if
+                call mlp_loss_hvp(self%model, self%train_x, self%train_target, l2, &
+                    theta_dot(:, i), l2_tangent, gradient_dot(:, i), scalar_hvp, status)
+                if (.not. status_ok(status)) return
+                gradient_direction = gradient_direction + direction(i)*gradient_dot(:, i)
+            end do
+            base_direction = base_rate*direction(MLP_SCHEDULE_LOG_BASE_RATE)
+            l2_direction = l2*direction(MLP_SCHEDULE_LOG_L2)
+            do i = 1, MLP_SCHEDULE_HYPERPARAMETER_COUNT
+                base_tangent = 0.0_dp
+                l2_tangent = 0.0_dp
+                base_second = 0.0_dp
+                l2_second = 0.0_dp
+                if (i == MLP_SCHEDULE_LOG_BASE_RATE) then
+                    base_tangent = base_rate
+                    base_second = base_rate*direction(MLP_SCHEDULE_LOG_BASE_RATE)
+                else if (i == MLP_SCHEDULE_LOG_L2) then
+                    l2_tangent = l2
+                    l2_second = l2*direction(MLP_SCHEDULE_LOG_L2)
+                end if
+                call mlp_loss_hvp(self%model, self%train_x, self%train_target, l2, &
+                    theta_ddot(:, i), l2_second, gradient_ddot, scalar_hvp, status)
+                if (.not. status_ok(status)) return
+                gradient_ddot = gradient_ddot + l2_direction*theta_dot(:, i) + &
+                    l2_tangent*theta_direction
+                theta_ddot(:, i) = theta_ddot(:, i) - base_second*gradient - &
+                    base_tangent*gradient_direction - base_direction*gradient_dot(:, i) - &
+                    base_rate*gradient_ddot
+                theta_dot(:, i) = theta_dot(:, i) - base_tangent*gradient - &
+                    base_rate*gradient_dot(:, i)
+            end do
+            theta = theta - base_rate*gradient
+            if (any(.not. ieee_is_finite(theta)) .or. &
+                any(.not. ieee_is_finite(theta_dot)) .or. &
+                any(.not. ieee_is_finite(theta_ddot))) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP schedule hypergradient HVP: trajectory is not finite")
+                return
+            end if
+        end do
+        call self%model%set_parameters(theta, status)
+        if (.not. status_ok(status)) return
+        allocate(validation_gradient(n_parameters), validation_hvp(n_parameters))
+        call mlp_loss_value_gradient(self%model, self%validation_x, self%validation_target, &
+            0.0_dp, validation_value, validation_gradient, l2_gradient, status)
+        if (.not. status_ok(status)) return
+        theta_direction = matmul(theta_dot, direction)
+        call mlp_loss_hvp(self%model, self%validation_x, self%validation_target, 0.0_dp, &
+            theta_direction, 0.0_dp, validation_hvp, scalar_hvp, status)
+        if (.not. status_ok(status)) return
+        do i = 1, MLP_SCHEDULE_HYPERPARAMETER_COUNT
+            product(i) = dot_product(validation_hvp, theta_dot(:, i)) + &
+                dot_product(validation_gradient, theta_ddot(:, i))
+        end do
+        if (any(.not. ieee_is_finite(product))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP schedule hypergradient HVP: product is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine constant_schedule_affine_hvp
 
     subroutine schedule_hypergradient_fortopt(self, objective, status)
         class(mlp_schedule_hypergradient_objective_t), target, intent(inout) :: self
@@ -742,6 +856,17 @@ contains
             size(gradient) == MLP_SCHEDULE_HYPERPARAMETER_COUNT .and. &
             all(ieee_is_finite(parameters))
     end function valid_parameter_vector
+
+    logical function affine_one_layer(model) result(valid)
+        !! Whether the model is a single dense affine map.
+        class(mlp_t), intent(in) :: model
+
+        valid = allocated(model%layer_sizes) .and. allocated(model%layer)
+        if (.not. valid) return
+        valid = size(model%layer_sizes) == 2 .and. size(model%layer) == 1 .and. &
+            model%hidden_activation == MLP_LINEAR .and. &
+            model%output_activation == MLP_LINEAR
+    end function affine_one_layer
 
     logical function finite_bounds(lower, upper) result(valid)
         real(dp), intent(in) :: lower, upper

@@ -58,11 +58,13 @@ derivatives through the linear warm-up and cosine tail. Therefore the
 `value_gradient`, `jvp`, and `vjp` paths share one objective and do not use
 finite-difference or optimizer fallback code.
 
-The type also exposes `hvp(parameters, direction, product, status)`.  It
-returns a typed `FORTNUM_NOT_IMPLEMENTED` refusal for valid inputs until the
-third network derivatives needed by an outer hyper-HVP are available; invalid
-shapes remain domain errors.  This boundary is tested rather than replaced by
-a hidden finite-difference approximation.
+The type also exposes `hvp(parameters, direction, product, status)`.  For a
+single affine layer and a constant schedule it is exact; see
+`MLP_CONSTANT_SCHEDULE_HVP.md`.  Nonlinear networks return a typed
+`FORTNUM_NOT_IMPLEMENTED` refusal because an outer hyper-HVP would require
+third network derivatives.  Nonconstant schedules likewise refuse until their
+rate second products are implemented.  Invalid shapes remain domain errors.
+These boundaries are tested rather than replaced by hidden finite differences.
 
 `mlp_optimize_schedule_hyperparameters` wraps the objective in FortOpt's
 projected L-BFGS-B implementation.  Bounds are on the packed log/logit
@@ -79,6 +81,7 @@ from CPU products; it is never represented as a host timing labelled CUDA.
 
 The release workload is `fortml_bench_mlp_schedule_hypergradient`; the
 independent benchmark harness records exact values, gradient components, and a
-directional JVP before retaining timing rows.  A second-order hyper-HVP would
-require third derivatives of the network loss and is kept as a separate
-capability boundary rather than approximated with finite differences.
+directional JVP before retaining timing rows.  The affine constant-rate HVP
+workload is `fortml_bench_mlp_constant_schedule_hvp`.  A second-order
+hyper-HVP for nonlinear or nonconstant trajectories remains a separate
+capability boundary rather than being approximated with finite differences.
