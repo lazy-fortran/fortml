@@ -20,7 +20,7 @@ program test_xgboost_multioutput
     type(lightgbm_options_t) :: lo
     type(fortnum_status_t) :: status
     type(fortml_device_t) :: cuda
-    real(dp) :: x(4, 1), targets(4, 2), values(4, 2), margin(4, 2)
+    real(dp) :: x(4, 1), x_missing(4, 1), targets(4, 2), values(4, 2), margin(4, 2)
     real(dp) :: staged(4, 1, 2), x_dot(4, 1), values_dot(4, 2), x_bar(4, 1)
     real(dp) :: output_bar(4, 2), parameter_dot(6), parameter_bar(6)
     real(dp) :: before(4, 2), bad_targets(4, 2)
@@ -97,6 +97,13 @@ program test_xgboost_multioutput
     call xgb%predict(x, values, status)
     call check(status_ok(status) .and. maxval(abs(values-before)) < 2.0e-13_dp, &
         "XGBoost malformed fit is transactional", failures)
+
+    x_missing = x
+    x_missing(2, 1) = ieee_value(0.0_dp, ieee_quiet_nan)
+    xo%missing_policy = "learn"
+    call xgb%fit(x_missing, targets, status, xo)
+    call check(status_ok(status), "XGBoost multi-output preserves missing policy", failures)
+    xo%missing_policy = "error"
 
     lo%n_estimators = 1
     lo%num_leaves = 2

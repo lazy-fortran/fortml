@@ -991,8 +991,12 @@ contains
         real(dp), intent(in), optional :: sample_weight(:), validation_x(:, :), &
             validation_targets(:, :), validation_weight(:)
 
+        ! Let each child enforce its own input policy.  In particular,
+        ! XGBoost may accept IEEE NaNs when `missing_policy` is `learn`,
+        ! `left`, or `right`; rejecting them here would silently narrow the
+        ! child contract.  Targets and weights remain finite-only.
         valid = size(x, 1) >= 2 .and. size(x, 2) >= 1 .and. size(targets, 1) == size(x, 1) .and. &
-            size(targets, 2) >= 1 .and. all(ieee_is_finite(x)) .and. all(ieee_is_finite(targets))
+            size(targets, 2) >= 1 .and. all(ieee_is_finite(targets))
         if (present(sample_weight)) valid = valid .and. size(sample_weight) == size(x, 1) .and. &
             all(ieee_is_finite(sample_weight)) .and. all(sample_weight > 0.0_dp)
         if (present(validation_x)) then
@@ -1001,7 +1005,7 @@ contains
             else
                 valid = valid .and. size(validation_x, 1) >= 1 .and. &
                     size(validation_targets, 1) == size(validation_x, 1) .and. &
-                    all(ieee_is_finite(validation_x)) .and. all(ieee_is_finite(validation_targets))
+                    all(ieee_is_finite(validation_targets))
             end if
         else if (present(validation_targets)) then
             valid = .false.
