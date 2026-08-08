@@ -1,11 +1,12 @@
 program test_mlp_adafactor_factored
     !! Independent row/column Adafactor oracle plus MLP integration contract.
     use fortnum_kinds, only: dp
-    use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_NOT_IMPLEMENTED
+    use fortnum_status, only: fortnum_status_t, status_ok
     use fortml_device, only: FORTML_DEVICE_CPU, FORTML_DEVICE_CUDA
     use fortml_mlp, only: mlp_t, MLP_LINEAR
     use fortml_mlp_training, only: mlp_training_options_t, mlp_training_state_t, &
         mlp_training_checkpoint_t, mlp_train, MLP_OPTIMIZER_ADAFACTOR
+    use fortml_mlp_checkpoint, only: mlp_checkpoint_save, mlp_checkpoint_load
     use fortml_adafactor_factored, only: adafactor_factored_t, &
         adafactor_block_spec_t
     implicit none
@@ -14,7 +15,7 @@ program test_mlp_adafactor_factored
 
     failures = 0
     call test_factored_recurrence(failures)
-    call test_mlp_integration_and_refusal(failures)
+    call test_mlp_integration_and_checkpoint(failures)
     if (failures > 0) then
         write (*, '(a,i0)') "FAIL factored Adafactor cases: ", failures
         error stop 1
@@ -83,14 +84,16 @@ contains
             "CPU support and typed CUDA capability", failures)
     end subroutine test_factored_recurrence
 
-    subroutine test_mlp_integration_and_refusal(failures)
+    subroutine test_mlp_integration_and_checkpoint(failures)
         integer, intent(inout) :: failures
-        type(mlp_t) :: model
-        type(mlp_training_options_t) :: options
-        type(mlp_training_state_t) :: state
-        type(mlp_training_checkpoint_t) :: checkpoint
+        type(mlp_t) :: model, full_model, resumed_model, loaded_model
+        type(mlp_training_options_t) :: options, full_options, split_options
+        type(mlp_training_state_t) :: state, full_state, split_state
+        type(mlp_training_checkpoint_t) :: checkpoint, full_checkpoint, split_checkpoint, loaded_checkpoint
         type(fortnum_status_t) :: status
         real(dp) :: x(4, 2), target(4, 1)
+        real(dp), allocatable :: initial_parameters(:), full_parameters(:), resumed_parameters(:), loaded_parameters(:)
+        character(*), parameter :: path = "test_mlp_adafactor_factored_checkpoint.txt"
 
         x = reshape([ -1.0_dp, 0.0_dp, 1.0_dp, 2.0_dp, &
             0.5_dp, -0.5_dp, 1.5_dp, -1.5_dp ], shape(x))
@@ -109,11 +112,52 @@ contains
         call check(status_ok(status) .and. state%updates == 2, &
             "MLP trainer integrates factored weight blocks", failures)
 
-        call model%initialize([2, 3, 1], status, output_activation=MLP_LINEAR)
-        call mlp_train(model, x, target, status, options, state, checkpoint=checkpoint)
-        call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
-            "factored checkpoint request is a typed refusal", failures)
-    end subroutine test_mlp_integration_and_refusal
+        full_options = options
+        full_options%max_epochs = 6
+        full_options%batch_size = 2
+        full_options%shuffle = .true.
+        full_options%shuffle_seed = 31
+        full_options%tolerance = 0.0_dp
+        split_options = full_options
+        split_options%max_epochs = 3
+        call full_model%initialize([2, 3, 1], status, output_activation=MLP_LINEAR)
+        call resumed_model%initialize([2, 3, 1], status, output_activation=MLP_LINEAR)
+        call loaded_model%initialize([2, 3, 1], status, output_activation=MLP_LINEAR)
+        initial_parameters = full_model%parameters()
+        call resumed_model%set_parameters(initial_parameters, status)
+        call loaded_model%set_parameters(initial_parameters, status)
+        call mlp_train(full_model, x, target, status, full_options, full_state, &
+            checkpoint=full_checkpoint)
+        call check(status_ok(status) .and. full_checkpoint%valid() .and. &
+            full_checkpoint%adafactor_factored, &
+            "factored full checkpoint capture", failures)
+        call mlp_train(resumed_model, x, target, status, split_options, split_state, &
+            checkpoint=split_checkpoint)
+        call check(status_ok(status) .and. split_checkpoint%valid() .and. &
+            split_checkpoint%n_adafactor_blocks == 4, &
+            "factored split checkpoint capture", failures)
+        call mlp_checkpoint_save(split_checkpoint, path, status)
+        call check(status_ok(status), "factored checkpoint formatted save", failures)
+        call mlp_checkpoint_load(loaded_checkpoint, path, status)
+        call check(status_ok(status) .and. loaded_checkpoint%valid() .and. &
+            loaded_checkpoint%adafactor_factored .and. &
+            maxval(abs(loaded_checkpoint%adafactor_row_moment - &
+            split_checkpoint%adafactor_row_moment)) < 1.0e-15_dp, &
+            "factored checkpoint formatted load", failures)
+        call mlp_train(resumed_model, x, target, status, full_options, split_state, &
+            checkpoint=split_checkpoint)
+        call check(status_ok(status), "factored native resume", failures)
+        call mlp_train(loaded_model, x, target, status, full_options, split_state, &
+            checkpoint=loaded_checkpoint)
+        call check(status_ok(status), "factored formatted resume", failures)
+        full_parameters = full_model%parameters()
+        resumed_parameters = resumed_model%parameters()
+        loaded_parameters = loaded_model%parameters()
+        call check(maxval(abs(full_parameters - resumed_parameters)) < 2.0e-14_dp .and. &
+            maxval(abs(full_parameters - loaded_parameters)) < 2.0e-14_dp, &
+            "factored uninterrupted/native/formatted trajectories agree", failures)
+        call execute_command_line("rm -f " // path)
+    end subroutine test_mlp_integration_and_checkpoint
 
     subroutine check(condition, description, failures)
         logical, intent(in) :: condition

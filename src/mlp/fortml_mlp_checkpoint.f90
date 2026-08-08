@@ -19,7 +19,7 @@ module fortml_mlp_checkpoint
 
     character(*), parameter, public :: MLP_CHECKPOINT_MAGIC = &
         "FORTML_MLP_CHECKPOINT_TEXT"
-    integer, parameter, public :: MLP_CHECKPOINT_SCHEMA_VERSION = 7
+    integer, parameter, public :: MLP_CHECKPOINT_SCHEMA_VERSION = 8
 
     public :: mlp_checkpoint_save
     public :: mlp_checkpoint_load
@@ -113,6 +113,17 @@ contains
         if (ios == 0) call write_r(unit, "beta1", checkpoint%beta1, ios)
         if (ios == 0) call write_r(unit, "beta2", checkpoint%beta2, ios)
         if (ios == 0) call write_r(unit, "epsilon", checkpoint%epsilon, ios)
+        if (ios == 0) call write_r(unit, "adafactor_decay", checkpoint%adafactor_decay, ios)
+        if (ios == 0) call write_r(unit, "adafactor_clip_threshold", &
+            checkpoint%adafactor_clip_threshold, ios)
+        if (ios == 0) call write_l(unit, "adafactor_relative_step", &
+            checkpoint%adafactor_relative_step, ios)
+        if (ios == 0) call write_l(unit, "adafactor_scale_parameter", &
+            checkpoint%adafactor_scale_parameter, ios)
+        if (ios == 0) call write_l(unit, "adafactor_factored", &
+            checkpoint%adafactor_factored, ios)
+        if (ios == 0) call write_i(unit, "n_adafactor_blocks", &
+            checkpoint%n_adafactor_blocks, ios)
         if (ios == 0) call write_r(unit, "rmsprop_decay", checkpoint%rmsprop_decay, ios)
         if (ios == 0) call write_r(unit, "rmsprop_momentum", &
             checkpoint%rmsprop_momentum, ios)
@@ -152,6 +163,22 @@ contains
             checkpoint%optimizer_group_learning_rate_multiplier, ios)
         if (ios == 0) call write_r_array(unit, "first_moment", checkpoint%first_moment, ios)
         if (ios == 0) call write_r_array(unit, "second_moment", checkpoint%second_moment, ios)
+        if (ios == 0) call write_optional_i_array(unit, "adafactor_block_first", &
+            checkpoint%adafactor_block_first, ios)
+        if (ios == 0) call write_optional_i_array(unit, "adafactor_block_last", &
+            checkpoint%adafactor_block_last, ios)
+        if (ios == 0) call write_optional_i_array(unit, "adafactor_block_rows", &
+            checkpoint%adafactor_block_rows, ios)
+        if (ios == 0) call write_optional_i_array(unit, "adafactor_block_columns", &
+            checkpoint%adafactor_block_columns, ios)
+        if (ios == 0) call write_optional_i_array(unit, "adafactor_block_factored", &
+            checkpoint%adafactor_block_factored, ios)
+        if (ios == 0) call write_optional_r_array(unit, "adafactor_row_moment", &
+            checkpoint%adafactor_row_moment, ios)
+        if (ios == 0) call write_optional_r_array(unit, "adafactor_column_moment", &
+            checkpoint%adafactor_column_moment, ios)
+        if (ios == 0) call write_optional_r_array(unit, "adafactor_second_moment", &
+            checkpoint%adafactor_second_moment, ios)
         if (ios == 0) call write_optional_r_array(unit, "max_second_moment", &
             checkpoint%max_second_moment, ios)
         if (ios == 0) call write_optional_r_array(unit, "rmsprop_buffer", &
@@ -269,6 +296,17 @@ contains
         if (ios == 0) call read_r(unit, "beta1", candidate%beta1, ios)
         if (ios == 0) call read_r(unit, "beta2", candidate%beta2, ios)
         if (ios == 0) call read_r(unit, "epsilon", candidate%epsilon, ios)
+        if (ios == 0) call read_r(unit, "adafactor_decay", candidate%adafactor_decay, ios)
+        if (ios == 0) call read_r(unit, "adafactor_clip_threshold", &
+            candidate%adafactor_clip_threshold, ios)
+        if (ios == 0) call read_l(unit, "adafactor_relative_step", &
+            candidate%adafactor_relative_step, ios)
+        if (ios == 0) call read_l(unit, "adafactor_scale_parameter", &
+            candidate%adafactor_scale_parameter, ios)
+        if (ios == 0) call read_l(unit, "adafactor_factored", &
+            candidate%adafactor_factored, ios)
+        if (ios == 0) call read_i(unit, "n_adafactor_blocks", &
+            candidate%n_adafactor_blocks, ios)
         if (ios == 0) call read_r(unit, "rmsprop_decay", candidate%rmsprop_decay, ios)
         if (ios == 0) call read_r(unit, "rmsprop_momentum", &
             candidate%rmsprop_momentum, ios)
@@ -317,6 +355,30 @@ contains
             "first_moment_item", candidate%n_parameters, candidate%first_moment, ios)
         if (ios == 0) call read_r_array(unit, "second_moment_count", &
             "second_moment_item", candidate%n_parameters, candidate%second_moment, ios)
+        if (ios == 0) call read_optional_i_array(unit, "adafactor_block_first_present", &
+            "adafactor_block_first_count", "adafactor_block_first_item", &
+            candidate%n_adafactor_blocks, candidate%adafactor_block_first, ios)
+        if (ios == 0) call read_optional_i_array(unit, "adafactor_block_last_present", &
+            "adafactor_block_last_count", "adafactor_block_last_item", &
+            candidate%n_adafactor_blocks, candidate%adafactor_block_last, ios)
+        if (ios == 0) call read_optional_i_array(unit, "adafactor_block_rows_present", &
+            "adafactor_block_rows_count", "adafactor_block_rows_item", &
+            candidate%n_adafactor_blocks, candidate%adafactor_block_rows, ios)
+        if (ios == 0) call read_optional_i_array(unit, "adafactor_block_columns_present", &
+            "adafactor_block_columns_count", "adafactor_block_columns_item", &
+            candidate%n_adafactor_blocks, candidate%adafactor_block_columns, ios)
+        if (ios == 0) call read_optional_i_array(unit, "adafactor_block_factored_present", &
+            "adafactor_block_factored_count", "adafactor_block_factored_item", &
+            candidate%n_adafactor_blocks, candidate%adafactor_block_factored, ios)
+        if (ios == 0) call read_optional_r_array(unit, "adafactor_row_moment_present", &
+            "adafactor_row_moment_count", "adafactor_row_moment_item", -1, &
+            candidate%adafactor_row_moment, ios)
+        if (ios == 0) call read_optional_r_array(unit, "adafactor_column_moment_present", &
+            "adafactor_column_moment_count", "adafactor_column_moment_item", -1, &
+            candidate%adafactor_column_moment, ios)
+        if (ios == 0) call read_optional_r_array(unit, "adafactor_second_moment_present", &
+            "adafactor_second_moment_count", "adafactor_second_moment_item", -1, &
+            candidate%adafactor_second_moment, ios)
         if (ios == 0) call read_optional_r_array(unit, "max_second_moment_present", &
             "max_second_moment_count", "max_second_moment_item", &
             candidate%n_parameters, candidate%max_second_moment, ios)
@@ -520,7 +582,8 @@ contains
         integer :: count, i, alloc_status
 
         call read_i(unit, count_key, count, ios)
-        if (ios /= 0 .or. count < 0 .or. count /= expected_count) then
+        if (ios /= 0 .or. count < 0 .or. &
+                (expected_count >= 0 .and. count /= expected_count)) then
             ios = 1
             return
         end if
@@ -543,7 +606,8 @@ contains
         integer :: count, i, alloc_status
 
         call read_i(unit, count_key, count, ios)
-        if (ios /= 0 .or. count < 0 .or. count /= expected_count) then
+        if (ios /= 0 .or. count < 0 .or. &
+                (expected_count >= 0 .and. count /= expected_count)) then
             ios = 1
             return
         end if

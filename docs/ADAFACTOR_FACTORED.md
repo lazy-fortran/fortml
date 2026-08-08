@@ -36,14 +36,15 @@ call optimizer%dense_second_moment(second_moment, status)
 
 The independent `test_mlp_adafactor_factored` fixture compares three updates
 against a separate row/column and vector recurrence, checks the dense-state
-reconstruction, and exercises the MLP trainer integration.
+reconstruction, exercises the MLP trainer integration, and compares
+uninterrupted training with native and formatted checkpoint resumes.
 
 ## Explicit boundaries
 
 The recurrence is CPU-resident. `step_device` reports
 `FORTNUM_NOT_IMPLEMENTED` for CUDA; it never copies a host vector and calls
-that GPU execution. The factored option currently refuses any checkpoint
-argument because the ragged row/column state is not yet part of the MLP
-checkpoint schema. The default vector Adafactor path remains fully
-checkpoint/resume compatible. These are typed boundaries, not silent
-fallbacks.
+that GPU execution. Factored checkpoints include block shape metadata and
+flattened row, column, and vector states, and the resume path rejects a
+different parameter layout before restoring any state. Formatted checkpoints
+use schema 8; the default vector Adafactor path remains checkpoint/resume
+compatible as before. These are typed boundaries, not silent fallbacks.

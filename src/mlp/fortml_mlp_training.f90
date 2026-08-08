@@ -268,6 +268,18 @@ module fortml_mlp_training
         real(dp), allocatable :: second_moment(:)
         real(dp), allocatable :: max_second_moment(:)
         real(dp), allocatable :: rmsprop_buffer(:)
+        !! Matrix-factored Adafactor state is flattened with explicit block
+        !! metadata so a checkpoint can reject a shape-compatible but
+        !! differently laid-out network rather than silently remapping rows.
+        integer :: n_adafactor_blocks = 0
+        integer, allocatable :: adafactor_block_first(:)
+        integer, allocatable :: adafactor_block_last(:)
+        integer, allocatable :: adafactor_block_rows(:)
+        integer, allocatable :: adafactor_block_columns(:)
+        integer, allocatable :: adafactor_block_factored(:)
+        real(dp), allocatable :: adafactor_row_moment(:)
+        real(dp), allocatable :: adafactor_column_moment(:)
+        real(dp), allocatable :: adafactor_second_moment(:)
         real(dp), allocatable :: ema_parameters(:)
         real(dp), allocatable :: best_parameters(:)
         real(dp), allocatable :: accumulated_gradient(:)
@@ -579,6 +591,14 @@ contains
         if (allocated(self%second_moment)) deallocate(self%second_moment)
         if (allocated(self%max_second_moment)) deallocate(self%max_second_moment)
         if (allocated(self%rmsprop_buffer)) deallocate(self%rmsprop_buffer)
+        if (allocated(self%adafactor_block_first)) deallocate(self%adafactor_block_first)
+        if (allocated(self%adafactor_block_last)) deallocate(self%adafactor_block_last)
+        if (allocated(self%adafactor_block_rows)) deallocate(self%adafactor_block_rows)
+        if (allocated(self%adafactor_block_columns)) deallocate(self%adafactor_block_columns)
+        if (allocated(self%adafactor_block_factored)) deallocate(self%adafactor_block_factored)
+        if (allocated(self%adafactor_row_moment)) deallocate(self%adafactor_row_moment)
+        if (allocated(self%adafactor_column_moment)) deallocate(self%adafactor_column_moment)
+        if (allocated(self%adafactor_second_moment)) deallocate(self%adafactor_second_moment)
         if (allocated(self%ema_parameters)) deallocate(self%ema_parameters)
         if (allocated(self%best_parameters)) deallocate(self%best_parameters)
         if (allocated(self%accumulated_gradient)) then
@@ -635,6 +655,7 @@ contains
         self%adafactor_relative_step = .false.
         self%adafactor_scale_parameter = .false.
         self%adafactor_factored = .false.
+        self%n_adafactor_blocks = 0
         self%rmsprop_decay = 0.99_dp
         self%rmsprop_momentum = 0.0_dp
         self%rmsprop_centered = .false.
@@ -731,6 +752,60 @@ contains
             valid = .false.
             return
         end if
+        if (self%optimizer == MLP_OPTIMIZER_ADAFACTOR .and. self%adafactor_factored) then
+            if (self%n_adafactor_blocks < 1 .or. &
+                    .not. allocated(self%adafactor_block_first) .or. &
+                    .not. allocated(self%adafactor_block_last) .or. &
+                    .not. allocated(self%adafactor_block_rows) .or. &
+                    .not. allocated(self%adafactor_block_columns) .or. &
+                    .not. allocated(self%adafactor_block_factored) .or. &
+                    .not. allocated(self%adafactor_row_moment) .or. &
+                    .not. allocated(self%adafactor_column_moment) .or. &
+                    .not. allocated(self%adafactor_second_moment)) then
+                valid = .false.
+                return
+            end if
+            valid = size(self%adafactor_block_first) == self%n_adafactor_blocks .and. &
+                size(self%adafactor_block_last) == self%n_adafactor_blocks .and. &
+                size(self%adafactor_block_rows) == self%n_adafactor_blocks .and. &
+                size(self%adafactor_block_columns) == self%n_adafactor_blocks .and. &
+                size(self%adafactor_block_factored) == self%n_adafactor_blocks
+            if (.not. valid) return
+            valid = all(self%adafactor_block_first >= 1) .and. &
+                all(self%adafactor_block_last >= self%adafactor_block_first) .and. &
+                all(self%adafactor_block_rows >= 1) .and. &
+                all(self%adafactor_block_columns >= 1) .and. &
+                all((self%adafactor_block_factored == 0) .or. &
+                    (self%adafactor_block_factored == 1))
+            if (.not. valid) return
+            valid = all(self%adafactor_block_last - self%adafactor_block_first + 1 == &
+                self%adafactor_block_rows*self%adafactor_block_columns)
+            if (.not. valid) return
+            valid = sum(merge(self%adafactor_block_rows, 0, &
+                self%adafactor_block_factored == 1)) == size(self%adafactor_row_moment) .and. &
+                sum(merge(self%adafactor_block_columns, 0, &
+                self%adafactor_block_factored == 1)) == size(self%adafactor_column_moment) .and. &
+                sum(merge(self%adafactor_block_last - self%adafactor_block_first + 1, 0, &
+                self%adafactor_block_factored == 0)) == size(self%adafactor_second_moment)
+            if (.not. valid) return
+            valid = all(ieee_is_finite(self%adafactor_row_moment)) .and. &
+                all(ieee_is_finite(self%adafactor_column_moment)) .and. &
+                all(ieee_is_finite(self%adafactor_second_moment)) .and. &
+                all(self%adafactor_row_moment >= 0.0_dp) .and. &
+                all(self%adafactor_column_moment >= 0.0_dp) .and. &
+                all(self%adafactor_second_moment >= 0.0_dp)
+        else
+            valid = .not. self%adafactor_factored .and. self%n_adafactor_blocks == 0 .and. &
+                .not. allocated(self%adafactor_block_first) .and. &
+                .not. allocated(self%adafactor_block_last) .and. &
+                .not. allocated(self%adafactor_block_rows) .and. &
+                .not. allocated(self%adafactor_block_columns) .and. &
+                .not. allocated(self%adafactor_block_factored) .and. &
+                .not. allocated(self%adafactor_row_moment) .and. &
+                .not. allocated(self%adafactor_column_moment) .and. &
+                .not. allocated(self%adafactor_second_moment)
+        end if
+        if (.not. valid) return
         if (self%ema_decay > 0.0_dp) then
             if (.not. allocated(self%ema_parameters)) then
                 valid = .false.
@@ -1419,13 +1494,6 @@ contains
             if (present(state)) state = result
             return
         end if
-        if (config%optimizer == MLP_OPTIMIZER_ADAFACTOR .and. &
-                config%adafactor_factored .and. present(checkpoint)) then
-            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
-                "MLP train: factored Adafactor checkpoint/resume is not serialized")
-            if (present(state)) state = result
-            return
-        end if
         if (config%precision_kind /= MLP_PRECISION_FP64) then
             call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
                 "MLP train: requested precision has no master-weight/loss-scaling implementation")
@@ -1484,6 +1552,9 @@ contains
                 incompatible_checkpoint = .true.
             end if
             if (checkpoint%adafactor_scale_parameter .neqv. config%adafactor_scale_parameter) then
+                incompatible_checkpoint = .true.
+            end if
+            if (checkpoint%adafactor_factored .neqv. config%adafactor_factored) then
                 incompatible_checkpoint = .true.
             end if
             if (checkpoint%rmsprop_decay /= config%rmsprop_decay) then
@@ -1744,6 +1815,19 @@ contains
                 if (adafactor_optimizer%learning_rate <= 0.0_dp) then
                     adafactor_optimizer%learning_rate = config%learning_rate
                 end if
+            else if (config%optimizer == MLP_OPTIMIZER_ADAFACTOR .and. &
+                    config%adafactor_factored) then
+                call restore_factored_adafactor_checkpoint(checkpoint, &
+                    adafactor_factored_optimizer, adafactor_specs, status)
+                if (status%code /= FORTNUM_OK) then
+                    if (present(state)) state = result
+                    return
+                end if
+                adafactor_factored_optimizer%step_count = checkpoint%adam_step_count
+                adafactor_factored_optimizer%learning_rate = checkpoint%last_learning_rate
+                if (adafactor_factored_optimizer%learning_rate <= 0.0_dp) then
+                    adafactor_factored_optimizer%learning_rate = config%learning_rate
+                end if
             else if (config%optimizer == MLP_OPTIMIZER_AMSGRAD) then
                 amsgrad_optimizer%first_moment = checkpoint%first_moment
                 amsgrad_optimizer%second_moment = checkpoint%second_moment
@@ -1961,7 +2045,8 @@ contains
                 if (present(checkpoint)) then
                     call checkpoint_capture(checkpoint, x, target, config, result, &
                         iterator, optimizer, adamw_optimizer, adagrad_optimizer, &
-                        rmsprop_optimizer, adafactor_optimizer, amsgrad_optimizer, &
+                        rmsprop_optimizer, adafactor_optimizer, adafactor_factored_optimizer, &
+                        amsgrad_optimizer, &
                         radam_optimizer, sgd_optimizer, lion_momentum, theta, &
                         best_theta, stale_epochs, &
                         epoch, microbatch_count, accumulated_samples, &
@@ -2060,7 +2145,8 @@ contains
             if (present(checkpoint)) then
                 call checkpoint_capture(checkpoint, x, target, config, result, &
                     iterator, optimizer, adamw_optimizer, adagrad_optimizer, &
-                    rmsprop_optimizer, adafactor_optimizer, amsgrad_optimizer, &
+                    rmsprop_optimizer, adafactor_optimizer, adafactor_factored_optimizer, &
+                    amsgrad_optimizer, &
                     radam_optimizer, sgd_optimizer, lion_momentum, theta, &
                     best_theta, stale_epochs, &
                     epoch, microbatch_count, accumulated_samples, &
@@ -2175,7 +2261,7 @@ contains
 
     subroutine checkpoint_capture(checkpoint, x, target, config, result, iterator, &
             optimizer, adamw_optimizer, adagrad_optimizer, rmsprop_optimizer, &
-            adafactor_optimizer, amsgrad_optimizer, &
+            adafactor_optimizer, adafactor_factored_optimizer, amsgrad_optimizer, &
             radam_optimizer, sgd_optimizer, lion_momentum, theta, best_theta, &
             stale_epochs, active_epoch, &
             active_microbatches, accumulated_samples, accumulated_gradient, &
@@ -2190,6 +2276,7 @@ contains
         type(adagrad_t), intent(in) :: adagrad_optimizer
         type(rmsprop_t), intent(in) :: rmsprop_optimizer
         type(adafactor_t), intent(in) :: adafactor_optimizer
+        type(adafactor_factored_t), intent(in) :: adafactor_factored_optimizer
         type(amsgrad_t), intent(in) :: amsgrad_optimizer
         type(radam_t), intent(in) :: radam_optimizer
         type(sgd_t), intent(in) :: sgd_optimizer
@@ -2256,7 +2343,11 @@ contains
                 end if
             end if
         else if (config%optimizer == MLP_OPTIMIZER_ADAFACTOR) then
-            if (.not. allocated(adafactor_optimizer%second_moment)) then
+            if (config%adafactor_factored) then
+                if (.not. adafactor_factored_optimizer%initialized()) then
+                    invalid_state = .true.
+                end if
+            else if (.not. allocated(adafactor_optimizer%second_moment)) then
                 invalid_state = .true.
             else if (size(adafactor_optimizer%second_moment) /= size(theta)) then
                 invalid_state = .true.
@@ -2368,7 +2459,11 @@ contains
         else if (config%optimizer == MLP_OPTIMIZER_ADAGRAD) then
             checkpoint%adam_step_count = adagrad_optimizer%step_count
         else if (config%optimizer == MLP_OPTIMIZER_ADAFACTOR) then
-            checkpoint%adam_step_count = adafactor_optimizer%step_count
+            if (config%adafactor_factored) then
+                checkpoint%adam_step_count = adafactor_factored_optimizer%step_count
+            else
+                checkpoint%adam_step_count = adafactor_optimizer%step_count
+            end if
         else if (config%optimizer == MLP_OPTIMIZER_AMSGRAD) then
             checkpoint%adam_step_count = amsgrad_optimizer%step_count
         else if (config%optimizer == MLP_OPTIMIZER_RADAM) then
@@ -2395,6 +2490,7 @@ contains
         checkpoint%adafactor_clip_threshold = config%adafactor_clip_threshold
         checkpoint%adafactor_relative_step = config%adafactor_relative_step
         checkpoint%adafactor_scale_parameter = config%adafactor_scale_parameter
+        checkpoint%adafactor_factored = config%adafactor_factored
         checkpoint%rmsprop_decay = config%rmsprop_decay
         checkpoint%rmsprop_momentum = config%rmsprop_momentum
         checkpoint%rmsprop_centered = config%rmsprop_centered
@@ -2431,9 +2527,19 @@ contains
             allocate(checkpoint%second_moment(size(theta)))
             checkpoint%second_moment = 0.0_dp
         else if (config%optimizer == MLP_OPTIMIZER_ADAFACTOR) then
-            allocate(checkpoint%first_moment, source=adafactor_optimizer%second_moment)
-            allocate(checkpoint%second_moment(size(theta)))
-            checkpoint%second_moment = 0.0_dp
+            if (config%adafactor_factored) then
+                allocate(checkpoint%first_moment(size(theta)))
+                checkpoint%first_moment = 0.0_dp
+                allocate(checkpoint%second_moment(size(theta)))
+                checkpoint%second_moment = 0.0_dp
+                call capture_factored_adafactor_state(checkpoint, &
+                    adafactor_factored_optimizer, status)
+                if (status%code /= FORTNUM_OK) return
+            else
+                allocate(checkpoint%first_moment, source=adafactor_optimizer%second_moment)
+                allocate(checkpoint%second_moment(size(theta)))
+                checkpoint%second_moment = 0.0_dp
+            end if
         else if (config%optimizer == MLP_OPTIMIZER_AMSGRAD) then
             allocate(checkpoint%first_moment, source=amsgrad_optimizer%first_moment)
             allocate(checkpoint%second_moment, source=amsgrad_optimizer%second_moment)
@@ -2709,6 +2815,125 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine adafactor_specs_from_layout
+
+    subroutine capture_factored_adafactor_state(checkpoint, optimizer, status)
+        type(mlp_training_checkpoint_t), intent(inout) :: checkpoint
+        type(adafactor_factored_t), intent(in) :: optimizer
+        type(fortnum_status_t), intent(out) :: status
+        integer :: i, row_total, column_total, second_total
+        integer :: row_position, column_position, second_position
+
+        if (.not. optimizer%initialized() .or. .not. allocated(optimizer%blocks) .or. &
+                .not. allocated(optimizer%state)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP checkpoint: factored Adafactor is not initialized")
+            return
+        end if
+        checkpoint%n_adafactor_blocks = size(optimizer%blocks)
+        allocate(checkpoint%adafactor_block_first(checkpoint%n_adafactor_blocks), &
+            checkpoint%adafactor_block_last(checkpoint%n_adafactor_blocks), &
+            checkpoint%adafactor_block_rows(checkpoint%n_adafactor_blocks), &
+            checkpoint%adafactor_block_columns(checkpoint%n_adafactor_blocks), &
+            checkpoint%adafactor_block_factored(checkpoint%n_adafactor_blocks))
+        row_total = 0
+        column_total = 0
+        second_total = 0
+        do i = 1, checkpoint%n_adafactor_blocks
+            checkpoint%adafactor_block_first(i) = optimizer%blocks(i)%first
+            checkpoint%adafactor_block_last(i) = optimizer%blocks(i)%last
+            checkpoint%adafactor_block_rows(i) = optimizer%blocks(i)%rows
+            checkpoint%adafactor_block_columns(i) = optimizer%blocks(i)%columns
+            checkpoint%adafactor_block_factored(i) = merge(1, 0, optimizer%blocks(i)%factored)
+            if (optimizer%blocks(i)%factored) then
+                row_total = row_total + optimizer%blocks(i)%rows
+                column_total = column_total + optimizer%blocks(i)%columns
+            else
+                second_total = second_total + optimizer%blocks(i)%last - &
+                    optimizer%blocks(i)%first + 1
+            end if
+        end do
+        allocate(checkpoint%adafactor_row_moment(row_total), &
+            checkpoint%adafactor_column_moment(column_total), &
+            checkpoint%adafactor_second_moment(second_total))
+        row_position = 1
+        column_position = 1
+        second_position = 1
+        do i = 1, checkpoint%n_adafactor_blocks
+            if (optimizer%blocks(i)%factored) then
+                checkpoint%adafactor_row_moment(row_position:row_position + &
+                    optimizer%blocks(i)%rows - 1) = optimizer%state(i)%row_moment
+                checkpoint%adafactor_column_moment(column_position:column_position + &
+                    optimizer%blocks(i)%columns - 1) = optimizer%state(i)%column_moment
+                row_position = row_position + optimizer%blocks(i)%rows
+                column_position = column_position + optimizer%blocks(i)%columns
+            else
+                checkpoint%adafactor_second_moment(second_position:second_position + &
+                    optimizer%blocks(i)%last - optimizer%blocks(i)%first) = &
+                    optimizer%state(i)%second_moment
+                second_position = second_position + optimizer%blocks(i)%last - &
+                    optimizer%blocks(i)%first + 1
+            end if
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine capture_factored_adafactor_state
+
+    subroutine restore_factored_adafactor_checkpoint(checkpoint, optimizer, specs, status)
+        type(mlp_training_checkpoint_t), intent(in) :: checkpoint
+        type(adafactor_factored_t), intent(inout) :: optimizer
+        type(adafactor_block_spec_t), intent(in) :: specs(:)
+        type(fortnum_status_t), intent(out) :: status
+        integer :: i, row_total, column_total, second_total
+        integer :: row_position, column_position, second_position
+
+        if (.not. checkpoint%adafactor_factored .or. checkpoint%n_adafactor_blocks /= size(specs) .or. &
+                .not. optimizer%initialized() .or. size(optimizer%blocks) /= size(specs)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP checkpoint: factored Adafactor layout is incompatible")
+            return
+        end if
+        do i = 1, size(specs)
+            if (checkpoint%adafactor_block_first(i) /= specs(i)%first .or. &
+                    checkpoint%adafactor_block_last(i) /= specs(i)%last .or. &
+                    checkpoint%adafactor_block_rows(i) /= specs(i)%rows .or. &
+                    checkpoint%adafactor_block_columns(i) /= specs(i)%columns .or. &
+                    (checkpoint%adafactor_block_factored(i) == 1) .neqv. specs(i)%factored) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP checkpoint: factored Adafactor layout is incompatible")
+                return
+            end if
+        end do
+        row_total = sum(merge(specs%rows, 0, specs%factored))
+        column_total = sum(merge(specs%columns, 0, specs%factored))
+        second_total = sum(merge(specs%last - specs%first + 1, 0, .not. specs%factored))
+        if (.not. allocated(checkpoint%adafactor_row_moment) .or. &
+                .not. allocated(checkpoint%adafactor_column_moment) .or. &
+                .not. allocated(checkpoint%adafactor_second_moment) .or. &
+                size(checkpoint%adafactor_row_moment) /= row_total .or. &
+                size(checkpoint%adafactor_column_moment) /= column_total .or. &
+                size(checkpoint%adafactor_second_moment) /= second_total) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP checkpoint: factored Adafactor state is malformed")
+            return
+        end if
+        row_position = 1
+        column_position = 1
+        second_position = 1
+        do i = 1, size(specs)
+            if (specs(i)%factored) then
+                optimizer%state(i)%row_moment = checkpoint%adafactor_row_moment(row_position: &
+                    row_position + specs(i)%rows - 1)
+                optimizer%state(i)%column_moment = checkpoint%adafactor_column_moment(column_position: &
+                    column_position + specs(i)%columns - 1)
+                row_position = row_position + specs(i)%rows
+                column_position = column_position + specs(i)%columns
+            else
+                optimizer%state(i)%second_moment = checkpoint%adafactor_second_moment(second_position: &
+                    second_position + specs(i)%last - specs(i)%first)
+                second_position = second_position + specs(i)%last - specs(i)%first + 1
+            end if
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine restore_factored_adafactor_checkpoint
 
     logical function valid_lbfgsb_options(options) result(valid)
         type(mlp_lbfgsb_options_t), intent(in) :: options
