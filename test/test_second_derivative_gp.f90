@@ -96,6 +96,12 @@ program test_second_derivative_gp
     call check(status%code == FORTNUM_NOT_IMPLEMENTED, "typed CUDA prediction refusal", failures)
     call model%joint_covariance_device(cuda, query, query_orders, covariance, status)
     call check(status%code == FORTNUM_NOT_IMPLEMENTED, "typed CUDA covariance refusal", failures)
+    call model%predict_input_jvp_device(cuda, query, query_orders, direction, mean, mean_dot, &
+        variance, variance_dot, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED, "typed CUDA input JVP refusal", failures)
+    call model%predict_input_vjp_device(cuda, query, query_orders, mean_bar, variance_bar, &
+        query_bar, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED, "typed CUDA input VJP refusal", failures)
     call check(.not. model%device_supported(FORTML_DEVICE_CUDA), "CUDA capability metadata", failures)
 
     matern = make_matern32_kernel(1, 1.6_dp, 0.75_dp, status)
