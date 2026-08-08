@@ -221,8 +221,10 @@ The classification surface also includes `fortml_gp_multilabel_classification`,
 which fits independent weighted logistic/probit Laplace-GP heads for dense
 indicator targets and exposes packed/input JVP/VJP products plus explicit CPU/
 CUDA capability metadata. It also includes `fortml_calibrated_softmax_classifier`
-for leakage-safe stratified OOF softmax calibration with a positive temperature,
-packed temperature products, and a typed CUDA refusal. It also includes
+for leakage-safe stratified OOF softmax calibration with positive temperature,
+one-vs-rest Platt, and weighted isotonic policies. Temperature and Platt have
+packed smooth products; isotonic active-set products and every CUDA path are
+typed refusals, and malformed refits preserve a deployed candidate. It also includes
 `fortml_gp_variational_categorical_classification`:
 it fits a variance-corrected shared-softmax ELBO with bounded FortOpt and exposes
 packed/input JVP/VJP products plus typed CUDA refusal. Its positive softmax
