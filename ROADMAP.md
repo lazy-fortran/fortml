@@ -54,7 +54,7 @@ compiler coverage remains an
 explicit older-build result.
 
 The companion benchmark harness is clean at FortML-bench revision
-`1a972e731cb63a3f612330f9a35874d1800aba29`,
+`fd1e80e2533fe756041749ae0224607c91f84ad1`,
 the trainer-checkpoint, unfactored-Adafactor, binary-objective,
 multiclass-calibration, variational-multiclass-GP, PINN/physics-objective,
 physics HVP, grouped K-fold, spectral-mixture, XGBoost-ranking,
@@ -93,7 +93,8 @@ The latent-Gaussian ordinal GP and Student-t process lanes add independent
 NumPy/analytic contract rows with typed CUDA boundaries; the LightGBM lane now
 also records versioned text and binary persistence round trips and malformed-
 record refusals. Known-noise heteroskedastic GP has an independent CPU oracle
-in `test_heteroskedastic_gp`; its release benchmark remains a follow-up lane.
+in `test_heteroskedastic_gp` and a release lane in
+`results/HETEROSKEDASTIC_GP.md`.
 
 ### 2026-08-08 parity and provenance slice
 
@@ -127,7 +128,7 @@ remain open. The source and benchmark pins for this earlier optimizer-group
 slice were FortML `05632ce8fa95268417c7a2d979fa1461a202abaa` and
 FortML-bench `0fb8ac7`; the current aggregate verification is the newer
 `6ccfb1482403632d794c67c11443272866b34512`/
-`1a972e731cb63a3f612330f9a35874d1800aba29` pair recorded above.
+`fd1e80e2533fe756041749ae0224607c91f84ad1` pair recorded above.
 
 The variational-GP classification and OVR wrappers now expose fixed-state
 kernel-log-parameter JVP/VJP products for latent margins and normalized
