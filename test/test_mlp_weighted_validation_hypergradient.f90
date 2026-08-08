@@ -90,6 +90,7 @@ program test_mlp_weighted_validation_hypergradient
         "non-uniform validation HVP typed refusal", failures)
 
     validation_weight = [1.0_dp, 1.0_dp, 1.0_dp]
+    call model%set_parameters([0.13_dp, -0.08_dp], status)
     call objective%initialize(model, train_x, train_target, validation_x, &
         validation_target, options, status, validation_weight)
     call check(status_ok(status), "uniform validation reinitialization", failures)

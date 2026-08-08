@@ -62,6 +62,8 @@ program fortml_bench_mlp_weighted_validation_hypergradient
         error stop "weighted validation non-uniform HVP boundary failed"
     end if
 
+    call model%set_parameters([0.13_dp, -0.08_dp], status)
+    if (.not. status_ok(status)) error stop "uniform validation benchmark reset failed"
     call objective%initialize(model, train_x, train_target, validation_x, &
         validation_target, options, status)
     if (.not. status_ok(status)) error stop "uniform validation benchmark setup failed"
