@@ -1,0 +1,42 @@
+# MLP optimizer-group trajectory hypergradients
+
+`fortml_mlp_optimizer_group_hypergradient` exposes the production trainer's
+contiguous optimizer-group update rule to FortOpt hyperparameter search. The
+fixed full-batch SGD trajectory packs
+
+```text
+[ log(learning_rate), log(l2), log(multiplier_1), ..., log(multiplier_g) ]
+```
+
+Group names and ranges are discrete metadata captured at initialization.
+Every update uses the same post-optimizer scaling as `mlp_train`: parameters in
+group `i` receive `multiplier_i` times the shared SGD delta, while uncovered
+parameters retain multiplier one. The outer coordinates are differentiable
+through the MLP analytic HVP, the learning rate, L2, and every group
+multiplier. `value_gradient`, `jvp`, `vjp`, and the FortOpt bounded L-BFGS-B
+adapter share one deterministic objective; no finite-difference optimizer
+fallback is used.
+
+The current adapter deliberately covers plain full-batch SGD first. Momentum,
+Adam-family state, schedules, clipping, minibatch cursors, and resident CUDA
+group state remain separate capability boundaries. CUDA requests return typed
+`FORTNUM_NOT_IMPLEMENTED`; invalid or overlapping ranges are domain errors.
+
+```fortran
+use fortml_mlp_training, only: mlp_optimizer_group_t
+use fortml_mlp_optimizer_group_hypergradient, only: &
+    mlp_optimizer_group_hypergradient_options_t, &
+    mlp_optimize_optimizer_group_hyperparameters
+
+call weight_group%initialize("weights", 1, 4, 0.5_dp, status)
+call bias_group%initialize("bias", 5, 5, 1.0_dp, status)
+allocate(options%groups(2))
+options%groups = [weight_group, bias_group]
+call mlp_optimize_optimizer_group_hyperparameters(model, train_x, train_y, &
+    validation_x, validation_y, options, result, status)
+```
+
+`test_mlp_optimizer_group_hypergradient` checks an independent central-
+finite-difference oracle for every packed coordinate, JVP contraction, scalar
+VJP scaling, exact parity with `mlp_train`'s group update, FortOpt result
+coordinates, overlap validation, and the typed CUDA refusal.
