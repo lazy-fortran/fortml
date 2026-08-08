@@ -192,6 +192,7 @@ repeated resident-batch evidence.
 | `mlp_rmsprop_hypergradient_objective_t` | Validation MSE after fixed full-batch RMSprop trajectory | Packed `[log(learning_rate),log(l2),decay,log(epsilon),momentum]` JVP | Exact trajectory value gradient and scalar VJP | Forward state sensitivities; inner MLP HVP |
 | `mlp_adagrad_hypergradient_objective_t` | Validation MSE after fixed full-batch Adagrad trajectory | Packed `[log(learning_rate),log(l2),log(epsilon)]` JVP | Exact trajectory value gradient and scalar VJP | Forward accumulated-square sensitivities; inner MLP HVP |
 | `mlp_adafactor_hypergradient_objective_t` | Validation MSE after fixed full-batch unfactored Adafactor trajectory | Packed `[log(learning_rate),log(l2),decay,log(epsilon),log(clip_threshold)]` JVP | Exact trajectory value gradient and scalar VJP | Forward second-moment, update-RMS clipping, and denominator sensitivities; active-set and discrete branches refuse |
+| `adafactor_factored_t` | Layout-aware matrix-factorized Adafactor with vector fallback | Parameter update | Dense second-moment inspection | Explicit row/column state for matrix blocks; CPU recurrence; CUDA and checkpoint/resume are typed refusals |
 | `mlp_schedule_hypergradient_objective_t` | Validation MSE after a typed scheduled full-batch trajectory | Packed `[log(base_rate),log(l2),logit(min_fraction),logit(decay_factor)]` JVP | Exact schedule/trajectory value gradient and scalar VJP | Inner MLP HVP; outer hyper-HVP is not approximated |
 | `mlp_minibatch_hypergradient_objective_t` | Validation MSE after a fixed seeded mini-batch SGD trajectory | Packed `[log(learning_rate),log(l2)]` JVP | Exact batch-cursor trajectory value gradient and scalar VJP | Per-batch MLP HVP; outer hyper-HVP is a typed refusal |
 | `mlp_minibatch_adam_hypergradient_objective_t` | Validation MSE after a fixed seeded mini-batch coupled-L2 Adam trajectory | Packed `[log(learning_rate),log(l2)]` JVP | Exact batch-cursor trajectory value gradient and scalar VJP | Forward parameter/moment/bias-correction sensitivities; outer hyper-HVP is a typed refusal |
@@ -1814,8 +1815,12 @@ step. Its accumulator and step counter are checkpointed and restored exactly.
 as `FORTML_TRAIN_ADAFACTOR`, with `adafactor_decay`,
 `adafactor_clip_threshold`, optional relative-step and parameter scaling. Its
 second moment and step counter are checkpointed and compared on resume; true
-matrix-factorized state, optimizer-trajectory hypergradients, and CUDA-resident
-Adafactor remain explicit follow-up contracts.
+matrix-factorized state is available by setting
+`options%adafactor_factored=.true.`. The layout-aware path factors dense weight
+blocks and keeps bias/singleton blocks unfactored; see
+[`ADAFACTOR_FACTORED.md`](ADAFACTOR_FACTORED.md). Its ragged row/column state is
+not yet part of the checkpoint schema, so a checkpoint argument returns
+`FORTNUM_NOT_IMPLEMENTED`, and CUDA-resident Adafactor remains a typed refusal.
 `MLP_OPTIMIZER_AMSGRAD` keeps the Adam first and second moments plus an
 elementwise maximum second moment. Bias correction is applied to both moments,
 and the maximum is checkpointed in `max_second_moment` (in-memory format 8,

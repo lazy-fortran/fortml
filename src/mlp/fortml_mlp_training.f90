@@ -14,7 +14,7 @@ module fortml_mlp_training
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
         FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED, FORTNUM_CONVERGENCE_ERROR
-    use fortml_mlp, only: mlp_t
+    use fortml_mlp, only: mlp_t, mlp_parameter_block_t
     use fortml_mlp_schedules, only: mlp_learning_rate_schedule_t
     use fortml_losses, only: weighted_mse_loss_value, weighted_mse_loss_vjp, &
         weighted_mse_loss_hvp
@@ -25,6 +25,8 @@ module fortml_mlp_training
     use fortopt_rmsprop, only: rmsprop_t
     use fortopt_sgd, only: sgd_t
     use fortml_adafactor, only: adafactor_t
+    use fortml_adafactor_factored, only: adafactor_factored_t, &
+        adafactor_block_spec_t
     use fortml_amsgrad, only: amsgrad_t
     use fortml_radam, only: radam_t
     use fortopt_lbfgsb, only: lbfgsb_t, lbfgsb_options_t, lbfgsb_result_t
@@ -121,6 +123,10 @@ module fortml_mlp_training
         real(dp) :: adafactor_clip_threshold = 1.0_dp
         logical :: adafactor_relative_step = .false.
         logical :: adafactor_scale_parameter = .false.
+        !! Use row/column factored state for matrix-shaped MLP weight blocks.
+        !! Checkpoint/resume is a typed refusal until its ragged factor state
+        !! is serialized; the default vector recurrence remains resumable.
+        logical :: adafactor_factored = .false.
         real(dp) :: rmsprop_decay = 0.99_dp
         real(dp) :: rmsprop_momentum = 0.0_dp
         logical :: rmsprop_centered = .false.
@@ -232,6 +238,7 @@ module fortml_mlp_training
         real(dp) :: adafactor_clip_threshold = 1.0_dp
         logical :: adafactor_relative_step = .false.
         logical :: adafactor_scale_parameter = .false.
+        logical :: adafactor_factored = .false.
         real(dp) :: rmsprop_decay = 0.99_dp
         real(dp) :: rmsprop_momentum = 0.0_dp
         logical :: rmsprop_centered = .false.
@@ -623,6 +630,7 @@ contains
         self%adafactor_clip_threshold = 1.0_dp
         self%adafactor_relative_step = .false.
         self%adafactor_scale_parameter = .false.
+        self%adafactor_factored = .false.
         self%rmsprop_decay = 0.99_dp
         self%rmsprop_momentum = 0.0_dp
         self%rmsprop_centered = .false.
@@ -1355,6 +1363,7 @@ contains
         type(rmsprop_t) :: rmsprop_optimizer
         type(sgd_t) :: sgd_optimizer
         type(adafactor_t) :: adafactor_optimizer
+        type(adafactor_factored_t) :: adafactor_factored_optimizer
         type(mlp_batch_iterator_t) :: iterator
         type(radam_t) :: radam_optimizer
         real(dp), allocatable :: theta(:), theta_before(:), best_theta(:), gradient(:)
@@ -1376,6 +1385,8 @@ contains
         logical :: incompatible_checkpoint
         logical :: has_typed_schedule
         type(mlp_learning_rate_schedule_t) :: schedule_config
+        type(mlp_parameter_block_t), allocatable :: parameter_layout(:)
+        type(adafactor_block_spec_t), allocatable :: adafactor_specs(:)
 
         resuming = .false.
         validation_loss = huge(1.0_dp)
@@ -1397,6 +1408,13 @@ contains
             (present(validation_x) .neqv. present(validation_target))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "MLP train: invalid model, data, or options")
+            if (present(state)) state = result
+            return
+        end if
+        if (config%optimizer == MLP_OPTIMIZER_ADAFACTOR .and. &
+                config%adafactor_factored .and. present(checkpoint)) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "MLP train: factored Adafactor checkpoint/resume is not serialized")
             if (present(state)) state = result
             return
         end if
@@ -1637,11 +1655,26 @@ contains
             call adagrad_optimizer%initialize(n_parameters, status, &
                 learning_rate=config%learning_rate, epsilon=config%epsilon)
         else if (config%optimizer == MLP_OPTIMIZER_ADAFACTOR) then
-            call adafactor_optimizer%initialize(n_parameters, status, &
-                learning_rate=config%learning_rate, decay=config%adafactor_decay, &
-                epsilon=config%epsilon, clip_threshold=config%adafactor_clip_threshold, &
-                relative_step=config%adafactor_relative_step, &
-                scale_parameter=config%adafactor_scale_parameter)
+            if (config%adafactor_factored) then
+                parameter_layout = model%parameter_layout()
+                allocate(adafactor_specs(size(parameter_layout)))
+                call adafactor_specs_from_layout(parameter_layout, adafactor_specs, status)
+                if (status%code /= FORTNUM_OK) then
+                    if (present(state)) state = result
+                    return
+                end if
+                call adafactor_factored_optimizer%initialize(n_parameters, adafactor_specs, status, &
+                    learning_rate=config%learning_rate, decay=config%adafactor_decay, &
+                    epsilon=config%epsilon, clip_threshold=config%adafactor_clip_threshold, &
+                    relative_step=config%adafactor_relative_step, &
+                    scale_parameter=config%adafactor_scale_parameter)
+            else
+                call adafactor_optimizer%initialize(n_parameters, status, &
+                    learning_rate=config%learning_rate, decay=config%adafactor_decay, &
+                    epsilon=config%epsilon, clip_threshold=config%adafactor_clip_threshold, &
+                    relative_step=config%adafactor_relative_step, &
+                    scale_parameter=config%adafactor_scale_parameter)
+            end if
         else if (config%optimizer == MLP_OPTIMIZER_AMSGRAD) then
             call amsgrad_optimizer%initialize(n_parameters, status, &
                 learning_rate=config%learning_rate, beta1=config%beta1, &
@@ -1695,7 +1728,8 @@ contains
                 if (adagrad_optimizer%learning_rate <= 0.0_dp) then
                     adagrad_optimizer%learning_rate = config%learning_rate
                 end if
-            else if (config%optimizer == MLP_OPTIMIZER_ADAFACTOR) then
+            else if (config%optimizer == MLP_OPTIMIZER_ADAFACTOR .and. &
+                    .not. config%adafactor_factored) then
                 adafactor_optimizer%second_moment = checkpoint%first_moment
                 adafactor_optimizer%step_count = checkpoint%adam_step_count
                 adafactor_optimizer%learning_rate = checkpoint%last_learning_rate
@@ -1842,6 +1876,9 @@ contains
                             adagrad_optimizer%learning_rate = effective_rate
                         else if (config%optimizer == MLP_OPTIMIZER_ADAFACTOR) then
                             adafactor_optimizer%learning_rate = effective_rate
+                            if (config%adafactor_factored) then
+                                adafactor_factored_optimizer%learning_rate = effective_rate
+                            end if
                         else if (config%optimizer == MLP_OPTIMIZER_AMSGRAD) then
                             amsgrad_optimizer%learning_rate = effective_rate
                         else if (config%optimizer == MLP_OPTIMIZER_RADAM) then
@@ -1862,7 +1899,11 @@ contains
                         else if (config%optimizer == MLP_OPTIMIZER_ADAGRAD) then
                             call adagrad_optimizer%step(theta, gradient, status)
                         else if (config%optimizer == MLP_OPTIMIZER_ADAFACTOR) then
-                            call adafactor_optimizer%step(theta, gradient, status)
+                            if (config%adafactor_factored) then
+                                call adafactor_factored_optimizer%step(theta, gradient, status)
+                            else
+                                call adafactor_optimizer%step(theta, gradient, status)
+                            end if
                         else if (config%optimizer == MLP_OPTIMIZER_AMSGRAD) then
                             call amsgrad_optimizer%step(theta, gradient, status)
                         else if (config%optimizer == MLP_OPTIMIZER_RADAM) then
@@ -2632,6 +2673,34 @@ contains
             first%peak_rate_fraction == second%peak_rate_fraction .and. &
             first%final_rate_fraction == second%final_rate_fraction
     end function schedules_equal
+
+    subroutine adafactor_specs_from_layout(layout, specs, status)
+        !! Convert the MLP's named dense layout into explicit Adafactor blocks.
+        type(mlp_parameter_block_t), intent(in) :: layout(:)
+        type(adafactor_block_spec_t), intent(out) :: specs(:)
+        type(fortnum_status_t), intent(out) :: status
+        integer :: i
+
+        if (size(layout) < 1 .or. size(specs) /= size(layout)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP Adafactor: parameter layout is invalid")
+            return
+        end if
+        do i = 1, size(layout)
+            specs(i)%first = layout(i)%first
+            specs(i)%last = layout(i)%last
+            specs(i)%rows = layout(i)%rows
+            specs(i)%columns = layout(i)%columns
+            specs(i)%factored = trim(layout(i)%kind) == "weight" .and. &
+                layout(i)%rows > 1 .and. layout(i)%columns > 1
+            if (.not. specs(i)%valid()) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP Adafactor: parameter layout block is invalid")
+                return
+            end if
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine adafactor_specs_from_layout
 
     logical function valid_lbfgsb_options(options) result(valid)
         type(mlp_lbfgsb_options_t), intent(in) :: options
