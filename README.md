@@ -40,7 +40,11 @@ module. For example, exact GP regression uses `fortml_kernels` and
 Recent closure slices also expose query-coordinate JVP/VJP products for
 Bernoulli variational GPs (logistic and probit), exact unfactored-Adafactor
 trajectory hypergradients for FortOpt L-BFGS-B, fixed-tree XGBoost derivative
-oracles and transactional fitted-prefix slicing. These paths retain explicit
+oracles and transactional fitted-prefix slicing. Sparse variational GPs now
+also expose fixed-state kernel-log-parameter JVP/VJP products; MLP training
+accepts validated contiguous optimizer groups with checkpointed metadata; and
+classifier chains provide smooth probability-chain prediction plus exact
+input/parameter products. These paths retain explicit
 CPU/CUDA capability metadata and typed CUDA refusals until their complete
 operation graphs are resident; no host fallback is presented as GPU support.
 

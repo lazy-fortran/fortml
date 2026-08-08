@@ -14,12 +14,12 @@ gate is still open, so this work does not move or recreate that tag.
 
 | Compiler | Command | Result |
 | --- | --- | --- |
-| GNU Fortran | `fo` | Static, clean first/second builds, all 184 behavioral tests, and lint passed at the current FortML/FortAD-main revisions. The compiler still emits non-fatal array-temporary warnings; see [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
-| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded older compiler lane. The checked-in NVIDIA log predates the current 184-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
+| GNU Fortran | `fo` | Static, clean build, all 186 behavioral tests, and lint passed at the current FortML/FortAD-main revisions. The compiler still emits non-fatal array-temporary warnings; see [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
+| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded older compiler lane. The checked-in NVIDIA log predates the current 186-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
 The checked-in GNU compiler log is the fresh 2026-08-08 run against FortML code
-revision `60b2c8c`, FortAD `origin/main` at
+revision `05632ce8fa95268417c7a2d979fa1461a202abaa`, FortAD `origin/main` at
 `928a375d2808ea902cbe4a8a89425c5f536a576d`, and FortNum at
 `38bc0e578ec5c6c0e636e8fdd3844f54f9e3e473`, run from the clean checkout
 under `/mnt/storage/code/lazy-fortran/fortml`. The run includes the
@@ -37,11 +37,13 @@ variational-GP objective, multiclass variational-GP prediction/JVPs/VJPs, positi
  Adafactor recurrence/checkpoint and relative-step/parameter-scale products, the portable trainer checkpoint, pairwise XGBoost
  ranking, physics residual value/JVP/VJP products, and the
  transform-aware hyperparameter registry, sparse variational-GP ELBO products,
- XGBoost warm-start continuation, and differentiable basis-pipeline
+ XGBoost warm-start continuation, sparse-GP kernel hyperparameter products,
+ classifier-chain logistic products, MLP optimizer groups/checkpoint metadata,
+ and differentiable basis-pipeline
  training objective. The build emits non-fatal GNU
 array-temporary warnings in FortFront query/generator calls, existing GP
 benchmark boundaries, variational-GP batch conversions, and basis-pipeline
-shape conversions. They are isolated to array construction; all 184 behavioral
+shape conversions. They are isolated to array construction; all 186 behavioral
 tests pass. Lint has zero unused-import findings and the full `fo` lint stage
 passes despite the non-fatal compiler warning corpus. The independent CUDA gate additionally covers the
 resident dense-affine value/JVP/VJP path and its single-layer MSE update with
@@ -49,7 +51,7 @@ parameter snapshots and transfer counters. NVIDIA
 compiler coverage remains an
 explicit older-build result.
 
-The companion benchmark harness is clean at FortML-bench revision `c5de03d`;
+The companion benchmark harness is clean at FortML-bench revision `0fb8ac7`;
 the trainer-checkpoint, unfactored-Adafactor, binary-objective,
 multiclass-calibration, variational-multiclass-GP, PINN/physics-objective,
 physics HVP, grouped K-fold, spectral-mixture, XGBoost-ranking,
@@ -66,7 +68,41 @@ its own CPU-product and CUDA-refusal rows in
 `results/mlp_adagrad_schedule_hypergradient.csv`. CUDA rows are explicit `unavailable`/typed-refusal records
 rather than host timings. The XGBoost warm-start lane adds an independent
 Newton-stump replay, transactional refusal rows, and an explicit CUDA-
-unavailable record in `results/xgboost_warm_start.csv`.
+unavailable record in `results/xgboost_warm_start.csv`. The classifier-chain
+lane adds packed-head NumPy replay, integer-label prediction checks, fit/predict
+timing, and an explicit CUDA-unavailable row in
+`results/classifier_chain.csv`.
+
+### 2026-08-08 parity and provenance slice
+
+This verification closes three bounded production contracts without changing the
+broader parity claim. `classifier_chain_t` fits one binary logistic head per
+output, accepts arbitrary sorted integer label pairs, supports shared sample
+weights, per-output class weights and thresholds, and uses observed positive
+indicators during fitting followed by smooth positive probabilities at
+prediction. Its packed head parameters have exact input and parameter JVP/VJP
+products; hard labels and fit-time optimizer decisions remain discrete. CPU
+dispatch is tested and selected CUDA calls return `FORTNUM_NOT_IMPLEMENTED`.
+The independent fixture is `test_classifier_chain`, with the release evidence
+in `fortml-bench/results/CLASSIFIER_CHAIN.md`.
+
+Sparse variational-GP ELBOs now expose fixed-state kernel-log-parameter JVP and
+VJP products. The reverse product includes the inducing solve, cross-covariance,
+diagonal predictive variance, and KL terms, and is checked against central
+finite differences and scalar adjoint duality in `test_sparse_gp`. CPU dispatch
+is complete; the CUDA entry points are typed refusals. The contract is limited
+to the current Gaussian variational state and does not claim natural-gradient,
+minibatch, interdomain, or resident-GPU SVGP training.
+
+MLP training now accepts non-overlapping contiguous `optimizer_groups` with
+named positive learning-rate multipliers. Every existing CPU optimizer applies
+the multiplier to that block's deterministic update, while shared moment state
+remains canonical. Group ranges, names, multipliers, checkpoint compatibility,
+and formatted schema metadata are validated transactionally by
+`test_mlp_optimizer_groups`; the schema is now format 6/text schema 4. CUDA
+optimizer-group execution, mixed precision, distributed state, and migration
+remain open. The source and benchmark pins for this slice are FortML
+`05632ce8fa95268417c7a2d979fa1461a202abaa` and FortML-bench `0fb8ac7`.
 
 ### 2026-08-07 objective-trainer and tree-contribution slice
 
@@ -1701,7 +1737,12 @@ state, scoring, and refusal rules.
   novelty/outlier detectors (isolation forest, local outlier factor, robust
   covariance, one-class methods), and density metrics only after reproducible
   seeded behavior is specified.
-- [ ] Add multioutput, multiclass, multilabel, regressor/classifier chains,
+- [x] Add a sequential binary classifier-chain adapter with arbitrary sorted
+  integer labels, observed-label training features, smooth probability-chain
+  prediction, packed-head input/parameter JVP/VJPs, thresholds, weights, and a
+  typed CUDA refusal. The bounded release evidence is `test_classifier_chain`
+  and `fortml-bench/results/classifier_chain.csv`.
+- [ ] Add general multioutput, multiclass, multilabel, regressor chains,
   voting, stacking, bagging, and calibrated meta-estimators with nested
   parameter routing and leakage-safe fitting.
 
@@ -1999,6 +2040,11 @@ trials remain visible in the result schema.
   checkpoints. Independent recurrence and interrupted/serialized-resume
   tests cover the state; EMA is an explicit export surface and never hides a
   model-parameter replacement.
+- [x] Add validated contiguous MLP optimizer groups with named positive
+  learning-rate multipliers and deterministic per-block update scaling across
+  the CPU optimizers. Group ranges and metadata round-trip through in-memory
+  and formatted checkpoints; mixed precision, distributed groups, and resident
+  device execution remain open.
 - [ ] Add activation checkpointing, truncated BPTT, gradient
   centralization/noise, value clipping, and anomaly detection with
   parameter-path diagnostics.
@@ -2230,6 +2276,11 @@ state phases are reported separately.
   `test_gp_variational_classification`. Multiclass coupling, kernel/inducing
   hyperparameter products, natural gradients, and resident GPU inference remain
   open.
+- [x] Add fixed-state sparse variational-GP ELBO JVP/VJP products for all
+  currently supported kernel log parameters. The products differentiate the
+  inducing solve, cross-covariance, predictive diagonal, and KL terms and are
+  independently checked by `test_sparse_gp`; general inducing-state,
+  likelihood, natural-gradient, and resident-GPU products remain open.
 
 Acceptance: every new derivative agrees with central finite differences and an
 independently assembled dense covariance on small fixtures. Hyperparameter fits
