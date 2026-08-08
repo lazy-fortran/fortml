@@ -30,6 +30,7 @@ program fortml_bench_mlp_optimizer_group_hypergradient
     options%steps = 4
     options%learning_rate = 0.07_dp
     options%l2 = 0.03_dp
+    options%gradient_clip_norm = 0.1_dp
     options%lower_log_learning_rate = -6.0_dp
     options%upper_log_learning_rate = 0.0_dp
     options%lower_log_l2 = -7.0_dp

@@ -7,7 +7,7 @@ program test_mlp_optimizer_group_hypergradient
     use fortml_device, only: FORTML_DEVICE_CUDA
     use fortml_mlp, only: mlp_t, MLP_LINEAR
     use fortml_mlp_training, only: mlp_optimizer_group_t, mlp_training_options_t, &
-        mlp_train, MLP_OPTIMIZER_SGD
+        mlp_training_state_t, mlp_train, MLP_OPTIMIZER_SGD
     use fortml_mlp_optimizer_group_hypergradient, only: &
         mlp_optimizer_group_hypergradient_options_t, &
         mlp_optimizer_group_hypergradient_objective_t, &
@@ -20,6 +20,7 @@ program test_mlp_optimizer_group_hypergradient
     failures = 0
     call test_products_and_independent_fd(failures)
     call test_trainer_parity(failures)
+    call test_clipped_trajectory_and_boundary(failures)
     call test_fortopt_and_refusals(failures)
     if (failures > 0) then
         write (*, '(a,i0)') "FAIL MLP optimizer-group hypergradient cases: ", failures
@@ -141,6 +142,125 @@ contains
         call check(status_ok(status) .and. maxval(abs(expected-trainer_model%parameters())) < 1.0e-13_dp, &
             "optimizer-group trajectory matches production trainer", failures)
     end subroutine test_trainer_parity
+
+    subroutine test_clipped_trajectory_and_boundary(failures)
+        integer, intent(inout) :: failures
+        type(mlp_t) :: model, trainer_model
+        type(mlp_optimizer_group_hypergradient_options_t) :: options
+        type(mlp_training_options_t) :: training_options
+        type(mlp_training_state_t) :: training_state
+        type(mlp_optimizer_group_hypergradient_objective_t) :: objective
+        type(fortnum_status_t) :: status
+        real(dp) :: train_x(4, 1), train_target(4, 1)
+        real(dp) :: validation_x(3, 1), validation_target(3, 1)
+        real(dp), allocatable :: parameters(:), gradient(:), plus(:), minus(:)
+        real(dp) :: value, value_plus, value_minus, fd, h, clip, boundary_clip
+        integer :: i
+
+        call fixture(model, options, train_x, train_target, validation_x, &
+            validation_target, status)
+        options%gradient_clip_norm = 0.1_dp
+        call objective%initialize(model, train_x, train_target, validation_x, &
+            validation_target, options, status)
+        call check(status_ok(status), "clipped optimizer-group setup", failures)
+        clip = options%gradient_clip_norm
+        parameters = objective%parameters()
+        allocate(gradient(size(parameters)), plus(size(parameters)), minus(size(parameters)))
+        call objective%value_gradient(parameters, value, gradient, status)
+        call check(status_ok(status) .and. abs(value-clipped_oracle(parameters, clip)) < &
+            2.0e-13_dp, "clipped trajectory matches independent oracle", failures)
+        h = 2.0e-6_dp
+        do i = 1, size(parameters)
+            plus = parameters
+            minus = parameters
+            plus(i) = plus(i) + h
+            minus(i) = minus(i) - h
+            value_plus = clipped_oracle(plus, clip)
+            value_minus = clipped_oracle(minus, clip)
+            fd = (value_plus-value_minus)/(2.0_dp*h)
+            call check(abs(fd-gradient(i)) < 2.0e-8_dp, &
+                "clipped trajectory derivative oracle", failures)
+        end do
+
+        call trainer_model%initialize([1, 1], status, output_activation=MLP_LINEAR)
+        call trainer_model%set_parameters([0.25_dp, 0.1_dp], status)
+        training_options%max_epochs = options%steps
+        training_options%learning_rate = options%learning_rate
+        training_options%l2 = options%l2
+        training_options%gradient_clip_norm = options%gradient_clip_norm
+        training_options%optimizer = MLP_OPTIMIZER_SGD
+        training_options%tolerance = 0.0_dp
+        training_options%restore_best = .false.
+        allocate(training_options%optimizer_groups(2))
+        training_options%optimizer_groups = options%groups
+        call mlp_train(trainer_model, train_x, train_target, status, training_options, &
+            training_state)
+        call check(status_ok(status) .and. training_state%gradient_clipped_updates == &
+            options%steps .and. abs(clipped_oracle(parameters, clip)-value) < &
+            2.0e-13_dp .and. maxval(abs(trainer_model%parameters()- &
+            clipped_parameters(parameters, clip))) < 2.0e-13_dp, &
+            "clipped trajectory matches production trainer", failures)
+
+        call fixture(model, options, train_x, train_target, validation_x, &
+            validation_target, status)
+        boundary_clip = sqrt(0.26075_dp**2 + 0.1655_dp**2)
+        options%gradient_clip_norm = boundary_clip
+        call objective%initialize(model, train_x, train_target, validation_x, &
+            validation_target, options, status)
+        parameters = objective%parameters()
+        call objective%value_gradient(parameters, value, gradient, status)
+        call check(status%code == FORTNUM_NOT_IMPLEMENTED .and. all(gradient == 0.0_dp), &
+            "clipping active-set boundary refusal", failures)
+    end subroutine test_clipped_trajectory_and_boundary
+
+    function clipped_oracle(parameters, clip) result(value)
+        real(dp), intent(in) :: parameters(:), clip
+        real(dp) :: value
+        real(dp) :: theta(2), gradient(2), residual(4), validation_residual(3)
+        real(dp), parameter :: x(4) = [-1.0_dp, -0.2_dp, 0.7_dp, 1.5_dp]
+        real(dp), parameter :: target(4) = [-0.75_dp, -0.27_dp, 0.27_dp, 0.75_dp]
+        real(dp), parameter :: validation_x(3) = [-0.8_dp, 0.4_dp, 1.2_dp]
+        real(dp), parameter :: validation_target(3) = [-0.63_dp, 0.09_dp, 0.57_dp]
+        real(dp) :: learning_rate, l2, scales(2), norm
+        integer :: step
+
+        learning_rate = exp(parameters(1))
+        l2 = exp(parameters(2))
+        scales = exp(parameters(3:4))
+        theta = [0.25_dp, 0.1_dp]
+        do step = 1, 4
+            residual = x*theta(1) + theta(2) - target
+            gradient = [sum(residual*x)/4.0_dp + l2*theta(1), &
+                sum(residual)/4.0_dp + l2*theta(2)]
+            norm = sqrt(sum(gradient*gradient))
+            if (clip > 0.0_dp .and. norm > clip) gradient = gradient*clip/norm
+            theta = theta-learning_rate*scales*gradient
+        end do
+        validation_residual = validation_x*theta(1) + theta(2) - validation_target
+        value = 0.5_dp*sum(validation_residual*validation_residual)/3.0_dp
+    end function clipped_oracle
+
+    function clipped_parameters(parameters, clip) result(theta)
+        real(dp), intent(in) :: parameters(:), clip
+        real(dp) :: theta(2), gradient(2), residual(4), norm
+        real(dp), parameter :: x(4) = [-1.0_dp, -0.2_dp, 0.7_dp, 1.5_dp]
+        real(dp), parameter :: target(4) = [-0.75_dp, -0.27_dp, 0.27_dp, 0.75_dp]
+        real(dp) :: learning_rate, l2, scales(2)
+        integer :: step
+
+        learning_rate = exp(parameters(1))
+        l2 = exp(parameters(2))
+        scales = exp(parameters(3:4))
+        theta = [0.25_dp, 0.1_dp]
+        do step = 1, 4
+            residual = x*theta(1) + theta(2) - target
+            gradient = [sum(residual*x)/4.0_dp + l2*theta(1), &
+                sum(residual)/4.0_dp + l2*theta(2)]
+            norm = sqrt(sum(gradient*gradient))
+            if (clip > 0.0_dp .and. norm > clip) gradient = gradient*clip/norm
+            theta = theta-learning_rate*scales*gradient
+        end do
+    end function clipped_parameters
 
     subroutine test_fortopt_and_refusals(failures)
         integer, intent(inout) :: failures

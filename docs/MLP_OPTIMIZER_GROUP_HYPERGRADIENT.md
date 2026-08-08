@@ -20,9 +20,14 @@ returns a zero product with `FORTNUM_NOT_IMPLEMENTED` until third network
 derivatives are available. Shape or non-finite inputs return
 `FORTNUM_DOMAIN_ERROR`; no numerical hyper-HVP is hidden behind the API.
 
-The current adapter deliberately covers plain full-batch SGD first. Momentum,
-Adam-family state, schedules, clipping, minibatch cursors, and resident CUDA
-group state remain separate capability boundaries. CUDA requests return typed
+The adapter also accepts a fixed `gradient_clip_norm` and applies the same
+global-norm clipping order as `mlp_train`, after the L2 term and before grouped
+scaling. The packed derivatives propagate through the clipped branch for a
+fixed active set. A trajectory that lands on the clipping boundary returns a
+typed `FORTNUM_NOT_IMPLEMENTED` instead of assigning a false derivative; the
+clip norm itself is not an outer coordinate. Momentum, Adam-family state,
+schedules, minibatch cursors, and resident CUDA group state remain separate
+capability boundaries. CUDA requests return typed
 `FORTNUM_NOT_IMPLEMENTED`; invalid or overlapping ranges are domain errors.
 
 ```fortran

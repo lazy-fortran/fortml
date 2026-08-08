@@ -58,6 +58,10 @@ module fortml_mlp_optimizer_group_hypergradient
         real(dp) :: upper_log_l2 = 1.0_dp
         real(dp) :: lower_log_multiplier = -8.0_dp
         real(dp) :: upper_log_multiplier = 8.0_dp
+        !! Fixed global norm clipping applied before each grouped SGD update.
+        !! The clipping norm is not an outer coordinate; derivatives are exact
+        !! for the fixed active set and the norm boundary is a typed refusal.
+        real(dp) :: gradient_clip_norm = 0.0_dp
         integer :: optimizer = MLP_OPTIMIZER_GROUP_OPTIMIZER
         integer :: device_kind = FORTML_DEVICE_CPU
         integer :: memory = 8
@@ -92,6 +96,7 @@ module fortml_mlp_optimizer_group_hypergradient
         type(mlp_optimizer_group_hypergradient_metadata_t) :: layout
         real(dp) :: initial_log_learning_rate = 0.0_dp
         real(dp) :: initial_log_l2 = 0.0_dp
+        real(dp) :: gradient_clip_norm = 0.0_dp
         logical :: initialized = .false.
     contains
         procedure, public :: initialize => mlp_optimizer_group_hypergradient_initialize
@@ -191,6 +196,7 @@ contains
         self%layout%inner_steps = options%steps
         self%initial_log_learning_rate = log(options%learning_rate)
         self%initial_log_l2 = log(options%l2)
+        self%gradient_clip_norm = options%gradient_clip_norm
         self%initialized = .true.
         call status_set(status, FORTNUM_OK, "")
     end subroutine mlp_optimizer_group_hypergradient_initialize
@@ -484,6 +490,7 @@ contains
         real(dp), allocatable :: validation_gradient(:)
         real(dp) :: learning_rate, l2, train_value, l2_gradient, scalar_hvp
         real(dp) :: learning_rate_dot, l2_dot, multiplier
+        real(dp) :: raw_gradient_norm, clip_scale, norm_dot, clip_tolerance
         integer :: n_model, n_outer, step, parameter_index, group_index, first, last
 
         value = huge(1.0_dp)
@@ -519,6 +526,20 @@ contains
             call mlp_loss_value_gradient(self%model, self%train_x, self%train_target, &
                 l2, train_value, raw_gradient, l2_gradient, status)
             if (status%code /= FORTNUM_OK) return
+            raw_gradient_norm = sqrt(sum(raw_gradient*raw_gradient))
+            if (.not. ieee_is_finite(raw_gradient_norm)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP optimizer-group hypergradient: gradient norm is not finite")
+                return
+            end if
+            if (self%gradient_clip_norm > 0.0_dp) then
+                clip_tolerance = 1.0e-12_dp*max(1.0_dp, self%gradient_clip_norm)
+                if (abs(raw_gradient_norm-self%gradient_clip_norm) <= clip_tolerance) then
+                    call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                        "MLP optimizer-group hypergradient: clipping active-set boundary")
+                    return
+                end if
+            end if
             do parameter_index = 1, n_outer
                 l2_dot = 0.0_dp
                 if (parameter_index == MLP_OPTIMIZER_GROUP_LOG_L2) l2_dot = l2
@@ -526,6 +547,20 @@ contains
                     theta_dot(:, parameter_index), l2_dot, hvp, scalar_hvp, status)
                 if (status%code /= FORTNUM_OK) return
                 gradient_dot(:, parameter_index) = hvp
+            end do
+            if (self%gradient_clip_norm > 0.0_dp .and. &
+                    raw_gradient_norm > self%gradient_clip_norm) then
+                clip_scale = self%gradient_clip_norm/raw_gradient_norm
+                do parameter_index = 1, n_outer
+                    norm_dot = dot_product(raw_gradient, &
+                        gradient_dot(:, parameter_index))/raw_gradient_norm
+                    gradient_dot(:, parameter_index) = clip_scale* &
+                        (gradient_dot(:, parameter_index) - &
+                        raw_gradient*norm_dot/raw_gradient_norm)
+                end do
+                raw_gradient = clip_scale*raw_gradient
+            end if
+            do parameter_index = 1, n_outer
                 learning_rate_dot = 0.0_dp
                 if (parameter_index == MLP_OPTIMIZER_GROUP_LOG_LEARNING_RATE) then
                     learning_rate_dot = learning_rate
@@ -605,6 +640,8 @@ contains
             options%lower_log_learning_rate <= options%upper_log_learning_rate .and. &
             options%lower_log_l2 <= options%upper_log_l2 .and. &
             options%lower_log_multiplier <= options%upper_log_multiplier .and. &
+            ieee_is_finite(options%gradient_clip_norm) .and. &
+            options%gradient_clip_norm >= 0.0_dp .and. &
             log(options%learning_rate) >= options%lower_log_learning_rate .and. &
             log(options%learning_rate) <= options%upper_log_learning_rate .and. &
             log(options%l2) >= options%lower_log_l2 .and. log(options%l2) <= options%upper_log_l2 .and. &
