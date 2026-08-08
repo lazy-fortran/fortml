@@ -24,7 +24,7 @@ behavior, and benchmark evidence land together.
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
 The checked-in GNU compiler log is the fresh 2026-08-08 run against FortML code
-revision `a509f50`, FortAD `origin/main` at
+revision `8804a2c`, FortAD `origin/main` at
 `931dac5f39eb6ea5ab3854d5af49b346bea950af`, and FortNum at
 `396c8f202ba45e97eecceaba2e6bf848a206b4d0`, run from the clean checkout
 under `/mnt/storage/code/lazy-fortran/fortml`. The run includes the
@@ -59,7 +59,7 @@ compiler coverage remains an
 explicit older-build result.
 
 The companion benchmark harness is clean at FortML-bench revision
-`76c0dac`,
+`7d8f59b`,
 the trainer-checkpoint, unfactored-Adafactor, binary-objective,
 multiclass-calibration, variational-multiclass-GP, PINN/physics-objective,
 physics HVP, grouped K-fold, spectral-mixture, XGBoost-ranking,
@@ -93,6 +93,11 @@ an independent NumPy group-mean/path-mask oracle for unconstrained and
 separated-group depth-two trees; its CPU rows pass with zero prediction error
 and its CUDA row is an explicit unavailable capability record in
 `results/xgboost_interaction.csv`.
+The final closure batch additionally records metric-aware plateau transitions,
+random-forest OOB probabilities and coverage, the PCA-seeded linear MLP
+reconstruction optimum, AMSGrad trajectory products, and spectral-mixture
+derivative-GP mixed parameter HVPs with independent NumPy rows and typed CUDA
+boundaries.
 The ARD derivative-GP lane adds dense mixed-observation input JVP/VJP and
 parameter HVP rows in `results/DERIVATIVE_GP.md`; the RAdam trajectory lane is
 `results/MLP_RADAM_HYPERGRADIENT.md`, and the Tweedie tree lane is
@@ -164,7 +169,7 @@ optimizer-group execution, mixed precision, distributed state, and migration
 remain open. The source and benchmark pins for this earlier optimizer-group
 slice were FortML `05632ce8fa95268417c7a2d979fa1461a202abaa` and
 FortML-bench `0fb8ac7`; the current aggregate verification is the newer
-`a509f50`/`76c0dac` pair recorded above.
+`8804a2c`/`7d8f59b` pair recorded above.
 
 The variational-GP classification and OVR wrappers now expose fixed-state
 kernel-log-parameter JVP/VJP products for latent margins and normalized
