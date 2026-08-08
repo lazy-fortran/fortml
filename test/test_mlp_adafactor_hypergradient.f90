@@ -11,7 +11,8 @@ program test_mlp_adafactor_hypergradient
     use fortml_mlp_adagrad_hypergradient, only: MLP_ADAGRAD_LOG_LEARNING_RATE
     use fortml_mlp_adafactor_hypergradient, only: &
         mlp_adafactor_hypergradient_objective_t, mlp_adafactor_hypergradient_options_t, &
-        mlp_adafactor_hypergradient_metadata_t, MLP_ADAFACTOR_HYPERPARAMETER_COUNT, &
+        mlp_adafactor_hypergradient_metadata_t, mlp_adafactor_hypergradient_result_t, &
+        mlp_optimize_adafactor_hyperparameters, MLP_ADAFACTOR_HYPERPARAMETER_COUNT, &
         MLP_ADAFACTOR_LOG_LEARNING_RATE, MLP_ADAFACTOR_LOG_L2, MLP_ADAFACTOR_DECAY, &
         MLP_ADAFACTOR_LOG_EPSILON, MLP_ADAFACTOR_LOG_CLIP_THRESHOLD
     use fortopt_objective, only: objective_t
@@ -21,6 +22,7 @@ program test_mlp_adafactor_hypergradient
     type(mlp_adafactor_hypergradient_objective_t) :: objective
     type(mlp_adafactor_hypergradient_options_t) :: options, bad_options
     type(mlp_adafactor_hypergradient_metadata_t) :: metadata
+    type(mlp_adafactor_hypergradient_result_t) :: result
     type(objective_t) :: fortopt_objective
     type(fortnum_status_t) :: status
     real(dp) :: train_x(5, 1), train_target(5, 1)
@@ -148,6 +150,10 @@ program test_mlp_adafactor_hypergradient
         validation_target, bad_options, status)
     call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
         "CUDA Adafactor hypergradient refusal", failures)
+    call mlp_optimize_adafactor_hyperparameters(model, train_x, train_target, validation_x, &
+        validation_target, bad_options, result, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
+        "CUDA Adafactor optimizer refusal", failures)
 
     ! Retain an import-level guard against accidentally confusing this packed
     ! layout with another optimizer's outer vector in client code.

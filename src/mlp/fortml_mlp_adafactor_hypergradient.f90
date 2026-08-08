@@ -322,8 +322,14 @@ contains
 
         result = mlp_adafactor_hypergradient_result_t()
         if (.not. valid_options(options)) then
-            call status_set(status, FORTNUM_DOMAIN_ERROR, &
-                "MLP Adafactor hyperparameter optimization: options are invalid")
+            if (options%optimizer /= MLP_OPTIMIZER_ADAFACTOR .or. &
+                    options%device_kind /= FORTML_DEVICE_CPU) then
+                call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                    "MLP Adafactor hyperparameter optimization: unsupported optimizer/device")
+            else
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP Adafactor hyperparameter optimization: options are invalid")
+            end if
             return
         end if
         call adapter%initialize(model, train_x, train_target, validation_x, &
