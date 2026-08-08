@@ -2951,20 +2951,24 @@ CUDA value/JVP/VJP products, preserving the no-hidden-host-fallback contract.
 ### `fortml_gp_classification_training`
 
 `gp_classification_optimize_hyperparameters(model,x,labels,kernel,options,
-result,status)` runs bounded FortOpt L-BFGS-B over the binary classifier's
+result,status[,sample_weight])` runs bounded FortOpt L-BFGS-B over the binary classifier's
 recursive kernel-log parameter vector. Every trial refits the damped Laplace
 mode and consumes `hyperparameter_gradient`; it therefore differentiates the
 converged mode log posterior without finite-difference gradients. The caller's
 `kernel` is updated in place and the final fitted state is left in `model`.
+When supplied, finite nonnegative row weights are validated once and passed
+through every refit, so the optimizer objective and envelope gradient match
+the weighted fit contract.
 `gp_classification_hyperparameter_options_t%fit` carries the logistic/probit
 Newton settings, while the remaining fields carry memory, convergence, and
 uniform log-parameter bounds. A failed mode solve, invalid bound, nonfinite
 value, or iteration limit is returned through `fortnum_status_t`.
 
 `gp_multiclass_optimize_hyperparameters(model,x,labels,kernel,options,result,
-status)` provides the corresponding shared-kernel one-vs-rest adapter. It
+status[,sample_weight])` provides the corresponding shared-kernel one-vs-rest adapter. It
 optimizes one constructor-kernel vector shared by all sorted classes and sums
-the independent binary envelope gradients. The packed per-class metadata
+the independent binary envelope gradients, routing one validated row-weight
+vector to every class. The packed per-class metadata
 returned by `gp_multiclass_classification_t%parameters()` is intentionally not
 optimized as independent blocks by this adapter. Neither adapter differentiates
 the full Laplace evidence, likelihood parameters, or an implicit mode HVP;
