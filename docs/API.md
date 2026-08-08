@@ -4080,5 +4080,5 @@ boundary. CPU dispatch is supported; `predict_device` on a selected CUDA
 device returns `FORTNUM_NOT_IMPLEMENTED` until resident leaf-wise histogram
 state is available. Independent hand, tree-walk, and persistence oracles are
 `test_lightgbm`, `test_lightgbm_staged_slice`, and
-`test_lightgbm_persistence`; the release benchmark is
-`lightgbm_leafwise.csv` in `../fortml-bench`.
+`test_lightgbm_persistence`, and `test_lightgbm_goss`; the release benchmarks
+are `lightgbm_leafwise.csv` and `lightgbm_goss.csv` in `../fortml-bench`.

@@ -536,7 +536,7 @@ only listed as gaps:
   public loss/derivative products. The independent oracle
   `test_xgboost_ranking` covers finite differences, two-item ordering, group
   isolation, and singleton refusal. Categorical/interaction policies, DART,
-  GOSS/EFB, distributed growth, and resident GPU histograms remain open.
+  EFB, distributed growth, and resident GPU histograms remain open.
 - The exact GP kernel catalog now includes an ARD squared-exponential kernel
   with one log length scale per input feature. Scalar, matrix, input-derivative,
   parameter-product, and exact-GP likelihood paths share the same packed
