@@ -16,13 +16,13 @@ gate is still open, so this work does not move or recreate that tag.
 
 | Compiler | Command | Result |
 | --- | --- | --- |
-| GNU Fortran | `fo` | Static build, all 209 behavioral tests, and lint passed at the current FortML/FortAD-main revisions. The compiler still emits non-fatal array-temporary warnings; see [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
-| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded older compiler lane. The checked-in NVIDIA log predates the current 209-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
+| GNU Fortran | `fo` | Static build, all 213 behavioral tests, and lint passed at the current FortML/FortAD-main revisions. The compiler still emits non-fatal array-temporary warnings; see [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
+| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded older compiler lane. The checked-in NVIDIA log predates the current 213-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
 The checked-in GNU compiler log is the fresh 2026-08-08 run against FortML code
-revision `024aaf763c9531bdca0501643d57991474a68433`, FortAD `origin/main` at
-`e02b59994496c59a194a36066e029f9771c6023b`, and FortNum at
+revision `9ba0e9b`, FortAD `origin/main` at
+`5a20ab6af78a52af263645c57b8b680fa6c0cf3e`, and FortNum at
 `38bc0e578ec5c6c0e636e8fdd3844f54f9e3e473`, run from the clean checkout
 under `/mnt/storage/code/lazy-fortran/fortml`. The run includes the
   kernel-catalog, weighted LDA/QDA, robust/absolute XGBoost, neural NLL, random-forest,
@@ -45,7 +45,7 @@ variational-GP objective, multiclass variational-GP prediction/JVPs/VJPs, positi
  training objective. The build emits non-fatal GNU
 array-temporary warnings in FortFront query/generator calls, existing GP
 benchmark boundaries, variational-GP batch conversions, and basis-pipeline
-shape conversions. They are isolated to array construction; all 209 behavioral
+shape conversions. They are isolated to array construction; all 213 behavioral
 tests pass. Lint has zero unused-import findings and the full `fo` lint stage
 passes despite the non-fatal compiler warning corpus. The independent CUDA gate additionally covers the
 resident dense-affine value/JVP/VJP path and its single-layer MSE update with
@@ -54,7 +54,7 @@ compiler coverage remains an
 explicit older-build result.
 
 The companion benchmark harness is clean at FortML-bench revision
-`1b3a3edb99ae2b7fa5187457c44cef0d8df00fee`,
+`1a972e731cb63a3f612330f9a35874d1800aba29`,
 the trainer-checkpoint, unfactored-Adafactor, binary-objective,
 multiclass-calibration, variational-multiclass-GP, PINN/physics-objective,
 physics HVP, grouped K-fold, spectral-mixture, XGBoost-ranking,
@@ -121,8 +121,8 @@ optimizer-group execution, mixed precision, distributed state, and migration
 remain open. The source and benchmark pins for this earlier optimizer-group
 slice were FortML `05632ce8fa95268417c7a2d979fa1461a202abaa` and
 FortML-bench `0fb8ac7`; the current aggregate verification is the newer
-`024aaf763c9531bdca0501643d57991474a68433`/
-`1b3a3edb99ae2b7fa5187457c44cef0d8df00fee` pair recorded above.
+`9ba0e9b`/
+`1a972e731cb63a3f612330f9a35874d1800aba29` pair recorded above.
 
 The variational-GP classification and OVR wrappers now expose fixed-state
 kernel-log-parameter JVP/VJP products for latent margins and normalized
@@ -542,7 +542,7 @@ only listed as gaps:
 
 The FortBO and FortMC companion pins were rechecked against their remote
 `main` branches on 2026-08-08: FortBO
-`9e705a8c54c4c64085551975f98a15f47b305f70` and FortMC
+`54fb74ce2c8206111fe8c97bc5ea8ea6c6f9d22e` and FortMC
 `4dde0ccdc37b4c331126605406b08e1f3bda4f59`. Their roadmaps remain authoritative
 for acquisition and sampling algorithms; FortML owns the posterior/log-density
 protocols and does not embed sampler or acquisition state. FortBO additionally
@@ -630,7 +630,7 @@ the complete operation graph resident or return a typed refusal; OpenACC is the
 first choice when it preserves semantics, and native CUDA is reserved for
 fixed no-autodiff hot loops where OpenACC cannot.
 
-The dependency pins used by the current GNU verification are FortAD `e02b599`,
+The dependency pins used by the current GNU verification are FortAD `5a20ab6`,
 FortSym `873d33f`, and FortOpt `bfbf1fc`, all checked against their remote
 `main` branches on 2026-08-08. Generated derivatives record the exact FortSym
 revision and source hash; model-level autodiff uses the same FortAD `main` pin.
@@ -643,7 +643,7 @@ acquisition work packages:
 
 The companion repositories were checked on 2026-08-08 at FortMC
 `4dde0ccdc37b4c331126605406b08e1f3bda4f59` and FortBO
-`9e705a8c54c4c64085551975f98a15f47b305f70`, both on their `main` branches. The
+`54fb74ce2c8206111fe8c97bc5ea8ea6c6f9d22e`, both on their `main` branches. The
 FortBO pin now includes a versioned capability-gated posterior contract,
 gradient-aware observation history/checkpointing, normalized continuous/integer/
 categorical/mixed/conditional search spaces, a differentiable-coordinate mask,
@@ -671,18 +671,17 @@ their protocol or device contracts change.
 The preceding FortBO `4266ce6` pin built and ran 20/20 tests, including
 knowledge-gradient and qEI/qNEI/qUCB batch acquisitions, TuRBO/DTuRBO drivers,
 trust-region trace/rescaling, preference-learning, and noisy-dominance oracles.
-The current `9e705a8` remote registers 32 tests; a clean `fo test` run passes
-31 and reports one failure in the DTuRBO lambda-direction assertions. The
-remaining tests cover feasibility, worker, high-dimensional benchmark,
-constrained/multi-objective fixtures, acquisition, trust-region, and
-preference behavior. FortMC's current
+The current `54fb74c` remote registers 35 test sources; a clean `fo test` run
+discovers 34 test targets, passes 20, and reports 14 generated-leaf link
+failures in the upstream acquisition, trust-region, adapter, and generated-
+kernel fixtures. FortMC's current
 checkout builds cleanly and reports zero registered
 tests, so its sampler and diagnostics claims remain roadmap items rather than
 FortML verification evidence.
 
 This companion check was repeated from clean source trees on 2026-08-08:
 `origin/main` resolves exactly to the two pins above; FortBO's current clean
-run is the 31-pass/1-failure result above, while FortMC has 0 registered
+run is the 20-pass/14-link-failure result above, while FortMC has 0 registered
 tests, and neither repository has a
 runtime dependency on the FortSym executable. These are boundary checks, not a
 claim that FortMC samplers or the remaining FortBO policy catalog are shipped.
@@ -781,7 +780,7 @@ temperature scaling and calibration-aware cross-validation remain open.
 
 | Family | Required variants | Current FortML baseline | Missing production gates |
 | --- | --- | --- | --- |
-| Classification | binary, multinomial/softmax, OVR, OVO, multilabel, Naive Bayes, LDA/QDA, tree, neural, dense RBF one-class SVM, Laplace GP, variational GP, calibrated, ordinal | binary/softmax/OVR/OVO/multilabel and weighted ordinal cumulative-logit heads, weighted Gaussian/Bernoulli/Multinomial/Complement/Categorical NB, weighted LDA/QDA, CART, MLP, dense RBF nu-SVM, weighted binary/OVR Laplace GP, bounded Bernoulli variational GP (logistic/probit) including sorted-label OVR multiclass, coupled categorical variational GP with FortOpt fitting and analytic packed/input products, positive temperature, Platt sigmoid, weighted PAVA isotonic calibration, weighted reliability-diagram points, exact and histogram boosted trees | sparse/multioutput multilabel, ordinal GP, natural-gradient and resident-GPU training, shared preprocessing/search, and kernel-SVM parity |
+| Classification | binary, multinomial/softmax, OVR, OVO, multilabel, Naive Bayes, LDA/QDA, tree, neural, dense RBF one-class SVM, Laplace GP, variational GP, calibrated, ordinal | binary/softmax/OVR/OVO/multilabel and weighted ordinal cumulative-logit heads, weighted Gaussian/Bernoulli/Multinomial/Complement/Categorical NB, weighted LDA/QDA, CART, MLP, dense RBF nu-SVM, weighted binary/OVR Laplace GP, bounded Bernoulli variational GP (logistic/probit) including sorted-label OVR multiclass, coupled categorical variational GP with FortOpt fitting and analytic packed/input products, latent-Gaussian ordinal GP, positive temperature, Platt sigmoid, weighted PAVA isotonic calibration, weighted reliability-diagram points, exact and histogram boosted trees | sparse/multioutput multilabel, native ordinal GP likelihoods and optimized cut points, natural-gradient and resident-GPU training, shared preprocessing/search, and kernel-SVM parity |
 | Regression | OLS, weighted/ridge/lasso/elastic-net, robust, quantile, GLM, multi-output, partial-fit | dense OLS, weighted ridge, weighted elastic-net/lasso, weighted linear SVR, weighted Poisson/Gamma log-link GLM, exact/histogram XGBoost-style squared/squared-log (RMSLE)/Huber/quantile/absolute/Tweedie regression with fixed-state products, multi-output fixed-fit products | positive/Bayesian/ARD, partial-fit, fit-time/hyperparameter products, resident GPU kernels |
 | Ensembles | CART, random/extra forests, bagging, AdaBoost, histogram boosting, XGBoost/LightGBM ranking/categorical/DART | weighted CART, deterministic seeded random-forest and randomized-threshold Extra-Trees classification, seeded bootstrap bagging over CART, binary and multiclass SAMME AdaBoost over weighted CART, squared/squared-log/Huber/quantile/absolute/Tweedie boosting, exact and bounded histogram second-order XGBoost-style binary/OVR, bounded `rank:pairwise`, exact/histogram per-feature monotonic and interaction-group constraints, bounded ordered-gradient integer categorical partitions with explicit cardinality refusal, and a bounded weighted LightGBM-style leaf-wise regression/binary path with validation loss, patience/min-delta early stopping, best-iteration metadata, restore-best slicing, and weighted validation objectives | OOB/permutation/SHAP workflows, SAMME.R probability updates, categorical policies beyond ordered partitions, DART/GOSS/EFB, distributed and resident GPU histograms |
 | Gaussian processes | exact, derivative observations, multitask, sparse/variational, SKI/lazy, local experts, classification | exact and derivative GPs with RBF, Matérn, periodic, rational-quadratic, cosine, polynomial, linear, constant, white-noise, user, sum, and product leaves, sparse/local/SKI/structured operators, weighted binary/OVR Laplace classification, bounded weighted Bernoulli variational classification with logistic/probit ELBOs, coupled categorical variational classification with variance-corrected softmax, packed sparse-GP mean/log-Cholesky ELBO gradients/JVPs/VJPs, weighted envelope kernel hypergradients, fixed-state binary and OVR Laplace latent/probability kernel-parameter JVP/VJP products, and fixed-state binary/OVR variational kernel-log products | full likelihood/kernel catalog, batch/multitask likelihoods, inducing-state and likelihood hyperparameter products, implicit derivatives, natural gradients, resident GPU solves |
@@ -814,9 +813,9 @@ more required variants remain open.
 
 | Subsystem | Implemented surface | Closure evidence still required |
 | --- | --- | --- |
-| Classification | Binary, softmax, OVR, OVO, multilabel, ordinal, five Naive Bayes variants, weighted LDA/QDA, CART, deterministic random forest, MLP, linear and dense RBF one-class SVM, temperature/sigmoid/isotonic calibration, weighted binary or OVR Laplace GP classification, bounded Bernoulli variational GP classification including sorted-label OVR multiclass, and coupled categorical variational GP classification with FortOpt fitting and analytic packed/input products | Sparse and multioutput labels, ordinal GP, natural-gradient and resident-GPU training, shared preprocessing and search, and kernel SVM/margin parity |
+| Classification | Binary, softmax, OVR, OVO, multilabel, ordinal, five Naive Bayes variants, weighted LDA/QDA, CART, deterministic random forest, MLP, linear and dense RBF one-class SVM, temperature/sigmoid/isotonic calibration, weighted binary or OVR Laplace GP classification, bounded Bernoulli variational GP classification including sorted-label OVR multiclass, coupled categorical variational GP classification with FortOpt fitting and analytic packed/input products, and a latent-Gaussian ordinal GP baseline | Sparse and multioutput labels, native ordinal GP likelihoods and optimized cut points, natural-gradient and resident-GPU training, shared preprocessing and search, and kernel SVM/margin parity |
 | Regression and bases | OLS, ridge, elastic-net, weighted linear SVR, scalar and multi-output closed-radius neighbors with uniform or distance weighting, Poisson/Gamma GLM, PCA, polynomial/Fourier/radial/spline maps, analytic basis/pipeline HVPs, sequential or column pipelines, joint differentiable basis-pipeline training, and robust/squared-log/quantile/Tweedie XGBoost-style objectives | KD/ball-tree and approximate neighbors, partial fit, sparse views, graph serialization, callback/pipeline second derivatives, and resident GPU execution |
-| Trees and boosting | Weighted CART, deterministic seeded random-forest classification, seeded bootstrap bagging classification, binary and multiclass SAMME AdaBoost over weighted CART, exact and bounded-histogram second-order squared/logistic/Poisson/Tweedie/squared-log/Huber/quantile and `rank:pairwise` boosting, staged binary or OVR predictions, diagnostics, monotonic and interaction-group constraints, bounded ordered-gradient integer categorical partitions, transactional fitted-prefix slicing, and LightGBM staged margins/predictions plus additive contributions | Extra-trees extensions, OOB/permutation/SHAP workflows, SAMME.R probability updates, categorical policies beyond ordered partitions, DART/GOSS/EFB, distributed workers, LightGBM persistence/warm starts, and complete GPU histograms |
+| Trees and boosting | Weighted CART, deterministic seeded random-forest classification, seeded bootstrap bagging classification, binary and multiclass SAMME AdaBoost over weighted CART, exact and bounded-histogram second-order squared/logistic/Poisson/Tweedie/squared-log/Huber/quantile and `rank:pairwise` boosting, staged binary or OVR predictions, diagnostics, monotonic and interaction-group constraints, bounded ordered-gradient integer categorical partitions, transactional fitted-prefix slicing, versioned LightGBM text/binary persistence, and LightGBM staged margins/predictions plus additive contributions | Extra-trees extensions, OOB/permutation/SHAP workflows, SAMME.R probability updates, categorical policies beyond ordered partitions, DART/GOSS/EFB, distributed workers, LightGBM warm starts, and complete GPU histograms |
 | Gaussian processes | Exact, derivative-observation, sparse, local, SKI, structured operators, periodic/rational-quadratic/cosine/polynomial leaves, weighted binary or OVR Laplace classification, bounded weighted Bernoulli variational classification, coupled categorical variational classification, packed sparse-GP mean/log-Cholesky ELBO products, weighted envelope kernel products, and fixed-state binary/OVR variational kernel-log products | Full likelihood and kernel catalog, batch or multitask shapes, inducing-state and likelihood hyperparameter products, operator-valued derivatives, implicit products, serialization, and resident GPU solves |
 | Trees and boosting | Weighted CART, deterministic seeded random-forest classification, seeded bootstrap bagging classification, binary and multiclass SAMME AdaBoost over weighted CART, exact and bounded-histogram second-order squared/logistic/Poisson/Tweedie/squared-log/Huber/quantile and `rank:pairwise` boosting, staged binary or OVR predictions, diagnostics, monotonic and interaction-group constraints, bounded ordered-gradient integer categorical partitions, transactional fitted-prefix slicing, LightGBM staged margins/predictions plus additive contributions, and versioned LightGBM text persistence | Extra-trees extensions, OOB/permutation/SHAP workflows, SAMME.R probability updates, categorical policies beyond ordered partitions, DART/GOSS/EFB, distributed workers, LightGBM warm-start state, and complete GPU histograms |
 | Gaussian processes | Exact, derivative-observation, sparse, local, SKI, structured operators, periodic/rational-quadratic/cosine/polynomial leaves, weighted binary or OVR Laplace classification, bounded weighted Bernoulli variational classification, coupled categorical variational classification, packed sparse-GP mean/log-Cholesky ELBO products, weighted envelope kernel products, and fixed-state binary/OVR variational kernel-log products | Full likelihood and kernel catalog, batch or multitask shapes, inducing-state and likelihood hyperparameter products, operator-valued derivatives, implicit products, serialization, and resident GPU solves |
@@ -3082,7 +3081,7 @@ results as an external literature claim.
   count, and fallback reason in generated-kernel provenance.
 
 The repository snapshot used for this roadmap resolves `fortad` `main` at
-`e02b59994496c59a194a36066e029f9771c6023b` and `fortsym` `main` at
+`5a20ab6af78a52af263645c57b8b680fa6c0cf3e` and `fortsym` `main` at
 `873d33fa38d0c87d111158bc0be987e1ef1dd58c`. The checked-in RBF HVP/product
 module was generated by FortAD `5e1bfe0`; the RBF primal and first-order leaf
 was generated by FortSym `f71a1aa` (the earlier primal-only leaf remains

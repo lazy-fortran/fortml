@@ -68,7 +68,7 @@ can reject an incompatible estimator before consuming a fold.
 The companion repositories are optional consumers of FortML model and
 probability objects; FortML does not import either package. At the pinned
 2026-08-08 revisions (FortBO
-`9e705a8c54c4c64085551975f98a15f47b305f70`, FortMC
+`54fb74ce2c8206111fe8c97bc5ea8ea6c6f9d22e`, FortMC
 `4dde0ccdc37b4c331126605406b08e1f3bda4f59`), their public modules contain
 versioned contracts, tested acquisition/candidate-search foundations, and a
 FortML GP adapter. FortMC still has no sampler implementation, while FortBO's
@@ -3439,6 +3439,20 @@ latent-Gaussian ordered surrogate, not a native cumulative-likelihood fit;
 optimized cut points and ordinal likelihood hyperparameters remain open. The
 independent oracle is `test_gp_ordinal_classification` and the design note is
 [`docs/GP_ORDINAL_CLASSIFICATION.md`](GP_ORDINAL_CLASSIFICATION.md).
+
+### `fortml_student_t_process`
+
+`student_t_process_t` is a dense scalar Student-t process regression baseline.
+`fit(x,y,kernel,nu,noise_variance,status[,jitter])` requires `nu > 2`, factors
+the noisy kernel matrix, and records the observed Mahalanobis distance. `predict`
+returns the posterior mean and marginal variance; unlike a Gaussian process,
+the variance is multiplied by `(nu + beta - 2)/(nu + n - 2)`, so it responds to
+how surprising the observed values were. `posterior_dof`, `covariance_scale`,
+and `log_marginal_likelihood` expose the fitted state. The large-`nu` GP limit,
+data-dependent variance contrast, and invalid-input refusals are checked by
+`test_student_t_process`; see [`docs/GP_STUDENT_T_PROCESS.md`](GP_STUDENT_T_PROCESS.md).
+This is a CPU dense reference path: derivative products, sparse/variational
+inference, and resident CUDA execution remain open.
 
 ### `fortml_sparse_prior_gp`
 
