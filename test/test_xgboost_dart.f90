@@ -129,6 +129,10 @@ contains
         call full%predict_staged_margin(x, full_staged, status)
         call check(status_ok(status) .and. maxval(abs(warm_staged-full_staged)) < &
             2.0e-13_real64, "DART warm continuation matches full fit", failures)
+        full_options%dart_drop_rate = 0.5_real64
+        call warm%fit_warm_start(x, y, status, full_options)
+        call check(status%code /= FORTNUM_OK .and. warm%estimator_count() == 6, &
+            "changed DART controls are refused transactionally", failures)
     end subroutine test_warm_start
 
     subroutine test_schema_and_refusals(failures)

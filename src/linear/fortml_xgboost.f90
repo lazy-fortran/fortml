@@ -943,6 +943,9 @@ contains
             settings%min_child_weight /= self%min_child_weight_value .or. &
             settings%subsample /= self%subsample_value .or. &
             settings%colsample_bytree /= self%colsample_bytree_value .or. &
+            settings%dart_drop_rate /= self%dart_drop_rate_value .or. &
+            settings%dart_skip_drop /= self%dart_skip_drop_value .or. &
+            settings%dart_max_drop /= self%dart_max_drop_value .or. &
             settings%seed /= self%seed_value .or. categorical_policy_code /= self%categorical_policy_code .or. &
             settings%categorical_max_categories /= self%categorical_max_categories_value) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
