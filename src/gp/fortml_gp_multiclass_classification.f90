@@ -105,7 +105,7 @@ module fortml_gp_multiclass_classification
 contains
 
     subroutine gp_multiclass_classification_fit( &
-            self, x, labels, kernel, status, options, state)
+            self, x, labels, kernel, status, options, state, sample_weight)
         class(gp_multiclass_classification_t), intent(out) :: self
         real(dp), intent(in) :: x(:, :)
         integer, intent(in) :: labels(:)
@@ -113,6 +113,7 @@ contains
         type(fortnum_status_t), intent(out) :: status
         type(gp_multiclass_classification_options_t), intent(in), optional :: options
         type(gp_multiclass_classification_state_t), intent(out), optional :: state
+        real(dp), intent(in), optional :: sample_weight(:)
         type(gp_multiclass_classification_options_t) :: requested
         type(gp_classification_options_t) :: binary_options
         type(gp_classification_state_t) :: binary_state
@@ -140,6 +141,8 @@ contains
                 "GP multiclass classification fit: inputs must be finite")
             return
         end if
+        call validate_sample_weights(size(x, 1), sample_weight, status)
+        if (status%code /= FORTNUM_OK) return
         call sorted_unique_labels(labels, unique_labels)
         class_count = size(unique_labels)
         if (class_count < 2) then
@@ -169,8 +172,13 @@ contains
         do i = 1, class_count
             binary_labels = 0
             where (labels == unique_labels(i)) binary_labels = 1
-            call self%models(i)%fit(x, binary_labels, kernel, status, &
-                binary_options, binary_state)
+            if (present(sample_weight)) then
+                call self%models(i)%fit(x, binary_labels, kernel, status, &
+                    binary_options, binary_state, sample_weight=sample_weight)
+            else
+                call self%models(i)%fit(x, binary_labels, kernel, status, &
+                    binary_options, binary_state)
+            end if
             if (status%code /= FORTNUM_OK) then
                 call status_set(status, FORTNUM_DOMAIN_ERROR, &
                     "GP multiclass classification fit: one-vs-rest model failed")
@@ -923,6 +931,32 @@ contains
         allocate(unique_labels(count))
         unique_labels = work(:count)
     end subroutine sorted_unique_labels
+
+    subroutine validate_sample_weights(n_samples, sample_weight, status)
+        integer, intent(in) :: n_samples
+        real(dp), intent(in), optional :: sample_weight(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: weight_mass
+
+        if (.not. present(sample_weight)) then
+            call status_set(status, FORTNUM_OK, "")
+            return
+        end if
+        if (size(sample_weight) /= n_samples .or. &
+                any(.not. ieee_is_finite(sample_weight)) .or. &
+                any(sample_weight < 0.0_dp)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP multiclass classification fit: sample weights are invalid")
+            return
+        end if
+        weight_mass = sum(sample_weight)
+        if (.not. ieee_is_finite(weight_mass) .or. weight_mass <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP multiclass classification fit: sample weights need positive mass")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine validate_sample_weights
 
     logical function valid_options(options) result(valid)
         type(gp_multiclass_classification_options_t), intent(in) :: options
