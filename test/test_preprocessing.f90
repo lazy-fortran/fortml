@@ -1,6 +1,7 @@
 program test_preprocessing
     use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_quiet_nan
-    use fortml_preprocessing, only: standard_scaler_t, minmax_scaler_t
+    use fortml_preprocessing, only: standard_scaler_t, minmax_scaler_t, &
+        robust_scaler_t
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_ok
     implicit none
@@ -10,6 +11,7 @@ program test_preprocessing
     failures = 0
     call test_standard_scaler(failures)
     call test_minmax_scaler(failures)
+    call test_robust_scaler(failures)
     call test_refusals(failures)
     if (failures > 0) then
         write (*, '(a,i0)') "FAIL preprocessing cases: ", failures
@@ -90,6 +92,40 @@ contains
         call check(maxval(abs(transformed_tangent(:, 2) - 2.0_dp)) < &
             1.0e-14_dp, "minmax constant JVP", failures)
     end subroutine test_minmax_scaler
+
+    subroutine test_robust_scaler(failures)
+        integer, intent(inout) :: failures
+        type(robust_scaler_t) :: scaler
+        type(fortnum_status_t) :: status
+        real(dp) :: x(3, 2), transformed(3, 2), recovered(3, 2), tangent(3, 2)
+        real(dp) :: transformed_tangent(3, 2)
+        real(dp), allocatable :: centers(:), scales(:)
+
+        x = reshape([1.0_dp, 3.0_dp, 5.0_dp, 2.0_dp, 2.0_dp, 2.0_dp], [3, 2])
+        tangent = 1.0_dp
+        call scaler%fit(x, status)
+        call check(status_ok(status), "robust fit", failures)
+        call check(scaler%fitted(), "robust fitted flag", failures)
+        centers = scaler%centers()
+        scales = scaler%scales()
+        call check(maxval(abs(centers - [3.0_dp, 2.0_dp])) < 1.0e-14_dp, &
+            "robust median centers", failures)
+        call check(maxval(abs(scales - [2.0_dp, 1.0_dp])) < 1.0e-14_dp, &
+            "robust IQR scales", failures)
+        call scaler%transform(x, transformed, status)
+        call scaler%inverse_transform(transformed, recovered, status)
+        call check(status_ok(status), "robust transforms", failures)
+        call check(maxval(abs(transformed(:, 1) - [-1.0_dp, 0.0_dp, 1.0_dp])) < &
+            1.0e-14_dp, "robust transform oracle", failures)
+        call check(maxval(abs(recovered - x)) < 1.0e-14_dp, &
+            "robust inverse oracle", failures)
+        call scaler%transform_jvp(tangent, transformed_tangent, status)
+        call check(status_ok(status), "robust JVP", failures)
+        call check(maxval(abs(transformed_tangent(:, 1) - 0.5_dp)) < &
+            1.0e-14_dp, "robust JVP scale", failures)
+        call check(maxval(abs(transformed_tangent(:, 2) - tangent(:, 2))) < &
+            1.0e-14_dp, "robust constant-feature JVP", failures)
+    end subroutine test_robust_scaler
 
     subroutine test_refusals(failures)
         integer, intent(inout) :: failures

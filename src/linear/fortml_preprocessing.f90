@@ -41,6 +41,31 @@ module fortml_preprocessing
         procedure, public :: fitted => minmax_scaler_fitted
     end type minmax_scaler_t
 
+    !> Fitted median/IQR preprocessing with row-oriented sample semantics.
+    !>
+    !> The default quantile range is the interquartile range (25, 75).  A
+    !> constant feature receives unit scale, matching the other dense scaler
+    !> contracts.  Fit is finite-only and the fitted center and scale are
+    !> state, not differentiable parameters.
+    type, public :: robust_scaler_t
+        private
+        real(dp), allocatable :: center_value(:)
+        real(dp), allocatable :: scale_value(:)
+        real(dp) :: lower_quantile = 25.0_dp
+        real(dp) :: upper_quantile = 75.0_dp
+        logical :: with_centering = .true.
+        logical :: with_scaling = .true.
+    contains
+        procedure, public :: fit => robust_scaler_fit
+        procedure, public :: transform => robust_scaler_transform
+        procedure, public :: inverse_transform => robust_scaler_inverse
+        procedure, public :: transform_jvp => robust_scaler_transform_jvp
+        procedure, public :: centers => robust_scaler_centers
+        procedure, public :: scales => robust_scaler_scales
+        procedure, public :: feature_count => robust_scaler_feature_count
+        procedure, public :: fitted => robust_scaler_fitted
+    end type robust_scaler_t
+
 contains
 
     subroutine standard_scaler_fit(self, x, status, with_mean, with_std)
@@ -269,6 +294,191 @@ contains
 
         value = allocated(self%data_min) .and. allocated(self%data_max)
     end function minmax_scaler_fitted
+
+    subroutine robust_scaler_fit(self, x, status, with_centering, with_scaling, &
+            quantile_range)
+        class(robust_scaler_t), intent(out) :: self
+        real(dp), intent(in) :: x(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        logical, intent(in), optional :: with_centering, with_scaling
+        real(dp), intent(in), optional :: quantile_range(2)
+        real(dp), allocatable :: sorted(:)
+        real(dp) :: lower, upper
+        integer :: j
+
+        if (.not. valid_matrix(x)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "robust scaler fit: input must be a finite nonempty matrix")
+            return
+        end if
+        self%with_centering = .true.
+        if (present(with_centering)) self%with_centering = with_centering
+        self%with_scaling = .true.
+        if (present(with_scaling)) self%with_scaling = with_scaling
+        self%lower_quantile = 25.0_dp
+        self%upper_quantile = 75.0_dp
+        if (present(quantile_range)) then
+            if (any(.not. ieee_is_finite(quantile_range)) .or. &
+                    quantile_range(1) < 0.0_dp .or. &
+                    quantile_range(2) > 100.0_dp .or. &
+                    quantile_range(2) <= quantile_range(1)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "robust scaler fit: quantile range must be finite, ordered, and within [0,100]")
+                return
+            end if
+            self%lower_quantile = quantile_range(1)
+            self%upper_quantile = quantile_range(2)
+        end if
+
+        allocate(self%center_value(size(x, 2)), self%scale_value(size(x, 2)))
+        self%center_value = 0.0_dp
+        self%scale_value = 1.0_dp
+        allocate(sorted(size(x, 1)))
+        do j = 1, size(x, 2)
+            sorted = x(:, j)
+            call sort_real_values(sorted)
+            if (self%with_centering) then
+                self%center_value(j) = percentile_value(sorted, 50.0_dp)
+            end if
+            if (self%with_scaling) then
+                lower = percentile_value(sorted, self%lower_quantile)
+                upper = percentile_value(sorted, self%upper_quantile)
+                if (upper > lower) self%scale_value(j) = upper - lower
+            end if
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine robust_scaler_fit
+
+    subroutine robust_scaler_transform(self, x, transformed, status)
+        class(robust_scaler_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: transformed(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. robust_scaler_valid(self, x, transformed, status, &
+                "robust scaler transform")) return
+        transformed = (x - spread(self%center_value, dim=1, &
+            ncopies=size(x, 1)))/spread(self%scale_value, dim=1, &
+            ncopies=size(x, 1))
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine robust_scaler_transform
+
+    subroutine robust_scaler_inverse(self, x, transformed, status)
+        class(robust_scaler_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: transformed(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. robust_scaler_valid(self, x, transformed, status, &
+                "robust scaler inverse_transform")) return
+        transformed = x*spread(self%scale_value, dim=1, ncopies=size(x, 1)) + &
+            spread(self%center_value, dim=1, ncopies=size(x, 1))
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine robust_scaler_inverse
+
+    subroutine robust_scaler_transform_jvp(self, x_dot, transformed_dot, status)
+        class(robust_scaler_t), intent(in) :: self
+        real(dp), intent(in) :: x_dot(:, :)
+        real(dp), intent(out) :: transformed_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. robust_scaler_valid(self, x_dot, transformed_dot, status, &
+                "robust scaler JVP")) return
+        transformed_dot = x_dot/spread(self%scale_value, dim=1, &
+            ncopies=size(x_dot, 1))
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine robust_scaler_transform_jvp
+
+    function robust_scaler_centers(self) result(values)
+        class(robust_scaler_t), intent(in) :: self
+        real(dp), allocatable :: values(:)
+
+        if (allocated(self%center_value)) then
+            values = self%center_value
+        else
+            allocate(values(0))
+        end if
+    end function robust_scaler_centers
+
+    function robust_scaler_scales(self) result(values)
+        class(robust_scaler_t), intent(in) :: self
+        real(dp), allocatable :: values(:)
+
+        if (allocated(self%scale_value)) then
+            values = self%scale_value
+        else
+            allocate(values(0))
+        end if
+    end function robust_scaler_scales
+
+    integer function robust_scaler_feature_count(self) result(count)
+        class(robust_scaler_t), intent(in) :: self
+
+        count = 0
+        if (allocated(self%center_value)) count = size(self%center_value)
+    end function robust_scaler_feature_count
+
+    logical function robust_scaler_fitted(self) result(value)
+        class(robust_scaler_t), intent(in) :: self
+
+        value = allocated(self%center_value) .and. allocated(self%scale_value)
+    end function robust_scaler_fitted
+
+    logical function robust_scaler_valid(self, x, transformed, status, context) &
+            result(value)
+        class(robust_scaler_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: transformed(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        character(*), intent(in) :: context
+
+        transformed = 0.0_dp
+        value = .false.
+        if (.not. robust_scaler_fitted(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, trim(context)//": model is not fitted")
+            return
+        end if
+        if (.not. valid_matrix(x) .or. any(shape(transformed) /= shape(x)) .or. &
+                size(x, 2) /= size(self%center_value)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, trim(context)//": shape or values are invalid")
+            return
+        end if
+        value = .true.
+        call status_set(status, FORTNUM_OK, "")
+    end function robust_scaler_valid
+
+    pure real(dp) function percentile_value(sorted, quantile) result(value)
+        real(dp), intent(in) :: sorted(:), quantile
+        real(dp) :: position, fraction
+        integer :: lower_index, upper_index
+
+        if (size(sorted) == 1) then
+            value = sorted(1)
+            return
+        end if
+        position = 1.0_dp + (real(size(sorted) - 1, dp)*quantile/100.0_dp)
+        lower_index = int(floor(position))
+        upper_index = min(lower_index + 1, size(sorted))
+        fraction = position - real(lower_index, dp)
+        value = (1.0_dp - fraction)*sorted(lower_index) + fraction*sorted(upper_index)
+    end function percentile_value
+
+    pure subroutine sort_real_values(values)
+        real(dp), intent(inout) :: values(:)
+        real(dp) :: key
+        integer :: i, j
+
+        do i = 2, size(values)
+            key = values(i)
+            j = i - 1
+            do while (j >= 1)
+                if (values(j) <= key) exit
+                values(j + 1) = values(j)
+                j = j - 1
+            end do
+            values(j + 1) = key
+        end do
+    end subroutine sort_real_values
 
     logical function valid_matrix(x) result(value)
         real(dp), intent(in) :: x(:, :)
