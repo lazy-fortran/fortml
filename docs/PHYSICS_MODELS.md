@@ -33,6 +33,14 @@ tensor or an implicit integrator. `linear_autoencoder_t` is likewise only the ex
 tied, centered PCA reconstruction seam. It is not a nonlinear or physics
 autoencoder initializer.
 
+`mlp_t%initialize_from_pca` exposes the same fixed-width reconstruction map as
+a two-layer linear MLP, including the center and optional PCA whitening scales.
+It is a checked finite linear/PCA optimum and leaves an existing model
+unchanged when the PCA is unfitted or malformed. It does not claim an NNGP,
+NTK, GP-posterior, physics-consistent, symplectic, or Hamiltonian network
+equivalence; those finite/infinite-width and structure-preserving mappings
+remain separate research contracts.
+
 `fortml_physics_objective` now provides the first composable residual seam:
 `physics_constraint_t` owns a positive reduction weight and caller-supplied
 residual/JVP/VJP callbacks, while `physics_objective_t` sums named data,

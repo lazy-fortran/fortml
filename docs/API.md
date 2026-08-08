@@ -1684,6 +1684,18 @@ values, zero-width arrays, nonlinear topologies, and shape mismatches before
 mutating the destination. This is a linear-state loading contract only; it
 does not assert an NNGP, NTK, or GP-posterior equivalence.
 
+`initialize_from_pca(pca,status)` builds a two-layer linear autoencoder from a
+fitted `pca_t`. The first layer applies the centered PCA projection and the
+second applies its inverse; a whitened PCA preserves its sample-variance
+scales in the two weight blocks and the center is represented in the biases.
+The generated topology is `[pca%feature_count(), pca%n_components(),
+pca%feature_count()]`. The PCA must be fitted and all exposed components,
+mean, and variance metadata must be finite and shape-consistent. Validation and
+weight construction happen before the destination is changed, so an unfitted
+or malformed PCA leaves an existing MLP untouched and returns
+`FORTNUM_DOMAIN_ERROR`. This is the finite linear/PCA reconstruction optimum,
+not an NNGP, NTK, or GP-posterior equivalence.
+
 `predict(x,y,status)` evaluates a batch. The product signatures are:
 
 ```text

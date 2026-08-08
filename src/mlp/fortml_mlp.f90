@@ -3,6 +3,7 @@ module fortml_mlp
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
         FORTNUM_DOMAIN_ERROR
+    use fortml_pca, only: pca_t
     implicit none
     private
 
@@ -54,6 +55,7 @@ module fortml_mlp
     contains
         procedure, public :: initialize => mlp_initialize
         procedure, public :: initialize_linear => mlp_initialize_linear
+        procedure, public :: initialize_from_pca => mlp_initialize_from_pca
         procedure, public :: parameter_count => mlp_parameter_count
         procedure, public :: parameter_block_count => mlp_parameter_block_count
         procedure, public :: parameter_layout => mlp_parameter_layout
@@ -143,6 +145,82 @@ contains
         if (status%code /= FORTNUM_OK) return
         call self%set_linear_parameters(weight1, bias1, weight2, bias2, status)
     end subroutine mlp_initialize_linear
+
+    subroutine mlp_initialize_from_pca(self, pca, status)
+        !! Initialize a two-layer linear autoencoder from fitted PCA.
+        !!
+        !! The resulting map is exactly the fitted PCA transform followed by
+        !! its inverse transform, including sample-variance whitening.  It is
+        !! the finite linear/PCA reconstruction optimum, not an NNGP, NTK, or
+        !! GP-posterior equivalence.
+        class(mlp_t), intent(inout) :: self
+        class(pca_t), intent(in) :: pca
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: components(:, :), center(:), variance(:)
+        real(dp), allocatable :: weight1(:, :), bias1(:), weight2(:, :), bias2(:)
+        integer :: n_components, n_features, j
+
+        if (.not. pca%fitted()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP initialize_from_pca: PCA must be fitted")
+            return
+        end if
+        components = pca%components()
+        center = pca%mean()
+        variance = pca%explained_variance()
+        n_components = size(components, 1)
+        n_features = size(components, 2)
+        if (n_components < 1 .or. n_features < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP initialize_from_pca: PCA dimensions are invalid")
+            return
+        end if
+        if (size(center) /= n_features .or. size(variance) /= n_components) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP initialize_from_pca: PCA metadata shape is invalid")
+            return
+        end if
+        if (.not. all(ieee_is_finite(components))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP initialize_from_pca: PCA components are nonfinite")
+            return
+        end if
+        if (.not. all(ieee_is_finite(center))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP initialize_from_pca: PCA mean is nonfinite")
+            return
+        end if
+        if (.not. all(ieee_is_finite(variance)) .or. any(variance < 0.0_dp)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP initialize_from_pca: PCA variance is invalid")
+            return
+        end if
+
+        allocate(weight1(n_features, n_components), bias1(n_components))
+        allocate(weight2(n_components, n_features), bias2(n_features))
+        weight1 = transpose(components)
+        weight2 = components
+        bias1 = -matmul(center, transpose(components))
+        bias2 = center
+        if (pca%whiten()) then
+            do j = 1, n_components
+                if (variance(j) > tiny(1.0_dp)) then
+                    weight1(:, j) = weight1(:, j)/sqrt(variance(j))
+                    bias1(j) = bias1(j)/sqrt(variance(j))
+                    weight2(j, :) = weight2(j, :)*sqrt(variance(j))
+                end if
+            end do
+        end if
+        if (.not. all(ieee_is_finite(weight1)) .or. &
+                .not. all(ieee_is_finite(bias1)) .or. &
+                .not. all(ieee_is_finite(weight2)) .or. &
+                .not. all(ieee_is_finite(bias2))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP initialize_from_pca: generated state is nonfinite")
+            return
+        end if
+        call self%initialize_linear(weight1, bias1, weight2, bias2, status)
+    end subroutine mlp_initialize_from_pca
 
     subroutine initialize_layer(weight, bias, scale, seed, layer_index)
         real(dp), intent(out) :: weight(:, :), bias(:)

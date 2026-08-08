@@ -1267,13 +1267,15 @@ when a lower-level primitive already exists.
 - [ ] Convolution, transposed convolution, pooling, normalization, dropout,
   embeddings, attention, transformers, residual blocks, recurrent LSTM/GRU,
   temporal convolutions, graph message passing, and neural operators.
-- [x] Add a checked `mlp_t%initialize_linear`/`set_linear_parameters` seam for
-  finite two-layer affine or PCA-seeded states. It derives the topology from
-  the supplied `(weight,bias)` blocks, requires linear activations and exact
-  dimensions, preserves packed column-major layout, and has an independent
-  prediction/transaction/refusal oracle. This is not an NNGP, NTK, or
-  GP-posterior initializer; those structure-aware mappings remain open in
-  WP9d.
+- [x] Add checked `mlp_t%initialize_linear`/`set_linear_parameters` seams and
+  `mlp_t%initialize_from_pca` for finite two-layer affine or PCA-seeded states.
+  The PCA path maps the centered (optionally whitened) projection and inverse
+  into linear MLP weights and biases, derives the exact autoencoder topology,
+  validates all metadata before mutation, and has independent reconstruction,
+  transaction, and refusal oracles plus a companion benchmark. These are
+  finite linear/PCA optima, not NNGP, NTK, GP-posterior, physics-consistent,
+  symplectic, or Hamiltonian equivalences; those structure-aware mappings remain
+  open in WP9d.
 - [x] Extend dense MLP value/JVP/VJP/HVP products with linear, `tanh`, ReLU,
   tanh-approximate GELU, SiLU, ELU, softplus, fixed-slope leaky ReLU, stable
   sigmoid, and Mish activations. Independent value and central-difference
