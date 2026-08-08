@@ -197,6 +197,7 @@ contains
         type(fortnum_status_t) :: status
         integer :: matrix(2, 2)
         real(dp) :: value
+        real(dp) :: bad_curve(1), mean_accuracy(2), bin_weight(2)
 
         call classification_accuracy([1, 2], [1], value, status)
         call check(.not. status_ok(status), "mismatched label refusal", failures)
@@ -218,7 +219,7 @@ contains
             [2], [0, 1], 2, value, status)
         call check(.not. status_ok(status), "unknown calibration label refusal", failures)
         call classification_reliability_diagram(reshape([0.5_dp, 0.5_dp], [1, 2]), &
-            [0], [0, 1], 2, [0.0_dp], mean_accuracy, bin_weight, status)
+            [0], [0, 1], 2, bad_curve, mean_accuracy, bin_weight, status)
         call check(.not. status_ok(status), "reliability output shape refusal", failures)
     end subroutine test_refusals
 
