@@ -35,6 +35,11 @@ module fortml_xgboost
     integer, parameter, public :: XGB_BOOSTER_DART = 2
     integer, parameter :: XGB_MAX_SERIALIZED_NODES = 1000000
     integer, parameter :: XGB_MAX_CATEGORICAL_VALUES = 64
+    ! Exact subset enumeration keeps the SHAP-like path attribution
+    ! deterministic and independent of a background-data side channel.  The
+    ! bounded contract refuses wider models rather than silently switching to
+    ! an approximate explanation.
+    integer, parameter, public :: XGB_MAX_SHAP_FEATURES = 12
 
     public :: xgb_pairwise_loss, xgb_pairwise_derivatives
     public :: xgb_histogram_cut_positions
@@ -217,6 +222,8 @@ module fortml_xgboost
         procedure, public :: predict_contributions => xgb_predict_contributions
         procedure, public :: predict_contributions_device => &
             xgb_predict_contributions_device
+        procedure, public :: predict_shap => xgb_predict_shap
+        procedure, public :: predict_shap_device => xgb_predict_shap_device
         procedure, public :: predict_proba_staged => xgb_predict_proba_staged
         procedure, public :: predict_proba => xgb_predict_proba
         procedure, public :: decision_function => xgb_decision_function
@@ -2139,6 +2146,92 @@ contains
                 "xgboost contribution device: device kind is invalid")
         end select
     end subroutine xgb_predict_contributions_device
+
+    !> Return deterministic per-feature SHAP-like raw-margin attributions.
+    !>
+    !> The first output column is the path-dependent expected margin (the
+    !> fitted base margin plus each tree's expected leaf value).  Columns
+    !> `2:n_inputs+1` are exact Shapley subset attributions of the fitted
+    !> tree paths, using each node's stored cover as the conditional branch
+    !> distribution.  Consequently the columns sum to `predict_margin` up to
+    !> roundoff.  This bounded implementation refuses models wider than
+    !> `XGB_MAX_SHAP_FEATURES` instead of silently producing an approximation.
+    !> Fit and tree routing remain discrete; no fit-time derivative is implied.
+    subroutine xgb_predict_shap(self, x, shap, status)
+        class(xgboost_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: shap(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: tree_phi(:)
+        real(dp) :: tree_base
+        integer :: i, j, n_samples
+
+        if (.not. self%initialized .or. size(x, 2) /= self%n_inputs .or. &
+            size(shap, 1) /= size(x, 1) .or. &
+            size(shap, 2) /= self%n_inputs + 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost predict_shap: model, input, or output shape is invalid")
+            return
+        end if
+        if (self%n_inputs > XGB_MAX_SHAP_FEATURES) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "xgboost predict_shap: exact subset attribution is bounded to 12 features")
+            return
+        end if
+        if (.not. valid_query_values(self%missing_code, x)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost predict_shap: input has unsupported nonfinite values")
+            return
+        end if
+        if (.not. valid_categorical_query(self, x)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost predict_shap: categorical query values must be integer codes")
+            return
+        end if
+
+        n_samples = size(x, 1)
+        allocate(tree_phi(self%n_inputs))
+        shap = 0.0_dp
+        shap(:, 1) = self%base_score
+        do i = 1, self%n_estimators
+            do j = 1, n_samples
+                call xgb_tree_shap(self%estimators(i), x(j, :), self%n_inputs, &
+                    tree_phi, tree_base, status)
+                if (status%code /= FORTNUM_OK) return
+                shap(j, 1) = shap(j, 1) + self%learning_rate * &
+                    self%estimators(i)%scale * tree_base
+                shap(j, 2:) = shap(j, 2:) + self%learning_rate * &
+                    self%estimators(i)%scale * tree_phi
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine xgb_predict_shap
+
+    !> Device-control-plane wrapper for SHAP-like attributions.  CUDA remains
+    !> a typed refusal until a resident tree explanation kernel is linked.
+    subroutine xgb_predict_shap_device(self, device, x, shap, status)
+        class(xgboost_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: shap(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost SHAP device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_shap(x, shap, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "xgboost SHAP device: no resident CUDA tree kernel is linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost SHAP device: device kind is invalid")
+        end select
+    end subroutine xgb_predict_shap_device
 
     !> Return cumulative binary probabilities after every boosting stage.
     !>
@@ -5192,6 +5285,112 @@ contains
 
         probabilities = stable_sigmoid_element(values)
     end function stable_sigmoid_array
+
+    subroutine xgb_tree_shap(tree, query, n_features, phi, baseline, status)
+        !! Exact Shapley subset enumeration for one tree.  Unobserved split
+        !! features are integrated with the child-cover proportions stored at
+        !! fit time; observed features follow the normal tree route.
+        type(xgb_tree_t), intent(in) :: tree
+        real(dp), intent(in) :: query(:)
+        integer, intent(in) :: n_features
+        real(dp), intent(out) :: phi(:)
+        real(dp), intent(out) :: baseline
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: coalition(:)
+        integer :: n_masks, mask, feature, bit, cardinality
+        real(dp) :: coefficient
+
+        if (n_features < 1 .or. n_features > XGB_MAX_SHAP_FEATURES .or. &
+            size(query) /= n_features .or. size(phi) /= n_features .or. &
+            tree%n_nodes < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost SHAP tree: invalid tree or feature shape")
+            return
+        end if
+        n_masks = ishft(1, n_features)
+        allocate(coalition(0:n_masks-1))
+        do mask = 0, n_masks-1
+            coalition(mask) = xgb_tree_coalition(tree, 1, query, mask)
+        end do
+        baseline = coalition(0)
+        phi = 0.0_dp
+        do feature = 1, n_features
+            bit = ishft(1, feature-1)
+            do mask = 0, n_masks-1
+                if (iand(mask, bit) /= 0) cycle
+                cardinality = popcnt(mask)
+                coefficient = shap_subset_coefficient(cardinality, n_features)
+                phi(feature) = phi(feature) + coefficient * &
+                    (coalition(ior(mask, bit)) - coalition(mask))
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine xgb_tree_shap
+
+    recursive real(dp) function xgb_tree_coalition(tree, node, query, mask) result(value)
+        type(xgb_tree_t), intent(in) :: tree
+        integer, intent(in) :: node, mask
+        real(dp), intent(in) :: query(:)
+        integer :: feature, left_node, right_node
+        real(dp) :: parent_cover, left_cover, right_cover, left_fraction
+        logical :: left
+
+        if (tree%leaf(node)) then
+            value = tree%weight(node)
+            return
+        end if
+        feature = tree%feature(node)
+        left_node = tree%left_child(node)
+        right_node = tree%right_child(node)
+        if (iand(mask, ishft(1, feature-1)) /= 0) then
+            if (tree%categorical(node)) then
+                left = category_go_left(query(feature), tree%category_values(node, :), &
+                    tree%category_count(node), tree%missing_left(node))
+            else
+                left = go_left(query(feature), tree%node_threshold(node), &
+                    tree%missing_left(node))
+            end if
+            if (left) then
+                value = xgb_tree_coalition(tree, left_node, query, mask)
+            else
+                value = xgb_tree_coalition(tree, right_node, query, mask)
+            end if
+        else
+            parent_cover = tree%node_cover(node)
+            left_cover = tree%node_cover(left_node)
+            right_cover = tree%node_cover(right_node)
+            if (parent_cover > 0.0_dp .and. ieee_is_finite(parent_cover) .and. &
+                left_cover >= 0.0_dp .and. right_cover >= 0.0_dp .and. &
+                ieee_is_finite(left_cover) .and. ieee_is_finite(right_cover)) then
+                left_fraction = left_cover/parent_cover
+                left_fraction = min(1.0_dp, max(0.0_dp, left_fraction))
+                if (left_cover + right_cover <= 0.0_dp) left_fraction = 0.5_dp
+            else
+                left_fraction = 0.5_dp
+            end if
+            value = left_fraction*xgb_tree_coalition(tree, left_node, query, mask) + &
+                (1.0_dp-left_fraction)*xgb_tree_coalition(tree, right_node, query, mask)
+        end if
+    end function xgb_tree_coalition
+
+    real(dp) function shap_subset_coefficient(cardinality, n_features) result(value)
+        integer, intent(in) :: cardinality, n_features
+        integer :: i
+        real(dp) :: numerator, denominator
+
+        numerator = 1.0_dp
+        do i = 2, cardinality
+            numerator = numerator*real(i, dp)
+        end do
+        do i = 2, n_features-cardinality-1
+            numerator = numerator*real(i, dp)
+        end do
+        denominator = 1.0_dp
+        do i = 2, n_features
+            denominator = denominator*real(i, dp)
+        end do
+        value = numerator/denominator
+    end function shap_subset_coefficient
 
     subroutine sort_feature_indices(values, order)
         real(dp), intent(in) :: values(:)

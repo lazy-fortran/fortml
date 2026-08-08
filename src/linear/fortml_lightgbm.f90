@@ -20,6 +20,10 @@ module fortml_lightgbm
     integer, parameter, public :: LIGHTGBM_BOOSTING_GOSS = 1
     integer, parameter, public :: LIGHTGBM_BOOSTING_DART = 2
     integer, parameter :: LIGHTGBM_MAX_SERIALIZED_NODES = 1000000
+    ! Exact subset enumeration gives a deterministic SHAP-like path
+    ! attribution.  Wider models return a typed refusal rather than silently
+    ! changing explanation semantics.
+    integer, parameter, public :: LIGHTGBM_MAX_SHAP_FEATURES = 12
 
     !> Options for the deterministic numeric LightGBM-style path.  The
     !> estimator intentionally exposes only the supported CPU core: weighted
@@ -136,6 +140,8 @@ module fortml_lightgbm
         procedure, public :: predict_staged => lgbm_predict_staged
         procedure, public :: predict_staged_margin => lgbm_predict_staged_margin
         procedure, public :: predict_contributions => lgbm_predict_contributions
+        procedure, public :: predict_shap => lgbm_predict_shap
+        procedure, public :: predict_shap_device => lgbm_predict_shap_device
         procedure, public :: slice => lgbm_slice
         procedure, public :: save_text => lgbm_save_text
         procedure, public :: load_text => lgbm_load_text
@@ -1023,6 +1029,86 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine lgbm_predict_contributions
+
+    !> Return deterministic per-feature SHAP-like raw-margin attributions.
+    !>
+    !> Column one is the path-dependent expected margin (base margin plus
+    !> expected leaf values); the remaining columns are exact Shapley subset
+    !> attributions of each fitted leaf-wise tree.  Unobserved split features
+    !> are integrated using the child row-count proportions retained in each
+    !> node.  The columns therefore sum to `predict_margin` up to roundoff.
+    !> The bounded implementation refuses models wider than
+    !> `LIGHTGBM_MAX_SHAP_FEATURES` instead of silently approximating SHAP.
+    subroutine lgbm_predict_shap(self, x, shap, status)
+        class(lightgbm_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: shap(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: tree_phi(:)
+        real(dp) :: tree_base
+        integer :: i, j, n_samples
+
+        if (.not. self%initialized .or. size(x, 2) /= self%n_inputs .or. &
+            size(shap, 1) /= size(x, 1) .or. &
+            size(shap, 2) /= self%n_inputs + 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm predict_shap: model, input, or output shape is invalid")
+            return
+        end if
+        if (self%n_inputs > LIGHTGBM_MAX_SHAP_FEATURES) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "lightgbm predict_shap: exact subset attribution is bounded to 12 features")
+            return
+        end if
+        if (any(.not. ieee_is_finite(x))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm predict_shap: input has unsupported nonfinite values")
+            return
+        end if
+
+        n_samples = size(x, 1)
+        allocate(tree_phi(self%n_inputs))
+        shap = 0.0_dp
+        shap(:, 1) = self%base_score
+        do i = 1, self%n_estimators
+            do j = 1, n_samples
+                call lgbm_tree_shap(self%estimator(i), x(j, :), self%n_inputs, &
+                    tree_phi, tree_base, status)
+                if (status%code /= FORTNUM_OK) return
+                shap(j, 1) = shap(j, 1) + self%learning_rate * &
+                    self%estimator(i)%scale * tree_base
+                shap(j, 2:) = shap(j, 2:) + self%learning_rate * &
+                    self%estimator(i)%scale * tree_phi
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine lgbm_predict_shap
+
+    !> Device-control-plane wrapper for SHAP-like attributions.  CUDA remains
+    !> a typed refusal until a resident LightGBM tree kernel is linked.
+    subroutine lgbm_predict_shap_device(self, device, x, shap, status)
+        class(lightgbm_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: shap(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm SHAP device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_shap(x, shap, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "lightgbm SHAP device: no resident CUDA tree kernel is linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm SHAP device: device kind is invalid")
+        end select
+    end subroutine lgbm_predict_shap_device
 
     !> Copy a fitted LightGBM prefix into `destination` without refitting.
     !>
@@ -2128,6 +2214,103 @@ contains
             13007_int64*int(round, int64), modulus)
         value = modulo(value*48271_int64 + 17_int64, modulus)
     end function goss_hash
+
+    subroutine lgbm_tree_shap(tree, query, n_features, phi, baseline, status)
+        !! Exact Shapley subset enumeration for one leaf-wise tree.  The
+        !! training-row membership retained by each node supplies the
+        !! conditional branch distribution for omitted features.
+        type(lgbm_tree_t), intent(in) :: tree
+        real(dp), intent(in) :: query(:)
+        integer, intent(in) :: n_features
+        real(dp), intent(out) :: phi(:)
+        real(dp), intent(out) :: baseline
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: coalition(:)
+        integer :: n_masks, mask, feature, bit, cardinality
+        real(dp) :: coefficient
+
+        if (n_features < 1 .or. n_features > LIGHTGBM_MAX_SHAP_FEATURES .or. &
+            size(query) /= n_features .or. size(phi) /= n_features .or. &
+            tree%n_nodes < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm SHAP tree: invalid tree or feature shape")
+            return
+        end if
+        n_masks = ishft(1, n_features)
+        allocate(coalition(0:n_masks-1))
+        do mask = 0, n_masks-1
+            coalition(mask) = lgbm_tree_coalition(tree, 1, query, mask)
+        end do
+        baseline = coalition(0)
+        phi = 0.0_dp
+        do feature = 1, n_features
+            bit = ishft(1, feature-1)
+            do mask = 0, n_masks-1
+                if (iand(mask, bit) /= 0) cycle
+                cardinality = popcnt(mask)
+                coefficient = shap_subset_coefficient(cardinality, n_features)
+                phi(feature) = phi(feature) + coefficient * &
+                    (coalition(ior(mask, bit)) - coalition(mask))
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine lgbm_tree_shap
+
+    recursive real(dp) function lgbm_tree_coalition(tree, node, query, mask) result(value)
+        type(lgbm_tree_t), intent(in) :: tree
+        integer, intent(in) :: node, mask
+        real(dp), intent(in) :: query(:)
+        integer :: feature, left_node, right_node
+        real(dp) :: parent_count, left_count, right_count, left_fraction
+
+        if (tree%node(node)%leaf) then
+            value = tree%node(node)%weight
+            return
+        end if
+        feature = tree%node(node)%feature
+        left_node = tree%node(node)%left_child
+        right_node = tree%node(node)%right_child
+        if (iand(mask, ishft(1, feature-1)) /= 0) then
+            if (query(feature) < tree%node(node)%threshold) then
+                value = lgbm_tree_coalition(tree, left_node, query, mask)
+            else
+                value = lgbm_tree_coalition(tree, right_node, query, mask)
+            end if
+        else
+            left_count = real(size(tree%node(left_node)%rows), dp)
+            right_count = real(size(tree%node(right_node)%rows), dp)
+            parent_count = left_count + right_count
+            if (parent_count > 0.0_dp .and. left_count >= 0.0_dp .and. &
+                right_count >= 0.0_dp) then
+                left_fraction = left_count/parent_count
+                left_fraction = min(1.0_dp, max(0.0_dp, left_fraction))
+                if (left_count + right_count <= 0.0_dp) left_fraction = 0.5_dp
+            else
+                left_fraction = 0.5_dp
+            end if
+            value = left_fraction*lgbm_tree_coalition(tree, left_node, query, mask) + &
+                (1.0_dp-left_fraction)*lgbm_tree_coalition(tree, right_node, query, mask)
+        end if
+    end function lgbm_tree_coalition
+
+    real(dp) function shap_subset_coefficient(cardinality, n_features) result(value)
+        integer, intent(in) :: cardinality, n_features
+        integer :: i
+        real(dp) :: numerator, denominator
+
+        numerator = 1.0_dp
+        do i = 2, cardinality
+            numerator = numerator*real(i, dp)
+        end do
+        do i = 2, n_features-cardinality-1
+            numerator = numerator*real(i, dp)
+        end do
+        denominator = 1.0_dp
+        do i = 2, n_features
+            denominator = denominator*real(i, dp)
+        end do
+        value = numerator/denominator
+    end function shap_subset_coefficient
 
     subroutine sort_indices(values, order)
         real(dp), intent(in) :: values(:)

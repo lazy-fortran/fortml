@@ -2471,9 +2471,16 @@ hyperparameter block. A deliberate train/validation leakage fixture must fail.
   CUDA refusal. Fit-time dropout derivatives remain explicitly unsupported
   because tree selection is discrete; EFB, distributed growth, and resident
   GPU histograms remain open.
-- [ ] Add monotone prediction checks, partial dependence, SHAP-like additive
-  contribution products, and model-size/tree export diagnostics. Warm-start
-  continuation and staged predictions are covered above.
+- [x] Add bounded SHAP-like additive contribution products to both boosted-tree
+  families. `xgboost_t%predict_shap` and `lightgbm_t%predict_shap` use exact
+  feature-subset Shapley enumeration with path-dependent expected baselines;
+  XGBoost integrates omitted splits with stored cover and LightGBM with child
+  row-count proportions. Rows sum to the raw margin, fitted DART scales and
+  prefixes are retained, models wider than 12 features return a typed refusal,
+  and CPU/CUDA dispatch never hides a host fallback. `test_tree_shap` and
+  `fortml-bench/results/TREE_SHAP.md` provide independent one-stump NumPy
+  oracles. Monotone prediction checks, partial dependence, model-size/tree
+  export diagnostics, and resident GPU explanation kernels remain open.
 - [ ] Extend categorical support beyond the ordered-gradient policy (exhaustive
   partitions for very small cardinalities, categorical statistics/target
   encoding, categorical interaction constraints) and add distributed/resident

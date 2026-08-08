@@ -3048,6 +3048,16 @@ the raw link, so apply the objective link after summing. The corresponding
 linked. Invalid shapes and unsupported NaN policies return
 `FORTNUM_DOMAIN_ERROR`.
 
+`predict_shap(x,shap,status)` returns a bounded per-feature SHAP-like
+raw-margin decomposition with shape `(n_samples,n_features+1)`. Column one is
+the path-dependent expected margin and the remaining columns are exact subset
+Shapley attributions using fitted node-cover branch probabilities; the row
+sum reproduces `predict_margin`. The subset path is limited to 12 features and
+returns `FORTNUM_NOT_IMPLEMENTED` for wider models rather than silently
+approximating. `predict_shap_device` dispatches CPU and returns a typed CUDA
+refusal until a resident explanation kernel is linked. See
+[`docs/TREE_SHAP.md`](TREE_SHAP.md).
+
 `xgboost_multiclass_t` wraps the binary logistic estimator in a deterministic
 one-vs-rest classifier. `fit(x,labels,status[,options,sample_weight])` sorts
 arbitrary integer labels, applies an optional positive sample-weight vector to
@@ -4096,6 +4106,14 @@ arrays. Loading validates record order, schema, finite scalar bounds, child
 indices, and EOF before replacing the destination; truncated, unknown,
 trailing, or malformed records return `FORTNUM_DOMAIN_ERROR` and leave it
 unchanged.
+
+`predict_shap(x,shap,status)` provides the same bounded per-feature raw-margin
+contract as XGBoost. Column one is the path-dependent expected margin and
+columns two through `n_features+1` are exact subset Shapley values, with
+LightGBM child row counts supplying omitted-feature branch probabilities.
+Rows sum to `predict_margin`; models wider than 12 features return
+`FORTNUM_NOT_IMPLEMENTED`. `predict_shap_device` has explicit CPU dispatch and
+a typed CUDA refusal with no hidden host fallback.
 
 `fit_warm_start(x,y,status,options[,sample_weight])` continues a fitted model
 to a strictly larger `options%n_estimators` target. The fitted prefix and all
