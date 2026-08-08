@@ -204,7 +204,7 @@ repeated resident-batch evidence.
 | `kernel_t` | Scalar value and matrix | Parameter JVP | Parameter VJP | Parameter HVP |
 | `xgboost_t` | Squared/squared-log (RMSLE)/logistic/Poisson/fixed-shape Gamma/Tweedie/Huber/quantile/absolute/rank:pairwise margins, predictions, additive tree contributions, fitted-prefix slicing, and bounded ordered-gradient integer categorical partitions | Fixed-tree input JVP away from split boundaries; categorical models refuse discrete tangents | Fixed-tree input VJP away from split boundaries; categorical models refuse discrete cotangents | No |
 | `xgboost_classifier_t` | Binary integer labels, logistic `(n,2)` probabilities, staged margins, and feature diagnostics | Fixed-tree probability/input JVP away from split boundaries | Fixed-tree probability/input VJP away from split boundaries | No |
-| `lightgbm_t` | Weighted numeric regression/binary logistic histogram boosting with deterministic globally best-leaf growth and GOSS top/other-rate gradient/Hessian sampling | Fixed-tree input JVP away from split boundaries | Fixed-tree input VJP away from split boundaries | No |
+| `lightgbm_t` | Weighted numeric regression/binary logistic histogram boosting with deterministic globally best-leaf growth, GOSS top/other-rate gradient/Hessian sampling, and seeded DART/dropout with persisted tree-normalisation scales | Fixed-tree input JVP away from split boundaries | Fixed-tree input VJP away from split boundaries | No |
 | `random_forest_classifier_t` | Bootstrap-ensemble probabilities/labels plus transactional OOB decision probabilities, OOB accuracy, coverage, bootstrap-inclusion audit state, and deterministic fixed-state accuracy permutation importance | Refused: split routing and permutation membership are discrete | Refused: split routing and permutation membership are discrete | CPU OOB/permutation diagnostics; CUDA returns typed `FORTNUM_NOT_IMPLEMENTED` |
 | `extra_trees_classifier_t` | Randomized-threshold ensemble probabilities and labels | Refused: split routing is discrete | Refused: split routing is discrete | No |
 | `bagging_classifier_t` | Seeded bootstrap or without-replacement CART probabilities and labels | Refused: split routing is discrete | Refused: split routing is discrete | No |
@@ -4043,7 +4043,7 @@ identity or sigmoid link, while `num_leaves`, `tree_node_count`, and
 `tree_depth` expose the growth policy. `predict_staged_margin` and
 `predict_staged` return cumulative margins or linked predictions after every
 retained tree. `predict_contributions` returns the base margin followed by
-learning-rate-scaled per-tree terms; summing its columns reproduces
+learning-rate and tree-scale-scaled per-tree terms; summing its columns reproduces
 `predict_margin`. `slice(n_trees,destination,status)` copies a fitted prefix
 transactionally, including all allocatable node/row state, so a prefix can be
 served without refitting.
@@ -4070,10 +4070,22 @@ selected small-gradient rows receive the exact `(1-top_rate)/other_rate`
 gradient/Hessian correction before leaf gains and weights are evaluated.
 `boosting_type()`, `top_rate()`, and `other_rate()` expose fitted policy
 metadata. GOSS is available for both regression and binary logistic paths,
-warm-start continuation, prefix slicing, and schema-2 text persistence. Rates
+warm-start continuation, prefix slicing, and schema-3 text persistence. Rates
 must be positive with `top_rate+other_rate<1`; invalid combinations refuse
 transactionally. The CPU path is the only supported device and selected CUDA
 prediction returns `FORTNUM_NOT_IMPLEMENTED`.
+
+Set `options%boosting_type="dart"` to enable the bounded DART policy. Each
+round uses a compiler-independent hash stream seeded by `options%seed` to
+drop prior trees with probability `dart_drop_rate`, skips a round with
+`dart_skip_drop`, and caps selected trees with `dart_max_drop` (`0` means no
+cap). The selected prior trees and the new tree are multiplied by the explicit
+tree-normalisation `1/(k+1)`; their scales are part of staged predictions,
+contributions, prefix slices, warm starts, and schema-3 snapshots. The public
+`dart_drop_rate()`, `dart_skip_drop()`, `dart_max_drop()`, and `tree_scale(i)`
+accessors expose this state. DART fit/dropout selection is discrete and has no
+fit-time hyperparameter derivative; fixed-tree input JVP/VJP products retain
+the zero-away-from-splits contract. Invalid rates refuse transactionally.
 
 The finite numeric contract is explicit: NaN and infinity inputs are refused,
 and categorical, missing-value-default, EFB, and distributed policies are not
@@ -4081,7 +4093,8 @@ silently approximated. Fixed-tree input JVP/VJP products are zero away from
 learned split surfaces and return `FORTNUM_DOMAIN_ERROR` exactly on a split
 boundary. CPU dispatch is supported; `predict_device` on a selected CUDA
 device returns `FORTNUM_NOT_IMPLEMENTED` until resident leaf-wise histogram
-state is available. Independent hand, tree-walk, and persistence oracles are
-`test_lightgbm`, `test_lightgbm_staged_slice`, and
-`test_lightgbm_persistence`, and `test_lightgbm_goss`; the release benchmarks
-are `lightgbm_leafwise.csv` and `lightgbm_goss.csv` in `../fortml-bench`.
+state is available. Independent hand, tree-walk, DART, and persistence oracles
+are `test_lightgbm`, `test_lightgbm_staged_slice`, `test_lightgbm_persistence`,
+`test_lightgbm_goss`, and `test_lightgbm_dart`; the release benchmarks are
+`lightgbm_leafwise.csv`, `lightgbm_goss.csv`, and `lightgbm_dart.csv` in
+`../fortml-bench`.
