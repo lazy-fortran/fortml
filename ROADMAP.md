@@ -536,7 +536,7 @@ only listed as gaps:
 
 The FortBO and FortMC companion pins were rechecked against their remote
 `main` branches on 2026-08-08: FortBO
-`04528f00bb522e6c9a40172da9def778f09d4524` and FortMC
+`3dc4970ec3fab754746b7abd454965d959669666` and FortMC
 `4dde0ccdc37b4c331126605406b08e1f3bda4f59`. Their roadmaps remain authoritative
 for acquisition and sampling algorithms; FortML owns the posterior/log-density
 protocols and does not embed sampler or acquisition state. FortBO additionally
@@ -551,12 +551,12 @@ also supplies preference learning and noisy-dominance probabilities with
 FortSym-generated Gaussian-comparison derivatives, exact posterior mean and
 standard-deviation Hessians from derivative predictions, and tested TuRBO-1/
 TuRBO-m and DTuRBO mode-2 drivers with deterministic region updates,
-posterior sampling, and posterior-derivative local models, an
+posterior sampling, posterior-derivative local models, trust-region traces,
+and an
 indefinite-curvature bound-constrained quadratic subproblem, multi-objective
 Pareto archives with exact hypervolume and scalarizations, and stopping rules
-that report a machine-readable reason. Posterior-
-full batch and knowledge/entropy/noisy acquisitions, device execution, and
-wider sparse, variational, and multi-output adapters
+that report a machine-readable reason. Full batch, entropy/noisy acquisitions,
+device execution, and wider sparse, variational, and multi-output adapters
 remain open. Any future adapter must add
 a focused oracle, typed GPU/refusal row, and a benchmark record in the companion
 harness.
@@ -627,15 +627,16 @@ acquisition work packages:
 
 The companion repositories were checked on 2026-08-08 at FortMC
 `4dde0ccdc37b4c331126605406b08e1f3bda4f59` and FortBO
-`04528f00bb522e6c9a40172da9def778f09d4524`, both on their `main` branches. The
+`3dc4970ec3fab754746b7abd454965d959669666`, both on their `main` branches. The
 FortBO pin now includes a versioned capability-gated posterior contract,
 gradient-aware observation history/checkpointing, normalized continuous/integer/
 categorical/mixed/conditional search spaces, a differentiable-coordinate mask,
-analytic EI/PI/UCB/log-EI, marginal Monte-Carlo EI/PI with CRN, antithetic
-draws and pathwise gradients, Sobol TuRBO candidates, Thompson selection,
+analytic EI/PI/UCB/log-EI, exact-envelope knowledge gradient, marginal
+Monte-Carlo EI/PI with CRN, antithetic draws and pathwise gradients, Sobol
+TuRBO candidates, Thompson selection,
 gradient-based DTuRBO in-region acquisition search, exact posterior mean and
 standard-deviation Hessians, tested TuRBO-1/TuRBO-m and DTuRBO mode-2 drivers,
-an
+trust-region traces, and an
 indefinite-curvature quadratic subproblem, Pareto archives with
 exact hypervolume, scalarizations, machine-readable stopping reasons,
 preference learning, noisy dominance, the FortML derivative-GP input-HVP
@@ -643,14 +644,15 @@ adapter, and FortML value/derivative-GP adapters;
 refresh these pins when
 their protocol or device contracts change.
 
-The current FortBO checkout builds and runs all 17 registered tests with `fo
-test`, including the TuRBO driver, preference-learning, and noisy-dominance
-oracles. FortMC's current checkout builds cleanly and reports zero registered
+The current FortBO checkout builds and runs all 19 registered tests with `fo
+test`, including the knowledge-gradient, TuRBO/DTuRBO drivers, trust-region
+trace, preference-learning, and noisy-dominance oracles. FortMC's current
+checkout builds cleanly and reports zero registered
 tests, so its sampler and diagnostics claims remain roadmap items rather than
 FortML verification evidence.
 
 This companion check was repeated from clean source trees on 2026-08-08:
-`origin/main` resolves exactly to the two pins above, `fo test` reports 14/14
+`origin/main` resolves exactly to the two pins above, `fo test` reports 19/19
 for FortBO and 0 registered tests for FortMC, and neither repository has a
 runtime dependency on the FortSym executable. These are boundary checks, not a
 claim that FortMC samplers or the remaining FortBO policy catalog are shipped.
