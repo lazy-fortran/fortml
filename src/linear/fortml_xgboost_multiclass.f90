@@ -1010,6 +1010,11 @@ contains
         if (.not. allocated(self%one_vs_rest)) return
         if (self%n_inputs < 1 .or. size(self%class_label) < 2) return
         if (size(self%one_vs_rest) /= size(self%class_label)) return
+        if (self%requested_estimators < 1 .or. &
+            self%requested_estimators < size(self%one_vs_rest) .or. &
+            self%best_iteration_value < 1 .or. &
+            self%best_iteration_value > size(self%one_vs_rest) .or. &
+            .not. ieee_is_finite(self%best_validation_loss_value)) return
         do i = 2, size(self%class_label)
             if (self%class_label(i) <= self%class_label(i - 1)) return
         end do
