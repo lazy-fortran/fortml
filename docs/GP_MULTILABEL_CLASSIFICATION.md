@@ -22,7 +22,7 @@ binary GP contract, the Newton mode and curvature are held fixed in prediction
 products; differentiating a full Laplace evidence or jointly correlated label
 likelihood is a separate objective.
 
-CPU device dispatch is exact.  CUDA prediction and label calls return
+CPU device dispatch is exact.  CUDA latent/probability prediction and label calls return
 `FORTNUM_NOT_IMPLEMENTED` until all binary Laplace states, covariance solves,
 and the multilabel reduction are resident; no host fallback is implied.
 

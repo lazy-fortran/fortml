@@ -3485,8 +3485,8 @@ layout; the gradient is the concatenation of the binary Laplace envelope
 gradients for the independent mode posteriors.  `set_thresholds` updates only
 the prediction policy and validates every threshold in `(0,1)`.
 
-Selected CPU device calls dispatch to the reference path.  CUDA probability
-and label requests return `FORTNUM_NOT_IMPLEMENTED` until resident binary
+Selected CPU device calls dispatch to the reference path.  CUDA latent,
+probability, and label requests return `FORTNUM_NOT_IMPLEMENTED` until resident binary
 Laplace states, solves, and the multilabel reduction are linked; no host
 fallback is implied.  The independent behavioral oracle is
 `test_gp_multilabel_classification`, and the cross-engine correctness record

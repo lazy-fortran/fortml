@@ -110,6 +110,9 @@ program test_gp_multilabel_classification
     call model%predict_proba_device(cuda, query, probabilities, status)
     call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
         "typed CUDA probability refusal", failures)
+    call model%predict_latent_device(cuda, query, latent, variance, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
+        "typed CUDA latent refusal", failures)
     call model%predict_device(cuda, query, predicted, status)
     call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
         "typed CUDA label refusal", failures)

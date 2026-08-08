@@ -45,6 +45,8 @@ module fortml_gp_multilabel_classification
     contains
         procedure, public :: fit => gp_multilabel_fit
         procedure, public :: predict_latent => gp_multilabel_predict_latent
+        procedure, public :: predict_latent_device => &
+            gp_multilabel_predict_latent_device
         procedure, public :: predict_latent_jvp => gp_multilabel_predict_latent_jvp
         procedure, public :: predict_latent_vjp => gp_multilabel_predict_latent_vjp
         procedure, public :: predict_latent_parameter_jvp => &
@@ -76,6 +78,7 @@ module fortml_gp_multilabel_classification
 
     public :: gp_multilabel_fit
     public :: gp_multilabel_predict_latent
+    public :: gp_multilabel_predict_latent_device
     public :: gp_multilabel_predict_latent_jvp
     public :: gp_multilabel_predict_latent_vjp
     public :: gp_multilabel_predict_latent_parameter_jvp
@@ -221,6 +224,30 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine gp_multilabel_predict_latent
+
+    subroutine gp_multilabel_predict_latent_device(self, device, x, mean, variance, status)
+        !! Dispatch latent posterior prediction without hidden host fallback.
+        class(gp_multilabel_classification_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: mean(:, :), variance(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multilabel GP latent device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_latent(x, mean, variance, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "multilabel GP latent device: no resident CUDA Laplace heads are linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multilabel GP latent device: device kind is invalid")
+        end select
+    end subroutine gp_multilabel_predict_latent_device
 
     subroutine gp_multilabel_predict_proba(self, x, probabilities, status)
         class(gp_multilabel_classification_t), intent(in) :: self
