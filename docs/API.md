@@ -194,6 +194,7 @@ repeated resident-batch evidence.
 | `mlp_adafactor_hypergradient_objective_t` | Validation MSE after fixed full-batch unfactored Adafactor trajectory | Packed `[log(learning_rate),log(l2),decay,log(epsilon),log(clip_threshold)]` JVP | Exact trajectory value gradient and scalar VJP | Forward second-moment, update-RMS clipping, and denominator sensitivities; active-set and discrete branches refuse |
 | `adafactor_factored_t` | Layout-aware matrix-factorized Adafactor with vector fallback | Parameter update | Dense second-moment inspection | Explicit row/column state for matrix blocks; CPU recurrence; formatted and in-memory schema-9 checkpoint migration; CUDA remains a typed refusal |
 | `mlp_schedule_hypergradient_objective_t` | Validation MSE after a typed scheduled full-batch trajectory | Packed `[log(base_rate),log(l2),logit(min_fraction),logit(decay_factor)]` JVP, or `[log(base_rate),log(l2),log(peak_fraction),log(final_fraction)]` for one-cycle | Exact schedule/trajectory value gradient and scalar VJP | Inner MLP HVP; outer hyper-HVP is not approximated |
+| `mlp_radam_schedule_hypergradient_objective_t` | Validation MSE after a typed scheduled full-batch RAdam trajectory | Packed base-rate/L2/beta/epsilon/schedule JVP | Exact trajectory value gradient and scalar VJP | Moment, bias-correction, rectification, and schedule sensitivities; outer HVP/CUDA refusal |
 | `mlp_minibatch_hypergradient_objective_t` | Validation MSE after a fixed seeded mini-batch SGD trajectory | Packed `[log(learning_rate),log(l2)]` JVP | Exact batch-cursor trajectory value gradient and scalar VJP | Per-batch MLP HVP; outer hyper-HVP is a typed refusal |
 | `mlp_minibatch_adam_hypergradient_objective_t` | Validation MSE after a fixed seeded mini-batch coupled-L2 Adam trajectory | Packed `[log(learning_rate),log(l2)]` JVP | Exact batch-cursor trajectory value gradient and scalar VJP | Forward parameter/moment/bias-correction sensitivities; outer hyper-HVP is a typed refusal |
 | `trainer_t` | Any `fortopt_objective::objective_t` with explicit full-batch training state | Optimizer updates are stateful; the objective supplies exact products | The same objective value/gradient callback is used for every update | L-BFGS-B consumes the objective gradient; no hidden HVP or finite-difference fallback |
@@ -2362,6 +2363,21 @@ The independent `test_mlp_radam_hypergradient` fixture checks central
 differences, a directional product, the scalar adjoint, FortOpt integration,
 and both refusal contracts. See
 [`docs/MLP_RADAM_HYPERGRADIENT.md`](MLP_RADAM_HYPERGRADIENT.md).
+
+### `fortml_mlp_radam_schedule_hypergradient`
+
+`mlp_radam_schedule_hypergradient_objective_t` extends fixed full-batch RAdam
+with a typed stateless learning-rate schedule. Its packed vector is
+`[log(base_rate), log(l2), logit(beta1), logit(beta2), log(epsilon),
+logit(min_rate_fraction), logit(decay_factor)]`. Constant, cosine,
+warmup-cosine, and exponential-decay schedule families have exact rate
+sensitivities; inactive family fields return zero products. Value/gradient,
+JVP, scalar VJP, and the FortOpt L-BFGS-B adapter propagate through moments,
+bias correction, rectification, and schedule state. The outer hyper-HVP
+requires third network derivatives and is a typed refusal, as are CUDA
+trajectory requests, the `rho_t = 4` branch, and zero square-root derivatives.
+See [`docs/MLP_RADAM_SCHEDULE_HYPERGRADIENT.md`](MLP_RADAM_SCHEDULE_HYPERGRADIENT.md)
+and `test_mlp_radam_schedule_hypergradient`.
 
 ### `fortml_mlp_amsgrad_hypergradient`
 
