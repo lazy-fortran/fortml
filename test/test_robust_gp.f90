@@ -136,7 +136,7 @@ contains
 
         kernel = make_rbf_kernel(1, 4.0_dp, 0.8_dp, status)
         call robust%fit(x, spoiled, kernel, FORTML_LIKELIHOOD_STUDENT_T, status, &
-                        nu=3.0_dp, scale=0.2_dp)
+            nu=3.0_dp, scale=0.2_dp)
         call check(status_ok(status), "the Student-t model fits", failures)
         call robust%predict_latent(probe, robust_mean, robust_variance, status)
 
@@ -169,7 +169,7 @@ contains
         kernel = make_rbf_kernel(1, 1.0_dp, 1.0_dp, status)
 
         call model%fit(x, [-1.0_dp, 1.0_dp, 2.0_dp, 3.0_dp], kernel, &
-                       FORTML_LIKELIHOOD_POISSON, status)
+            FORTML_LIKELIHOOD_POISSON, status)
         call check(status%code == FORTNUM_DOMAIN_ERROR, &
             "a negative Poisson count is refused", failures)
 
@@ -178,7 +178,7 @@ contains
             "an unknown likelihood is refused", failures)
 
         call model%fit(x, y, kernel, FORTML_LIKELIHOOD_STUDENT_T, status, &
-                       nu=-1.0_dp)
+            nu=-1.0_dp)
         call check(status%code == FORTNUM_DOMAIN_ERROR, &
             "a non-positive nu is refused", failures)
 

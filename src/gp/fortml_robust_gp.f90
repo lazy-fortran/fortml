@@ -84,7 +84,7 @@ contains
     !! First derivative and negative second derivative of the log likelihood in
     !! the latent value. Everything likelihood-specific lives here.
     pure subroutine log_likelihood_derivatives(likelihood, nu, scale, y, f, &
-                                               gradient, curvature)
+            gradient, curvature)
         integer, intent(in) :: likelihood
         real(dp), intent(in) :: nu, scale, y, f
         real(dp), intent(out) :: gradient
@@ -104,13 +104,13 @@ contains
             denominator = nu*scale*scale + residual*residual
             gradient = (nu + 1.0_dp)*residual/denominator
             curvature = (nu + 1.0_dp)*(nu*scale*scale - residual*residual) &
-                        /(denominator*denominator)
+                /(denominator*denominator)
             if (curvature < 0.0_dp) curvature = 0.0_dp
         end select
     end subroutine log_likelihood_derivatives
 
     subroutine robust_fit(self, x, y, kernel, likelihood, status, nu, scale, &
-                          jitter)
+            jitter)
         class(robust_gp_t), intent(out) :: self
         real(dp), intent(in) :: x(:, :)
         real(dp), intent(in) :: y(:)
@@ -198,8 +198,8 @@ contains
             previous = self%mode
             do i = 1, n
                 call log_likelihood_derivatives(likelihood, self%nu, self%scale, &
-                                                y(i), self%mode(i), gradient(i), &
-                                                curvature(i))
+                    y(i), self%mode(i), gradient(i), &
+                    curvature(i))
                 root_w(i) = sqrt(curvature(i))
             end do
 
@@ -238,8 +238,8 @@ contains
         ! predictive variance belongs to the same latent as the mean.
         do i = 1, n
             call log_likelihood_derivatives(likelihood, self%nu, self%scale, &
-                                            y(i), self%mode(i), gradient(i), &
-                                            self%curvature(i))
+                y(i), self%mode(i), gradient(i), &
+                self%curvature(i))
             root_w(i) = sqrt(self%curvature(i))
         end do
         do j = 1, n
