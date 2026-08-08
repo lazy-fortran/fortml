@@ -70,8 +70,9 @@ probability objects; FortML does not import either package. At the pinned
 2026-08-08 revisions (FortBO
 `95495344e109b52e8562ebe7c36329e30a754688`, FortMC
 `4dde0ccdc37b4c331126605406b08e1f3bda4f59`), their public modules contain
-versioned contracts, selected acquisition/candidate-search foundations, and a
-FortML GP adapter, but not samplers or full candidate-search algorithms:
+versioned contracts, tested acquisition/candidate-search foundations, and a
+FortML GP adapter. FortMC still has no sampler implementation, while FortBO's
+candidate policies remain a partial catalog rather than a complete BO suite:
 
 | Companion | Current public protocol | Not yet supplied by the companion boundary |
 | --- | --- | --- |
