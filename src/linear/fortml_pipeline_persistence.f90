@@ -369,8 +369,15 @@ contains
             state%parameters(i) = real_value
         end do
         read (unit, '(a)', iostat=ios) line
+        if (ios /= 0 .or. trim(line) /= "end") then
+            close (unit)
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "pipeline state load: malformed or invalid dictionary")
+            return
+        end if
+        read (unit, '(a)', iostat=ios) line
         close (unit)
-        if (ios /= 0 .or. trim(line) /= "end" .or. .not. state%valid()) then
+        if (ios == 0 .or. .not. state%valid()) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "pipeline state load: malformed or invalid dictionary")
             return
@@ -519,6 +526,10 @@ contains
         do i = 1, size(names)
             read (unit, '(a)', iostat=ios) line
             if (ios /= 0) return
+            if (len_trim(line) > len(names(i))) then
+                ios = 1
+                return
+            end if
             names(i) = trim(line)
         end do
     end subroutine read_names
