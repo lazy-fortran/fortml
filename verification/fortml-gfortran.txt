@@ -1,15 +1,15 @@
 Verification date: 2026-08-08
-FortML revision: 11ab2317618994ef6b1ea24ef1de8cbd8fe104a3
-FortAD dependency: origin/main 0e9a38ebb8c382530272aa3e51f44255e87c41d7 (remote main pin rechecked 2026-08-08)
+FortML revision: 9f218345ba0cc9a7fe0b76d99d498109f411f56d
+FortAD dependency: origin/main 3046712912d1fe1d9f252fd4bbec29afe6174e26 (remote main pin rechecked 2026-08-08)
 FortFront dependency: origin/main 57367e12a7a0010a6683a1ded5a5f8132163ffc4 (clean main checkout)
 FortSym dependency: origin/main 873d33fa38d0c87d111158bc0be987e1ef1dd58c (generation pin rechecked 2026-08-08)
 FortOpt dependency: origin/main bfbf1fc018896ac0139ee0befead34d70a28d0b6 (optimization pin rechecked 2026-08-08)
 FortNum dependency: clean origin/main 38bc0e578ec5c6c0e636e8fdd3844f54f9e3e473
 Command: FO_SCAN_FALLBACK=regex fo
 Worktree: /mnt/storage/code/lazy-fortran/fortml
-Static: OK (472 modules, 472 changed, 472 affected)
-Build: OK (843 units)
-Tests: OK (220/220)
+Static: OK (481 modules, 481 changed, 481 affected)
+Build: OK (849 units)
+Tests: OK (224/224)
 Lint: OK (0 unused imports; non-fatal compiler warnings remain)
 Result: All static, build, behavioral, and lint stages passed
 Warnings: existing non-fatal GNU compiler warnings, primarily

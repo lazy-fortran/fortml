@@ -24,7 +24,7 @@ behavior, and benchmark evidence land together.
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
 The checked-in GNU compiler log is the fresh 2026-08-08 run against FortML code
-revision `5b1ff3170a93b8865225c764f9ab498799ead59f`, FortAD `origin/main` at
+revision `9f218345ba0cc9a7fe0b76d99d498109f411f56d`, FortAD `origin/main` at
 `3046712912d1fe1d9f252fd4bbec29afe6174e26`, and FortNum at
 `38bc0e578ec5c6c0e636e8fdd3844f54f9e3e473`, run from the clean checkout
 under `/mnt/storage/code/lazy-fortran/fortml`. The run includes the
@@ -59,14 +59,15 @@ compiler coverage remains an
 explicit older-build result.
 
 The companion benchmark harness is clean at FortML-bench revision
-`773e7cc7edd9c1c40007f57d1f53bd4bc69c6e39`,
+`dd4ac8b`,
 the trainer-checkpoint, unfactored-Adafactor, binary-objective,
 multiclass-calibration, variational-multiclass-GP, PINN/physics-objective,
 physics HVP, grouped K-fold, spectral-mixture, XGBoost-ranking,
 resident dense-MSE CUDA, binary XGBoost classifier, calibrated neural classifier,
 SGD-momentum, sparse preprocessing, derivative-GP covariance and polynomial HVP,
 weighted multiclass MLP objective, resident Adagrad, resident RMSprop, random
-Fourier basis, Matérn-5/2 derivative-GP, and mini-batch hypergradient
+Fourier basis, Matérn-5/2 derivative-GP, locally-periodic GP, fixed-shape Gamma
+XGBoost, leakage-safe calibrated logistic CV, and mini-batch hypergradient
 CSV rows record their FortML source revisions and independent NumPy or analytic
 behavioral oracles. The basis-pipeline lane now includes the optimized-ridge
 coordinate/mixed-HVP case, and the binary Laplace-GP parameter-product test has
@@ -144,8 +145,7 @@ optimizer-group execution, mixed precision, distributed state, and migration
 remain open. The source and benchmark pins for this earlier optimizer-group
 slice were FortML `05632ce8fa95268417c7a2d979fa1461a202abaa` and
 FortML-bench `0fb8ac7`; the current aggregate verification is the newer
-`11ab2317618994ef6b1ea24ef1de8cbd8fe104a3`/
-`773e7cc7edd9c1c40007f57d1f53bd4bc69c6e39` pair recorded above.
+`9f218345ba0cc9a7fe0b76d99d498109f411f56d`/`dd4ac8b` pair recorded above.
 
 The variational-GP classification and OVR wrappers now expose fixed-state
 kernel-log-parameter JVP/VJP products for latent margins and normalized
@@ -705,7 +705,7 @@ the complete operation graph resident or return a typed refusal; OpenACC is the
 first choice when it preserves semantics, and native CUDA is reserved for
 fixed no-autodiff hot loops where OpenACC cannot.
 
-The dependency pins used by the current GNU verification are FortAD `0e9a38e`,
+The dependency pins used by the current GNU verification are FortAD `3046712`,
 FortSym `873d33f`, and FortOpt `bfbf1fc`, all checked against their remote
 `main` branches on 2026-08-08. Generated derivatives record the exact FortSym
 revision and source hash; model-level autodiff uses the same FortAD `main` pin.
