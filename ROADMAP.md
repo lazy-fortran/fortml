@@ -1239,7 +1239,7 @@ when a lower-level primitive already exists.
   state remains open.
 - [ ] Remaining production optimizer gaps: factored-state checkpoint migration,
   cosine/one-cycle/warmup/plateau schedules, and derivative products through
-  optimizer groups, validation policy, checkpoint migration, and device state.
+  optimizer groups, validation policy, and device state.
   The deterministic mini-batch SGD trajectory objective now records a private
   batch cursor (including seeded epoch shuffles), exposes exact learning-rate
   and L2 hypergradients through validation MSE, and is consumable by FortOpt
