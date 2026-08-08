@@ -55,6 +55,11 @@ Both CPU contracts have independent tests and explicit typed CUDA boundaries;
 native ordinal likelihood optimization and resident Student-t inference remain
 roadmap work.
 
+The exact-GP kernel catalog also includes the gated change-point kernel. Its
+input, mixed, and packed parameter products are covered by an independent
+NumPy lane, while static-operator and resident CUDA requests return typed
+refusals.
+
 The library uses separate Fortran modules instead of an umbrella `fortml`
 module. For example, exact GP regression uses `fortml_kernels` and
 `fortml_gaussian_process`.
