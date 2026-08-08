@@ -54,7 +54,7 @@ compiler coverage remains an
 explicit older-build result.
 
 The companion benchmark harness is clean at FortML-bench revision
-`fd1e80e2533fe756041749ae0224607c91f84ad1`,
+`0f3b75e7fc31561b8d277225d429b5ac1e2cfcfe`,
 the trainer-checkpoint, unfactored-Adafactor, binary-objective,
 multiclass-calibration, variational-multiclass-GP, PINN/physics-objective,
 physics HVP, grouped K-fold, spectral-mixture, XGBoost-ranking,
@@ -95,6 +95,8 @@ also records versioned text and binary persistence round trips and malformed-
 record refusals. Known-noise heteroskedastic GP has an independent CPU oracle
 in `test_heteroskedastic_gp` and a release lane in
 `results/HETEROSKEDASTIC_GP.md`.
+The robust Poisson/Student-t Laplace GP has matched stationarity, positive-rate,
+outlier-resistance, and refusal rows in `results/ROBUST_GP.md`.
 
 ### 2026-08-08 parity and provenance slice
 
@@ -128,7 +130,7 @@ remain open. The source and benchmark pins for this earlier optimizer-group
 slice were FortML `05632ce8fa95268417c7a2d979fa1461a202abaa` and
 FortML-bench `0fb8ac7`; the current aggregate verification is the newer
 `4f68dc2`/
-`fd1e80e2533fe756041749ae0224607c91f84ad1` pair recorded above.
+`0f3b75e7fc31561b8d277225d429b5ac1e2cfcfe` pair recorded above.
 
 The variational-GP classification and OVR wrappers now expose fixed-state
 kernel-log-parameter JVP/VJP products for latent margins and normalized
