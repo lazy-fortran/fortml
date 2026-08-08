@@ -1706,12 +1706,168 @@ contains
                 parameter, direction, covariance, covariance_dot, covariance_parameter, &
                 covariance_parameter_dot, status)
             return
+        case (KERNEL_RBF_ARD)
+            call ard_rbf_derivative_parameter_hvp(kernel, x1, component1, x2, component2, &
+                parameter, direction, covariance, covariance_dot, covariance_parameter, &
+                covariance_parameter_dot, status)
+            return
         case default
             call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
                 "derivative GP mixed HVP: kernel leaf lacks analytic second products")
             return
         end select
     end subroutine derivative_covariance_parameter_hvp
+
+    subroutine ard_rbf_derivative_parameter_hvp(kernel, x1, component1, x2, component2, &
+            parameter, direction, covariance, covariance_dot, covariance_parameter, &
+            covariance_parameter_dot, status)
+        !! Analytic ARD-RBF mixed-observation parameter/HVP block.
+        !!
+        !! For q_i=(x1_i-x2_i)^2/l_i^2, f=variance*exp(-sum(q_i)/2),
+        !! the input covariance blocks are f, -f*d_i/l_i^2, and
+        !! f*(delta_ij/l_i^2-d_i*d_j/(l_i^2*l_j^2)).  Differentiating these
+        !! expressions with respect to logarithmic variance/lengthscales and
+        !! then along `direction` gives both products without finite
+        !! differences.
+        type(kernel_t), intent(in) :: kernel
+        real(dp), intent(in) :: x1(:), x2(:), direction(:)
+        integer, intent(in) :: component1, component2, parameter
+        real(dp), intent(out) :: covariance, covariance_dot
+        real(dp), intent(out) :: covariance_parameter, covariance_parameter_dot
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: difference(:), q(:), weighted(:)
+        real(dp), allocatable :: gradient_x1(:), gradient_x2(:), gradient_x1_dot(:)
+        real(dp), allocatable :: gradient_x2_dot(:), mixed_hessian(:, :), mixed_hessian_dot(:, :)
+        real(dp), allocatable :: parameter_gradient_x1(:), parameter_gradient_x2(:)
+        real(dp), allocatable :: parameter_hessian(:, :), parameter_gradient_x1_dot(:)
+        real(dp), allocatable :: parameter_gradient_x2_dot(:), parameter_hessian_dot(:, :)
+        real(dp) :: value, value_dot, log_direction, weighted_parameter
+        real(dp) :: q_dot, product, product_dot, a, a_dot, a_parameter, a_parameter_dot
+        real(dp) :: direction_parameter
+        integer :: i, j, k
+
+        covariance = 0.0_dp
+        covariance_dot = 0.0_dp
+        covariance_parameter = 0.0_dp
+        covariance_parameter_dot = 0.0_dp
+        if (kernel%kind /= KERNEL_RBF_ARD .or. &
+            kernel%parameter_count() /= size(x1) + 1 .or. size(x1) /= size(x2) .or. &
+            size(direction) /= kernel%parameter_count() .or. parameter < 1 .or. &
+            parameter > kernel%parameter_count() .or. component1 < 0 .or. component2 < 0 .or. &
+            component1 > size(x1) .or. component2 > size(x2) .or. &
+            any(.not. ieee_is_finite(x1)) .or. any(.not. ieee_is_finite(x2)) .or. &
+            any(.not. ieee_is_finite(direction))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "derivative GP ARD RBF HVP: shape, parameter, or value is invalid")
+            return
+        end if
+
+        allocate(difference(size(x1)), q(size(x1)), weighted(size(x1)))
+        allocate(gradient_x1(size(x1)), gradient_x2(size(x2)))
+        allocate(gradient_x1_dot(size(x1)), gradient_x2_dot(size(x2)))
+        allocate(mixed_hessian(size(x1), size(x2)))
+        allocate(mixed_hessian_dot(size(x1), size(x2)))
+        allocate(parameter_gradient_x1(size(x1)), parameter_gradient_x2(size(x2)))
+        allocate(parameter_gradient_x1_dot(size(x1)), parameter_gradient_x2_dot(size(x2)))
+        allocate(parameter_hessian(size(x1), size(x2)))
+        allocate(parameter_hessian_dot(size(x1), size(x2)))
+
+        do i = 1, size(x1)
+            difference(i) = x1(i) - x2(i)
+            q(i) = exp(-2.0_dp*kernel%log_parameters(i + 1))
+            weighted(i) = difference(i)*difference(i)*q(i)
+        end do
+        value = exp(kernel%log_parameters(1) - 0.5_dp*sum(weighted))
+        log_direction = direction(1) + dot_product(weighted, direction(2:))
+        value_dot = value*log_direction
+        do i = 1, size(x1)
+            gradient_x1(i) = -value*difference(i)*q(i)
+            gradient_x2(i) = -gradient_x1(i)
+            gradient_x1_dot(i) = gradient_x1(i)*(log_direction - 2.0_dp*direction(i + 1))
+            gradient_x2_dot(i) = -gradient_x1_dot(i)
+            do j = 1, size(x2)
+                product = difference(i)*difference(j)*q(i)*q(j)
+                a = q(i)*merge(1.0_dp, 0.0_dp, i == j) - product
+                product_dot = -2.0_dp*product*(direction(i + 1) + direction(j + 1))
+                a_dot = -2.0_dp*q(i)*direction(i + 1)*merge(1.0_dp, 0.0_dp, i == j) - &
+                    product_dot
+                mixed_hessian(i, j) = value*a
+                mixed_hessian_dot(i, j) = value*(log_direction*a + a_dot)
+            end do
+        end do
+
+        if (parameter == 1) then
+            covariance_parameter = value
+            covariance_parameter_dot = value_dot
+            parameter_gradient_x1 = gradient_x1
+            parameter_gradient_x2 = gradient_x2
+            parameter_gradient_x1_dot = gradient_x1_dot
+            parameter_gradient_x2_dot = gradient_x2_dot
+            parameter_hessian = mixed_hessian
+            parameter_hessian_dot = mixed_hessian_dot
+        else
+            k = parameter - 1
+            weighted_parameter = weighted(k)
+            direction_parameter = direction(parameter)
+            covariance_parameter = value*weighted_parameter
+            covariance_parameter_dot = value*weighted_parameter*(log_direction - &
+                2.0_dp*direction_parameter)
+            do i = 1, size(x1)
+                parameter_gradient_x1(i) = gradient_x1(i)*(weighted_parameter - &
+                    2.0_dp*merge(1.0_dp, 0.0_dp, i == k))
+                parameter_gradient_x2(i) = gradient_x2(i)*(weighted_parameter - &
+                    2.0_dp*merge(1.0_dp, 0.0_dp, i == k))
+                parameter_gradient_x1_dot(i) = gradient_x1_dot(i)*(weighted_parameter - &
+                    2.0_dp*merge(1.0_dp, 0.0_dp, i == k)) - &
+                    2.0_dp*direction_parameter*weighted_parameter*gradient_x1(i)
+                parameter_gradient_x2_dot(i) = gradient_x2_dot(i)*(weighted_parameter - &
+                    2.0_dp*merge(1.0_dp, 0.0_dp, i == k)) - &
+                    2.0_dp*direction_parameter*weighted_parameter*gradient_x2(i)
+                do j = 1, size(x2)
+                    product = difference(i)*difference(j)*q(i)*q(j)
+                    a = q(i)*merge(1.0_dp, 0.0_dp, i == j) - product
+                    product_dot = -2.0_dp*product*(direction(i + 1) + direction(j + 1))
+                    a_dot = -2.0_dp*q(i)*direction(i + 1)*merge(1.0_dp, 0.0_dp, i == j) - &
+                        product_dot
+                    q_dot = -2.0_dp*weighted_parameter*direction_parameter
+                    a_parameter = weighted_parameter*a - 2.0_dp*q(i)* &
+                        merge(1.0_dp, 0.0_dp, i == k)*merge(1.0_dp, 0.0_dp, i == j) + &
+                        2.0_dp*product*(merge(1.0_dp, 0.0_dp, i == k) + &
+                        merge(1.0_dp, 0.0_dp, j == k))
+                    a_parameter_dot = q_dot*a + weighted_parameter*a_dot + &
+                        4.0_dp*q(i)*direction(i + 1)*merge(1.0_dp, 0.0_dp, i == k)* &
+                        merge(1.0_dp, 0.0_dp, i == j) - &
+                        4.0_dp*product*(direction(i + 1) + direction(j + 1))* &
+                        (merge(1.0_dp, 0.0_dp, i == k) + &
+                        merge(1.0_dp, 0.0_dp, j == k))
+                    parameter_hessian(i, j) = value*a_parameter
+                    parameter_hessian_dot(i, j) = value*(log_direction*a_parameter + &
+                        a_parameter_dot)
+                end do
+            end do
+        end if
+
+        if (component1 == 0 .and. component2 == 0) then
+            covariance = value
+            covariance_dot = value_dot
+        else if (component1 > 0 .and. component2 == 0) then
+            covariance = gradient_x1(component1)
+            covariance_dot = gradient_x1_dot(component1)
+            covariance_parameter = parameter_gradient_x1(component1)
+            covariance_parameter_dot = parameter_gradient_x1_dot(component1)
+        else if (component1 == 0 .and. component2 > 0) then
+            covariance = gradient_x2(component2)
+            covariance_dot = gradient_x2_dot(component2)
+            covariance_parameter = parameter_gradient_x2(component2)
+            covariance_parameter_dot = parameter_gradient_x2_dot(component2)
+        else
+            covariance = mixed_hessian(component1, component2)
+            covariance_dot = mixed_hessian_dot(component1, component2)
+            covariance_parameter = parameter_hessian(component1, component2)
+            covariance_parameter_dot = parameter_hessian_dot(component1, component2)
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine ard_rbf_derivative_parameter_hvp
 
     subroutine polynomial_derivative_parameter_hvp(kernel, x1, component1, x2, component2, &
             parameter, direction, covariance, covariance_dot, covariance_parameter, &
@@ -2185,6 +2341,7 @@ contains
         real(dp) :: variance_log_dot, scale_log_dot, offset_log_dot, degree_log_dot
         real(dp) :: coefficient, coefficient_dot, curvature_dot_input, log_direction
         integer :: i, j
+        real(dp) :: weighted_squared_distance, difference, q, q_dot, log_direction_ard
 
         value = 0.0_dp
         value_dot = 0.0_dp
@@ -2300,6 +2457,60 @@ contains
             call spectral_input_parameter_jvp(kernel, x1, x2, parameter, value, &
                 gradient_x1, gradient_x2, mixed_hessian, value_dot, gradient_x1_dot, &
                 gradient_x2_dot, mixed_hessian_dot, status)
+            return
+        case (KERNEL_RBF_ARD)
+            !! ARD RBF uses one logarithmic length-scale coordinate per
+            !! feature.  Let q_i = (x1_i-x2_i)^2/l_i^2 and
+            !! s=sum(q_i).  The parameter tangent is f*(u_var+sum(q_i*u_i));
+            !! input derivatives follow by differentiating the same closed
+            !! form, so derivative-observation likelihoods do not need a
+            !! finite-difference fallback.
+            if (kernel%parameter_count() /= size(x1) + 1) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "kernel ARD RBF parameter JVP: parameter layout is invalid")
+                return
+            end if
+            weighted_squared_distance = 0.0_dp
+            log_direction_ard = 0.0_dp
+            do i = 1, size(x1)
+                difference = x1(i) - x2(i)
+                q = difference*difference*exp(-2.0_dp*kernel%log_parameters(i + 1))
+                weighted_squared_distance = weighted_squared_distance + q
+                if (parameter == 1) then
+                    log_direction_ard = 1.0_dp
+                else if (parameter == i + 1) then
+                    log_direction_ard = q
+                end if
+            end do
+            value = exp(kernel%log_parameters(1) - 0.5_dp*weighted_squared_distance)
+            value_dot = value*log_direction_ard
+            do i = 1, size(x1)
+                difference = x1(i) - x2(i)
+                q = exp(-2.0_dp*kernel%log_parameters(i + 1))
+                gradient_x1(i) = -value*difference*q
+                gradient_x2(i) = -gradient_x1(i)
+                if (parameter == 1) then
+                    gradient_x1_dot(i) = gradient_x1(i)
+                    gradient_x2_dot(i) = gradient_x2(i)
+                else
+                    q_dot = merge(-2.0_dp*q, 0.0_dp, parameter == i + 1)
+                    gradient_x1_dot(i) = gradient_x1(i)*log_direction_ard - &
+                        value*difference*q_dot
+                    gradient_x2_dot(i) = -gradient_x1_dot(i)
+                end if
+                do j = 1, size(x2)
+                    mixed_hessian(i, j) = value*(q*merge(1.0_dp, 0.0_dp, i == j) - &
+                        (x1(i) - x2(i))*(x1(j) - x2(j))*q* &
+                        exp(-2.0_dp*kernel%log_parameters(j + 1)))
+                    if (parameter == 1) then
+                        mixed_hessian_dot(i, j) = mixed_hessian(i, j)
+                    else
+                        mixed_hessian_dot(i, j) = ard_rbf_input_hessian_parameter_dot( &
+                            kernel, x1, x2, i, j, parameter, value)
+                    end if
+                end do
+            end do
+            call status_set(status, FORTNUM_OK, "")
             return
         case (KERNEL_USER)
             call kernel%input_derivatives(x1, x2, value, gradient_x1, gradient_x2, &
@@ -2590,6 +2801,42 @@ contains
                 "kernel leaf parameter JVP: input derivatives are unsupported")
         end select
     end subroutine leaf_input_parameter_jvp
+
+    real(dp) function ard_rbf_input_hessian_parameter_dot(kernel, x1, x2, i, j, &
+            parameter, value) result(hessian_dot)
+        !! Directional derivative of one mixed-input Hessian entry for an
+        !! ARD RBF logarithmic length-scale parameter.  This remains finite at
+        !! coincident inputs and is used by derivative-observation JVPs.
+        type(kernel_t), intent(in) :: kernel
+        real(dp), intent(in) :: x1(:), x2(:), value
+        integer, intent(in) :: i, j, parameter
+        real(dp) :: difference_i, difference_j, q_i, q_j, q_k
+        real(dp) :: weighted_k, product, a, a_parameter
+        logical :: i_equals_j, i_equals_k, j_equals_k
+        integer :: k
+
+        if (parameter <= 1) then
+            hessian_dot = 0.0_dp
+            return
+        end if
+        k = parameter - 1
+        difference_i = x1(i) - x2(i)
+        difference_j = x1(j) - x2(j)
+        q_i = exp(-2.0_dp*kernel%log_parameters(i + 1))
+        q_j = exp(-2.0_dp*kernel%log_parameters(j + 1))
+        q_k = exp(-2.0_dp*kernel%log_parameters(k + 1))
+        weighted_k = (x1(k) - x2(k))**2*q_k
+        i_equals_j = i == j
+        i_equals_k = i == k
+        j_equals_k = j == k
+        product = difference_i*difference_j*q_i*q_j
+        a = q_i*merge(1.0_dp, 0.0_dp, i_equals_j) - product
+        a_parameter = weighted_k*a - 2.0_dp*q_i* &
+            merge(1.0_dp, 0.0_dp, i_equals_k)*merge(1.0_dp, 0.0_dp, i_equals_j) + &
+            2.0_dp*product*(merge(1.0_dp, 0.0_dp, i_equals_k) + &
+            merge(1.0_dp, 0.0_dp, j_equals_k))
+        hessian_dot = value*a_parameter
+    end function ard_rbf_input_hessian_parameter_dot
 
     subroutine spectral_input_parameter_jvp(kernel, x1, x2, parameter, value, &
             gradient_x1, gradient_x2, mixed_hessian, value_dot, gradient_x1_dot, &
