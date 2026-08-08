@@ -1449,7 +1449,7 @@ a negative optimized ridge value.
 `value_gradient` evaluates mean half-squared error plus optional ridge penalty.
 When the ridge coordinate is optimized, its exact derivative is half the
 non-intercept coefficient squared norm; the HVP includes both mixed
-ridge/coefficient blocks and the ridge-coordinate curvature. `jvp`, `vjp`, and
+ridge/coefficient blocks and the zero ridge-ridge curvature. `jvp`, `vjp`, and
 `hvp` use the pipeline's chained analytic products and the linear map's exact
 contractions. `fortopt` supplies the same value/gradient callback to FortOpt
 L-BFGS-B. CPU is the current execution path. A CUDA
