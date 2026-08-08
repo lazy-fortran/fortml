@@ -177,6 +177,7 @@ repeated resident-batch evidence.
 | `mlp_multilabel_classifier_t` | Independent sigmoid probabilities and indicator labels | Packed parameter/input JVP, probability JVP | Packed parameter/input VJP, probability VJP; mean BCE gradient | Exact mean BCE parameter HVP |
 | `mlp_chain_t` | Sequential composition of named MLP stages | Packed all-stage parameters and inputs | Packed all-stage parameters and inputs | Differentiated reverse chain rule for parameters and inputs |
 | `mlp_training_objective_t` | MSE+L2 scalar objective | Packed network/L2 JVP | Packed network/L2 gradient and scalar VJP | Joint network/L2 HVP |
+| `mlp_poisson_training_objective_t` | Weighted one-output Poisson NLL in log-rate coordinates with optional L2 | Packed network/L2 JVP | Packed network/L2 gradient and scalar VJP | Exact joint network/L2 HVP |
 | `mlp_grouped_training_objective_t` | MSE with one positive log-L2 coefficient per named parameter range | Packed network/log-L2 JVP | Packed network/log-L2 gradient and scalar VJP | Exact mixed network/log-L2 HVP |
 | `mlp_chain_objective_t` | MSE+L2 scalar objective over a sequential MLP tree | Packed all-stage/L2 JVP | Packed all-stage/L2 gradient and scalar VJP | Exact all-stage/L2 HVP |
 | `mlp_hypergradient_objective_t` | Validation MSE after fixed full-batch GD trajectory | Outer `[log(learning_rate),log(l2)]` JVP | Exact trajectory value gradient and scalar VJP | Reverse trajectory products; inner MLP HVP |
@@ -1836,6 +1837,25 @@ momentum/Nesterov acceleration) are available stochastic trainers.
 The optimizer consumes the analytic value/gradient path above, so no
 finite-difference hyperparameter approximation is introduced.
 
+### `fortml_mlp_poisson`
+
+`mlp_poisson_training_objective_t` composes an initialized one-output MLP with
+the Poisson negative log likelihood in log-rate coordinates. The target matrix
+has shape `(n_samples,1)` and contains finite non-negative counts or relaxed
+count weights. Optional sample weights use the positive-mass mean reduction
+implemented by `fortml_losses`.
+
+The packed vector contains the network parameters. With `optimize_l2=.true.`
+it appends the non-negative L2 coefficient. `value_gradient`, `jvp`, `vjp`, and
+`hvp` are analytic. The HVP combines the Poisson output curvature with the
+MLP reverse-over-forward product and includes the exact mixed L2 block. The
+same objective is available through `fortopt(objective,status)`, and
+`mlp_poisson_optimize_lbfgsb` supplies bounded FortOpt L-BFGS-B controls and
+result diagnostics. The independent `test_mlp_poisson_objective` fixture
+checks central differences, JVP contraction, VJP scaling, an L-BFGS-B solve,
+and malformed CUDA requests. The objective currently accepts CPU state only,
+so a CUDA request returns `FORTNUM_NOT_IMPLEMENTED` before fitting.
+
 ### `fortml_mlp_grouped_training`
 
 `mlp_parameter_group_t` names a contiguous network-parameter range and stores
@@ -2423,8 +2443,16 @@ refusal still applies.
 `predict_jvp` is zero away from learned split boundaries and returns a
 structured refusal at a discontinuity. `max_depth` grows each exact tree
 recursively, with deterministic feature/threshold tie ordering and
-regularized Newton leaves at every node. Histogram quantile approximation,
-categorical features, and interaction constraints remain separate policies.
+regularized Newton leaves at every node. Histogram quantile approximation and
+categorical features remain separate policies. Allocate
+`xgboost_options_t%interaction_groups(:)` with one nonnegative integer per
+feature to constrain feature co-occurrence along a tree path: a positive
+label restricts descendant splits to that same group, while zero leaves the
+feature unconstrained. `interaction_group(feature)` reports the fitted label;
+the vector is validated, copied by `slice` and warm starts, and persisted by
+the versioned text snapshot. A changed or malformed policy is a typed domain
+error, and tree fit remains discrete with the existing split-boundary
+derivative refusal.
 The
 `missing_policy` option is `error` by default and rejects IEEE NaNs. `learn`
 evaluates both default directions for every finite threshold and stores the
@@ -3104,8 +3132,17 @@ cotangents for both latent outputs or both probability columns and satisfies
 the JVP/VJP dot-product identity. `predict_latent_input_jvp`/
 `predict_latent_input_vjp` and their probability counterparts differentiate
 query coordinates with the inducing state fixed; an independent oracle checks
-central differences and the adjoint identity. CPU dispatch executes these
-products exactly; CUDA prediction and reverse-product paths return
+central differences and the adjoint identity. The fixed-state kernel products
+`predict_latent_kernel_parameter_jvp`,
+`predict_proba_kernel_parameter_jvp`,
+`predict_latent_kernel_parameter_vjp`, and
+`predict_proba_kernel_parameter_vjp` use the kernel log-hyperparameter vector
+(`kernel_parameter_count()`) and differentiate the `K_uu` solve, `K_ux`
+cross-covariance, and diagonal `K_xx` terms. Their independent
+finite-difference and JVP/VJP oracle is
+`test_gp_variational_kernel_products`.
+CPU dispatch executes these products exactly; CUDA prediction and
+reverse-product paths return
 `FORTNUM_NOT_IMPLEMENTED`
 until the inducing solve, likelihood evaluation, and reduction are resident.
 No hidden host fallback is used. `gp_variational_classification_optimize`
@@ -3134,7 +3171,13 @@ reverse product through the OVR simplex normalization, and `predict` uses
 first-max ties in sorted class order. CPU dispatch is exact; CUDA ELBO and
 prediction/reverse-product requests return a typed refusal until a resident OVR
 graph is linked. Coupled categorical likelihoods, natural gradients, and
-kernel/inducing hyperparameter products remain open.
+kernel/inducing hyperparameter products remain open. `kernel_parameter_count()`
+and `predict_latent_kernel_parameter_jvp`,
+`predict_proba_kernel_parameter_jvp`,
+`predict_latent_kernel_parameter_vjp`, and
+`predict_proba_kernel_parameter_vjp` expose shared fixed-state kernel products;
+the direction is applied to every copied binary kernel and reverse class terms
+are accumulated. Resident GPU kernel products remain open.
 
 ### `fortml_sparse_prior_gp`
 

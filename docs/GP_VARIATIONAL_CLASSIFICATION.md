@@ -35,16 +35,30 @@ through the latent mean and variance; its result agrees with a centered
 finite difference of `elbo`. An optional `scale` multiplies only the expected
 log likelihood, making minibatch scaling explicit without scaling the KL.
 
+Fixed-state predictive kernel products are available through
+`predict_latent_kernel_parameter_jvp` and
+`predict_proba_kernel_parameter_jvp`, with matching
+`predict_latent_kernel_parameter_vjp` and
+`predict_proba_kernel_parameter_vjp` reverse products. A direction is in
+the kernel's log-hyperparameter coordinates; `kernel_parameter_count()`
+reports its length. The products differentiate the inducing solve and all
+`K_uu`, `K_ux`, and diagonal `K_xx` terms while holding inducing points and
+the variational state fixed. CPU dispatch is exact; the device VJP returns
+`FORTNUM_NOT_IMPLEMENTED` for CUDA until the resident projection graph is
+available.
+
 The likelihood can be logistic (the default,
 `GP_VARIATIONAL_LOGISTIC`) or probit (`GP_VARIATIONAL_PROBIT`). Labels must be
 integer zero/one values. The model exposes
 `device_supported(FORTML_DEVICE_CPU)` and `elbo_device`; CUDA returns
 `FORTNUM_NOT_IMPLEMENTED` until the full inducing solve, likelihood, and
-reduction are resident. No implicit host fallback is performed. Multiclass
-coupling, kernel/inducing hyperparameter products, natural-gradient updates,
-posterior prediction, and resident GPU inference remain planned extensions.
+reduction are resident. No implicit host fallback is performed. Natural-
+gradient updates and resident GPU inference remain planned extensions.
 
-The independent behavioral oracle is `test_gp_variational_classification`.
+The independent behavioral oracles are `test_gp_variational_classification`
+and `test_gp_variational_kernel_products`. The latter checks centered finite
+differences, JVP/VJP dot-product identities, both likelihood paths, and the
+typed CUDA refusal.
 It checks the prior KL identity, ELBO decomposition, every packed gradient
 coordinate against finite differences, a directional JVP, CPU dispatch, and
 the typed CUDA and invalid-label refusals.

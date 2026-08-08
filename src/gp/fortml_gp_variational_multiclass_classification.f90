@@ -38,6 +38,7 @@ module fortml_gp_variational_multiclass_classification
         procedure, public :: set_parameters => gvmc_set_parameters
         procedure, public :: parameters => gvmc_parameters
         procedure, public :: parameter_count => gvmc_parameter_count
+        procedure, public :: kernel_parameter_count => gvmc_kernel_parameter_count
         procedure, public :: elbo => gvmc_elbo
         procedure, public :: elbo_gradient => gvmc_elbo_gradient
         procedure, public :: elbo_jvp => gvmc_elbo_jvp
@@ -49,6 +50,16 @@ module fortml_gp_variational_multiclass_classification
             gvmc_predict_proba_parameter_vjp
         procedure, public :: predict_proba_parameter_vjp_device => &
             gvmc_predict_proba_parameter_vjp_device
+        procedure, public :: predict_latent_kernel_parameter_jvp => &
+            gvmc_predict_latent_kernel_parameter_jvp
+        procedure, public :: predict_proba_kernel_parameter_jvp => &
+            gvmc_predict_proba_kernel_parameter_jvp
+        procedure, public :: predict_latent_kernel_parameter_vjp => &
+            gvmc_predict_latent_kernel_parameter_vjp
+        procedure, public :: predict_proba_kernel_parameter_vjp => &
+            gvmc_predict_proba_kernel_parameter_vjp
+        procedure, public :: predict_proba_kernel_parameter_vjp_device => &
+            gvmc_predict_proba_kernel_parameter_vjp_device
         procedure, public :: predict => gvmc_predict
         procedure, public :: elbo_device => gvmc_elbo_device
         procedure, public :: predict_proba_device => gvmc_predict_proba_device
@@ -139,6 +150,13 @@ contains
             count = count + self%models(i)%parameter_count()
         end do
     end function gvmc_parameter_count
+
+    integer function gvmc_kernel_parameter_count(self) result(count)
+        class(gp_variational_multiclass_classification_t), intent(in) :: self
+
+        count = 0
+        if (self%initialized()) count = self%models(1)%kernel_parameter_count()
+    end function gvmc_kernel_parameter_count
 
     function gvmc_parameters(self) result(parameters)
         class(gp_variational_multiclass_classification_t), intent(in) :: self
@@ -476,6 +494,200 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine gvmc_predict_proba_parameter_vjp
 
+    !> Forward product of all OVR latent columns with respect to shared kernel
+    !! log-hyperparameters.  Each class owns an independent variational state,
+    !! while the caller's direction is applied to the copied kernel in every
+    !! class model.
+    subroutine gvmc_predict_latent_kernel_parameter_jvp(self, x, direction, margins, &
+            margins_dot, variances, variances_dot, status)
+        class(gp_variational_multiclass_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), direction(:)
+        real(dp), intent(out) :: margins(:, :), margins_dot(:, :), variances(:, :), &
+            variances_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: local_mean(:), local_mean_dot(:), local_variance(:), &
+            local_variance_dot(:)
+        integer :: i
+
+        if (.not. prediction_valid(self, x, margins, variances, status)) return
+        if (any(shape(margins_dot) /= shape(margins)) .or. &
+            any(shape(variances_dot) /= shape(variances)) .or. &
+            size(direction) /= self%kernel_parameter_count() .or. &
+            any(.not. ieee_is_finite(direction))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP multiclass kernel JVP: direction or output shape is invalid")
+            return
+        end if
+        allocate(local_mean(size(x, 1)), local_mean_dot(size(x, 1)), &
+            local_variance(size(x, 1)), local_variance_dot(size(x, 1)))
+        do i = 1, self%n_classes
+            call self%models(i)%predict_latent_kernel_parameter_jvp(x, direction, &
+                local_mean, local_mean_dot, local_variance, local_variance_dot, status)
+            if (status%code /= FORTNUM_OK) return
+            margins(:, i) = local_mean
+            margins_dot(:, i) = local_mean_dot
+            variances(:, i) = local_variance
+            variances_dot(:, i) = local_variance_dot
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gvmc_predict_latent_kernel_parameter_jvp
+
+    !> Forward product of normalized OVR probabilities with respect to shared
+    !! kernel log-hyperparameters.
+    subroutine gvmc_predict_proba_kernel_parameter_jvp(self, x, direction, probabilities, &
+            probabilities_dot, status)
+        class(gp_variational_multiclass_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), direction(:)
+        real(dp), intent(out) :: probabilities(:, :), probabilities_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: raw(:, :), raw_dot(:, :), local(:, :), local_dot(:, :)
+        real(dp) :: total, total_dot
+        integer :: i, j
+
+        if (.not. prediction_probability_valid(self, x, probabilities, status)) return
+        if (any(shape(probabilities_dot) /= shape(probabilities)) .or. &
+            size(direction) /= self%kernel_parameter_count() .or. &
+            any(.not. ieee_is_finite(direction))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP multiclass kernel probability JVP: shape is invalid")
+            return
+        end if
+        allocate(raw(size(x, 1), self%n_classes), raw_dot(size(x, 1), self%n_classes), &
+            local(size(x, 1), 2), local_dot(size(x, 1), 2))
+        do i = 1, self%n_classes
+            call self%models(i)%predict_proba_kernel_parameter_jvp(x, direction, local, &
+                local_dot, status)
+            if (status%code /= FORTNUM_OK) return
+            raw(:, i) = local(:, 2)
+            raw_dot(:, i) = local_dot(:, 2)
+        end do
+        do j = 1, size(x, 1)
+            total = sum(raw(j, :))
+            total_dot = sum(raw_dot(j, :))
+            if (.not. ieee_is_finite(total) .or. total <= tiny(1.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "variational GP multiclass kernel JVP: invalid normalization")
+                return
+            end if
+            probabilities(j, :) = raw(j, :)/total
+            probabilities_dot(j, :) = (raw_dot(j, :)*total - raw(j, :)*total_dot)/ &
+                (total*total)
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gvmc_predict_proba_kernel_parameter_jvp
+
+    !> Reverse product of all OVR latent columns with respect to shared kernel
+    !! log-hyperparameters.  Class contributions are accumulated because each
+    !! copied binary model is differentiated along the same direction.
+    subroutine gvmc_predict_latent_kernel_parameter_vjp(self, x, margins_bar, &
+            variances_bar, parameter_bar, status)
+        class(gp_variational_multiclass_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), margins_bar(:, :), variances_bar(:, :)
+        real(dp), intent(out) :: parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: local_bar(:), local_parameter_bar(:)
+        integer :: i
+
+        parameter_bar = 0.0_dp
+        if (.not. latent_kernel_vjp_valid(self, x, margins_bar, variances_bar, parameter_bar, &
+            status)) return
+        allocate(local_bar(size(x, 1)), local_parameter_bar(size(parameter_bar)))
+        do i = 1, self%n_classes
+            call self%models(i)%predict_latent_kernel_parameter_vjp(x, margins_bar(:, i), &
+                variances_bar(:, i), local_parameter_bar, status)
+            if (status%code /= FORTNUM_OK) return
+            parameter_bar = parameter_bar + local_parameter_bar
+        end do
+        if (any(.not. ieee_is_finite(parameter_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP multiclass kernel VJP: nonfinite parameter cotangent")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gvmc_predict_latent_kernel_parameter_vjp
+
+    !> Reverse product of normalized OVR probabilities with respect to shared
+    !! kernel log-hyperparameters.  The simplex normalization adjoint is
+    !! applied before accumulating each binary positive-column product.
+    subroutine gvmc_predict_proba_kernel_parameter_vjp(self, x, probabilities_bar, &
+            parameter_bar, status)
+        class(gp_variational_multiclass_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), probabilities_bar(:, :)
+        real(dp), intent(out) :: parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: raw(:, :), raw_bar(:, :), local(:, :), local_bar(:, :)
+        real(dp), allocatable :: local_parameter_bar(:)
+        real(dp) :: total, projection
+        integer :: i, j
+
+        parameter_bar = 0.0_dp
+        if (.not. multiclass_kernel_probability_vjp_valid(self, x, probabilities_bar, &
+            parameter_bar, status)) return
+        allocate(raw(size(x, 1), self%n_classes), raw_bar(size(x, 1), self%n_classes), &
+            local(size(x, 1), 2), local_bar(size(x, 1), 2))
+        do i = 1, self%n_classes
+            call self%models(i)%predict_proba(x, local, status)
+            if (status%code /= FORTNUM_OK) return
+            raw(:, i) = local(:, 2)
+        end do
+        do j = 1, size(x, 1)
+            total = sum(raw(j, :))
+            if (.not. ieee_is_finite(total) .or. total <= tiny(1.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "variational GP multiclass kernel VJP: invalid normalization")
+                return
+            end if
+            projection = sum(probabilities_bar(j, :)*raw(j, :))/total
+            do i = 1, self%n_classes
+                raw_bar(j, i) = (probabilities_bar(j, i) - projection)/total
+            end do
+        end do
+        allocate(local_parameter_bar(size(parameter_bar)))
+        do i = 1, self%n_classes
+            local_bar = 0.0_dp
+            local_bar(:, 2) = raw_bar(:, i)
+            call self%models(i)%predict_proba_kernel_parameter_vjp(x, local_bar, &
+                local_parameter_bar, status)
+            if (status%code /= FORTNUM_OK) return
+            parameter_bar = parameter_bar + local_parameter_bar
+        end do
+        if (any(.not. ieee_is_finite(parameter_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP multiclass kernel VJP: nonfinite parameter cotangent")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gvmc_predict_proba_kernel_parameter_vjp
+
+    !> Device boundary for the OVR variational-GP kernel reverse product.
+    !! CUDA remains refused until the copied inducing solves and simplex
+    !! reduction are resident; CPU dispatch is exact.
+    subroutine gvmc_predict_proba_kernel_parameter_vjp_device(self, device, x, &
+            probabilities_bar, parameter_bar, status)
+        class(gp_variational_multiclass_classification_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :), probabilities_bar(:, :)
+        real(dp), intent(out) :: parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        parameter_bar = 0.0_dp
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP multiclass kernel VJP device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_proba_kernel_parameter_vjp(x, probabilities_bar, parameter_bar, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "variational GP multiclass kernel VJP device: resident CUDA graph is not linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP multiclass kernel VJP device: device kind is invalid")
+        end select
+    end subroutine gvmc_predict_proba_kernel_parameter_vjp_device
+
     !> Explicit CPU/CUDA capability boundary for the multiclass predictive
     !! reverse product.  CUDA remains refused until a resident OVR reduction
     !! and inducing-posterior reverse kernel are linked.
@@ -723,6 +935,45 @@ contains
         end if
         call status_set(status, FORTNUM_OK, "")
     end function multiclass_probability_cotangent_valid
+
+    logical function latent_kernel_vjp_valid(self, x, margins_bar, variances_bar, &
+            parameter_bar, status) result(valid)
+        class(gp_variational_multiclass_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), margins_bar(:, :), variances_bar(:, :), parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        valid = prediction_valid(self, x, margins_bar, variances_bar, status)
+        if (.not. valid) return
+        if (any(shape(margins_bar) /= [size(x, 1), self%n_classes]) .or. &
+            any(shape(variances_bar) /= shape(margins_bar)) .or. &
+            size(parameter_bar) /= self%kernel_parameter_count() .or. &
+            any(.not. ieee_is_finite(margins_bar)) .or. any(.not. ieee_is_finite(variances_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP multiclass kernel VJP: cotangent shape is invalid")
+            valid = .false.
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end function latent_kernel_vjp_valid
+
+    logical function multiclass_kernel_probability_vjp_valid(self, x, probabilities_bar, &
+            parameter_bar, status) result(valid)
+        class(gp_variational_multiclass_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), probabilities_bar(:, :), parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        valid = prediction_input_valid(self, x, status)
+        if (.not. valid) return
+        if (any(shape(probabilities_bar) /= [size(x, 1), self%n_classes]) .or. &
+            size(parameter_bar) /= self%kernel_parameter_count() .or. &
+            any(.not. ieee_is_finite(probabilities_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP multiclass kernel probability VJP: cotangent shape is invalid")
+            valid = .false.
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end function multiclass_kernel_probability_vjp_valid
 
     subroutine encode_labels(labels, positive, encoded, status)
         integer, intent(in) :: labels(:), positive
