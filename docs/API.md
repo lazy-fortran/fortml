@@ -2166,6 +2166,22 @@ directional products, adjointness, optimizer integration, malformed options,
 and the CUDA refusal. See
 [`docs/MLP_ADAGRAD_SCHEDULE_HYPERGRADIENT.md`](MLP_ADAGRAD_SCHEDULE_HYPERGRADIENT.md).
 
+### `fortml_mlp_radam_hypergradient`
+
+`mlp_radam_hypergradient_objective_t` differentiates a fixed full-batch RAdam
+trajectory through its parameter, first-moment, second-moment, bias-correction,
+and rectification state. The packed vector is `[log(learning_rate), log(l2),
+logit(beta1), logit(beta2), log(epsilon)]`. `value_gradient`, `jvp`, and the
+scalar `vjp` are exact CPU products based on the MLP loss HVP, and
+`fortopt`/`mlp_optimize_radam_hyperparameters` expose the same registry to
+bounded FortOpt L-BFGS-B. The `rho_t = 4` branch and zero second-moment square
+roots return typed `FORTNUM_NOT_IMPLEMENTED` nonsmooth refusals; CUDA
+trajectory requests use the same explicit refusal until resident state exists.
+The independent `test_mlp_radam_hypergradient` fixture checks central
+differences, a directional product, the scalar adjoint, FortOpt integration,
+and both refusal contracts. See
+[`docs/MLP_RADAM_HYPERGRADIENT.md`](MLP_RADAM_HYPERGRADIENT.md).
+
 ### `fortml_mlp_minibatch_hypergradient`
 
 `mlp_minibatch_hypergradient_objective_t` differentiates a fixed mini-batch
