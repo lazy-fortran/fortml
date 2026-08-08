@@ -2923,12 +2923,16 @@ product is available for diagnostics and second-order callers only.
 
 ### `fortml_gp_classification`
 
-`gp_classification_t%fit(x,labels,kernel,status[,options,state])` fits a binary
-Laplace GP classifier. Labels are arbitrary integers and are retained in
-ascending order. `GP_LIKELIHOOD_LOGISTIC` uses a MacKay logistic predictive
-integral. `GP_LIKELIHOOD_PROBIT` uses the analytic probit predictive map.
-`gp_classification_options_t` controls Newton iterations, damping, tolerance,
-and jitter. `predict_latent` returns posterior latent mean and variance.
+`gp_classification_t%fit(x,labels,kernel,status[,options,state,sample_weight])`
+fits a binary Laplace GP classifier. Labels are arbitrary integers and are
+retained in ascending order. `GP_LIKELIHOOD_LOGISTIC` uses a MacKay logistic
+predictive integral. `GP_LIKELIHOOD_PROBIT` uses the analytic probit predictive
+map. `gp_classification_options_t` controls Newton iterations, damping,
+tolerance, and jitter. Optional finite, nonnegative `sample_weight` values
+weight each training likelihood contribution and require positive total mass;
+zero-weight rows contribute no likelihood curvature. The fitted state,
+envelope `hyperparameter_gradient`, and `state%log_posterior` all use those
+weights. `predict_latent` returns posterior latent mean and variance.
 `predict_proba` returns two observed-probability columns. Both have input-JVP
 and input-VJP variants, and `predict` returns the stored integer labels. The
 `predict_latent_parameter_jvp`/`_vjp` and `predict_proba_parameter_jvp`/`_vjp`
@@ -2951,6 +2955,8 @@ derivative-observation classifier paths remain explicit roadmap work.
 `gp_multiclass_classification_t` provides deterministic one-vs-rest multiclass
 GP classification over the same binary Laplace models. It fits one model per
 sorted integer class, normalizes their positive probabilities onto a simplex,
+and accepts the same optional `sample_weight` vector for every class head;
+the row weights are validated before any class state is allocated.
 and exposes `classes`, `class_count`, `feature_count`, `predict_proba`,
 `predict`, and `fitted`. `parameter_count()` and `parameters()` concatenate
 the read-only kernel metadata for each one-vs-rest model in sorted class order.

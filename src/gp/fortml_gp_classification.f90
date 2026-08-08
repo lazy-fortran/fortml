@@ -107,7 +107,8 @@ module fortml_gp_classification
 
 contains
 
-    subroutine gp_classification_fit(self, x, labels, kernel, status, options, state)
+    subroutine gp_classification_fit(self, x, labels, kernel, status, options, state, &
+            sample_weight)
         class(gp_classification_t), intent(out) :: self
         real(dp), intent(in) :: x(:, :)
         integer, intent(in) :: labels(:)
@@ -115,10 +116,11 @@ contains
         type(fortnum_status_t), intent(out) :: status
         type(gp_classification_options_t), intent(in), optional :: options
         type(gp_classification_state_t), intent(out), optional :: state
+        real(dp), intent(in), optional :: sample_weight(:)
         type(gp_classification_options_t) :: requested
         type(gp_classification_state_t) :: result
         real(dp), allocatable :: b(:), rhs(:), sqrt_w(:), mode_new(:)
-        real(dp), allocatable :: matrix(:, :)
+        real(dp), allocatable :: matrix(:, :), weights(:)
         real(dp) :: eta, probability, likelihood_gradient, curvature
         real(dp) :: step_norm, scale
         integer :: i, iteration
@@ -143,6 +145,8 @@ contains
                 "GP classification fit: inputs must be finite")
             return
         end if
+        call build_sample_weights(size(x, 1), sample_weight, weights, status)
+        if (status%code /= FORTNUM_OK) return
         self%class_label = [minval(labels), maxval(labels)]
         if (self%class_label(1) == self%class_label(2)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -187,9 +191,13 @@ contains
                 eta = encoded_label(labels(i), self%class_label)*self%mode(i)
                 call likelihood_terms(eta, self%likelihood, probability, &
                     likelihood_gradient, curvature)
-                sqrt_w(i) = sqrt(max(curvature, MIN_LIKELIHOOD_CURVATURE))
-                b(i) = curvature*self%mode(i) + &
-                    encoded_label(labels(i), self%class_label)*likelihood_gradient
+                if (weights(i) > 0.0_dp) then
+                    sqrt_w(i) = sqrt(max(weights(i)*curvature, MIN_LIKELIHOOD_CURVATURE))
+                else
+                    sqrt_w(i) = 0.0_dp
+                end if
+                b(i) = weights(i)*curvature*self%mode(i) + &
+                    encoded_label(labels(i), self%class_label)*weights(i)*likelihood_gradient
             end do
             call posterior_system(self%covariance, sqrt_w, matrix)
             call self%posterior_factorization%factorize(matrix, status)
@@ -220,7 +228,12 @@ contains
             eta = encoded_label(labels(i), self%class_label)*self%mode(i)
             call likelihood_terms(eta, self%likelihood, probability, &
                 likelihood_gradient, curvature)
-            self%sqrt_w(i) = sqrt(max(curvature, MIN_LIKELIHOOD_CURVATURE))
+            if (weights(i) > 0.0_dp) then
+                self%sqrt_w(i) = sqrt(max(weights(i)*curvature, &
+                    MIN_LIKELIHOOD_CURVATURE))
+            else
+                self%sqrt_w(i) = 0.0_dp
+            end if
         end do
         call posterior_system(self%covariance, self%sqrt_w, matrix)
         call self%posterior_factorization%factorize(matrix, status)
@@ -229,7 +242,7 @@ contains
         call self%prior_factorization%solve(self%alpha, status)
         if (status%code /= FORTNUM_OK) return
         result%log_posterior = log_posterior(self%mode, self%alpha, labels, &
-            self%class_label, self%likelihood)
+            self%class_label, self%likelihood, weights)
         if (present(state)) state = result
         call status_set(status, FORTNUM_OK, "")
     end subroutine gp_classification_fit
@@ -1260,9 +1273,10 @@ contains
         value = merge(1.0_dp, -1.0_dp, label == classes(2))
     end function encoded_label
 
-    real(dp) function log_posterior(mode, alpha, labels, classes, likelihood) result(value)
+    real(dp) function log_posterior(mode, alpha, labels, classes, likelihood, weights) result(value)
         real(dp), intent(in) :: mode(:), alpha(:)
         integer, intent(in) :: labels(:), classes(2), likelihood
+        real(dp), intent(in) :: weights(:)
         real(dp) :: eta, probability, gradient, curvature
         integer :: i
 
@@ -1270,9 +1284,37 @@ contains
         do i = 1, size(mode)
             eta = encoded_label(labels(i), classes)*mode(i)
             call likelihood_terms(eta, likelihood, probability, gradient, curvature)
-            value = value + log(max(probability, tiny(1.0_dp)))
+            value = value + weights(i)*log(max(probability, tiny(1.0_dp)))
         end do
     end function log_posterior
+
+    subroutine build_sample_weights(n_samples, sample_weight, weights, status)
+        integer, intent(in) :: n_samples
+        real(dp), intent(in), optional :: sample_weight(:)
+        real(dp), allocatable, intent(out) :: weights(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: weight_mass
+
+        allocate(weights(n_samples))
+        weights = 1.0_dp
+        if (present(sample_weight)) then
+            if (size(sample_weight) /= n_samples .or. &
+                    any(.not. ieee_is_finite(sample_weight)) .or. &
+                    any(sample_weight < 0.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "GP classification fit: sample weights are invalid")
+                return
+            end if
+            weight_mass = sum(sample_weight)
+            if (.not. ieee_is_finite(weight_mass) .or. weight_mass <= 0.0_dp) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "GP classification fit: sample weights need positive mass")
+                return
+            end if
+            weights = sample_weight
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine build_sample_weights
 
     logical function valid_options(options) result(valid)
         type(gp_classification_options_t), intent(in) :: options
