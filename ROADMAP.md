@@ -540,7 +540,7 @@ only listed as gaps:
 
 The FortBO and FortMC companion pins were rechecked against their remote
 `main` branches on 2026-08-08: FortBO
-`b758dc807029938e149c68e0fbd498a9d2a96306` and FortMC
+`ff1e22809aaf1d1c7a62682adb5817382dacaa06` and FortMC
 `4dde0ccdc37b4c331126605406b08e1f3bda4f59`. Their roadmaps remain authoritative
 for acquisition and sampling algorithms; FortML owns the posterior/log-density
 protocols and does not embed sampler or acquisition state. FortBO additionally
@@ -556,6 +556,7 @@ FortSym-generated Gaussian-comparison derivatives, noisy expected improvement,
 joint qEI/qNEI/qUCB batch acquisitions, risk-sensitive and multi-fidelity
 criteria, constrained/cost-aware acquisitions, active-learning and level-set
 design, max-value entropy search, mixed-integer/categorical candidate search,
+per-evaluation benchmark metrics,
 FortSym-derived trust-region length rescaling, exact posterior mean and
 standard-deviation Hessians from derivative predictions, and tested TuRBO-1/
 TuRBO-m and DTuRBO mode-2 drivers with deterministic region updates,
@@ -636,7 +637,7 @@ acquisition work packages:
 
 The companion repositories were checked on 2026-08-08 at FortMC
 `4dde0ccdc37b4c331126605406b08e1f3bda4f59` and FortBO
-`b758dc807029938e149c68e0fbd498a9d2a96306`, both on their `main` branches. The
+`ff1e22809aaf1d1c7a62682adb5817382dacaa06`, both on their `main` branches. The
 FortBO pin now includes a versioned capability-gated posterior contract,
 gradient-aware observation history/checkpointing, normalized continuous/integer/
 categorical/mixed/conditional search spaces, a differentiable-coordinate mask,
@@ -644,7 +645,8 @@ analytic EI/PI/UCB/log-EI, exact-envelope knowledge gradient, noisy expected
 improvement, joint qEI/qNEI/qUCB batch acquisitions, risk-sensitive and
 multi-fidelity criteria, constrained/cost-aware acquisitions, active-learning
 and level-set design, max-value entropy search, mixed-integer/categorical
-candidate search, marginal Monte-Carlo EI/PI with CRN, antithetic draws and
+candidate search, per-evaluation benchmark metrics, marginal Monte-Carlo EI/PI
+with CRN, antithetic draws and
 pathwise gradients, Sobol TuRBO candidates, Thompson selection,
 gradient-based DTuRBO in-region acquisition search, FortSym-derived
 trust-region length rescaling, exact posterior mean and
@@ -660,7 +662,7 @@ their protocol or device contracts change.
 The preceding FortBO `4266ce6` pin built and ran 20/20 tests, including
 knowledge-gradient and qEI/qNEI/qUCB batch acquisitions, TuRBO/DTuRBO drivers,
 trust-region trace/rescaling, preference-learning, and noisy-dominance oracles.
-The current `b758dc8` remote registers 25 tests; a clean `fo test` run passes
+The current `ff1e228` remote registers 25 tests; a clean `fo test` run passes
 13 and reports 12 generated-leaf link failures in the upstream acquisition,
 trust-region, and preference fixtures. FortMC's current
 checkout builds cleanly and reports zero registered
