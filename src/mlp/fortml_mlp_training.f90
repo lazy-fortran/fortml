@@ -71,6 +71,25 @@ module fortml_mlp_training
         end subroutine mlp_training_event_proc
     end interface
 
+    type, public :: mlp_optimizer_group_t
+        !! A named, contiguous parameter slice with its own update scale.
+        !!
+        !! The multiplier is applied to the complete optimizer delta after
+        !! the optimizer updates its shared moments.  This gives every
+        !! optimizer the same deterministic group contract (including
+        !! AdamW's decoupled decay) without maintaining a second hidden
+        !! optimizer state per group.  Parameters not covered by a group use
+        !! multiplier one.
+        character(len=64) :: name = ""
+        integer :: first = 0
+        integer :: last = -1
+        real(dp) :: learning_rate_multiplier = 1.0_dp
+    contains
+        procedure, public :: initialize => mlp_optimizer_group_initialize
+        procedure, public :: size => mlp_optimizer_group_size
+        procedure, public :: initialized => mlp_optimizer_group_initialized
+    end type mlp_optimizer_group_t
+
     type, public :: mlp_training_options_t
         integer :: max_epochs = 1000
         integer :: batch_size = 0
@@ -102,6 +121,9 @@ module fortml_mlp_training
         !! Exponential moving average of post-update parameters.  A value of
         !! zero disables EMA; otherwise the decay must lie in [0,1).
         real(dp) :: ema_decay = 0.0_dp
+        !! Optional non-overlapping parameter groups.  A group's multiplier
+        !! scales its post-optimizer update; omitted groups use one.
+        type(mlp_optimizer_group_t), allocatable :: optimizer_groups(:)
         procedure(mlp_epoch_callback_proc), pointer, nopass :: callback => null()
         procedure(mlp_learning_rate_schedule_proc), pointer, nopass :: &
             learning_rate_schedule => null()
@@ -152,13 +174,14 @@ module fortml_mlp_training
         !! with its structural and continuous fields. Procedure pointers
         !! (custom schedules and callbacks) are intentionally not copied: the
         !! caller must install deterministic procedures again on resumed options.
-        integer :: format_version = 5
+        integer :: format_version = 6
         logical :: initialized = .false.
         logical :: resume_safe = .true.
         integer :: n_samples = 0
         integer :: n_features = 0
         integer :: n_outputs = 0
         integer :: n_parameters = 0
+        integer :: n_optimizer_groups = 0
         integer :: epoch = 0
         integer :: updates = 0
         integer :: microbatches = 0
@@ -214,6 +237,9 @@ module fortml_mlp_training
         integer :: best_epoch = 0
         integer :: best_validation_epoch = 0
         real(dp), allocatable :: parameters(:)
+        integer, allocatable :: optimizer_group_first(:)
+        integer, allocatable :: optimizer_group_last(:)
+        real(dp), allocatable :: optimizer_group_learning_rate_multiplier(:)
         real(dp), allocatable :: first_moment(:)
         real(dp), allocatable :: second_moment(:)
         real(dp), allocatable :: rmsprop_buffer(:)
@@ -331,6 +357,49 @@ module fortml_mlp_training
     public :: mlp_optimize_lbfgsb
 
 contains
+
+    subroutine mlp_optimizer_group_initialize(self, name, first, last, &
+            learning_rate_multiplier, status)
+        class(mlp_optimizer_group_t), intent(out) :: self
+        character(*), intent(in) :: name
+        integer, intent(in) :: first, last
+        real(dp), intent(in) :: learning_rate_multiplier
+        type(fortnum_status_t), intent(out) :: status
+
+        self%name = ""
+        self%first = 0
+        self%last = -1
+        self%learning_rate_multiplier = 1.0_dp
+        if (len_trim(name) == 0 .or. len_trim(name) > len(self%name) .or. &
+                first < 1 .or. last < first .or. &
+                .not. ieee_is_finite(learning_rate_multiplier) .or. &
+                learning_rate_multiplier <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP optimizer group: invalid name, range, or multiplier")
+            return
+        end if
+        self%name = trim(name)
+        self%first = first
+        self%last = last
+        self%learning_rate_multiplier = learning_rate_multiplier
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine mlp_optimizer_group_initialize
+
+    integer function mlp_optimizer_group_size(self) result(n)
+        class(mlp_optimizer_group_t), intent(in) :: self
+
+        n = 0
+        if (self%initialized()) n = self%last - self%first + 1
+    end function mlp_optimizer_group_size
+
+    logical function mlp_optimizer_group_initialized(self) result(yes)
+        class(mlp_optimizer_group_t), intent(in) :: self
+
+        yes = len_trim(self%name) > 0 .and. self%first >= 1 .and. &
+            self%last >= self%first .and. &
+            ieee_is_finite(self%learning_rate_multiplier) .and. &
+            self%learning_rate_multiplier > 0.0_dp
+    end function mlp_optimizer_group_initialized
 
     subroutine batch_iterator_initialize(self, n_samples, status, batch_size, &
             shuffle, seed)
@@ -452,6 +521,11 @@ contains
         class(mlp_training_checkpoint_t), intent(inout) :: self
 
         if (allocated(self%parameters)) deallocate(self%parameters)
+        if (allocated(self%optimizer_group_first)) deallocate(self%optimizer_group_first)
+        if (allocated(self%optimizer_group_last)) deallocate(self%optimizer_group_last)
+        if (allocated(self%optimizer_group_learning_rate_multiplier)) then
+            deallocate(self%optimizer_group_learning_rate_multiplier)
+        end if
         if (allocated(self%first_moment)) deallocate(self%first_moment)
         if (allocated(self%second_moment)) deallocate(self%second_moment)
         if (allocated(self%rmsprop_buffer)) deallocate(self%rmsprop_buffer)
@@ -468,13 +542,14 @@ contains
         if (allocated(self%validation_loss_history)) then
             deallocate(self%validation_loss_history)
         end if
-        self%format_version = 5
+        self%format_version = 6
         self%initialized = .false.
         self%resume_safe = .true.
         self%n_samples = 0
         self%n_features = 0
         self%n_outputs = 0
         self%n_parameters = 0
+        self%n_optimizer_groups = 0
         self%epoch = 0
         self%updates = 0
         self%microbatches = 0
@@ -534,7 +609,7 @@ contains
     logical function mlp_checkpoint_valid(self) result(valid)
         class(mlp_training_checkpoint_t), intent(in) :: self
 
-        valid = self%initialized .and. self%format_version == 5 .and. &
+        valid = self%initialized .and. self%format_version == 6 .and. &
             self%n_samples > 0 .and. self%n_features > 0 .and. &
             self%n_outputs > 0 .and. self%n_parameters > 0 .and. &
             self%epoch >= 0 .and. self%updates >= 0 .and. &
@@ -651,6 +726,29 @@ contains
             ieee_is_finite(self%final_validation_loss) .and. &
             ieee_is_finite(self%best_validation_loss)
         if (self%has_typed_schedule) valid = valid .and. self%typed_schedule%valid()
+        if (self%n_optimizer_groups < 0) then
+            valid = .false.
+        else if (self%n_optimizer_groups == 0) then
+            valid = valid .and. .not. allocated(self%optimizer_group_first) .and. &
+                .not. allocated(self%optimizer_group_last) .and. &
+                .not. allocated(self%optimizer_group_learning_rate_multiplier)
+        else
+            valid = valid .and. allocated(self%optimizer_group_first) .and. &
+                allocated(self%optimizer_group_last) .and. &
+                allocated(self%optimizer_group_learning_rate_multiplier)
+            if (.not. valid) return
+            valid = size(self%optimizer_group_first) == self%n_optimizer_groups .and. &
+                size(self%optimizer_group_last) == self%n_optimizer_groups .and. &
+                size(self%optimizer_group_learning_rate_multiplier) == self%n_optimizer_groups
+            if (.not. valid) return
+            valid = all(self%optimizer_group_first >= 1) .and. &
+                all(self%optimizer_group_last >= self%optimizer_group_first) .and. &
+                all(ieee_is_finite(self%optimizer_group_learning_rate_multiplier)) .and. &
+                all(self%optimizer_group_learning_rate_multiplier > 0.0_dp)
+            if (.not. valid) return
+            valid = optimizer_group_ranges_valid(self%n_parameters, &
+                self%optimizer_group_first, self%optimizer_group_last)
+        end if
     end function mlp_checkpoint_valid
 
     subroutine mlp_loss_value_gradient(model, x, target, l2, value, gradient, &
@@ -1197,7 +1295,7 @@ contains
         type(sgd_t) :: sgd_optimizer
         type(adafactor_t) :: adafactor_optimizer
         type(mlp_batch_iterator_t) :: iterator
-        real(dp), allocatable :: theta(:), best_theta(:), gradient(:)
+        real(dp), allocatable :: theta(:), theta_before(:), best_theta(:), gradient(:)
         real(dp), allocatable :: accumulated_gradient(:)
         real(dp), allocatable :: ema_parameters(:)
         real(dp), allocatable :: x_batch(:, :), target_batch(:, :)
@@ -1250,6 +1348,12 @@ contains
         n_samples = size(x, 1)
         n_outputs = size(target, 2)
         n_parameters = model%parameter_count()
+        if (.not. optimizer_groups_fit(n_parameters, config%optimizer_groups)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP train: optimizer group range exceeds model parameters")
+            if (present(state)) state = result
+            return
+        end if
         batch = config%batch_size
         if (batch == 0) batch = n_samples
         batch = min(batch, n_samples)
@@ -1312,6 +1416,9 @@ contains
                 incompatible_checkpoint = .true.
             end if
             if (checkpoint%ema_decay /= config%ema_decay) incompatible_checkpoint = .true.
+            if (.not. optimizer_groups_equal(checkpoint, config%optimizer_groups)) then
+                incompatible_checkpoint = .true.
+            end if
             if (checkpoint%has_typed_schedule .neqv. has_typed_schedule) then
                 incompatible_checkpoint = .true.
             end if
@@ -1358,6 +1465,7 @@ contains
         result%has_ema = config%ema_decay > 0.0_dp
         if (result%has_ema) allocate(result%ema_parameters, source=ema_parameters)
         allocate(gradient(n_parameters))
+        if (allocated(config%optimizer_groups)) allocate(theta_before(n_parameters))
         allocate(accumulated_gradient(n_parameters))
         history_length = config%max_epochs
         allocate(result%loss_history(history_length))
@@ -1626,6 +1734,7 @@ contains
                             rmsprop_optimizer%learning_rate = effective_rate
                         end if
                         result%last_learning_rate = effective_rate
+                        if (allocated(theta_before)) theta_before = theta
                         if (config%optimizer == MLP_OPTIMIZER_ADAM) then
                             call optimizer%step(theta, gradient, status)
                         else if (config%optimizer == MLP_OPTIMIZER_SGD) then
@@ -1642,6 +1751,14 @@ contains
                         if (status%code /= FORTNUM_OK) then
                             if (present(state)) state = result
                             return
+                        end if
+                        if (allocated(config%optimizer_groups)) then
+                            call apply_optimizer_group_scales(theta, theta_before, &
+                                config%optimizer_groups, status)
+                            if (status%code /= FORTNUM_OK) then
+                                if (present(state)) state = result
+                                return
+                            end if
                         end if
                         call model%set_parameters(theta, status)
                         if (status%code /= FORTNUM_OK) then
@@ -1948,13 +2065,29 @@ contains
             return
         end if
         call checkpoint%clear()
-        checkpoint%format_version = 5
+        checkpoint%format_version = 6
         checkpoint%initialized = .true.
         checkpoint%resume_safe = .true.
         checkpoint%n_samples = size(x, 1)
         checkpoint%n_features = size(x, 2)
         checkpoint%n_outputs = size(target, 2)
         checkpoint%n_parameters = size(theta)
+        if (allocated(config%optimizer_groups)) then
+            checkpoint%n_optimizer_groups = size(config%optimizer_groups)
+            if (checkpoint%n_optimizer_groups > 0) then
+                allocate(checkpoint%optimizer_group_first(checkpoint%n_optimizer_groups), &
+                    checkpoint%optimizer_group_last(checkpoint%n_optimizer_groups), &
+                    checkpoint%optimizer_group_learning_rate_multiplier( &
+                    checkpoint%n_optimizer_groups))
+                checkpoint%optimizer_group_first = [(config%optimizer_groups(n)%first, &
+                    n=1, checkpoint%n_optimizer_groups)]
+                checkpoint%optimizer_group_last = [(config%optimizer_groups(n)%last, &
+                    n=1, checkpoint%n_optimizer_groups)]
+                checkpoint%optimizer_group_learning_rate_multiplier = &
+                    [(config%optimizer_groups(n)%learning_rate_multiplier, &
+                    n=1, checkpoint%n_optimizer_groups)]
+            end if
+        end if
         checkpoint%epoch = result%epochs
         checkpoint%updates = result%updates
         checkpoint%microbatches = result%microbatches
@@ -2136,7 +2269,129 @@ contains
             valid = valid .and. options%typed_schedule%valid()
             if (associated(options%learning_rate_schedule)) valid = .false.
         end if
+        valid = valid .and. valid_optimizer_groups(options%optimizer_groups)
     end function valid_options
+
+    logical function valid_optimizer_groups(groups) result(valid)
+        type(mlp_optimizer_group_t), allocatable, intent(in) :: groups(:)
+        integer :: i, j
+
+        valid = .true.
+        if (.not. allocated(groups)) return
+        do i = 1, size(groups)
+            if (.not. groups(i)%initialized()) then
+                valid = .false.
+                return
+            end if
+            do j = 1, i - 1
+                if (trim(groups(i)%name) == trim(groups(j)%name) .or. &
+                        ranges_overlap(groups(i)%first, groups(i)%last, &
+                        groups(j)%first, groups(j)%last)) then
+                    valid = .false.
+                    return
+                end if
+            end do
+        end do
+    end function valid_optimizer_groups
+
+    logical function optimizer_group_ranges_valid(n_parameters, first, last) result(valid)
+        integer, intent(in) :: n_parameters
+        integer, intent(in) :: first(:), last(:)
+        integer :: i, j
+
+        valid = n_parameters > 0 .and. size(first) == size(last)
+        if (.not. valid) return
+        do i = 1, size(first)
+            if (first(i) < 1 .or. last(i) < first(i) .or. last(i) > n_parameters) then
+                valid = .false.
+                return
+            end if
+            do j = 1, i - 1
+                if (ranges_overlap(first(i), last(i), first(j), last(j))) then
+                    valid = .false.
+                    return
+                end if
+            end do
+        end do
+    end function optimizer_group_ranges_valid
+
+    logical function optimizer_groups_fit(n_parameters, groups) result(valid)
+        integer, intent(in) :: n_parameters
+        type(mlp_optimizer_group_t), allocatable, intent(in) :: groups(:)
+        integer, allocatable :: first(:), last(:)
+        integer :: i
+
+        valid = .true.
+        if (.not. allocated(groups)) return
+        if (size(groups) == 0) return
+        allocate(first(size(groups)), last(size(groups)))
+        do i = 1, size(groups)
+            first(i) = groups(i)%first
+            last(i) = groups(i)%last
+        end do
+        valid = optimizer_group_ranges_valid(n_parameters, first, last)
+    end function optimizer_groups_fit
+
+    logical function optimizer_groups_equal(checkpoint, groups) result(equal)
+        type(mlp_training_checkpoint_t), intent(in) :: checkpoint
+        type(mlp_optimizer_group_t), allocatable, intent(in) :: groups(:)
+        integer :: i
+
+        if (.not. allocated(groups)) then
+            equal = checkpoint%n_optimizer_groups == 0
+            return
+        end if
+        equal = checkpoint%n_optimizer_groups == size(groups)
+        if (.not. equal) return
+        if (size(groups) == 0) return
+        if (.not. allocated(checkpoint%optimizer_group_first) .or. &
+                .not. allocated(checkpoint%optimizer_group_last) .or. &
+                .not. allocated(checkpoint%optimizer_group_learning_rate_multiplier)) then
+            equal = .false.
+            return
+        end if
+        do i = 1, size(groups)
+            equal = checkpoint%optimizer_group_first(i) == groups(i)%first .and. &
+                checkpoint%optimizer_group_last(i) == groups(i)%last .and. &
+                checkpoint%optimizer_group_learning_rate_multiplier(i) == &
+                    groups(i)%learning_rate_multiplier
+            if (.not. equal) return
+        end do
+    end function optimizer_groups_equal
+
+    subroutine apply_optimizer_group_scales(theta, theta_before, groups, status)
+        real(dp), intent(inout) :: theta(:)
+        real(dp), intent(in) :: theta_before(:)
+        type(mlp_optimizer_group_t), allocatable, intent(in) :: groups(:)
+        type(fortnum_status_t), intent(out) :: status
+        integer :: i, first, last
+
+        if (size(theta) /= size(theta_before) .or. &
+                .not. optimizer_groups_fit(size(theta), groups)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP optimizer groups: parameter state is incompatible")
+            return
+        end if
+        do i = 1, size(groups)
+            first = groups(i)%first
+            last = groups(i)%last
+            theta(first:last) = theta_before(first:last) + &
+                groups(i)%learning_rate_multiplier* &
+                (theta(first:last) - theta_before(first:last))
+        end do
+        if (any(.not. ieee_is_finite(theta))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP optimizer groups: scaled update is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine apply_optimizer_group_scales
+
+    logical function ranges_overlap(first_a, last_a, first_b, last_b) result(overlap)
+        integer, intent(in) :: first_a, last_a, first_b, last_b
+
+        overlap = first_a <= last_b .and. first_b <= last_a
+    end function ranges_overlap
 
     logical function schedules_equal(first, second) result(equal)
         type(mlp_learning_rate_schedule_t), intent(in) :: first, second

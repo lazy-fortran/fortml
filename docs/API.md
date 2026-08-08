@@ -1658,6 +1658,16 @@ also provide optimizer selection (`MLP_OPTIMIZER_ADAM`, `MLP_OPTIMIZER_SGD`,
 coefficients, optional SGD
 momentum/Nesterov acceleration, L2 regularization, gradient tolerance,
 patience, best-state restoration, and an epoch callback.
+To route different parameter blocks through one shared optimizer state,
+allocate `options%optimizer_groups(:)` and initialize each
+`mlp_optimizer_group_t` with a non-overlapping one-based `[first,last]`
+range and a positive `learning_rate_multiplier`. After the optimizer updates
+its moments, the selected block receives that multiplier on the complete
+parameter delta; uncovered parameters use one. This post-update definition
+is identical for Adam, AdamW, Adagrad, RMSprop, Adafactor, and SGD (including
+AdamW's decoupled decay), keeps moment state shared, and is deterministic.
+Duplicate names, overlapping ranges, non-finite/non-positive multipliers, and
+ranges beyond the model parameter count are rejected before the first update.
 `MLP_OPTIMIZER_RMSPROP` uses the canonical FortOpt running squared-gradient
 recurrence. Set `rmsprop_centered` to use the centered variance estimate and
 `rmsprop_momentum` for optional classical momentum. The running square,
@@ -1731,6 +1741,10 @@ early-stopping counters, and the best-parameter state. A typed built-in
 schedule selected by `options%use_typed_schedule` is serialized with its kind,
 update counts, and fractions; the resumed options must provide the same
 schedule.
+When optimizer groups are configured, their ranges and multipliers are also
+captured and compared on resume; the versioned text schema stores the same
+metadata. Group names are caller-owned labels and do not affect the update
+trajectory.
 Procedure pointers are not serializable: install the same deterministic
 callback on the resumed options. A checkpoint
 is rejected when dimensions, batch/accumulation policy, shuffle seed, optimizer
@@ -1764,7 +1778,7 @@ reads it into a temporary value, validates every scalar and array, and only
 then replaces the destination. The schema records all optimizer variants,
 including Adam/AdamW moments, Adagrad squares, RMSprop square/mean/momentum
 state, or SGD velocity, together with the exact iterator permutation and
-shuffle stream. Schema version 3 also records typed schedule fields. Real
+shuffle stream. Schema version 4 also records typed schedule and optimizer-group fields. Real
 values use 17 significant decimal digits, and array
 lengths and record names are explicit, so files are independent of compiler
 endianness and unformatted-record conventions. Unknown schema versions,

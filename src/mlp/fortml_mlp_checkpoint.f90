@@ -19,7 +19,7 @@ module fortml_mlp_checkpoint
 
     character(*), parameter, public :: MLP_CHECKPOINT_MAGIC = &
         "FORTML_MLP_CHECKPOINT_TEXT"
-    integer, parameter, public :: MLP_CHECKPOINT_SCHEMA_VERSION = 3
+    integer, parameter, public :: MLP_CHECKPOINT_SCHEMA_VERSION = 4
 
     public :: mlp_checkpoint_save
     public :: mlp_checkpoint_load
@@ -58,6 +58,8 @@ contains
         if (ios == 0) call write_i(unit, "n_features", checkpoint%n_features, ios)
         if (ios == 0) call write_i(unit, "n_outputs", checkpoint%n_outputs, ios)
         if (ios == 0) call write_i(unit, "n_parameters", checkpoint%n_parameters, ios)
+        if (ios == 0) call write_i(unit, "n_optimizer_groups", &
+            checkpoint%n_optimizer_groups, ios)
         if (ios == 0) call write_i(unit, "epoch", checkpoint%epoch, ios)
         if (ios == 0) call write_i(unit, "updates", checkpoint%updates, ios)
         if (ios == 0) call write_i(unit, "microbatches", checkpoint%microbatches, ios)
@@ -140,6 +142,13 @@ contains
             checkpoint%best_validation_epoch, ios)
 
         if (ios == 0) call write_r_array(unit, "parameters", checkpoint%parameters, ios)
+        if (ios == 0) call write_optional_i_array(unit, "optimizer_group_first", &
+            checkpoint%optimizer_group_first, ios)
+        if (ios == 0) call write_optional_i_array(unit, "optimizer_group_last", &
+            checkpoint%optimizer_group_last, ios)
+        if (ios == 0) call write_optional_r_array(unit, &
+            "optimizer_group_learning_rate_multiplier", &
+            checkpoint%optimizer_group_learning_rate_multiplier, ios)
         if (ios == 0) call write_r_array(unit, "first_moment", checkpoint%first_moment, ios)
         if (ios == 0) call write_r_array(unit, "second_moment", checkpoint%second_moment, ios)
         if (ios == 0) call write_optional_r_array(unit, "rmsprop_buffer", &
@@ -202,6 +211,8 @@ contains
         if (ios == 0) call read_i(unit, "n_features", candidate%n_features, ios)
         if (ios == 0) call read_i(unit, "n_outputs", candidate%n_outputs, ios)
         if (ios == 0) call read_i(unit, "n_parameters", candidate%n_parameters, ios)
+        if (ios == 0) call read_i(unit, "n_optimizer_groups", &
+            candidate%n_optimizer_groups, ios)
         if (ios == 0) call read_i(unit, "epoch", candidate%epoch, ios)
         if (ios == 0) call read_i(unit, "updates", candidate%updates, ios)
         if (ios == 0) call read_i(unit, "microbatches", candidate%microbatches, ios)
@@ -286,6 +297,18 @@ contains
 
         call read_r_array(unit, "parameters_count", "parameters_item", &
             candidate%n_parameters, candidate%parameters, ios)
+        if (ios == 0) call read_optional_i_array(unit, "optimizer_group_first_present", &
+            "optimizer_group_first_count", "optimizer_group_first_item", &
+            candidate%n_optimizer_groups, candidate%optimizer_group_first, ios)
+        if (ios == 0) call read_optional_i_array(unit, "optimizer_group_last_present", &
+            "optimizer_group_last_count", "optimizer_group_last_item", &
+            candidate%n_optimizer_groups, candidate%optimizer_group_last, ios)
+        if (ios == 0) call read_optional_r_array(unit, &
+            "optimizer_group_learning_rate_multiplier_present", &
+            "optimizer_group_learning_rate_multiplier_count", &
+            "optimizer_group_learning_rate_multiplier_item", &
+            candidate%n_optimizer_groups, &
+            candidate%optimizer_group_learning_rate_multiplier, ios)
         if (ios == 0) call read_r_array(unit, "first_moment_count", &
             "first_moment_item", candidate%n_parameters, candidate%first_moment, ios)
         if (ios == 0) call read_r_array(unit, "second_moment_count", &
@@ -407,6 +430,19 @@ contains
         end do
     end subroutine write_i_array
 
+    subroutine write_optional_i_array(unit, key, values, ios)
+        integer, intent(in) :: unit
+        integer, allocatable, intent(in) :: values(:)
+        character(*), intent(in) :: key
+        integer, intent(out) :: ios
+        character(len=80) :: present_key
+
+        write(present_key, '(A,"_present")') trim(key)
+        call write_l(unit, trim(present_key), allocated(values), ios)
+        if (ios /= 0 .or. .not. allocated(values)) return
+        call write_i_array(unit, key, values, ios)
+    end subroutine write_optional_i_array
+
     subroutine write_optional_r_array(unit, key, values, ios)
         integer, intent(in) :: unit
         real(dp), allocatable, intent(in) :: values(:)
@@ -514,6 +550,23 @@ contains
             if (ios /= 0) return
         end do
     end subroutine read_i_array
+
+    subroutine read_optional_i_array(unit, present_key, count_key, item_key, &
+            expected_count, values, ios)
+        integer, intent(in) :: unit, expected_count
+        character(*), intent(in) :: present_key, count_key, item_key
+        integer, allocatable, intent(out) :: values(:)
+        integer, intent(out) :: ios
+        logical :: present
+
+        call read_l(unit, present_key, present, ios)
+        if (ios /= 0) return
+        if (.not. present) then
+            if (allocated(values)) deallocate(values)
+            return
+        end if
+        call read_i_array(unit, count_key, item_key, expected_count, values, ios)
+    end subroutine read_optional_i_array
 
     subroutine read_optional_r_array(unit, present_key, count_key, item_key, &
             expected_count, values, ios)
