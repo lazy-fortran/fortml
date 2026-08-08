@@ -3380,7 +3380,8 @@ contains
             value_dot = -value*dot_product(ard_r, delta)
             gradient_x1 = -value*ard_r
             gradient_x2 = -gradient_x1
-            gradient_x1_dot = gradient_x1*(value_dot/value) - value*ard_q*delta
+            gradient_x1_dot = gradient_x1*(-dot_product(ard_r, delta)) - &
+                value*ard_q*delta
             gradient_x2_dot = -gradient_x1_dot
             do i = 1, size(x1)
                 do j = 1, size(x2)
