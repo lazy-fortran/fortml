@@ -10,26 +10,28 @@ The cross-library acceptance table is maintained in
 ## Verification
 
 The GitHub `v0.1.0` tag currently points to the earlier release-verification
-commit `a387cc5`; the trainer, calibration, variational-GP, transform, and CUDA
-VJP closure slices documented below are post-tag additions. The broad parity
+commit `a387cc5`; the trainer, calibration, variational-GP, transform, tree
+attribution, and CUDA VJP closure slices documented below are post-tag additions.
+The broad parity
 gate is still open, so this work does not move or recreate that tag.
-The checklist currently records 320 completed and 128 open items; open rows are
+The checklist currently records 323 completed and 127 open items; open rows are
 retained until their implementation, independent oracle, device/refusal
 behavior, and benchmark evidence land together.
 
 | Compiler | Command | Result |
 | --- | --- | --- |
-| GNU Fortran | `fo` | Static build, all 246 behavioral tests, and lint passed at the current FortML/FortAD-main revisions. The compiler still emits non-fatal array-temporary warnings; see [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
-| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded older compiler lane. The checked-in NVIDIA log predates the current 246-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
+| GNU Fortran | `fo` | Static build, all 248 behavioral tests, and lint passed at the current FortML/FortAD-main revisions. The compiler still emits non-fatal array-temporary warnings; see [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
+| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded older compiler lane. The checked-in NVIDIA log predates the current 248-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
 The checked-in GNU compiler log is the fresh 2026-08-08 run against FortML code
-revision `955eb89` (including scheduled AdamW trajectory hypergradients,
+revision `a31a16a` (including scheduled AdamW trajectory hypergradients,
 calibrated-softmax OOF policies, affine schedule
 outer HVPs, and seeded XGBoost DART), FortAD `origin/main` at
-`5f77c47b1f5027a777e16e2bf1cf9a8958942a83`, and FortNum at
-`396c8f202ba45e97eecceaba2e6bf848a206b4d0`, run from the clean checkout
-under the detached clean checkout `/mnt/storage/compile/fortml`. The run includes the
+`7c65a88194b4cce796d58f90e12f147be29cd63e`, FortFront at
+`0bce426a0b69920e867d580b163508afba51d439`, and FortNum at
+`7ced2f7aa272920916789fa82a35bfcb2e792d45`, run from the clean checkout
+under `/mnt/storage/compile/final-lazy-fortran/fortml`. The run includes the
   kernel-catalog, weighted LDA/QDA, robust/absolute XGBoost, neural NLL, random-forest,
 Extra-Trees, grouped MLP HVP and L-BFGS-B, basis/pipeline HVP, cosine
 derivative-GP, multilabel/ROC-AUC/PR-AUC/F-beta ranking, derivative-GP
@@ -52,11 +54,13 @@ variational-GP objective, multiclass variational-GP prediction/JVPs/VJPs, positi
 training objective, fixed-active-set optimizer-group clipping products, affine
 constant-schedule outer HVPs with the FortOpt callback seam, seeded XGBoost DART
 tree scales with transactional warm-start controls, and calibrated-softmax OOF
-temperature, weighted Platt, and isotonic policies.
+temperature, weighted Platt, and isotonic policies, plus coupled categorical
+variational-GP likelihood products, bounded SHAP-like XGBoost/LightGBM
+attributions, and model-agnostic trainer validation diagnostics.
 The build emits non-fatal GNU
 array-temporary warnings in FortFront query/generator calls, existing GP
 benchmark boundaries, variational-GP batch conversions, and basis-pipeline
-shape conversions. They are isolated to array construction; all 246 behavioral
+shape conversions. They are isolated to array construction; all 248 behavioral
 tests pass. Lint has zero unused-import findings and the full `fo` lint stage
 passes despite the non-fatal compiler warning corpus. The independent CUDA gate additionally covers the
 resident dense-affine value/JVP/VJP path and its single-layer MSE update with
@@ -65,7 +69,7 @@ compiler coverage remains an
 explicit older-build result.
 
 The checked-in evidence is maintained on the clean FortML-bench revision
-`1cc3a47`; each CSV records the exact clean benchmark revision used to produce
+`62ce5bd`; each CSV records the exact clean benchmark revision used to produce
 its rows,
 the trainer-checkpoint, unfactored-Adafactor, binary-objective,
 multiclass-calibration, variational-multiclass-GP, PINN/physics-objective,
@@ -254,7 +258,7 @@ optimizer-group execution, mixed precision, distributed state, and migration
 remain open. The source and benchmark pins for this earlier optimizer-group
 slice were FortML `05632ce8fa95268417c7a2d979fa1461a202abaa` and
 FortML-bench `0fb8ac7`; the current aggregate verification is the newer
-`955eb89`/`1cc3a47` pair recorded above.
+`a31a16a`/`62ce5bd` pair recorded above.
 
 The variational-GP classification and OVR wrappers now expose fixed-state
 kernel-log-parameter JVP/VJP products for latent margins and normalized
@@ -889,9 +893,9 @@ the complete operation graph resident or return a typed refusal; OpenACC is the
 first choice when it preserves semantics, and native CUDA is reserved for
 fixed no-autodiff hot loops where OpenACC cannot.
 
-The dependency pins used by the current GNU verification are FortAD `931dac5`,
-FortFront `7139a94`, FortSym `26250ce`, FortOpt `883aa7e`
-(`release/context-objective`), and FortNum `396c8f2`, all checked against
+The dependency pins used by the current GNU verification are FortAD `7c65a88`,
+FortFront `0bce426`, FortSym `26250ce`, FortOpt `883aa7e`
+(`release/context-objective`), and FortNum `7ced2f7`, all checked against
 their corresponding remote branches on 2026-08-08. Generated derivatives
 record the exact FortSym revision and source hash; model-level autodiff uses
 the same FortAD `main` pin.
@@ -1059,7 +1063,7 @@ multiclass generic estimator routing remains open.
 | --- | --- | --- | --- |
 | Classification | binary, multinomial/softmax, OVR, OVO, multilabel, Naive Bayes, LDA/QDA, tree, neural, dense RBF one-class SVM, Laplace GP, variational GP, calibrated, ordinal | binary/softmax/OVR/OVO and logistic/MLP/independent Laplace-GP multilabel heads with per-label thresholds, weighted ordinal cumulative-logit heads, weighted Gaussian/Bernoulli/Multinomial/Complement/Categorical NB, weighted LDA/QDA, CART, MLP, dense RBF nu-SVM, weighted binary/OVR Laplace GP, bounded Bernoulli variational GP (logistic/probit) including sorted-label OVR multiclass, coupled categorical variational GP with FortOpt fitting and analytic packed/input products, latent-Gaussian ordinal GP, positive temperature, Platt sigmoid, weighted PAVA isotonic calibration, weighted reliability-diagram points, exact and histogram boosted trees | sparse/multioutput multilabel, native ordinal GP likelihoods and optimized cut points, natural-gradient and resident-GPU training, shared preprocessing/search, and kernel-SVM parity |
 | Regression | OLS, weighted/ridge/lasso/elastic-net, robust, quantile, GLM, multi-output, partial-fit | dense OLS, weighted ridge, weighted elastic-net/lasso, weighted linear SVR, weighted Poisson/Gamma log-link GLM, exact/histogram XGBoost-style squared/squared-log (RMSLE)/Huber/quantile/absolute/Tweedie regression with fixed-state products, multi-output fixed-fit products | positive/Bayesian/ARD, partial-fit, fit-time/hyperparameter products, resident GPU kernels |
-| Ensembles | CART, random/extra forests, bagging, AdaBoost, histogram boosting, XGBoost/LightGBM ranking/categorical/DART | weighted CART, deterministic seeded random-forest with stored bootstrap inclusion, transactional OOB decision probabilities/accuracy/coverage, fixed-state deterministic accuracy permutation importance with independent NumPy replay, and randomized-threshold Extra-Trees classification, seeded bootstrap bagging over CART, binary and multiclass SAMME AdaBoost over weighted CART, squared/squared-log/Huber/quantile/absolute/Tweedie boosting, exact and bounded histogram second-order XGBoost-style binary/OVR, bounded `rank:pairwise`, exact/histogram per-feature monotonic and interaction-group constraints, bounded ordered-gradient integer categorical partitions with explicit cardinality refusal, and bounded weighted LightGBM-style leaf-wise regression/binary and seeded XGBoost/LightGBM DART paths with validation loss, patience/min-delta early stopping, best-iteration metadata, restore-best slicing, weighted validation objectives, versioned persistence, transactional matched-option warm starts, deterministic GOSS top/other-rate gradient/Hessian reweighting, and persisted tree normalisation | SHAP workflows, SAMME.R probability updates, categorical policies beyond ordered partitions, XGBoost EFB, distributed, validation-aware warm-start, differentiable routing, and resident GPU histograms |
+| Ensembles | CART, random/extra forests, bagging, AdaBoost, histogram boosting, XGBoost/LightGBM ranking/categorical/DART | weighted CART, deterministic seeded random-forest with stored bootstrap inclusion, transactional OOB decision probabilities/accuracy/coverage, fixed-state deterministic accuracy permutation importance with independent NumPy replay, and randomized-threshold Extra-Trees classification, seeded bootstrap bagging over CART, binary and multiclass SAMME AdaBoost over weighted CART, squared/squared-log/Huber/quantile/absolute/Tweedie boosting, exact and bounded histogram second-order XGBoost-style binary/OVR, bounded `rank:pairwise`, exact/histogram per-feature monotonic and interaction-group constraints, bounded ordered-gradient integer categorical partitions with explicit cardinality refusal, bounded weighted LightGBM-style leaf-wise regression/binary and seeded XGBoost/LightGBM DART paths with validation loss, patience/min-delta early stopping, best-iteration metadata, restore-best slicing, weighted validation objectives, versioned persistence, transactional matched-option warm starts, deterministic GOSS top/other-rate gradient/Hessian reweighting, persisted tree normalisation, and bounded exact-subset SHAP-like raw-margin attributions | Full SHAP interaction/explanation workflows, SAMME.R probability updates, categorical policies beyond ordered partitions, XGBoost EFB, distributed, validation-aware warm-start, differentiable routing, and resident GPU histograms |
 | Gaussian processes | exact, derivative observations, multitask, sparse/variational, SKI/lazy, local experts, classification | exact and derivative GPs with RBF, Matérn, periodic, rational-quadratic, cosine, polynomial, linear, constant, white-noise, user, sum, and product leaves, sparse/local/SKI/structured operators, weighted binary/OVR and independent multilabel and robust Poisson/Student-t Laplace paths, bounded weighted Bernoulli variational classification with logistic/probit ELBOs, coupled categorical variational classification with variance-corrected softmax, latent-Gaussian ordinal classification, dense Student-t and known-noise heteroskedastic process regression, packed sparse-GP mean/log-Cholesky ELBO gradients/JVPs/VJPs, weighted envelope kernel hypergradients, fixed-state binary/OVR/multilabel Laplace latent/probability kernel-parameter JVP/VJP products, and fixed-state binary/OVR variational kernel-log products | full likelihood/kernel catalog, native ordinal likelihoods, batch/multitask likelihoods, inducing-state and likelihood hyperparameter products, implicit derivatives, natural gradients, resident GPU solves |
 | Neural and physics models | MLP, CNN, RNN/GRU/LSTM, attention, autoencoder/VAE, BNN, HNN/LNN/symplectic/PINN | MLP/MLP classifier, named sequential `mlp_chain_t`, BNN, VAE, vanilla RNN, Hamiltonian MLP, composable four-slot physics residual objective, weighted Poisson objective with exact HVP/L-BFGS-B, Lion fixed-trajectory hypergradients, selected optimizer hypergradients, exact fixed-trajectory scheduled-Adagrad, scheduled-RAdam, and scheduled-AdamW hyperparameter objectives | broader module tree, recurrent/attention/convolution families, full products, complete loss catalog, GP/linear initialization, physics samplers/adapters, and long-horizon GPU gates |
 
@@ -1092,7 +1096,7 @@ more required variants remain open.
 | --- | --- | --- |
 | Classification | Binary, softmax, OVR, OVO, multilabel, ordinal, five Naive Bayes variants, weighted LDA/QDA, CART, deterministic random forest, MLP, linear and dense RBF one-class SVM, temperature/sigmoid/isotonic calibration, weighted binary or OVR Laplace GP classification, bounded Bernoulli variational GP classification including sorted-label OVR multiclass, coupled categorical variational GP classification with FortOpt fitting and analytic packed/input products, and a latent-Gaussian ordinal GP baseline | Sparse and multioutput labels, native ordinal GP likelihoods and optimized cut points, natural-gradient and resident-GPU training, shared preprocessing and search, and kernel SVM/margin parity |
 | Regression and bases | OLS, ridge, elastic-net, weighted linear SVR, scalar and multi-output closed-radius neighbors with uniform or distance weighting, Poisson/Gamma GLM, PCA, polynomial/Chebyshev/Fourier/radial/spline maps, analytic basis/pipeline HVPs, sequential or column pipelines, joint differentiable basis-pipeline training, and robust/squared-log/quantile/Tweedie XGBoost-style objectives | KD/ball-tree and approximate neighbors, partial fit, sparse views, graph serialization, callback/pipeline second derivatives, and resident GPU execution |
-| Trees and boosting | Weighted CART, deterministic seeded random-forest classification with stored inclusion state and transactional OOB probabilities/score/coverage, fixed-state accuracy permutation importance with independent NumPy replay and transactional CPU/CUDA contracts, seeded bootstrap bagging classification, binary and multiclass SAMME AdaBoost over weighted CART, exact and bounded-histogram second-order squared/logistic/Poisson/Tweedie/squared-log/Huber/quantile and `rank:pairwise` boosting, staged binary or OVR predictions, diagnostics, monotonic and interaction-group constraints, bounded ordered-gradient integer categorical partitions, transactional fitted-prefix slicing, versioned XGBoost schema-5 and LightGBM text/binary persistence, XGBoost staged margins/predictions plus additive contributions, LightGBM staged margins/predictions plus additive contributions, transactional matched-option warm starts including validation-aware continuation, and bounded seeded XGBoost and LightGBM DART/dropout tree normalisation | Extra-trees extensions, SHAP workflows, SAMME.R probability updates, categorical policies beyond ordered partitions, XGBoost EFB, distributed workers, differentiable routing, and complete GPU histograms |
+| Trees and boosting | Weighted CART, deterministic seeded random-forest classification with stored inclusion state and transactional OOB probabilities/score/coverage, fixed-state accuracy permutation importance with independent NumPy replay and transactional CPU/CUDA contracts, seeded bootstrap bagging classification, binary and multiclass SAMME AdaBoost over weighted CART, exact and bounded-histogram second-order squared/logistic/Poisson/Tweedie/squared-log/Huber/quantile and `rank:pairwise` boosting, staged binary or OVR predictions, diagnostics, monotonic and interaction-group constraints, bounded ordered-gradient integer categorical partitions, transactional fitted-prefix slicing, versioned XGBoost schema-5 and LightGBM text/binary persistence, XGBoost staged margins/predictions plus additive contributions, LightGBM staged margins/predictions plus additive contributions, bounded exact-subset SHAP-like raw-margin attributions, transactional matched-option warm starts including validation-aware continuation, and bounded seeded XGBoost and LightGBM DART/dropout tree normalisation | Extra-trees extensions, full SHAP interaction/explanation workflows, SAMME.R probability updates, categorical policies beyond ordered partitions, XGBoost EFB, distributed workers, differentiable routing, and complete GPU histograms |
 | Gaussian processes | Exact, derivative-observation, sparse, local, SKI, structured operators, periodic/rational-quadratic/cosine/polynomial leaves, weighted binary or OVR and robust Poisson/Student-t Laplace paths, bounded weighted Bernoulli variational classification, coupled categorical and latent-Gaussian ordinal classification, dense Student-t and known-noise heteroskedastic process regression, packed sparse-GP mean/log-Cholesky ELBO products, weighted envelope kernel products, and fixed-state binary/OVR variational kernel-log products | Full likelihood and kernel catalog, native ordinal likelihoods, batch or multitask shapes, inducing-state and likelihood hyperparameter products, Student-t/heteroskedastic/robust derivative products, operator-valued derivatives, implicit products, serialization, and resident GPU solves |
 | Trees and boosting | Weighted CART, deterministic seeded random-forest classification with stored inclusion state and transactional OOB probabilities/score/coverage, fixed-state accuracy permutation importance with independent NumPy replay, seeded bootstrap bagging classification, binary and multiclass SAMME AdaBoost over weighted CART, exact and bounded-histogram second-order squared/logistic/Poisson/Tweedie/squared-log/Huber/quantile and `rank:pairwise` boosting, staged binary or OVR predictions, diagnostics, monotonic and interaction-group constraints, bounded ordered-gradient integer categorical partitions, transactional fitted-prefix slicing, XGBoost staged margins/predictions plus additive contributions, LightGBM staged margins/predictions plus additive contributions, versioned XGBoost schema-5 and LightGBM text persistence, transactional matched-option warm starts including validation-aware continuation, and bounded seeded XGBoost and LightGBM DART/dropout tree normalisation | Extra-trees extensions, SHAP workflows, SAMME.R probability updates, categorical policies beyond ordered partitions, XGBoost EFB, distributed workers, differentiable routing, and complete GPU histograms |
 | Gaussian processes | Exact, derivative-observation, sparse, local, SKI, structured operators, periodic/rational-quadratic/cosine/polynomial leaves, weighted binary or OVR Laplace classification, bounded weighted Bernoulli variational classification, coupled categorical and latent-Gaussian ordinal classification, dense Student-t and known-noise heteroskedastic process regression, packed sparse-GP mean/log-Cholesky ELBO products, weighted envelope kernel products, and fixed-state binary/OVR variational kernel-log products | Full likelihood and kernel catalog, native ordinal likelihoods, batch or multitask shapes, inducing-state and likelihood hyperparameter products, Student-t/heteroskedastic derivative products, operator-valued derivatives, implicit products, serialization, and resident GPU solves |
