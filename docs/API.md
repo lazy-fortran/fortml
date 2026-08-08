@@ -2177,7 +2177,7 @@ Calling ordinary `rate` with a plateau schedule returns
 owns that state at epoch boundaries: it monitors validation loss when a held-out
 stream is supplied (training loss otherwise), and preserves the best metric,
 bad-observation count, and reduction count in version-10 in-memory and
-formatted checkpoints. Split checkpoint/resume therefore reproduces the
+formatted checkpoints and in the returned training state. Split checkpoint/resume therefore reproduces the
 uninterrupted plateau trajectory. The metric-aware method remains available for
 custom trainers and its active-set products retain the same typed boundaries.
 `device_supported(kind)` reports CPU-only support in this release: schedules

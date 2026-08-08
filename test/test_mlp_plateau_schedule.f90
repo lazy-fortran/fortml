@@ -138,8 +138,10 @@ program test_mlp_plateau_schedule
     call model%set_parameters([0.0_dp, 0.0_dp], status)
     call mlp_train(model, x, target, status, options, state)
     call check(status_ok(status), "trainer metric-aware plateau schedule", failures)
-    call check(state%updates == 4 .and. abs(state%last_learning_rate-1.6e-13_dp) < &
-        1.0e-24_dp, "trainer plateau reductions follow independent recurrence", failures)
+    call check(state%updates == 4 .and. state%schedule_reductions == 2 .and. &
+        state%schedule_bad_updates == 0 .and. &
+        abs(state%last_learning_rate-1.6e-13_dp) < 1.0e-24_dp, &
+        "trainer plateau reductions follow independent recurrence", failures)
     call split_model%initialize([1, 1], status, output_activation=MLP_LINEAR)
     call split_model%set_parameters([0.0_dp, 0.0_dp], status)
     split_options = options

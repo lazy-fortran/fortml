@@ -166,8 +166,11 @@ module fortml_mlp_training
         integer :: precision_kind = MLP_PRECISION_FP64
         integer :: best_epoch = 0
         integer :: best_validation_epoch = 0
+        integer :: schedule_bad_updates = 0
+        integer :: schedule_reductions = 0
         logical :: converged = .false.
         logical :: early_stopped = .false.
+        logical :: schedule_metric_initialized = .false.
         integer :: gradient_clipped_updates = 0
         real(dp) :: initial_loss = huge(1.0_dp)
         real(dp) :: final_loss = huge(1.0_dp)
@@ -175,6 +178,7 @@ module fortml_mlp_training
         real(dp) :: initial_validation_loss = huge(1.0_dp)
         real(dp) :: final_validation_loss = huge(1.0_dp)
         real(dp) :: best_validation_loss = huge(1.0_dp)
+        real(dp) :: schedule_best_metric = huge(1.0_dp)
         real(dp) :: gradient_norm = huge(1.0_dp)
         real(dp) :: last_learning_rate = 0.0_dp
         logical :: has_ema = .false.
@@ -1700,6 +1704,10 @@ contains
             result%final_validation_loss = checkpoint%final_validation_loss
             result%best_validation_loss = checkpoint%best_validation_loss
             result%last_learning_rate = checkpoint%last_learning_rate
+            result%schedule_bad_updates = checkpoint%schedule_bad_updates
+            result%schedule_reductions = checkpoint%schedule_reductions
+            result%schedule_best_metric = checkpoint%schedule_best_metric
+            result%schedule_metric_initialized = checkpoint%schedule_metric_initialized
             if (result%epochs > 0) then
                 result%loss_history(:result%epochs) = checkpoint%loss_history
                 result%learning_rate_history(:result%epochs) = &
@@ -1739,6 +1747,10 @@ contains
             schedule_best_metric = monitored_loss
             schedule_metric_initialized = .true.
         end if
+        result%schedule_bad_updates = schedule_bad_updates
+        result%schedule_reductions = schedule_reductions
+        result%schedule_best_metric = schedule_best_metric
+        result%schedule_metric_initialized = schedule_metric_initialized
         call emit_training_event(config, MLP_EVENT_TRAIN_BEGIN, 0, result%updates, &
             result%initial_loss, result%initial_validation_loss, 0.0_dp, &
             config%learning_rate, event_stop, status)
@@ -2161,6 +2173,10 @@ contains
                 schedule_bad_updates = next_schedule_bad_updates
                 schedule_reductions = next_schedule_reductions
                 schedule_metric_initialized = .true.
+                result%schedule_bad_updates = schedule_bad_updates
+                result%schedule_reductions = schedule_reductions
+                result%schedule_best_metric = schedule_best_metric
+                result%schedule_metric_initialized = schedule_metric_initialized
                 result%last_learning_rate = effective_rate
                 result%learning_rate_history(epoch) = effective_rate
             end if

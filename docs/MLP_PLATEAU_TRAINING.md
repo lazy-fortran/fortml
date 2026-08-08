@@ -22,6 +22,8 @@ for the stateless `rate` method because a metric state is required.
 `mlp_train` owns the metric state and keeps it in the version-10 in-memory and
 formatted checkpoints.  A resumed run therefore reproduces the uninterrupted
 learning-rate trajectory, including reductions that occur at an epoch boundary.
+The returned `mlp_training_state_t` exposes the current best metric, bad
+observation count, and reduction count for diagnostics and manifests.
 Malformed or incomplete plateau state is rejected transactionally.  The
 independent `test_mlp_plateau_schedule` fixture checks the recurrence,
 continuous-factor finite difference, trainer integration, checkpoint
