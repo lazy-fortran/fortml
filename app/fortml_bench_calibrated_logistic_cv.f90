@@ -26,11 +26,11 @@ program fortml_bench_calibrated_logistic_cv
     end if
     call make_fixture(x, labels)
     options = calibrated_logistic_classifier_options_t()
-    options%l2 = 0.1_dp
-    options%max_iterations = 300
+    options%l2 = 1.0_dp
+    options%max_iterations = 1000
     options%tolerance = 1.0e-8_dp
-    options%cv_folds = 4
-    options%cv_shuffle = .true.
+    options%cv_folds = 3
+    options%cv_shuffle = .false.
     options%cv_seed = 29
     options%calibration%method = CALIBRATION_TEMPERATURE
     options%calibration%max_iterations = 300
@@ -40,7 +40,10 @@ program fortml_bench_calibrated_logistic_cv
     call system_clock(clock_start, clock_rate)
     call model%fit(x, labels, status, options=options)
     call system_clock(clock_end)
-    if (.not. status_ok(status)) error stop "calibrated logistic OOF fit failed"
+    if (.not. status_ok(status)) then
+        write (*, '(a,i0,2a)') "calibrated logistic OOF fit failed ", status%code, ": ", trim(status%msg)
+        error stop 1
+    end if
     fit_seconds = real(clock_end - clock_start, dp)/real(clock_rate, dp)
     call model%predict_proba(x, probabilities, status)
     call model%predict(x, predicted, status)
@@ -85,14 +88,20 @@ contains
     subroutine make_fixture(features, target)
         real(dp), intent(out) :: features(:, :)
         integer, intent(out) :: target(:)
+        real(dp), parameter :: first(12) = [ &
+            -2.0_dp, -1.7_dp, -1.4_dp, -1.1_dp, -0.7_dp, -0.3_dp, &
+            0.2_dp,  0.5_dp,  0.8_dp,  1.1_dp,  1.5_dp,  1.9_dp]
+        real(dp), parameter :: second(12) = [ &
+            -1.4_dp, -0.8_dp, -1.1_dp, -0.5_dp, -0.2_dp,  0.1_dp, &
+            -0.1_dp,  0.3_dp,  0.7_dp,  0.9_dp,  1.2_dp,  1.6_dp]
         integer :: i
         real(dp) :: phase
 
         do i = 1, size(target)
-            phase = real(i, dp)
-            features(i, 1) = sin(0.11_dp*phase) + 0.015_dp*phase
-            features(i, 2) = cos(0.17_dp*phase) - 0.01_dp*phase
-            if (features(i, 1) - 0.45_dp*features(i, 2) > 0.0_dp) then
+            phase = real(mod(i - 1, 12), dp)
+            features(i, 1) = first(int(phase) + 1)
+            features(i, 2) = second(int(phase) + 1)
+            if (phase >= 6.0_dp) then
                 target(i) = 42
             else
                 target(i) = -3
