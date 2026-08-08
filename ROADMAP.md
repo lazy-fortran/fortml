@@ -48,7 +48,7 @@ parameter snapshots and transfer counters. NVIDIA
 compiler coverage remains an
 explicit older-build result.
 
-The companion benchmark harness is clean at FortML-bench revision `e972e1e`;
+The companion benchmark harness is clean at FortML-bench revision `fc70d6b`;
 the trainer-checkpoint, unfactored-Adafactor, binary-objective,
 multiclass-calibration, variational-multiclass-GP, PINN/physics-objective,
 physics HVP, grouped K-fold, spectral-mixture, XGBoost-ranking,
@@ -60,7 +60,9 @@ behavioral oracles. The basis-pipeline lane now includes the optimized-ridge
 coordinate/mixed-HVP case, and the binary Laplace-GP parameter-product test has
 an independent fixed-state finite-difference oracle. The current closure slices
 also cover packed OVR Laplace-GP parameter products, weighted LightGBM validation
-early stopping, and scheduled-Adagrad trajectory hypergradients. CUDA rows are explicit `unavailable`/typed-refusal records
+early stopping, and scheduled-Adagrad trajectory hypergradients. The latter has
+its own CPU-product and CUDA-refusal rows in
+`results/mlp_adagrad_schedule_hypergradient.csv`. CUDA rows are explicit `unavailable`/typed-refusal records
 rather than host timings.
 
 ### 2026-08-07 objective-trainer and tree-contribution slice
