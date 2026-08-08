@@ -1,6 +1,6 @@
 Verification date: 2026-08-08
 FortML revision: 89f6341
-FortAD dependency: origin/main a423904da02ece090a10248ffff50d82e3f8f7a8 (code clean; local FortAD ROADMAP edit present)
+FortAD dependency: origin/main 928a375d2808ea902cbe4a8a89425c5f536a576d (remote main pin rechecked 2026-08-08)
 FortNum dependency: clean origin/main 38bc0e578ec5c6c0e636e8fdd3844f54f9e3e473
 Command: fo clean; fo build --flag -O3 (twice); fo test; fo lint
 Worktree: /mnt/storage/code/lazy-fortran/fortml
