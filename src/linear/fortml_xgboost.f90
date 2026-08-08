@@ -19,6 +19,7 @@ module fortml_xgboost
     integer, parameter, public :: XGB_OBJECTIVE_RANK_PAIRWISE = 7
     integer, parameter, public :: XGB_OBJECTIVE_ABSOLUTE = 8
     integer, parameter, public :: XGB_OBJECTIVE_TWEEDIE = 9
+    integer, parameter, public :: XGB_OBJECTIVE_GAMMA = 10
     integer, parameter, public :: XGB_MISSING_ERROR = 0
     integer, parameter, public :: XGB_MISSING_LEARN = 1
     integer, parameter, public :: XGB_MISSING_LEFT = 2
@@ -36,6 +37,7 @@ module fortml_xgboost
     public :: xgb_pairwise_loss, xgb_pairwise_derivatives
     public :: xgb_histogram_cut_positions
     public :: xgb_tweedie_loss, xgb_tweedie_derivatives
+    public :: xgb_gamma_loss, xgb_gamma_derivatives
 
     !> Options for the deterministic exact- or histogram-split
     !> XGBoost-style estimator.
@@ -77,6 +79,8 @@ module fortml_xgboost
         !! Tweedie variance power.  The bounded production path supports
         !! 1 < power < 2, matching XGBoost's compound-Poisson regime.
         real(dp) :: tweedie_variance_power = 1.5_dp
+        !! Positive Gamma shape for the fixed-shape log-link objective.
+        real(dp) :: gamma_shape = 1.0_dp
         character(len=16) :: missing_policy = "error"
         character(len=16) :: tree_method = "exact"
         integer :: max_bin = 256
@@ -129,7 +133,8 @@ module fortml_xgboost
     end type xgb_tree_t
 
     !> Second-order boosting for squared, squared-log (RMSLE), binary
-    !> logistic, Poisson count, Tweedie, Huber, quantile, and absolute objectives.
+    !> logistic, Poisson count, fixed-shape Gamma, Tweedie, Huber, quantile,
+    !> and absolute objectives.
     !> Fit is discrete; predictions are deterministic and the objective's
     !> Hessians are aggregated exactly for every retained candidate split.
     type, public :: xgboost_t
@@ -172,6 +177,7 @@ module fortml_xgboost
         procedure, public :: fit_regression => xgb_fit_regression
         procedure, public :: fit_binary => xgb_fit_binary
         procedure, public :: fit_poisson => xgb_fit_poisson
+        procedure, public :: fit_gamma => xgb_fit_gamma
         procedure, public :: fit_tweedie => xgb_fit_tweedie
         procedure, public :: fit_huber => xgb_fit_huber
         procedure, public :: fit_quantile => xgb_fit_quantile
@@ -499,6 +505,19 @@ contains
                     return
                 end if
             end if
+        else if (objective_code == XGB_OBJECTIVE_GAMMA) then
+            if (any(y <= 0.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "xgboost fit: Gamma targets must be strictly positive")
+                return
+            end if
+            if (have_validation) then
+                if (any(validation_y <= 0.0_dp)) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "xgboost fit: validation Gamma targets must be strictly positive")
+                    return
+                end if
+            end if
         else if (objective_code == XGB_OBJECTIVE_SQUARED_LOG) then
             if (any(y < 0.0_dp)) then
                 call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -534,6 +553,13 @@ contains
                 settings%tweedie_variance_power >= 2.0_dp) then
                 call status_set(status, FORTNUM_DOMAIN_ERROR, &
                     "xgboost fit: tweedie_variance_power must lie strictly between one and two")
+                return
+            end if
+        else if (objective_code == XGB_OBJECTIVE_GAMMA) then
+            if (.not. ieee_is_finite(settings%gamma_shape) .or. &
+                settings%gamma_shape <= 0.0_dp) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "xgboost fit: gamma_shape must be finite and positive")
                 return
             end if
         end if
@@ -590,7 +616,8 @@ contains
         else if (objective_code == XGB_OBJECTIVE_LOGISTIC) then
             self%base_score = stable_logit(mean_target)
         else if (objective_code == XGB_OBJECTIVE_POISSON .or. &
-            objective_code == XGB_OBJECTIVE_TWEEDIE) then
+            objective_code == XGB_OBJECTIVE_TWEEDIE .or. &
+            objective_code == XGB_OBJECTIVE_GAMMA) then
             self%base_score = stable_log_rate(mean_target)
         else if (objective_code == XGB_OBJECTIVE_SQUARED_LOG) then
             ! The constant optimum is the weighted geometric mean in the
@@ -630,7 +657,8 @@ contains
         do i = 1, settings%n_estimators
             call objective_derivatives(objective_code, prediction, y, gradient, &
                 hessian, settings%huber_delta, settings%quantile_alpha, &
-                settings%tweedie_variance_power, status, &
+                merge(settings%gamma_shape, settings%tweedie_variance_power, &
+                    objective_code == XGB_OBJECTIVE_GAMMA), status, &
                 group, observation_weight)
             if (status%code /= FORTNUM_OK) return
             if (is_ranking) hessian = max(hessian, 1.0e-12_dp)
@@ -656,7 +684,8 @@ contains
                 validation_prediction = validation_prediction + rate*validation_correction
                 call xgb_objective_loss(objective_code, validation_prediction, &
                     validation_y, validation_observation_weight, settings%huber_delta, &
-                    settings%quantile_alpha, settings%tweedie_variance_power, &
+                    settings%quantile_alpha, merge(settings%gamma_shape, &
+                        settings%tweedie_variance_power, objective_code == XGB_OBJECTIVE_GAMMA), &
                     validation_loss, status, validation_group)
                 if (status%code /= FORTNUM_OK) return
                 improved = validation_loss < best_validation_loss - &
@@ -724,6 +753,8 @@ contains
             self%objective_parameter = settings%quantile_alpha
         else if (objective_code == XGB_OBJECTIVE_TWEEDIE) then
             self%objective_parameter = settings%tweedie_variance_power
+        else if (objective_code == XGB_OBJECTIVE_GAMMA) then
+            self%objective_parameter = settings%gamma_shape
         else
             self%objective_parameter = 0.0_dp
         end if
@@ -905,6 +936,14 @@ contains
                 "xgboost warm start: tweedie_variance_power differs from the fitted model")
             return
         end if
+        if (objective_code == XGB_OBJECTIVE_GAMMA .and. &
+            (settings%gamma_shape /= self%objective_parameter .or. &
+             .not. ieee_is_finite(settings%gamma_shape) .or. &
+             settings%gamma_shape <= 0.0_dp)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost warm start: gamma_shape differs from the fitted model or is invalid")
+            return
+        end if
 
         have_validation = present(validation_x) .or. present(validation_y) .or. &
             present(validation_weight)
@@ -1011,6 +1050,17 @@ contains
                 any(validation_y > 1.0_dp))) then
                 call status_set(status, FORTNUM_DOMAIN_ERROR, &
                     "xgboost warm start: validation logistic targets must be in [0, 1]")
+                return
+            end if
+        else if (self%objective_code == XGB_OBJECTIVE_GAMMA) then
+            if (any(y <= 0.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "xgboost warm start: Gamma targets must be strictly positive")
+                return
+            end if
+            if (have_validation .and. any(validation_y <= 0.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "xgboost warm start: validation Gamma targets must be strictly positive")
                 return
             end if
         else if (self%objective_code == XGB_OBJECTIVE_POISSON .or. &
@@ -1302,6 +1352,55 @@ contains
         end if
     end subroutine xgb_fit_poisson
 
+    subroutine xgb_fit_gamma(self, x, y, status, options, sample_weight, &
+            validation_x, validation_y, validation_weight)
+        !! Fit a fixed-shape Gamma log-link model.
+        !!
+        !! The bounded contract uses a positive shape `gamma_shape` and the
+        !! corresponding deviance terms `shape*(margin + y*exp(-margin))`.
+        !! Margins are log means and predictions are positive. Exact and
+        !! weighted-histogram growth use analytic gradients and Hessians;
+        !! CUDA prediction remains a typed refusal until a resident tree
+        !! kernel is linked.
+        class(xgboost_t), intent(out) :: self
+        real(dp), intent(in) :: x(:, :), y(:)
+        type(fortnum_status_t), intent(out) :: status
+        type(xgboost_options_t), intent(in), optional :: options
+        real(dp), intent(in), optional :: sample_weight(:)
+        real(dp), intent(in), optional :: validation_x(:, :), validation_y(:), &
+            validation_weight(:)
+        type(xgboost_options_t) :: settings
+
+        settings = xgboost_options_t()
+        if (present(options)) settings = options
+        settings%objective = "gamma"
+        if (present(validation_x) .or. present(validation_y)) then
+            if (present(sample_weight)) then
+                if (present(validation_weight)) then
+                    call xgb_fit(self, x, y, status, settings, sample_weight, &
+                        validation_x, validation_y, validation_weight)
+                else
+                    call xgb_fit(self, x, y, status, settings, sample_weight, &
+                        validation_x, validation_y)
+                end if
+            else if (present(validation_weight)) then
+                call xgb_fit(self, x, y, status, settings, &
+                    validation_x=validation_x, validation_y=validation_y, &
+                    validation_weight=validation_weight)
+            else
+                call xgb_fit(self, x, y, status, settings, &
+                    validation_x=validation_x, validation_y=validation_y)
+            end if
+        else if (present(validation_weight)) then
+            call xgb_fit(self, x, y, status, settings, &
+                validation_weight=validation_weight)
+        else if (present(sample_weight)) then
+            call xgb_fit(self, x, y, status, settings, sample_weight)
+        else
+            call xgb_fit(self, x, y, status, settings)
+        end if
+    end subroutine xgb_fit_gamma
+
     subroutine xgb_fit_tweedie(self, x, y, status, options, sample_weight, &
             validation_x, validation_y, validation_weight)
         !! Fit the bounded XGBoost `reg:tweedie` objective.
@@ -1557,6 +1656,8 @@ contains
             y(:, 1) = stable_poisson_array(margin)
         else if (self%objective_code == XGB_OBJECTIVE_TWEEDIE) then
             y(:, 1) = stable_poisson_array(margin)
+        else if (self%objective_code == XGB_OBJECTIVE_GAMMA) then
+            y(:, 1) = stable_poisson_array(margin)
         else if (self%objective_code == XGB_OBJECTIVE_SQUARED_LOG) then
             y(:, 1) = stable_squared_log_array(margin)
         else
@@ -1585,6 +1686,8 @@ contains
         else if (self%objective_code == XGB_OBJECTIVE_POISSON) then
             y = stable_poisson_array(margin)
         else if (self%objective_code == XGB_OBJECTIVE_TWEEDIE) then
+            y = stable_poisson_array(margin)
+        else if (self%objective_code == XGB_OBJECTIVE_GAMMA) then
             y = stable_poisson_array(margin)
         else if (self%objective_code == XGB_OBJECTIVE_SQUARED_LOG) then
             y = stable_squared_log_array(margin)
@@ -1734,6 +1837,8 @@ contains
             else if (self%objective_code == XGB_OBJECTIVE_POISSON) then
                 staged(:, i) = stable_poisson_array(margin)
             else if (self%objective_code == XGB_OBJECTIVE_TWEEDIE) then
+                staged(:, i) = stable_poisson_array(margin)
+            else if (self%objective_code == XGB_OBJECTIVE_GAMMA) then
                 staged(:, i) = stable_poisson_array(margin)
             else if (self%objective_code == XGB_OBJECTIVE_SQUARED_LOG) then
                 staged(:, i) = stable_squared_log_array(margin)
@@ -2271,6 +2376,8 @@ contains
             name = "poisson"
         case (XGB_OBJECTIVE_TWEEDIE)
             name = "tweedie"
+        case (XGB_OBJECTIVE_GAMMA)
+            name = "gamma"
         case (XGB_OBJECTIVE_HUBER)
             name = "huber"
         case (XGB_OBJECTIVE_QUANTILE)
@@ -2844,7 +2951,7 @@ contains
         valid = model%n_inputs >= 1 .and. model%n_estimators >= 1 .and. &
             model%requested_estimators >= model%n_estimators .and. &
             model%objective_code >= XGB_OBJECTIVE_SQUARED .and. &
-            model%objective_code <= XGB_OBJECTIVE_TWEEDIE .and. &
+            model%objective_code <= XGB_OBJECTIVE_GAMMA .and. &
             (model%tree_method_code == XGB_TREE_EXACT .or. &
              model%tree_method_code == XGB_TREE_HIST) .and. &
             model%max_bin >= 2 .and. model%max_depth_value >= 1 .and. &
@@ -2879,6 +2986,9 @@ contains
         if (valid .and. model%objective_code == XGB_OBJECTIVE_TWEEDIE) then
             valid = model%objective_parameter > 1.0_dp .and. &
                 model%objective_parameter < 2.0_dp
+        end if
+        if (valid .and. model%objective_code == XGB_OBJECTIVE_GAMMA) then
+            valid = model%objective_parameter > 0.0_dp
         end if
     end function valid_serialized_scalars
 
@@ -3334,6 +3444,95 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine xgb_tweedie_derivatives
 
+    subroutine xgb_gamma_loss(margin, target, shape, value, status, weights)
+        !! Weighted fixed-shape Gamma negative log-likelihood in log-mean space.
+        !! Target-only terms are omitted, so the per-row value is
+        !! `shape*(margin + target*exp(-margin))`.
+        real(dp), intent(in) :: margin(:), target(:), shape
+        real(dp), intent(out) :: value
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: weights(:)
+        real(dp), allocatable :: row_weight(:)
+        real(dp) :: weight_sum, row_value, inverse_mean
+        integer :: i
+
+        value = huge(1.0_dp)
+        if (size(margin) < 1 .or. size(target) /= size(margin) .or. &
+            .not. ieee_is_finite(shape) .or. shape <= 0.0_dp .or. &
+            any(.not. ieee_is_finite(margin)) .or. &
+            any(.not. ieee_is_finite(target)) .or. any(target <= 0.0_dp)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost Gamma loss: finite margins, positive targets, and shape > 0 are required")
+            return
+        end if
+        allocate(row_weight(size(target)))
+        row_weight = 1.0_dp
+        if (present(weights)) then
+            if (size(weights) /= size(target) .or. any(.not. ieee_is_finite(weights)) .or. &
+                any(weights <= 0.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "xgboost Gamma loss: weights must be positive and finite")
+                return
+            end if
+            row_weight = weights
+        end if
+        weight_sum = sum(row_weight)
+        if (.not. ieee_is_finite(weight_sum) .or. weight_sum <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost Gamma loss: weight mass must be positive and finite")
+            return
+        end if
+        value = 0.0_dp
+        do i = 1, size(target)
+            inverse_mean = exp(-margin(i))
+            row_value = shape*(margin(i) + target(i)*inverse_mean)
+            if (.not. ieee_is_finite(row_value)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "xgboost Gamma loss: objective value is nonfinite")
+                return
+            end if
+            value = value + row_weight(i)*row_value
+        end do
+        if (.not. ieee_is_finite(value)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost Gamma loss: weighted objective is nonfinite")
+            return
+        end if
+        value = value/weight_sum
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine xgb_gamma_loss
+
+    subroutine xgb_gamma_derivatives(margin, target, shape, gradient, hessian, status)
+        !! Exact per-row Gamma derivatives with respect to the log mean.
+        real(dp), intent(in) :: margin(:), target(:), shape
+        real(dp), intent(out) :: gradient(:), hessian(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: inverse_mean
+        integer :: i
+
+        if (size(margin) < 1 .or. size(target) /= size(margin) .or. &
+            size(gradient) /= size(margin) .or. size(hessian) /= size(margin) .or. &
+            .not. ieee_is_finite(shape) .or. shape <= 0.0_dp .or. &
+            any(.not. ieee_is_finite(margin)) .or. &
+            any(.not. ieee_is_finite(target)) .or. any(target <= 0.0_dp)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost Gamma derivatives: finite margins, positive targets, and shape > 0 are required")
+            return
+        end if
+        do i = 1, size(margin)
+            inverse_mean = exp(-margin(i))
+            gradient(i) = shape*(1.0_dp - target(i)*inverse_mean)
+            hessian(i) = shape*target(i)*inverse_mean
+        end do
+        if (any(.not. ieee_is_finite(gradient)) .or. &
+            any(.not. ieee_is_finite(hessian))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost Gamma derivatives: gradient or Hessian is nonfinite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine xgb_gamma_derivatives
+
     subroutine xgb_objective_loss(objective_code, margin, target, weights, &
             huber_delta, quantile_alpha, tweedie_power, loss, status, group)
         !! Evaluate a finite weighted validation objective independently of
@@ -3390,6 +3589,9 @@ contains
             term = sum(weights*(stable_poisson_array(margin) - target*margin))
         case (XGB_OBJECTIVE_TWEEDIE)
             call xgb_tweedie_loss(margin, target, tweedie_power, loss, status, weights)
+            return
+        case (XGB_OBJECTIVE_GAMMA)
+            call xgb_gamma_loss(margin, target, tweedie_power, loss, status, weights)
             return
         case (XGB_OBJECTIVE_SQUARED_LOG)
             term = 0.5_dp*sum(weights*(margin - log(1.0_dp + target))**2)
@@ -3474,6 +3676,10 @@ contains
             hessian = max(probability, minimum_hessian)
         case (XGB_OBJECTIVE_TWEEDIE)
             call xgb_tweedie_derivatives(margin, target, tweedie_power, gradient, &
+                hessian, status)
+            if (status%code /= FORTNUM_OK) return
+        case (XGB_OBJECTIVE_GAMMA)
+            call xgb_gamma_derivatives(margin, target, tweedie_power, gradient, &
                 hessian, status)
             if (status%code /= FORTNUM_OK) return
         case (XGB_OBJECTIVE_SQUARED_LOG)
@@ -4200,6 +4406,8 @@ contains
             code = XGB_OBJECTIVE_POISSON
         case ("tweedie", "reg:tweedie", "reg:tweedieerror")
             code = XGB_OBJECTIVE_TWEEDIE
+        case ("gamma", "reg:gamma", "reg:gammaerror")
+            code = XGB_OBJECTIVE_GAMMA
         case ("huber", "reg:pseudohubererror")
             code = XGB_OBJECTIVE_HUBER
         case ("quantile", "reg:quantile", "pinball")
