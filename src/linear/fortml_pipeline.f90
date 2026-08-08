@@ -1473,7 +1473,10 @@ contains
             call self%branches(i)%vjp(x, &
                 u(:, feature_offset + 1:feature_offset + n_features), &
                 local_theta_bar, local_x_bar, status)
-            if (status%code /= FORTNUM_OK) return
+            if (status%code /= FORTNUM_OK) then
+                deallocate(local_theta_bar, local_x_bar)
+                return
+            end if
             if (n_parameters > 0) theta_bar(parameter_offset + 1: &
                 parameter_offset + n_parameters) = local_theta_bar
             x_bar = x_bar + local_x_bar
@@ -1525,7 +1528,10 @@ contains
             call self%branches(i)%hvp(x, &
                 u(:, feature_offset + 1:feature_offset + n_features), &
                 local_theta_dot, x_dot, local_theta_hvp, local_x_hvp, status)
-            if (status%code /= FORTNUM_OK) return
+            if (status%code /= FORTNUM_OK) then
+                deallocate(local_theta_dot, local_theta_hvp, local_x_hvp)
+                return
+            end if
             if (n_parameters > 0) theta_hvp(parameter_offset + 1: &
                 parameter_offset + n_parameters) = local_theta_hvp
             x_hvp = x_hvp + local_x_hvp
