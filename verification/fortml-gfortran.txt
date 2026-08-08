@@ -8,8 +8,8 @@ Static: OK (396 modules, 396 changed, 396 affected)
 First build: OK (806 units)
 Second build: OK (806 units)
 Tests: OK (181/181)
-Lint: WARN (0 unused imports; 1778 compiler warnings; fo lint exits nonzero)
-Result: Build and behavioral stages passed; lint warning gate remains open
+Lint: OK (0 unused imports; non-fatal compiler warnings remain)
+Result: All static, build, behavioral, and lint stages passed
 Warnings: existing non-fatal GNU compiler warnings, primarily
 -Warray-temporaries in FortML/FortAD, FortNum/FortFront dependencies, XGBoost
 benchmark applications, generated Matérn/RBF product applications, and one

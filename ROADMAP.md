@@ -14,7 +14,7 @@ gate is still open, so this work does not move or recreate that tag.
 
 | Compiler | Command | Result |
 | --- | --- | --- |
-| GNU Fortran | `fo` | Static, clean first/second builds, and all 181 behavioral tests passed at the current FortML/FortAD-main revisions. `fo lint` reports compiler warnings and exits nonzero, but no unused imports remain after the checked cleanup; see [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
+| GNU Fortran | `fo` | Static, clean first/second builds, all 181 behavioral tests, and lint passed at the current FortML/FortAD-main revisions. The compiler still emits non-fatal array-temporary warnings; see [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
 | NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded older compiler lane. The checked-in NVIDIA log predates the current 181-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
@@ -48,7 +48,7 @@ parameter snapshots and transfer counters. NVIDIA
 compiler coverage remains an
 explicit older-build result.
 
-The companion benchmark harness is clean at FortML-bench revision `e2916b8`;
+The companion benchmark harness is clean at FortML-bench revision `e1ed782`;
 the trainer-checkpoint, unfactored-Adafactor, binary-objective,
 multiclass-calibration, variational-multiclass-GP, PINN/physics-objective,
 physics HVP, grouped K-fold, spectral-mixture, XGBoost-ranking,
@@ -56,7 +56,9 @@ resident dense-MSE CUDA, binary XGBoost classifier, calibrated neural classifier
 SGD-momentum, sparse preprocessing, derivative-GP covariance and polynomial HVP,
 weighted multiclass MLP objective, resident Adagrad, and mini-batch hypergradient
 CSV rows record their FortML source revisions and independent NumPy or analytic
-behavioral oracles. CUDA rows are explicit `unavailable`/typed-refusal records
+behavioral oracles. The basis-pipeline lane now includes the optimized-ridge
+coordinate/mixed-HVP case, and the binary Laplace-GP parameter-product test has
+an independent fixed-state finite-difference oracle. CUDA rows are explicit `unavailable`/typed-refusal records
 rather than host timings.
 
 ### 2026-08-07 objective-trainer and tree-contribution slice
