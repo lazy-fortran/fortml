@@ -207,6 +207,14 @@ unnormalized. Named diagnostics expose data and regularization components and
 the effective weight mass. This keeps reduction semantics visible to an outer
 optimizer instead of hiding them in a trainer callback.
 
+The model-agnostic `fortml_trainer` uses the same ownership boundary for flat
+FortOpt objectives. Its Lion adapter stores the beta2 momentum and applies the
+beta1 sign/interpolation update with decoupled weight decay. The formatted
+trainer checkpoint serializes that momentum and step counter alongside the
+other optimizer states; an independent quadratic continuation oracle is
+required before the contract is counted as complete. The generic trainer is
+host-resident until a complete model/objective/optimizer device plan exists.
+
 ## Tree boosting lifecycle
 
 `xgboost_t` keeps split topology, leaf values, objective metadata, and
