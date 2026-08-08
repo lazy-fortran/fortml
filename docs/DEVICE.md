@@ -135,6 +135,28 @@ Those paths must remain on the FortAD/FortSym graph until a complete resident
 device graph and an independent derivative oracle are available. A caller
 must therefore not report end-to-end GPU training from this state kernel alone.
 
+## Direct Adagrad state kernel
+
+The matching no-autodiff Adagrad recurrence is exposed by the native CUDA C API
+in `src/mlp/fortml_cuda_adagrad.cu` (declarations are in
+`src/mlp/fortml_cuda_adagrad.h`). `fortml_cuda_adagrad_plan_create` selects an
+explicit nonnegative CUDA device and uploads parameters plus optional
+accumulated-square state. `fortml_cuda_adagrad_plan_step` requires a gradient
+pointer already resident on that device and performs
+
+```
+G <- G + gradient**2
+x <- x - learning_rate*gradient/(sqrt(G) + epsilon)
+```
+
+without a host state round trip. `plan_download` is the explicit
+inspection/checkpoint boundary and `plan_destroy` releases the resident state.
+`test/run_cuda_adagrad_state.sh` compares an eight-step trajectory against an
+independent CPU recurrence; `fortml-bench/scripts/bench_cuda_adagrad.py`
+records the corresponding CPU-oracle and typed CUDA gate rows. This fixed
+state kernel does not evaluate MLP gradients, JVP/VJP/HVP products, or
+hypergradients, and it must not be reported as complete resident MLP training.
+
 ## Transfer-inclusive CUDA MSE reduction
 
 `fortml_cuda_metrics%cuda_mean_squared_error` is a small no-autodiff CUDA
