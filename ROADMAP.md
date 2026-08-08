@@ -228,6 +228,16 @@ reference with dense cubic scaling. Joint FortOpt training of feature weights
 and kernel hyperparameters, KISS-GP/SKI approximations, and resident CUDA
 execution remain open.
 
+The locally-periodic kernel slice adds `make_local_periodic_kernel`, a named
+four-parameter product of a squared-exponential envelope and periodic factor.
+It is integrated as a first-class exact-GP kernel rather than a user-formula
+expansion: dense values, coincident-safe input gradients/mixed Hessians,
+parameter JVP/VJP/HVP products, and exact-GP posterior mean/variance all have
+an independent oracle in `test_local_periodic_gp`. The static kernel operator
+and resident CUDA path return a typed refusal until their program ABI carries
+the four-parameter leaf; no host fallback is counted as GPU support. The
+companion benchmark is `fortml-bench/results/LOCAL_PERIODIC_GP.md`.
+
 The scalar second-derivative GP reference now accepts Matérn-5/2 observations
 of orders zero through two, including exact order-four covariance blocks and
 order-five input JVP/VJP products away from coincidence points. Its typed
@@ -1065,9 +1075,11 @@ when a lower-level primitive already exists.
   positive rates, outlier resistance, convergence, and typed refusal boundaries;
   exact evidence, derivative products, scalable inference, and resident CUDA
   remain open.
-- [ ] Complete kernel catalog: locally
-  periodic, change-point, neural-network, graph,
-  string, and operator-valued kernels with compositional parameter metadata.
+- [x] Add a locally-periodic kernel with a four-coordinate logarithmic
+  parameter registry, analytic value/input/parameter products, exact-GP
+  integration, coincident-point limits, an independent oracle, and typed
+  static-operator/CUDA refusal. Change-point, neural-network, graph, string,
+  and operator-valued kernels remain open.
 - [ ] Likelihood catalog: Gaussian, Bernoulli, categorical, multinomial,
   Poisson, count, heteroscedastic, censored, ordinal, Student-t, and warped
   likelihoods with stable links, constraints, and declared derivative modes.

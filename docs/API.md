@@ -2924,6 +2924,8 @@ make_linear_kernel(input_dim, variance, status)
 make_constant_kernel(input_dim, variance, status)
 make_white_noise_kernel(input_dim, variance, status)
 make_periodic_kernel(input_dim, variance, lengthscale, period, status)
+make_local_periodic_kernel(input_dim, variance, envelope_lengthscale,
+    periodic_lengthscale, period, status)
 make_rational_quadratic_kernel(input_dim, variance, lengthscale, alpha, status)
 make_cosine_kernel(input_dim, variance, lengthscale, status)
 make_polynomial_kernel(input_dim, variance, scale, offset, degree, status)
@@ -2935,7 +2937,7 @@ The corresponding kind constants are `KERNEL_RBF`, `KERNEL_RBF_ARD`, `KERNEL_MAT
 `KERNEL_MATERN32`, `KERNEL_MATERN52`, `KERNEL_LINEAR`, `KERNEL_CONSTANT`,
 `KERNEL_WHITE_NOISE`, `KERNEL_PERIODIC`, `KERNEL_RATIONAL_QUADRATIC`,
 `KERNEL_COSINE`, `KERNEL_POLYNOMIAL`, `KERNEL_SPECTRAL_MIXTURE`,
-`KERNEL_SUM`, `KERNEL_PRODUCT`, and `KERNEL_USER`.
+`KERNEL_LOCAL_PERIODIC`, `KERNEL_SUM`, `KERNEL_PRODUCT`, and `KERNEL_USER`.
 Combine initialized kernels with `kernel_add(left,right,status)` or
 `kernel_multiply(left,right,status)`.
 `clone_kernel(kernel)` makes an independent copy of the complete expression
@@ -2964,6 +2966,20 @@ user leaves have `[log_variance]`. Cosine leaves use
 `[log_variance,log_scale,log_offset,log_degree]` and require
 `offset + scale*dot(x1,x2) > 0` for input derivatives. Composite vectors
 concatenate the complete left vector and then the complete right vector.
+
+Locally-periodic leaves use
+`make_local_periodic_kernel(input_dim,variance,envelope_lengthscale,
+periodic_lengthscale,period,status)` and pack
+`[log_variance,log_envelope_lengthscale,log_periodic_lengthscale,log_period]`.
+Their covariance is the product of a squared-exponential envelope and a
+periodic factor:
+`variance*exp(-r2/(2*envelope_lengthscale**2) -
+2*sin(pi*sqrt(r2)/period)**2/periodic_lengthscale**2)`. Dense values,
+input gradients/mixed Hessians, parameter JVP/VJP/HVP products, and exact-GP
+likelihood integration are analytic. Coincident-point limits are evaluated
+without a radial division. `kernel_operator_t` reports a typed refusal because
+the static CUDA program does not yet carry this four-parameter leaf; host
+matrix and derivative products remain available.
 
 Spectral-mixture leaves use `make_spectral_mixture_kernel` with positive
 `weights` and positive frequency-standard-deviation `scales` plus signed
