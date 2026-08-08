@@ -3397,6 +3397,28 @@ and `predict_latent_kernel_parameter_jvp`,
 the direction is applied to every copied binary kernel and reverse class terms
 are accumulated. Resident GPU kernel products remain open.
 
+### `fortml_gp_variational_categorical_classification`
+
+`gp_variational_categorical_classification_t` is the coupled categorical
+counterpart to the OVR variational wrapper. `initialize` sorts unique integer
+classes and creates one inducing posterior per class. `fit` initializes that
+state and maximizes a deterministic categorical ELBO with FortOpt L-BFGS-B.
+The likelihood is a stable softmax of variance-corrected latent means, with
+`pi/8` for logistic and `1` for probit. The ELBO subtracts the analytic KL of
+every inducing posterior. `elbo_gradient` and `elbo_jvp` include both terms.
+
+`predict_latent` returns per-class means and variances. `predict_proba` returns
+coupled simplex probabilities and `predict` uses sorted-class first-max ties.
+`predict_proba_parameter_jvp`/`predict_proba_parameter_vjp` and
+`predict_proba_input_jvp`/`predict_proba_input_vjp` differentiate the complete
+softmax, variance correction, and inducing projection. `parameters()` packs
+the per-class mean/log-Cholesky vectors in sorted-class order. HVP and kernel
+hyperparameter products are outside this bounded slice. CPU dispatch is exact;
+CUDA methods return `FORTNUM_NOT_IMPLEMENTED` until resident inducing solves,
+softmax reductions, and reverse kernels are linked. See
+`docs/GP_VARIATIONAL_CATEGORICAL.md` and the independent oracle
+`test_gp_variational_categorical_classification`.
+
 ### `fortml_sparse_prior_gp`
 
 `sparse_prior_gp_t` implements `SPARSE_SOR`, `SPARSE_DTC`, `SPARSE_FITC`, and
