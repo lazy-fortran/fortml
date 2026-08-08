@@ -164,6 +164,7 @@ module fortml_xgboost
         procedure, public :: predict_jvp => xgb_predict_jvp
         procedure, public :: predict_staged => xgb_predict_staged
         procedure, public :: predict_staged_margin => xgb_predict_staged_margin
+        procedure, public :: slice => xgb_slice
         procedure, public :: predict_contributions => xgb_predict_contributions
         procedure, public :: predict_contributions_device => &
             xgb_predict_contributions_device
@@ -1413,6 +1414,78 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine xgb_predict_vjp
+
+    !> Copy the first `n_trees` fitted boosting rounds into a valid model.
+    !>
+    !> Slicing is a structural operation on a fitted ensemble: it does not
+    !> refit, rescale, or recompute any tree.  Objective/link, base margin,
+    !> regularisation, missing-value routing, constraints, and device metadata
+    !> are copied exactly.  Validation diagnostics are retained, while the
+    !> reported best iteration is clamped to the retained prefix so the result
+    !> remains internally consistent.  A non-fitted source, invalid prefix, or
+    !> malformed source is refused without mutating the destination.
+    subroutine xgb_slice(self, n_trees, destination, status)
+        class(xgboost_t), intent(in) :: self
+        integer, intent(in) :: n_trees
+        type(xgboost_t), intent(inout) :: destination
+        type(fortnum_status_t), intent(out) :: status
+        type(xgboost_t) :: candidate
+        integer :: i
+
+        if (.not. self%initialized .or. .not. allocated(self%estimators) .or. &
+            .not. allocated(self%monotone_constraints)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost slice: source is not a valid fitted ensemble")
+            return
+        end if
+        if (self%n_estimators < 1 .or. size(self%estimators) /= self%n_estimators .or. &
+            size(self%monotone_constraints) /= self%n_inputs .or. &
+            n_trees < 1 .or. n_trees > self%n_estimators) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost slice: requested prefix is invalid")
+            return
+        end if
+        do i = 1, self%n_estimators
+            if (.not. valid_serialized_tree(self%estimators(i), self%n_inputs)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "xgboost slice: source contains an invalid tree")
+                return
+            end if
+        end do
+
+        candidate%n_inputs = self%n_inputs
+        candidate%n_estimators = n_trees
+        candidate%requested_estimators = max(self%requested_estimators, n_trees)
+        candidate%objective_code = self%objective_code
+        candidate%tree_method_code = self%tree_method_code
+        candidate%max_bin = self%max_bin
+        candidate%max_depth_value = self%max_depth_value
+        candidate%min_samples_leaf_value = self%min_samples_leaf_value
+        candidate%early_stopping_rounds_value = self%early_stopping_rounds_value
+        candidate%learning_rate = self%learning_rate
+        candidate%l1_value = self%l1_value
+        candidate%l2_value = self%l2_value
+        candidate%gamma_value = self%gamma_value
+        candidate%min_child_weight_value = self%min_child_weight_value
+        candidate%early_stopping_min_delta_value = self%early_stopping_min_delta_value
+        candidate%subsample_value = self%subsample_value
+        candidate%colsample_bytree_value = self%colsample_bytree_value
+        candidate%seed_value = self%seed_value
+        candidate%restore_best_value = self%restore_best_value
+        candidate%base_score = self%base_score
+        candidate%objective_parameter = self%objective_parameter
+        candidate%best_iteration_value = min(max(self%best_iteration_value, 0), n_trees)
+        candidate%best_validation_loss_value = self%best_validation_loss_value
+        candidate%early_stopped_flag = self%early_stopped_flag
+        candidate%missing_code = self%missing_code
+        allocate(candidate%monotone_constraints(self%n_inputs))
+        candidate%monotone_constraints = self%monotone_constraints
+        allocate(candidate%estimators(n_trees))
+        candidate%estimators = self%estimators(:n_trees)
+        candidate%initialized = .true.
+        destination = candidate
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine xgb_slice
 
     real(dp) function xgb_split_gain(self, tree_index) result(gain)
         class(xgboost_t), intent(in) :: self

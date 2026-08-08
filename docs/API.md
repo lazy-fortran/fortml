@@ -2316,7 +2316,11 @@ ensemble to the best round. `best_iteration()`, `best_validation_loss()`, and
 `early_stopped()` expose the resulting lifecycle state. Validation arguments
 must be supplied together and are shape-, weight-, target-, and NaN-checked.
 This is deterministic validation-based stopping. Warm-start continuation and
-serialized tree state remain separate contracts.
+serialized tree state remain separate contracts. `slice(n_trees,destination,
+status)` copies the first fitted boosting rounds into a valid standalone model,
+preserving objective/link, base margin, routing, constraints, regularization,
+and diagnostics; the best-iteration diagnostic is clamped to the retained
+prefix. Invalid prefixes or malformed sources are refused transactionally.
 
 `fit_ranking(x,relevance,group,status[,options,sample_weight,...])` selects
 the `rank:pairwise` objective. Rows with the same positive integer query ID
