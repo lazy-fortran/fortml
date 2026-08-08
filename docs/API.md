@@ -2814,8 +2814,10 @@ workload is `fortml_bench_bagging_classifier`.
 ### `fortml_adaboost_classifier`
 
 `adaboost_classifier_t%fit(x,labels,status[,n_estimators,max_depth,
-min_samples_leaf,sample_weight,seed])` fits a deterministic binary or
-multiclass SAMME ensemble of weighted CART classifiers. Labels may be any two
+min_samples_leaf,sample_weight,seed,algorithm])` fits a deterministic binary or
+multiclass SAMME ensemble of weighted CART classifiers. Set
+`algorithm=ADABOOST_ALGORITHM_SAMME_R` for the multiclass probability-update
+policy; the default `ADABOOST_ALGORITHM_SAMME` retains discrete SAMME. Labels may be any two
 or more finite integer values and are retained in sorted order. The default
 weak-learner depth is one. Binary learner weights are
 `0.5*log((1-error)/error)`; multiclass SAMME weights are
@@ -2827,9 +2829,13 @@ is deterministic and resolves all ties by sorted feature/threshold order.
 
 The rank-one `decision_function` returns the accumulated signed binary margin;
 the rank-two overload returns multiclass weighted-vote margins, and
-`stage_weights`, `class_count`, and `classes` expose the fitted SAMME state.
-`predict_proba` maps binary margins through a stable logistic link and
-multiclass margins through a stabilized softmax; `predict` uses the
+`stage_weights`, `class_count`, `classes`, and `algorithm` expose the fitted
+state. SAMME.R stores unit stage weights and updates training weights from
+centred clipped log probabilities. Its multiclass decision margins are the
+centred log-probability sum and `predict_proba` applies the corresponding
+`1/(K-1)` softmax scale (the geometric probability ensemble). `predict_proba`
+maps binary margins through a stable logistic link and SAMME margins through a
+stabilized softmax; `predict` uses the
 nonnegative binary margin or deterministic lowest-class argmax. CART split
 routing is discrete, so `predict_proba_jvp` returns `FORTNUM_NOT_IMPLEMENTED`;
 the CPU prediction path is available through `predict_proba_device`, while
