@@ -5,7 +5,7 @@ program test_gp_classification_parameter_products
         gp_classification_options_t, GP_LIKELIHOOD_PROBIT
     use fortml_kernels, only: kernel_t, make_rbf_kernel, clone_kernel
     use fortnum_cholesky, only: cholesky_factorization_t
-    use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_DOMAIN_ERROR
+    use fortnum_status, only: fortnum_status_t, status_ok
     implicit none
 
     type(gp_classification_t) :: logistic_model, probit_model
