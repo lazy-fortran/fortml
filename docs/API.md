@@ -148,6 +148,7 @@ repeated resident-batch evidence.
 | `elastic_net_regression_t` | Weighted `predict` | Packed-parameter and continuous-input JVP | Packed-parameter and continuous-input VJP | No |
 | `linear_svr_regression_t` | Weighted epsilon-insensitive `predict` | Packed-parameter and continuous-input JVP | Packed-parameter and continuous-input VJP; objective value/gradient | No |
 | `radius_neighbors_regressor_t` | Closed-radius scalar weighted average | Refused across discrete neighbor-selection boundaries | Refused across discrete neighbor-selection boundaries | No |
+| `radius_neighbors_multioutput_regressor_t` | Closed-radius multi-output weighted average | Zero away from radius boundaries; boundary refusal | Zero away from radius boundaries; boundary refusal | No |
 | `glm_regression_t` | Weighted positive-response Poisson/Gamma log-link `predict` | Packed-parameter and continuous-input JVP | Packed-parameter and continuous-input VJP; value/gradient objective | No |
 | `pca_t` | Centered projection and reconstruction | Input JVP for a fixed fitted state | Input VJP for a fixed fitted state | Fit-time SVD derivatives are not exposed |
 | `linear_autoencoder_t` | Tied centered linear encode/decode/reconstruct, initialized from PCA | Input JVP for encode and reconstruction | No parameter VJP (weights are fixed PCA state) | No |
@@ -1265,6 +1266,30 @@ is returned for an empty neighborhood; without it, prediction returns
 claiming a zero derivative across a selection boundary. CPU dispatch is
 complete. CUDA is an explicit `FORTNUM_NOT_IMPLEMENTED` refusal until a
 resident radius-search reduction is linked; no hidden host fallback is used.
+
+### `fortml_radius_neighbors_multioutput_regression`
+
+`radius_neighbors_multioutput_regressor_t%fit(x,targets,status[,radius,
+weights,sample_weight,outlier_value])` is the multi-output counterpart of the
+scalar radius regressor. `targets` has shape `(n_samples,n_outputs)` and every
+output column is averaged over the same closed squared-Euclidean neighborhood.
+Uniform and inverse-distance weighting use
+`RADIUS_MULTI_REGRESSION_WEIGHTS_UNIFORM` and
+`RADIUS_MULTI_REGRESSION_WEIGHTS_DISTANCE`; finite nonnegative sample weights
+must have positive total mass. An optional finite `outlier_value(n_outputs)`
+is returned for an empty neighborhood. Without it, an empty query returns
+`FORTNUM_DOMAIN_ERROR`.
+
+`predict`, `radius`, `weighting`, `feature_count`, `sample_count`,
+`output_count`, `fitted`, and `device_supported` expose the fitted state.
+Away from a radius boundary, `predict_jvp` and `predict_vjp` return exact zero
+products for the piecewise-constant map. If a query lies exactly on a retained
+radius boundary they return `FORTNUM_DOMAIN_ERROR`, making the undefined
+selection derivative explicit. Selected CPU device calls delegate to the host
+implementation; selected CUDA calls return `FORTNUM_NOT_IMPLEMENTED` without
+silently copying the model through the host. See
+`test_radius_neighbors_multioutput_regression` for independent weighted,
+outlier, boundary, and device oracles.
 
 ### `fortml_preprocessing`
 
