@@ -7,10 +7,10 @@ program fortml_bench_lightgbm
 
     integer, parameter :: n = 192, d = 3
     real(real64) :: x(n, d), target(n), labels(n), weight(n), prediction(n), margin(n)
-    real(real64) :: staged(n, 8), contributions(n, 9), sliced_prediction(n)
+    real(real64) :: staged(n, 8), warm_staged(n, 8), contributions(n, 9), sliced_prediction(n)
     real(real64) :: sx(6, 1), sy(6), expected(6), tiny_prediction(6)
-    type(lightgbm_t) :: regression, binary, tiny, prefix, restored
-    type(lightgbm_options_t) :: options, tiny_options
+    type(lightgbm_t) :: regression, binary, tiny, prefix, restored, warm
+    type(lightgbm_options_t) :: options, tiny_options, warm_options
     type(fortnum_status_t) :: status
     type(fortml_device_t) :: cuda
     real(real64) :: started, finished, mse, accuracy, oracle_error, product_error
@@ -54,6 +54,23 @@ program fortml_bench_lightgbm
     product_error = maxval(abs(staged(:, regression%estimator_count())-prediction))
     write (*, '(a,i0,a,i0,a,i0,a,es24.16,a,es24.16)') "lightgbm_staged,", n, ",", d, ",", &
         regression%estimator_count(), ",", max(0.0_real64, finished-started), ",", product_error
+
+    warm_options = options
+    warm_options%n_estimators = 4
+    call warm%fit_regression(x, target, status, warm_options, weight)
+    if (status%code /= FORTNUM_OK) error stop "lightgbm warm prefix fit failed"
+    call cpu_time(started)
+    call warm%fit_warm_start(x, target, status, options, weight)
+    call cpu_time(finished)
+    if (status%code /= FORTNUM_OK) error stop "lightgbm warm continuation failed"
+    call warm%predict_staged(x, warm_staged, status)
+    if (status%code /= FORTNUM_OK) error stop "lightgbm warm staged prediction failed"
+    product_error = maxval(abs(warm_staged-staged))
+    write (*, '(a,i0,a,i0,a,i0,a,es24.16,a,es24.16)') "lightgbm_warm_start,", n, ",", d, ",", &
+        warm%estimator_count(), ",", max(0.0_real64, finished-started), ",", product_error
+    warm_options%n_estimators = 4
+    call warm%fit_warm_start(x, target, status, warm_options, weight)
+    write (*, '(a,i0)') "lightgbm_warm_start_invalid,", status%code
 
     call regression%predict_margin(x, margin, status)
     if (status%code /= FORTNUM_OK) error stop "lightgbm margin prediction failed"

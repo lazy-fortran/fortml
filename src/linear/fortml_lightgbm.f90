@@ -100,6 +100,7 @@ module fortml_lightgbm
         procedure, public :: fit => lgbm_fit
         procedure, public :: fit_regression => lgbm_fit_regression
         procedure, public :: fit_binary => lgbm_fit_binary
+        procedure, public :: fit_warm_start => lgbm_fit_warm_start
         procedure, public :: predict => lgbm_predict
         procedure, public :: predict_margin => lgbm_predict_margin
         procedure, public :: predict_staged => lgbm_predict_staged
@@ -163,6 +164,137 @@ contains
         call lgbm_fit(self, x, y, status, settings, sample_weight, validation_x, &
             validation_y, validation_weight)
     end subroutine lgbm_fit_binary
+
+    !> Continue a fitted LightGBM ensemble to a larger `n_estimators` target.
+    !>
+    !> The existing tree prefix is copied into temporary storage and only
+    !> committed after all new trees succeed.  Options other than
+    !> `n_estimators` must match the fitted prefix exactly; validation/early
+    !> stopping controls are refused in this bounded continuation API because
+    !> the source does not retain training rows or validation state.
+    subroutine lgbm_fit_warm_start(self, x, y, status, options, sample_weight)
+        class(lightgbm_t), intent(inout) :: self
+        real(dp), intent(in) :: x(:, :), y(:)
+        type(fortnum_status_t), intent(out) :: status
+        type(lightgbm_options_t), intent(in), optional :: options
+        real(dp), intent(in), optional :: sample_weight(:)
+        type(lightgbm_options_t) :: settings
+        type(lgbm_tree_t), allocatable :: expanded_estimators(:)
+        real(dp), allocatable :: weights(:), margin(:), gradient(:), hessian(:), correction(:)
+        integer, allocatable :: rows(:)
+        integer :: objective_code, n_samples, n_features, start_estimators, target_estimators
+        integer :: i, j
+        real(dp) :: weight_sum
+
+        if (.not. self%initialized .or. .not. allocated(self%estimator)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm warm start: source is not a valid fitted model")
+            return
+        end if
+        if (.not. present(options)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm warm start: options with a larger n_estimators is required")
+            return
+        end if
+        settings = options
+        start_estimators = self%n_estimators
+        target_estimators = settings%n_estimators
+        if (start_estimators < 1 .or. size(self%estimator) /= start_estimators .or. &
+            target_estimators <= start_estimators) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm warm start: n_estimators must exceed the fitted prefix")
+            return
+        end if
+        objective_code = parse_lgbm_objective(settings%objective)
+        if (objective_code == 0 .or. objective_code /= self%objective_code) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm warm start: objective must match the fitted prefix")
+            return
+        end if
+        if (settings%num_leaves /= self%num_leaves_value .or. &
+            settings%max_bin /= self%max_bin_value .or. &
+            settings%max_depth /= self%max_depth_value .or. &
+            settings%min_data_in_leaf /= self%min_data_in_leaf_value .or. &
+            settings%learning_rate /= self%learning_rate .or. &
+            settings%l2 /= self%l2_value .or. &
+            settings%min_gain_to_split /= self%min_gain_value) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm warm start: tree options must match the fitted prefix")
+            return
+        end if
+        if (settings%early_stopping_rounds /= 0 .or. &
+            settings%early_stopping_min_delta /= 0.0_dp) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "lightgbm warm start: validation early stopping is not retained")
+            return
+        end if
+        n_samples = size(x, 1)
+        n_features = size(x, 2)
+        if (n_samples < 2 .or. n_features /= self%n_inputs .or. size(y) /= n_samples .or. &
+            any(.not. ieee_is_finite(x)) .or. any(.not. ieee_is_finite(y))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm warm start: input dimensions or finite-value contract failed")
+            return
+        end if
+        if (objective_code == LIGHTGBM_OBJECTIVE_BINARY) then
+            if (any(y < 0.0_dp) .or. any(y > 1.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "lightgbm warm start: binary targets must lie in [0,1]")
+                return
+            end if
+        end if
+        allocate(weights(n_samples))
+        weights = 1.0_dp
+        if (present(sample_weight)) then
+            if (size(sample_weight) /= n_samples .or. any(.not. ieee_is_finite(sample_weight)) .or. &
+                any(sample_weight <= 0.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "lightgbm warm start: sample weights must be finite and positive")
+                return
+            end if
+            weights = sample_weight
+        end if
+        weight_sum = sum(weights)
+        if (.not. ieee_is_finite(weight_sum) .or. weight_sum <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm warm start: sample weights have no positive mass")
+            return
+        end if
+        allocate(margin(n_samples), gradient(n_samples), hessian(n_samples), correction(n_samples))
+        allocate(rows(n_samples))
+        do j = 1, n_samples
+            rows(j) = j
+        end do
+        margin = self%base_score
+        do i = 1, start_estimators
+            call lgbm_tree_predict(self%estimator(i), x, correction, status)
+            if (status%code /= FORTNUM_OK) return
+            margin = margin + self%learning_rate*correction
+        end do
+        allocate(expanded_estimators(target_estimators))
+        expanded_estimators(:start_estimators) = self%estimator
+        do i = start_estimators + 1, target_estimators
+            call lgbm_objective_derivatives(objective_code, margin, y, weights, gradient, &
+                hessian, status)
+            if (status%code /= FORTNUM_OK) return
+            call build_leafwise_tree(x, gradient, hessian, weights, settings, rows, &
+                expanded_estimators(i), status)
+            if (status%code /= FORTNUM_OK) return
+            call lgbm_tree_predict(expanded_estimators(i), x, correction, status)
+            if (status%code /= FORTNUM_OK) return
+            margin = margin + self%learning_rate*correction
+        end do
+        call move_alloc(expanded_estimators, self%estimator)
+        self%n_estimators = target_estimators
+        self%requested_estimators = target_estimators
+        self%early_stopping_rounds_value = 0
+        self%early_stopping_min_delta_value = 0.0_dp
+        self%best_iteration_value = target_estimators
+        self%best_validation_loss_value = huge(1.0_dp)
+        self%early_stopped_flag = .false.
+        self%initialized = .true.
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine lgbm_fit_warm_start
 
     subroutine lgbm_fit(self, x, y, status, options, sample_weight, validation_x, &
             validation_y, validation_weight)

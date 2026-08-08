@@ -3642,6 +3642,15 @@ indices, and EOF before replacing the destination; truncated, unknown,
 trailing, or malformed records return `FORTNUM_DOMAIN_ERROR` and leave it
 unchanged.
 
+`fit_warm_start(x,y,status,options[,sample_weight])` continues a fitted model
+to a strictly larger `options%n_estimators` target. The fitted prefix and all
+new trees are built in temporary storage and committed only after success;
+objective, leaf, histogram, depth, weight, shrinkage, and gain options must
+match the prefix. This bounded continuation does not retain validation rows or
+early-stopping state, so nonzero early-stopping controls return
+`FORTNUM_NOT_IMPLEMENTED`; malformed targets, shapes, weights, or options
+return `FORTNUM_DOMAIN_ERROR` without changing the source.
+
 The finite numeric contract is explicit: NaN and infinity inputs are refused,
 and categorical, missing-value-default, GOSS, EFB, and distributed policies are
 not silently approximated. Fixed-tree input JVP/VJP products are zero away from
