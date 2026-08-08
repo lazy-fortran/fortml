@@ -86,11 +86,13 @@ program test_calibrated_softmax_classifier
     if (size(parameters) >= 2) parameters_dot(2) = -0.01_dp
     if (size(parameters) >= 3) parameters_dot(3) = 0.03_dp
     if (size(parameters) >= 4) parameters_dot(4) = -0.02_dp
+    parameters_dot(size(parameters)) = 0.07_dp
     parameters_bar = 0.0_dp
     if (size(parameters) >= 1) parameters_bar(1) = 0.2_dp
     if (size(parameters) >= 2) parameters_bar(2) = -0.1_dp
     if (size(parameters) >= 3) parameters_bar(3) = 0.3_dp
     if (size(parameters) >= 4) parameters_bar(4) = -0.2_dp
+    parameters_bar(size(parameters)) = 0.17_dp
 
     call model%predict_proba_jvp(x, parameters_dot, x_dot, probabilities, probabilities_dot, status)
     call model%predict_proba_parameter_jvp(x, parameters_dot, probabilities_plus, &
