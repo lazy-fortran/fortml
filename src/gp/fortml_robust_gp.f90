@@ -264,7 +264,7 @@ contains
         real(dp), intent(out) :: mean(:)
         real(dp), intent(out) :: variance(:)
         type(fortnum_status_t), intent(out) :: status
-        real(dp), allocatable :: cross(:, :), prior(:, :), weighted(:, :)
+        real(dp), allocatable :: cross(:, :), prior_diagonal(:), weighted(:, :)
         real(dp), allocatable :: root_w(:)
         integer :: n, i, j
 
@@ -283,12 +283,17 @@ contains
             return
         end if
 
-        allocate (cross(self%n_samples, n), prior(n, n))
+        allocate (cross(self%n_samples, n), prior_diagonal(n))
         allocate (weighted(self%n_samples, n), root_w(self%n_samples))
         call self%kernel%matrix(self%x_train, x, cross, status)
         if (status%code /= FORTNUM_OK) return
-        call self%kernel%matrix(x, x, prior, status)
-        if (status%code /= FORTNUM_OK) return
+        ! Diagonal only. Building the full `n` by `n` prior covariance to
+        ! take its diagonal costs `n**2` kernel evaluations and an `n**2`
+        ! allocation for `n` numbers; at Bayesian-optimization candidate counts
+        ! that is twenty-five million evaluations and 200 MB per call.
+        do i = 1, n
+            prior_diagonal(i) = self%kernel%value(x(i, :), x(i, :))
+        end do
 
         mean = matmul(transpose(cross), self%alpha)
 
@@ -307,7 +312,7 @@ contains
         end do
 
         do i = 1, n
-            variance(i) = prior(i, i) - dot_product(cross(:, i), weighted(:, i))
+            variance(i) = prior_diagonal(i) - dot_product(cross(:, i), weighted(:, i))
             if (variance(i) < 0.0_dp) variance(i) = 0.0_dp
         end do
         call status_set(status, FORTNUM_OK, "")

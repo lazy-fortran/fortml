@@ -184,27 +184,39 @@ contains
         real(dp), intent(in) :: x(:, :)
         real(dp), intent(out) :: mean(:, :), variance(:)
         type(fortnum_status_t), intent(out) :: status
-        real(dp), allocatable :: cross(:, :), prior(:, :), work(:, :)
+        real(dp), allocatable :: cross(:, :), work(:, :)
+        real(dp), allocatable :: prior_diagonal(:)
         real(dp), allocatable :: mean_query(:, :)
         integer :: i
 
         call check_prediction_shapes(self, x, mean, variance, status)
         if (status%code /= FORTNUM_OK) return
         allocate(cross(self%n_samples, size(x, 1)))
-        allocate(prior(size(x, 1), size(x, 1)))
         allocate(work, mold=cross)
         allocate(mean_query(size(x, 1), self%n_outputs))
+        allocate(prior_diagonal(size(x, 1)))
         call gp_mean_values(self, x, mean_query, status)
         if (status%code /= FORTNUM_OK) return
         call self%kernel%matrix(self%x_train, x, cross, status)
         if (status%code /= FORTNUM_OK) return
-        call self%kernel%matrix(x, x, prior, status)
-        if (status%code /= FORTNUM_OK) return
+
+        ! Only the diagonal of the prior is needed, so only the diagonal is
+        ! computed. This previously built the full `m` by `m` prior covariance
+        ! and immediately discarded everything off the diagonal. At the
+        ! candidate counts Bayesian optimization actually uses -- TuRBO scores
+        ! `min(100d, 5000)` candidates per region per step -- that is a
+        ! 5000-by-5000 matrix, twenty-five million kernel evaluations and a
+        ! 200 MB allocation, to obtain five thousand numbers. The work done
+        ! here is `m` kernel evaluations rather than `m**2`.
+        do i = 1, size(x, 1)
+            prior_diagonal(i) = self%kernel%value(x(i, :), x(i, :))
+        end do
+
         mean = mean_query + matmul(transpose(cross), self%alpha)
         work = cross
         call self%factorization%solve(work, status)
         if (status%code /= FORTNUM_OK) return
-        variance = diagonal(prior) - sum(cross*work, dim=1)
+        variance = prior_diagonal - sum(cross*work, dim=1)
         do i = 1, size(variance)
             if (variance(i) < 0.0_dp) then
                 if (variance(i) < -1.0e-9_dp) then

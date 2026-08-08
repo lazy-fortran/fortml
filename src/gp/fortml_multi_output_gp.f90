@@ -68,6 +68,7 @@ module fortml_multi_output_gp
         procedure, public :: log_marginal_likelihood => multi_output_lml
         procedure, public :: joint_covariance => multi_output_joint_covariance
         procedure, public :: predict_covariance => multi_output_predict_covariance
+        procedure, public :: predict_variance => multi_output_predict_variance
     end type multi_output_gp_t
 
 contains
@@ -168,6 +169,68 @@ contains
         matrix = prior - matmul(transpose(cross), work)
         call status_set(status, FORTNUM_OK, "")
     end subroutine multi_output_predict_covariance
+
+    !! Marginal predictive variances only, `variance(i, j)` for output `j` at
+    !! query `i`.
+    !!
+    !! `predict_covariance` answers a different question and costs accordingly:
+    !! it forms an `m*p` by `m*p` matrix, which at Bayesian-optimization
+    !! candidate counts is enormous -- five thousand candidates over two
+    !! outputs is a ten-thousand-square matrix, a hundred million entries and
+    !! eight hundred megabytes, to obtain ten thousand numbers. A caller that
+    !! wants marginals wants this instead; a caller that genuinely needs the
+    !! cross-covariances between query points still has the full routine.
+    subroutine multi_output_predict_variance(self, query, variance, status)
+        class(multi_output_gp_t), intent(in) :: self
+        real(dp), intent(in) :: query(:, :)
+        real(dp), intent(out) :: variance(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: block(:, :), cross(:, :), work(:, :)
+        real(dp) :: prior_entry, self_covariance
+        integer :: n, m, p, i, j, a
+
+        variance = 0.0_dp
+        if (.not. self%fitted) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multi-output GP: predict_variance before fit")
+            return
+        end if
+        n = self%n_samples
+        m = size(query, 1)
+        p = self%n_outputs
+        if (size(query, 2) /= self%kernel%input_dim .or. &
+            any(shape(variance) /= [m, p])) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multi-output GP: variance shape is invalid")
+            return
+        end if
+
+        allocate(block(n, m))
+        call self%kernel%matrix(self%inputs, query, block, status)
+        if (status%code /= FORTNUM_OK) return
+
+        ! One column of the stacked cross-covariance per (query, output) pair,
+        ! solved and contracted immediately, so nothing of size `m*p` squared
+        ! is ever held.
+        allocate(cross(n*p, 1), work(n*p, 1))
+        do j = 1, p
+            do i = 1, m
+                do a = 1, p
+                    cross((a - 1)*n + 1:a*n, 1) = &
+                        self%coregionalization(a, j)*block(:, i)
+                end do
+                work = cross
+                call self%factorization%solve(work, status)
+                if (status%code /= FORTNUM_OK) return
+                self_covariance = self%kernel%value(query(i, :), query(i, :))
+                prior_entry = self%coregionalization(j, j)*self_covariance
+                variance(i, j) = prior_entry &
+                    - dot_product(cross(:, 1), work(:, 1))
+                if (variance(i, j) < 0.0_dp) variance(i, j) = 0.0_dp
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine multi_output_predict_variance
 
     subroutine multi_output_joint_covariance(self, inputs, matrix, status)
         !! `B (x) K` on the given inputs, without observation noise.
