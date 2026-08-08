@@ -290,5 +290,7 @@ boundaries are recorded in [docs/DESIGN.md](docs/DESIGN.md) and
 work packages are maintained in [ROADMAP.md](ROADMAP.md). The canonical
 derivative/device/HPO row schema is in
 [docs/DERIVATIVE_CAPABILITY_MATRIX.md](docs/DERIVATIVE_CAPABILITY_MATRIX.md).
+The classification-specific acceptance matrix is in
+[docs/CLASSIFICATION_MATRIX.md](docs/CLASSIFICATION_MATRIX.md).
 The package is
 distributed under the [MIT license](LICENSE).
