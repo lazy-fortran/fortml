@@ -13,6 +13,7 @@ program test_cart_classifier
     call test_gini_split_oracle(failures)
     call test_entropy_split_oracle(failures)
     call test_tie_order_oracle(failures)
+    call test_missing_routing(failures)
     call test_refusals(failures)
     if (failures /= 0) then
         write (error_unit, '(a,i0)') "FAIL CART classifier cases: ", failures
@@ -118,6 +119,47 @@ contains
         end if
     end subroutine test_tie_order_oracle
 
+    subroutine test_missing_routing(failures)
+        integer, intent(inout) :: failures
+        type(cart_classifier_t) :: learned, finite_error, finite_learned
+        type(fortnum_status_t) :: status
+        real(dp) :: x(6, 1), finite_x(4, 1), query(4, 1)
+        real(dp) :: probabilities(4, 2), finite_error_probabilities(4, 2)
+        real(dp) :: finite_learned_probabilities(4, 2), nan_value
+        integer :: labels(6), finite_labels(4), prediction(4)
+        real(dp) :: wrong_shape(1, 1)
+
+        nan_value = ieee_value(0.0_dp, ieee_quiet_nan)
+        x(:, 1) = [0.0_dp, 1.0_dp, 2.0_dp, 3.0_dp, nan_value, nan_value]
+        labels = [0, 0, 1, 1, 0, 1]
+        query(:, 1) = [0.25_dp, 2.75_dp, nan_value, nan_value]
+        call learned%fit(x, labels, status, max_depth=1, missing_policy="learn")
+        call learned%predict_proba(query, probabilities, status)
+        call learned%predict(query, prediction, status)
+        call check(status_ok(status) .and. learned%missing_policy() == "learn" .and. &
+            learned%accepts_missing() .and. any(prediction == 0) .and. &
+            maxval(abs(probabilities(1, :) - [0.75_dp, 0.25_dp])) < 1.0e-13_dp .and. &
+            maxval(abs(probabilities(2, :) - [0.0_dp, 1.0_dp])) < 1.0e-13_dp .and. &
+            maxval(abs(probabilities(3, :) - [0.75_dp, 0.25_dp])) < 1.0e-13_dp, &
+            "learned NaN branch fit and prediction", failures)
+
+        finite_x(:, 1) = x(:4, 1)
+        finite_labels = labels(:4)
+        query(:2, :) = reshape([0.25_dp, 2.75_dp], [2, 1])
+        call finite_error%fit(finite_x, finite_labels, status, max_depth=1)
+        call finite_error%predict_proba(query(:2, :), finite_error_probabilities(:2, :), status)
+        call finite_learned%fit(finite_x, finite_labels, status, max_depth=1, &
+            missing_policy="learn")
+        call finite_learned%predict_proba(query(:2, :), finite_learned_probabilities(:2, :), &
+            status)
+        call check(status_ok(status) .and. maxval(abs(finite_error_probabilities(:2, :) - &
+            finite_learned_probabilities(:2, :))) < 1.0e-13_dp, &
+            "finite behavior is unchanged by learn policy", failures)
+
+        call learned%predict_proba(reshape([0.5_dp], [1, 1]), wrong_shape, status)
+        call check(status%code == FORTNUM_DOMAIN_ERROR, "missing model shape refusal", failures)
+    end subroutine test_missing_routing
+
     subroutine test_refusals(failures)
         integer, intent(inout) :: failures
         type(cart_classifier_t) :: model
@@ -151,6 +193,12 @@ contains
                 "FAIL [CART classifier refusal] unknown criterion"
             failures = failures + 1
         end if
+        call model%fit(x, labels, status, missing_policy="unsupported")
+        if (status%code /= FORTNUM_DOMAIN_ERROR) then
+            write (error_unit, '(a)') &
+                "FAIL [CART classifier refusal] unknown missing policy"
+            failures = failures + 1
+        end if
         call model%fit(x, labels, status)
         query(1, 1) = nan_value
         call model%predict_proba(query, probabilities, status)
@@ -160,5 +208,16 @@ contains
             failures = failures + 1
         end if
     end subroutine test_refusals
+
+    subroutine check(condition, description, failures)
+        logical, intent(in) :: condition
+        character(len=*), intent(in) :: description
+        integer, intent(inout) :: failures
+
+        if (.not. condition) then
+            write (error_unit, '(a)') "FAIL [CART classifier missing] "//description
+            failures = failures + 1
+        end if
+    end subroutine check
 
 end program test_cart_classifier

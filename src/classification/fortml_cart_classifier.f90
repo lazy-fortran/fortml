@@ -1,6 +1,6 @@
-!> Deterministic finite-only CART classification.
+!> Deterministic CART classification with optional NaN routing.
 module fortml_cart_classifier
-    use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
+    use, intrinsic :: ieee_arithmetic, only: ieee_is_finite, ieee_is_nan
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
         FORTNUM_DOMAIN_ERROR
@@ -9,6 +9,10 @@ module fortml_cart_classifier
 
     integer, parameter, public :: CART_CRITERION_GINI = 1
     integer, parameter, public :: CART_CRITERION_ENTROPY = 2
+    integer, parameter, public :: CART_MISSING_ERROR = 0
+    integer, parameter, public :: CART_MISSING_LEARN = 1
+    integer, parameter, public :: CART_MISSING_LEFT = 2
+    integer, parameter, public :: CART_MISSING_RIGHT = 3
 
     !> A deterministic numeric CART classifier with weighted impurity splits.
     !>
@@ -17,8 +21,10 @@ module fortml_cart_classifier
     !> only on strict impurity improvement, so ties retain the first feature
     !> and threshold. Leaves store weighted class frequencies as empirical
     !> piecewise-constant probabilities for this tree.
-    !> The implementation is dense and finite-only; missing-value routing and
-    !> input derivatives are intentionally outside this contract.
+    !> The implementation is dense.  The default `missing_policy="error"`
+    !> retains the finite-only behavior; `"learn"` compares both default
+    !> branches at each split and stores the strictly best one (left wins an
+    !> exact tie), while `"left"` and `"right"` force a deterministic branch.
     type, public :: cart_classifier_t
         private
         integer :: n_inputs = 0
@@ -26,11 +32,12 @@ module fortml_cart_classifier
         integer :: max_depth = 0
         integer :: min_samples_leaf = 1
         integer :: criterion_code = CART_CRITERION_GINI
+        integer :: missing_code = CART_MISSING_ERROR
         integer :: n_nodes = 0
         integer, allocatable :: class_label(:)
         integer, allocatable :: feature(:), left_child(:), right_child(:)
         real(dp), allocatable :: threshold(:), probability(:, :)
-        logical, allocatable :: leaf(:)
+        logical, allocatable :: leaf(:), missing_left(:)
         logical :: initialized = .false.
     contains
         procedure, public :: fit => cart_classifier_fit
@@ -42,22 +49,27 @@ module fortml_cart_classifier
         procedure, public :: node_count => cart_classifier_node_count
         procedure, public :: depth => cart_classifier_depth
         procedure, public :: criterion => cart_classifier_criterion
+        procedure, public :: missing_policy => cart_classifier_missing_policy
+        procedure, public :: accepts_missing => cart_classifier_accepts_missing
         procedure, public :: fitted => cart_classifier_fitted
     end type cart_classifier_t
 
 contains
 
     subroutine cart_classifier_fit(self, x, labels, status, max_depth, &
-            min_samples_leaf, sample_weight, criterion)
+            min_samples_leaf, sample_weight, criterion, missing_policy)
         class(cart_classifier_t), intent(out) :: self
         real(dp), intent(in) :: x(:, :)
         integer, intent(in) :: labels(:)
         type(fortnum_status_t), intent(out) :: status
         integer, intent(in), optional :: max_depth, min_samples_leaf, criterion
         real(dp), intent(in), optional :: sample_weight(:)
+        character(len=*), intent(in), optional :: missing_policy
         integer, allocatable :: indices(:), classes(:)
         real(dp), allocatable :: weights(:)
-        integer :: tree_depth, leaf_size, criterion_value, max_nodes, i
+        integer :: tree_depth, leaf_size, criterion_value, missing_code_value
+        integer :: max_nodes, i
+        character(len=16) :: missing_policy_value
 
         tree_depth = 3
         if (present(max_depth)) tree_depth = max_depth
@@ -65,6 +77,9 @@ contains
         if (present(min_samples_leaf)) leaf_size = min_samples_leaf
         criterion_value = CART_CRITERION_GINI
         if (present(criterion)) criterion_value = criterion
+        missing_policy_value = "error"
+        if (present(missing_policy)) missing_policy_value = trim(adjustl(missing_policy))
+        missing_code_value = cart_classifier_parse_missing_policy(missing_policy_value)
         if (size(x, 1) < 2 .or. size(x, 2) < 1 .or. &
             size(labels) /= size(x, 1) .or. tree_depth < 0 .or. &
             tree_depth > 12 .or. leaf_size < 1 .or. &
@@ -74,9 +89,20 @@ contains
                 "CART classifier fit: invalid dimensions or hyperparameters")
             return
         end if
-        if (any(.not. ieee_is_finite(x))) then
+        if (missing_code_value < CART_MISSING_ERROR .or. &
+            missing_code_value > CART_MISSING_RIGHT) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
-                "CART classifier fit: inputs must be finite")
+                "CART classifier fit: missing_policy must be error, learn, left, or right")
+            return
+        end if
+        if (any((.not. ieee_is_finite(x)) .and. (.not. ieee_is_nan(x)))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "CART classifier fit: inputs must be finite or IEEE NaN")
+            return
+        end if
+        if (missing_code_value == CART_MISSING_ERROR .and. any(ieee_is_nan(x))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "CART classifier fit: NaN inputs require a missing-value policy")
             return
         end if
         call unique_sorted_labels(labels, classes)
@@ -103,7 +129,7 @@ contains
         allocate(self%class_label(size(classes)), self%feature(max_nodes), &
             self%left_child(max_nodes), self%right_child(max_nodes), &
             self%threshold(max_nodes), self%probability(max_nodes, size(classes)), &
-            self%leaf(max_nodes))
+            self%leaf(max_nodes), self%missing_left(max_nodes))
         self%class_label = classes
         self%feature = 0
         self%left_child = 0
@@ -111,6 +137,7 @@ contains
         self%threshold = 0.0_dp
         self%probability = 0.0_dp
         self%leaf = .true.
+        self%missing_left = .false.
         allocate(indices(size(labels)))
         do i = 1, size(labels)
             indices(i) = i
@@ -121,6 +148,7 @@ contains
         self%max_depth = tree_depth
         self%min_samples_leaf = leaf_size
         self%criterion_code = criterion_value
+        self%missing_code = missing_code_value
         self%n_nodes = 0
         self%initialized = .false.
         call cart_classifier_build_node(self, x, labels, weights, indices, 0, 1, &
@@ -139,7 +167,7 @@ contains
         integer :: best_feature, i, left_count, right_count
         integer, allocatable :: left_indices(:), right_indices(:)
         real(dp) :: best_threshold, best_impurity, parent_impurity
-        logical :: found
+        logical :: found, best_missing_left, is_missing
 
         if (node > size(self%leaf)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -158,8 +186,8 @@ contains
             indices, self%class_label, self%criterion_code)
         call cart_classifier_find_best_split(x, labels, weights, indices, &
             self%class_label, self%criterion_code, self%min_samples_leaf, &
-            best_feature, &
-            best_threshold, best_impurity, found)
+            self%missing_code, best_feature, best_threshold, best_impurity, &
+            best_missing_left, found)
         if (.not. found .or. best_impurity >= parent_impurity) then
             call status_set(status, FORTNUM_OK, "")
             return
@@ -167,7 +195,9 @@ contains
 
         left_count = 0
         do i = 1, size(indices)
-            if (x(indices(i), best_feature) < best_threshold) then
+            is_missing = ieee_is_nan(x(indices(i), best_feature))
+            if ((is_missing .and. best_missing_left) .or. &
+                (.not. is_missing .and. x(indices(i), best_feature) < best_threshold)) then
                 left_count = left_count + 1
             end if
         end do
@@ -182,7 +212,9 @@ contains
         left_count = 0
         right_count = 0
         do i = 1, size(indices)
-            if (x(indices(i), best_feature) < best_threshold) then
+            is_missing = ieee_is_nan(x(indices(i), best_feature))
+            if ((is_missing .and. best_missing_left) .or. &
+                (.not. is_missing .and. x(indices(i), best_feature) < best_threshold)) then
                 left_count = left_count + 1
                 left_indices(left_count) = indices(i)
             else
@@ -193,6 +225,7 @@ contains
         self%leaf(node) = .false.
         self%feature(node) = best_feature
         self%threshold(node) = best_threshold
+        self%missing_left(node) = best_missing_left
         self%left_child(node) = 2*node
         self%right_child(node) = 2*node + 1
         call cart_classifier_build_node(self, x, labels, weights, left_indices, &
@@ -203,52 +236,85 @@ contains
     end subroutine cart_classifier_build_node
 
     subroutine cart_classifier_find_best_split(x, labels, weights, indices, &
-            classes, criterion, min_leaf, best_feature, best_threshold, &
-            best_impurity, found)
+            classes, criterion, min_leaf, missing_code, best_feature, &
+            best_threshold, best_impurity, best_missing_left, found)
         real(dp), intent(in) :: x(:, :), weights(:)
         integer, intent(in) :: labels(:), indices(:), classes(:), criterion, min_leaf
+        integer, intent(in) :: missing_code
         integer, intent(out) :: best_feature
         real(dp), intent(out) :: best_threshold, best_impurity
-        logical, intent(out) :: found
-        integer, allocatable :: order(:), left_indices(:), right_indices(:)
-        integer :: j, k, n, left_count, right_count, i
+        logical, intent(out) :: best_missing_left, found
+        integer, allocatable :: order(:), finite_indices(:), left_indices(:), right_indices(:)
+        integer :: j, k, n, n_finite, n_missing, left_count, right_count, i, branch
         real(dp) :: threshold, candidate_impurity
+        logical :: missing_left, is_missing
 
         n = size(indices)
-        allocate(order(n), left_indices(n), right_indices(n))
+        allocate(order(n), finite_indices(n), left_indices(n), right_indices(n))
         found = .false.
         best_feature = 0
         best_threshold = 0.0_dp
         best_impurity = huge(1.0_dp)
+        best_missing_left = .false.
         do j = 1, size(x, 2)
-            call sort_subset_indices(x(:, j), indices, order)
-            do k = min_leaf, n - min_leaf
-                if (x(indices(order(k)), j) >= &
-                    x(indices(order(k + 1)), j)) cycle
-                threshold = 0.5_dp*x(indices(order(k)), j) + &
-                    0.5_dp*x(indices(order(k + 1)), j)
-                left_count = 0
-                right_count = 0
-                do i = 1, n
-                    if (x(indices(i), j) < threshold) then
-                        left_count = left_count + 1
-                        left_indices(left_count) = indices(i)
+            n_finite = 0
+            n_missing = 0
+            do i = 1, n
+                if (ieee_is_nan(x(indices(i), j))) then
+                    n_missing = n_missing + 1
+                else
+                    n_finite = n_finite + 1
+                    finite_indices(n_finite) = indices(i)
+                end if
+            end do
+            if (n_finite < 2*min_leaf) cycle
+            call sort_subset_indices(x(:, j), finite_indices(:n_finite), &
+                order(:n_finite))
+            do k = min_leaf, n_finite - min_leaf
+                if (x(finite_indices(order(k)), j) >= &
+                    x(finite_indices(order(k + 1)), j)) cycle
+                threshold = 0.5_dp*x(finite_indices(order(k)), j) + &
+                    0.5_dp*x(finite_indices(order(k + 1)), j)
+                do branch = 1, 2
+                    if (missing_code == CART_MISSING_LEARN) then
+                        missing_left = branch == 1
+                    else if (missing_code == CART_MISSING_LEFT) then
+                        if (branch == 2) cycle
+                        missing_left = .true.
+                    else if (missing_code == CART_MISSING_RIGHT) then
+                        if (branch == 1) cycle
+                        missing_left = .false.
                     else
-                        right_count = right_count + 1
-                        right_indices(right_count) = indices(i)
+                        if (branch == 1) cycle
+                        missing_left = .false.
+                    end if
+                    left_count = 0
+                    right_count = 0
+                    do i = 1, n
+                        is_missing = ieee_is_nan(x(indices(i), j))
+                        if ((is_missing .and. missing_left) .or. &
+                            (.not. is_missing .and. x(indices(i), j) < threshold)) then
+                            left_count = left_count + 1
+                            left_indices(left_count) = indices(i)
+                        else
+                            right_count = right_count + 1
+                            right_indices(right_count) = indices(i)
+                        end if
+                    end do
+                    if (left_count < min_leaf .or. right_count < min_leaf) cycle
+                    candidate_impurity = &
+                        cart_classifier_weighted_impurity(labels, weights, &
+                        left_indices(:left_count), classes, criterion) + &
+                        cart_classifier_weighted_impurity(labels, weights, &
+                        right_indices(:right_count), classes, criterion)
+                    if (.not. found .or. candidate_impurity < best_impurity) then
+                        found = .true.
+                        best_feature = j
+                        best_threshold = threshold
+                        best_impurity = candidate_impurity
+                        best_missing_left = missing_left
                     end if
                 end do
-                candidate_impurity = &
-                    cart_classifier_weighted_impurity(labels, weights, &
-                    left_indices(:left_count), classes, criterion) + &
-                    cart_classifier_weighted_impurity(labels, weights, &
-                    right_indices(:right_count), classes, criterion)
-                if (.not. found .or. candidate_impurity < best_impurity) then
-                    found = .true.
-                    best_feature = j
-                    best_threshold = threshold
-                    best_impurity = candidate_impurity
-                end if
             end do
         end do
     end subroutine cart_classifier_find_best_split
@@ -310,15 +376,26 @@ contains
 
         if (.not. self%initialized .or. size(x, 2) /= self%n_inputs .or. &
             any(shape(probabilities) /= [size(x, 1), self%n_classes]) .or. &
-            any(.not. ieee_is_finite(x))) then
+            any((.not. ieee_is_finite(x)) .and. (.not. ieee_is_nan(x)))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "CART classifier predict_proba: model, input, or shape is invalid")
+            return
+        end if
+        if (self%missing_code == CART_MISSING_ERROR .and. any(ieee_is_nan(x))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "CART classifier predict_proba: NaN input requires a missing-value policy")
             return
         end if
         do i = 1, size(x, 1)
             node = 1
             do while (.not. self%leaf(node))
-                if (x(i, self%feature(node)) < self%threshold(node)) then
+                if (ieee_is_nan(x(i, self%feature(node)))) then
+                    if (self%missing_left(node)) then
+                        node = self%left_child(node)
+                    else
+                        node = self%right_child(node)
+                    end if
+                else if (x(i, self%feature(node)) < self%threshold(node)) then
                     node = self%left_child(node)
                 else
                     node = self%right_child(node)
@@ -389,10 +466,50 @@ contains
         criterion = self%criterion_code
     end function cart_classifier_criterion
 
+    character(len=16) function cart_classifier_missing_policy(self) result(policy)
+        class(cart_classifier_t), intent(in) :: self
+
+        select case (self%missing_code)
+        case (CART_MISSING_ERROR)
+            policy = "error"
+        case (CART_MISSING_LEARN)
+            policy = "learn"
+        case (CART_MISSING_LEFT)
+            policy = "left"
+        case (CART_MISSING_RIGHT)
+            policy = "right"
+        case default
+            policy = "unfitted"
+        end select
+    end function cart_classifier_missing_policy
+
+    logical function cart_classifier_accepts_missing(self) result(accepts)
+        class(cart_classifier_t), intent(in) :: self
+
+        accepts = self%initialized .and. self%missing_code /= CART_MISSING_ERROR
+    end function cart_classifier_accepts_missing
+
     logical function cart_classifier_fitted(self) result(fitted)
         class(cart_classifier_t), intent(in) :: self
         fitted = self%initialized
     end function cart_classifier_fitted
+
+    integer function cart_classifier_parse_missing_policy(policy) result(code)
+        character(len=*), intent(in) :: policy
+
+        select case (trim(adjustl(policy)))
+        case ("error")
+            code = CART_MISSING_ERROR
+        case ("learn")
+            code = CART_MISSING_LEARN
+        case ("left")
+            code = CART_MISSING_LEFT
+        case ("right")
+            code = CART_MISSING_RIGHT
+        case default
+            code = -1
+        end select
+    end function cart_classifier_parse_missing_policy
 
     subroutine unique_sorted_labels(labels, classes)
         integer, intent(in) :: labels(:)
