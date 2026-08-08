@@ -181,6 +181,7 @@ repeated resident-batch evidence.
 | `mlp_adam_hypergradient_objective_t` | Validation MSE after fixed full-batch coupled-L2 Adam trajectory | Packed `[log(learning_rate),log(l2),logit(beta1),logit(beta2)]` JVP | Exact trajectory value gradient and scalar VJP | Forward state sensitivities through coupled loss, moments, and bias correction |
 | `mlp_rmsprop_hypergradient_objective_t` | Validation MSE after fixed full-batch RMSprop trajectory | Packed `[log(learning_rate),log(l2),decay,log(epsilon),momentum]` JVP | Exact trajectory value gradient and scalar VJP | Forward state sensitivities; inner MLP HVP |
 | `mlp_adagrad_hypergradient_objective_t` | Validation MSE after fixed full-batch Adagrad trajectory | Packed `[log(learning_rate),log(l2),log(epsilon)]` JVP | Exact trajectory value gradient and scalar VJP | Forward accumulated-square sensitivities; inner MLP HVP |
+| `mlp_adafactor_hypergradient_objective_t` | Validation MSE after fixed full-batch unfactored Adafactor trajectory | Packed `[log(learning_rate),log(l2),decay,log(epsilon),log(clip_threshold)]` JVP | Exact trajectory value gradient and scalar VJP | Forward second-moment, update-RMS clipping, and denominator sensitivities; active-set and discrete branches refuse |
 | `mlp_schedule_hypergradient_objective_t` | Validation MSE after a typed scheduled full-batch trajectory | Packed `[log(base_rate),log(l2),logit(min_fraction),logit(decay_factor)]` JVP | Exact schedule/trajectory value gradient and scalar VJP | Inner MLP HVP; outer hyper-HVP is not approximated |
 | `mlp_minibatch_hypergradient_objective_t` | Validation MSE after a fixed seeded mini-batch SGD trajectory | Packed `[log(learning_rate),log(l2)]` JVP | Exact batch-cursor trajectory value gradient and scalar VJP | Per-batch MLP HVP; outer hyper-HVP is a typed refusal |
 | `trainer_t` | Any `fortopt_objective::objective_t` with explicit full-batch training state | Optimizer updates are stateful; the objective supplies exact products | The same objective value/gradient callback is used for every update | L-BFGS-B consumes the objective gradient; no hidden HVP or finite-difference fallback |
@@ -188,7 +189,7 @@ repeated resident-batch evidence.
 | `vae_t` | `elbo`, `reconstruct` | No | ELBO gradient | No |
 | `rnn_t` | `forward`, squared-error `loss` | No | Loss gradient by BPTT | No |
 | `kernel_t` | Scalar value and matrix | Parameter JVP | Parameter VJP | Parameter HVP |
-| `xgboost_t` | Squared/squared-log (RMSLE)/logistic/Poisson/Huber/quantile/absolute/rank:pairwise margins, predictions, and additive tree contributions | Fixed-tree input JVP away from split boundaries | Fixed-tree input VJP away from split boundaries | No |
+| `xgboost_t` | Squared/squared-log (RMSLE)/logistic/Poisson/Huber/quantile/absolute/rank:pairwise margins, predictions, additive tree contributions, and fitted-prefix slicing | Fixed-tree input JVP away from split boundaries | Fixed-tree input VJP away from split boundaries | No |
 | `xgboost_classifier_t` | Binary integer labels, logistic `(n,2)` probabilities, staged margins, and feature diagnostics | Fixed-tree probability/input JVP away from split boundaries | Fixed-tree probability/input VJP away from split boundaries | No |
 | `lightgbm_t` | Weighted numeric regression/binary logistic histogram boosting with deterministic globally best-leaf growth | Fixed-tree input JVP away from split boundaries | Fixed-tree input VJP away from split boundaries | No |
 | `random_forest_classifier_t` | Bootstrap-ensemble probabilities and labels | Refused: split routing is discrete | Refused: split routing is discrete | No |
@@ -1914,6 +1915,21 @@ L-BFGS-B under explicit log bounds. The independent
 directional JVP, the scalar adjoint, optimizer convergence, and typed
 non-Adagrad/CUDA refusals. Mini-batch, schedules, clipping, and CUDA-resident
 Adagrad state remain explicit follow-up contracts.
+
+### `fortml_mlp_adafactor_hypergradient`
+
+`mlp_adafactor_hypergradient_objective_t` differentiates the fixed full-batch
+unfactored Adafactor trajectory used by `fortml_trainer`. Its packed vector is
+`[log(learning_rate),log(l2),decay,log(epsilon),log(clip_threshold)]`.
+The exact CPU products propagate the second-moment, update-RMS clipping, and
+epsilon-stabilized denominator states; `value_gradient`, `jvp`, scalar `vjp`,
+and `mlp_optimize_adafactor_hyperparameters` are available for FortOpt
+L-BFGS-B. Relative-step and parameter-scaling modes are fixed discrete
+branches, exact clip-boundary trajectories refuse, and CUDA is a typed refusal
+until a resident trajectory graph exists. The independent
+`test_mlp_adafactor_hypergradient` fixture covers all five coordinates,
+finite-difference and adjoint products, active-set behavior, and optimizer
+integration. See [`docs/MLP_ADAFACTOR_HYPERGRADIENT.md`](MLP_ADAFACTOR_HYPERGRADIENT.md).
 
 ### `fortml_mlp_adam_hypergradient`
 

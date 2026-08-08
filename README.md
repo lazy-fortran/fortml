@@ -31,6 +31,13 @@ The library uses separate Fortran modules instead of an umbrella `fortml`
 module. For example, exact GP regression uses `fortml_kernels` and
 `fortml_gaussian_process`.
 
+Recent closure slices also expose query-coordinate JVP/VJP products for
+Bernoulli variational GPs (logistic and probit), exact unfactored-Adafactor
+trajectory hypergradients for FortOpt L-BFGS-B, fixed-tree XGBoost derivative
+oracles and transactional fitted-prefix slicing. These paths retain explicit
+CPU/CUDA capability metadata and typed CUDA refusals until their complete
+operation graphs are resident; no host fallback is presented as GPU support.
+
 ## Build and test
 
 The development manifest resolves four sibling checkouts:
