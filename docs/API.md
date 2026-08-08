@@ -3628,7 +3628,13 @@ optional `max_depth`) is reached. `fit_regression` and `fit_binary` accept
 positive sample weights and support squared regression and binary logistic
 losses. `predict_margin`, `predict`, and binary `predict_proba` expose the
 identity or sigmoid link, while `num_leaves`, `tree_node_count`, and
-`tree_depth` expose the growth policy.
+`tree_depth` expose the growth policy. `predict_staged_margin` and
+`predict_staged` return cumulative margins or linked predictions after every
+retained tree. `predict_contributions` returns the base margin followed by
+learning-rate-scaled per-tree terms; summing its columns reproduces
+`predict_margin`. `slice(n_trees,destination,status)` copies a fitted prefix
+transactionally, including all allocatable node/row state, so a prefix can be
+served without refitting.
 
 The finite numeric contract is explicit: NaN and infinity inputs are refused,
 and categorical, missing-value-default, GOSS, EFB, and distributed policies are
@@ -3636,5 +3642,6 @@ not silently approximated. Fixed-tree input JVP/VJP products are zero away from
 learned split surfaces and return `FORTNUM_DOMAIN_ERROR` exactly on a split
 boundary. CPU dispatch is supported; `predict_device` on a selected CUDA
 device returns `FORTNUM_NOT_IMPLEMENTED` until resident leaf-wise histogram
-state is available. The independent oracle is `test_lightgbm`, and the release
-benchmark is `lightgbm_leafwise.csv` in `../fortml-bench`.
+state is available. Independent hand and tree-walk oracles are
+`test_lightgbm` and `test_lightgbm_staged_slice`; the release benchmark is
+`lightgbm_leafwise.csv` in `../fortml-bench`.

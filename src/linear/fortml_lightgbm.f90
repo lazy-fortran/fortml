@@ -97,6 +97,10 @@ module fortml_lightgbm
         procedure, public :: fit_binary => lgbm_fit_binary
         procedure, public :: predict => lgbm_predict
         procedure, public :: predict_margin => lgbm_predict_margin
+        procedure, public :: predict_staged => lgbm_predict_staged
+        procedure, public :: predict_staged_margin => lgbm_predict_staged_margin
+        procedure, public :: predict_contributions => lgbm_predict_contributions
+        procedure, public :: slice => lgbm_slice
         procedure, public :: predict_proba => lgbm_predict_proba
         procedure, public :: predict_device => lgbm_predict_device
         procedure, public :: predict_jvp => lgbm_predict_jvp
@@ -426,6 +430,160 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine lgbm_predict_margin
+
+    !> Return cumulative raw margins after every fitted boosting round.
+    !>
+    !> The second dimension is ordered from the first fitted tree through the
+    !> retained ensemble.  This is deliberately a structural product: it
+    !> never refits or changes the leaf-wise tree state.
+    subroutine lgbm_predict_staged_margin(self, x, staged, status)
+        class(lightgbm_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: staged(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: correction(:)
+        integer :: i
+
+        if (.not. self%initialized) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm predict_staged_margin: model is not fitted")
+            return
+        end if
+        if (size(x, 2) /= self%n_inputs .or. size(staged, 1) /= size(x, 1) .or. &
+            size(staged, 2) /= self%n_estimators .or. self%n_estimators < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm predict_staged_margin: output shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(x))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm predict_staged_margin: input has unsupported nonfinite values")
+            return
+        end if
+        allocate(correction(size(x, 1)))
+        staged = 0.0_dp
+        do i = 1, self%n_estimators
+            call lgbm_tree_predict(self%estimator(i), x, correction, status)
+            if (status%code /= FORTNUM_OK) return
+            if (i == 1) then
+                staged(:, i) = self%base_score + self%learning_rate*correction
+            else
+                staged(:, i) = staged(:, i-1) + self%learning_rate*correction
+            end if
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine lgbm_predict_staged_margin
+
+    !> Return the fitted prediction after every boosting round.
+    !>
+    !> Regression stages are raw margins.  Binary stages are positive-class
+    !> probabilities, matching `predict`; use `predict_staged_margin` when the
+    !> additive link-scale values are required.
+    subroutine lgbm_predict_staged(self, x, staged, status)
+        class(lightgbm_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: staged(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        integer :: i
+
+        call self%predict_staged_margin(x, staged, status)
+        if (status%code /= FORTNUM_OK) return
+        if (self%objective_code == LIGHTGBM_OBJECTIVE_BINARY) then
+            do i = 1, size(staged, 2)
+                staged(:, i) = stable_sigmoid_array(staged(:, i))
+            end do
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine lgbm_predict_staged
+
+    !> Return additive raw-margin contributions for the fitted ensemble.
+    !>
+    !> Column one is the base margin and column `i+1` is the learning-rate
+    !> scaled contribution of tree `i`.  Summing columns reproduces
+    !> `predict_margin`; for binary objectives apply the sigmoid only after
+    !> summing the raw-link contributions.
+    subroutine lgbm_predict_contributions(self, x, contributions, status)
+        class(lightgbm_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: contributions(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: correction(:)
+        integer :: i
+
+        if (.not. self%initialized) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm predict_contributions: model is not fitted")
+            return
+        end if
+        if (size(x, 2) /= self%n_inputs .or. size(contributions, 1) /= size(x, 1) .or. &
+            size(contributions, 2) /= self%n_estimators + 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm predict_contributions: output shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(x))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm predict_contributions: input has unsupported nonfinite values")
+            return
+        end if
+        allocate(correction(size(x, 1)))
+        contributions = 0.0_dp
+        contributions(:, 1) = self%base_score
+        do i = 1, self%n_estimators
+            call lgbm_tree_predict(self%estimator(i), x, correction, status)
+            if (status%code /= FORTNUM_OK) return
+            contributions(:, i+1) = self%learning_rate*correction
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine lgbm_predict_contributions
+
+    !> Copy a fitted LightGBM prefix into `destination` without refitting.
+    !>
+    !> The operation is transactional: malformed requests leave `destination`
+    !> unchanged.  Tree arrays use intrinsic allocatable assignment, so all
+    !> node/row state is copied rather than aliased.
+    subroutine lgbm_slice(self, n_trees, destination, status)
+        class(lightgbm_t), intent(in) :: self
+        integer, intent(in) :: n_trees
+        type(lightgbm_t), intent(inout) :: destination
+        type(fortnum_status_t), intent(out) :: status
+        type(lightgbm_t) :: candidate
+
+        if (.not. self%initialized .or. .not. allocated(self%estimator)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm slice: source is not a valid fitted ensemble")
+            return
+        end if
+        if (self%n_estimators < 1 .or. size(self%estimator) /= self%n_estimators .or. &
+            n_trees < 1 .or. n_trees > self%n_estimators) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm slice: requested prefix is invalid")
+            return
+        end if
+        candidate%n_inputs = self%n_inputs
+        candidate%objective_code = self%objective_code
+        candidate%n_estimators = n_trees
+        candidate%requested_estimators = max(self%requested_estimators, n_trees)
+        candidate%num_leaves_value = self%num_leaves_value
+        candidate%max_bin_value = self%max_bin_value
+        candidate%max_depth_value = self%max_depth_value
+        candidate%min_data_in_leaf_value = self%min_data_in_leaf_value
+        candidate%learning_rate = self%learning_rate
+        candidate%l2_value = self%l2_value
+        candidate%min_gain_value = self%min_gain_value
+        candidate%base_score = self%base_score
+        candidate%early_stopping_rounds_value = self%early_stopping_rounds_value
+        candidate%early_stopping_min_delta_value = self%early_stopping_min_delta_value
+        candidate%restore_best_value = self%restore_best_value
+        candidate%best_iteration_value = min(max(self%best_iteration_value, 0), n_trees)
+        candidate%best_validation_loss_value = self%best_validation_loss_value
+        candidate%early_stopped_flag = self%early_stopped_flag
+        allocate(candidate%estimator(n_trees))
+        candidate%estimator = self%estimator(:n_trees)
+        candidate%initialized = .true.
+        destination = candidate
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine lgbm_slice
 
     subroutine lgbm_predict_proba(self, x, probabilities, status)
         class(lightgbm_t), intent(in) :: self

@@ -6,13 +6,14 @@ program fortml_bench_lightgbm
     implicit none
 
     integer, parameter :: n = 192, d = 3
-    real(real64) :: x(n, d), target(n), labels(n), weight(n), prediction(n)
+    real(real64) :: x(n, d), target(n), labels(n), weight(n), prediction(n), margin(n)
+    real(real64) :: staged(n, 8), contributions(n, 9), sliced_prediction(n)
     real(real64) :: sx(6, 1), sy(6), expected(6), tiny_prediction(6)
-    type(lightgbm_t) :: regression, binary, tiny
+    type(lightgbm_t) :: regression, binary, tiny, prefix
     type(lightgbm_options_t) :: options, tiny_options
     type(fortnum_status_t) :: status
     type(fortml_device_t) :: cuda
-    real(real64) :: started, finished, mse, accuracy, oracle_error
+    real(real64) :: started, finished, mse, accuracy, oracle_error, product_error
     integer :: i
 
     do i = 1, n
@@ -44,6 +45,34 @@ program fortml_bench_lightgbm
     mse = sum(weight*(prediction-target)**2)/sum(weight)
     write (*, '(a,i0,a,i0,a,es24.16,a,es24.16,a,es24.16)') "lightgbm_predict,", n, ",", d, ",", &
         real(regression%tree_depth(1), real64), ",", max(0.0_real64, finished-started), ",", mse
+
+    call cpu_time(started)
+    call regression%predict_staged(x, staged, status)
+    call cpu_time(finished)
+    if (status%code /= FORTNUM_OK) error stop "lightgbm staged prediction failed"
+    product_error = maxval(abs(staged(:, regression%estimator_count())-prediction))
+    write (*, '(a,i0,a,i0,a,i0,a,es24.16,a,es24.16)') "lightgbm_staged,", n, ",", d, ",", &
+        regression%estimator_count(), ",", max(0.0_real64, finished-started), ",", product_error
+
+    call regression%predict_margin(x, margin, status)
+    if (status%code /= FORTNUM_OK) error stop "lightgbm margin prediction failed"
+    call cpu_time(started)
+    call regression%predict_contributions(x, contributions, status)
+    call cpu_time(finished)
+    if (status%code /= FORTNUM_OK) error stop "lightgbm contribution prediction failed"
+    product_error = maxval(abs(sum(contributions, dim=2)-margin))
+    write (*, '(a,i0,a,i0,a,i0,a,es24.16,a,es24.16)') "lightgbm_contributions,", n, ",", d, ",", &
+        regression%estimator_count(), ",", max(0.0_real64, finished-started), ",", product_error
+
+    call cpu_time(started)
+    call regression%slice(4, prefix, status)
+    call cpu_time(finished)
+    if (status%code /= FORTNUM_OK) error stop "lightgbm prefix slice failed"
+    call prefix%predict(x, sliced_prediction, status)
+    if (status%code /= FORTNUM_OK) error stop "lightgbm prefix prediction failed"
+    product_error = maxval(abs(sliced_prediction-staged(:, 4)))
+    write (*, '(a,i0,a,i0,a,i0,a,es24.16,a,es24.16)') "lightgbm_slice,", n, ",", d, ",", &
+        prefix%estimator_count(), ",", max(0.0_real64, finished-started), ",", product_error
 
     call binary%fit_binary(x, labels, status, options, weight)
     if (status%code /= FORTNUM_OK) error stop "lightgbm binary fit failed"
