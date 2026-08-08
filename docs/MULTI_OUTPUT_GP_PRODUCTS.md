@@ -28,7 +28,16 @@ state fixed and differentiate only query locations using
 `kernel_t%input_derivatives`.  The VJP is the adjoint of the JVP under the
 same output-major stacking.  No production finite differences are used.
 
-The four `*_device` wrappers accept CPU execution and return
+For independent query sets, `predict_batch(query,mean,status)` accepts
+`query(batch,query,feature)` and returns `mean(batch,query,output)`. The
+`predict_batch_input_jvp` and `predict_batch_input_vjp` methods apply the same
+fixed-fit products member by member while preserving that shape contract.
+`test_multi_output_gp_batch` checks the batched mean against an independent
+dense RBF oracle, checks the JVP by central differences and the VJP by scalar
+duality, and exercises malformed-shape and nonfinite-input refusals.
+
+The four existing `*_device` wrappers and the three batch `*_device` wrappers
+accept CPU execution and return
 `FORTNUM_NOT_IMPLEMENTED` for CUDA until resident coregionalized covariance,
 factorization, and derivative kernels are available.  They never silently
 copy to a host fallback.  `test_multi_output_gp_products` checks query and
