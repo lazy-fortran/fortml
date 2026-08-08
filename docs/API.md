@@ -1974,6 +1974,21 @@ positive mass. L2 remains a single parameter regularizer in either reduction.
 `weight_mass`, and `sample_count`, so callers can log named scalar components
 without reconstructing the reduction.
 
+The shared `fortml_losses` facade also exposes stable softmax and log-softmax
+value/JVP/VJP products plus explicit-cotangent HVPs
+(`softmax_hvp`/`log_softmax_hvp`). `softmax_cross_entropy_value`,
+`softmax_cross_entropy_jvp`, `softmax_cross_entropy_vjp`, and
+`softmax_cross_entropy_hvp` accept optional row `sample_weight` and
+`LOSS_REDUCTION_MEAN`/`LOSS_REDUCTION_SUM` arguments. Mean reduction divides
+by positive row-weight mass; sum reduction is unnormalized. The focal
+binary-cross-entropy-with-logits family additionally provides an exact
+`focal_binary_cross_entropy_with_logits_hvp` for relaxed `[0,1]` targets and
+nonnegative focusing exponent. Shape, finite-input, alpha/gamma, label, and
+zero-support weight violations return a domain status. Device-dispatch value
+wrappers route CPU to this reference and return `FORTNUM_NOT_IMPLEMENTED` for
+CUDA until resident loss kernels exist; they never relabel a host fallback as
+GPU execution. See [`NEURAL_LOSS_PRODUCTS.md`](NEURAL_LOSS_PRODUCTS.md).
+
 `mlp_training_checkpoint_t` is the in-memory resumable trainer state. Pass an
 uninitialized checkpoint to `mlp_train` to capture it after each completed
 epoch (and at every microbatch boundary). Pass the initialized checkpoint back

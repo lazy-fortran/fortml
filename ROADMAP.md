@@ -619,6 +619,21 @@ and source revisions. CUDA/OpenACC measurements are split into resident and
 transfer-inclusive classes. A typed unavailable row is evidence of the
 boundary, never a performance result.
 
+### 2026-08-08 neural loss product slice
+
+The shared loss facade now provides stable softmax and log-softmax value,
+JVP, VJP, and HVP products, weighted mean/sum softmax cross-entropy, and
+analytic focal binary cross-entropy HVPs for relaxed targets. The independent
+`test_neural_loss_products` fixture checks central differences, VJP adjoints,
+stable extreme logits, weighted reductions, malformed inputs, and the typed
+CUDA refusal. The release lane is
+`fortml-bench/results/neural_losses.csv`.
+
+The remaining loss catalog is still open: multiclass and multilabel focal
+variants, count/dispersion extensions, contrastive/triplet/CTC objectives,
+probabilistic reconstruction, broader PDE residuals, and resident CUDA loss
+kernels require separate contracts.
+
 ### 2026-08-07 closure slice
 
 The current release adds several cross-package contracts that were previously
@@ -1498,10 +1513,14 @@ when a lower-level primitive already exists.
   first/second-product tests cover every activation; the complete CUDA path
   remains explicitly refused until resident activation and dense-gradient
   kernels are linked.
-- [ ] Complete the remaining activation and loss catalog: softmax, log-softmax,
-  focal, multilabel BCE variants, Poisson count/dispersion variants, Huber,
-  quantile, contrastive, triplet, CTC, and
-  physics residual losses, each with explicit derivative and refusal contracts.
+- [x] Add stable softmax/log-softmax value, JVP, VJP, and HVP products,
+  weighted mean/sum softmax cross-entropy, and focal binary BCE value/JVP/VJP/
+  HVP products with independent NumPy checks and a typed CUDA boundary. See
+  `docs/NEURAL_LOSS_PRODUCTS.md` and the `fortml-bench` neural-loss lane.
+- [ ] Complete the remaining activation and loss catalog: multiclass and
+  multilabel focal variants, Poisson count/dispersion variants, contrastive,
+  triplet, CTC, and physics residual losses, each with explicit derivative and
+  refusal contracts.
 - [x] Add a weighted one-output Poisson log-rate objective with exact value,
   JVP, VJP, HVP, optional L2 coordinate, and a bounded FortOpt L-BFGS-B
   adapter. `test_mlp_poisson_objective` checks finite differences, adjoint
