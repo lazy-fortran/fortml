@@ -1402,15 +1402,18 @@ contains
         valid = options%memory >= 1 .and. options%max_iterations >= 1 .and. &
             options%max_line_search >= 1 .and. options%gradient_tolerance >= 0.0_dp .and. &
             options%step_tolerance >= 0.0_dp .and. options%objective_tolerance >= 0.0_dp .and. &
-            options%lower_bound < options%upper_bound .and. options%l2 >= 0.0_dp .and. &
+            options%lower_bound <= options%upper_bound .and. options%l2 >= 0.0_dp .and. &
             options%l2_lower_bound >= 0.0_dp .and. &
-            options%l2_lower_bound < options%l2_upper_bound
+            options%l2_lower_bound <= options%l2_upper_bound
         valid = valid .and. ieee_is_finite(options%gradient_tolerance) .and. &
             ieee_is_finite(options%step_tolerance) .and. &
             ieee_is_finite(options%objective_tolerance) .and. &
             ieee_is_finite(options%lower_bound) .and. ieee_is_finite(options%upper_bound) .and. &
             ieee_is_finite(options%l2) .and. ieee_is_finite(options%l2_lower_bound) .and. &
             ieee_is_finite(options%l2_upper_bound)
+        if (options%optimize_l2) valid = valid .and. &
+            options%l2 >= options%l2_lower_bound .and. &
+            options%l2 <= options%l2_upper_bound
     end function valid_lbfgsb_options
 
     subroutine encode_labels(labels, classes, encoded, status)
