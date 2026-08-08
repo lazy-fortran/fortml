@@ -21,6 +21,7 @@ module fortml_trainer
     use fortopt_sgd, only: sgd_t
     use fortopt_lbfgsb, only: lbfgsb_t, lbfgsb_options_t, lbfgsb_result_t
     use fortml_adafactor, only: adafactor_t
+    use fortml_lion, only: lion_t
     implicit none
     private
 
@@ -31,9 +32,10 @@ module fortml_trainer
     integer, parameter, public :: FORTML_TRAIN_RMSPROP = 5
     integer, parameter, public :: FORTML_TRAIN_LBFGSB = 6
     integer, parameter, public :: FORTML_TRAIN_ADAFACTOR = 7
+    integer, parameter, public :: FORTML_TRAIN_LION = 8
     character(*), parameter, public :: FORTML_TRAINER_CHECKPOINT_MAGIC = &
         "FORTML_TRAINER_CHECKPOINT_TEXT"
-    integer, parameter, public :: FORTML_TRAINER_CHECKPOINT_SCHEMA_VERSION = 2
+    integer, parameter, public :: FORTML_TRAINER_CHECKPOINT_SCHEMA_VERSION = 3
 
     abstract interface
         subroutine trainer_step_callback_proc(step, value, gradient_norm, stop, status)
@@ -105,6 +107,7 @@ module fortml_trainer
         type(adagrad_t) :: adagrad
         type(rmsprop_t) :: rmsprop
         type(adafactor_t) :: adafactor
+        type(lion_t) :: lion
         type(lbfgsb_t) :: lbfgsb
         logical :: ready = .false.
     contains
@@ -207,6 +210,9 @@ contains
                 settings%adafactor_decay, settings%epsilon, &
                 settings%adafactor_clip_threshold, settings%adafactor_relative_step, &
                 settings%adafactor_scale_parameter)
+        case (FORTML_TRAIN_LION)
+            call self%lion%initialize(n, status, settings%learning_rate, &
+                settings%beta1, settings%beta2, settings%weight_decay)
         case (FORTML_TRAIN_LBFGSB)
             ! L-BFGS-B initializes its own history during fit.
             call status_set(status, FORTNUM_OK, "")
@@ -275,6 +281,8 @@ contains
             call self%rmsprop%step(self%state%parameters, gradient, status)
         case (FORTML_TRAIN_ADAFACTOR)
             call self%adafactor%step(self%state%parameters, gradient, status)
+        case (FORTML_TRAIN_LION)
+            call self%lion%step(self%state%parameters, gradient, status)
         case default
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "trainer: unsupported optimizer kind")
@@ -543,6 +551,9 @@ contains
             case (FORTML_TRAIN_ADAFACTOR)
                 call write_i(unit, "optimizer_step_count", self%adafactor%step_count, ios)
                 if (ios == 0) call write_r_array(unit, "optimizer_second_moment", self%adafactor%second_moment, ios)
+            case (FORTML_TRAIN_LION)
+                call write_i(unit, "optimizer_step_count", self%lion%step_count, ios)
+                if (ios == 0) call write_r_array(unit, "optimizer_momentum", self%lion%momentum, ios)
             end select
         end if
         close_ios = 0
@@ -676,6 +687,9 @@ contains
         case (FORTML_TRAIN_ADAFACTOR)
             call read_i(unit, "optimizer_step_count", optimizer_step, ios)
             call read_r_array(unit, "optimizer_second_moment_count", "optimizer_second_moment_item", n, payload1, ios)
+        case (FORTML_TRAIN_LION)
+            call read_i(unit, "optimizer_step_count", optimizer_step, ios)
+            call read_r_array(unit, "optimizer_momentum_count", "optimizer_momentum_item", n, payload1, ios)
         case default
             ios = 1
         end select
@@ -817,6 +831,12 @@ contains
                 call status_set(status, FORTNUM_DOMAIN_ERROR, "trainer checkpoint save: Adafactor state is invalid")
                 return
             end if
+        case (FORTML_TRAIN_LION)
+            if (.not. allocated(self%lion%momentum) .or. size(self%lion%momentum) /= n .or. &
+                any(.not. ieee_is_finite(self%lion%momentum)) .or. self%lion%step_count < 0) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, "trainer checkpoint save: Lion state is invalid")
+                return
+            end if
         end select
         call status_set(status, FORTNUM_OK, "")
     end subroutine validate_checkpoint
@@ -917,6 +937,12 @@ contains
             if (status%code /= FORTNUM_OK) return
             self%adafactor%second_moment = payload1
             self%adafactor%step_count = step_count
+        case (FORTML_TRAIN_LION)
+            call self%lion%initialize(n, status, options%learning_rate, options%beta1, &
+                options%beta2, options%weight_decay)
+            if (status%code /= FORTNUM_OK) return
+            self%lion%momentum = payload1
+            self%lion%step_count = step_count
         case default
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "trainer checkpoint load: unsupported optimizer")
@@ -972,7 +998,7 @@ contains
 
         if (n_parameters < 1 .or. options%max_steps < 1 .or. &
             options%optimizer < FORTML_TRAIN_SGD .or. &
-            options%optimizer > FORTML_TRAIN_ADAFACTOR .or. &
+            options%optimizer > FORTML_TRAIN_LION .or. &
             .not. ieee_is_finite(options%learning_rate) .or. &
             options%learning_rate <= 0.0_dp .or. &
             .not. ieee_is_finite(options%beta1) .or. options%beta1 < 0.0_dp .or. &

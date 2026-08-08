@@ -5,7 +5,8 @@ program test_trainer
     use fortnum_status, only: fortnum_status_t, status_ok, status_set, FORTNUM_OK
     use fortopt_objective, only: objective_t
     use fortml_trainer, only: trainer_t, trainer_options_t, trainer_state_t, &
-        FORTML_TRAIN_SGD, FORTML_TRAIN_ADAM, FORTML_TRAIN_ADAFACTOR, FORTML_TRAIN_LBFGSB
+        FORTML_TRAIN_SGD, FORTML_TRAIN_ADAM, FORTML_TRAIN_ADAFACTOR, FORTML_TRAIN_LBFGSB, &
+        FORTML_TRAIN_LION
     implicit none
 
     type(objective_t) :: objective
@@ -64,6 +65,44 @@ program test_trainer
     call check(status_ok(status) .and. state%clipped_steps == 1 .and. &
         state%final_value < state%initial_value, &
         "Adam and gradient clipping decrease the objective", failures)
+
+    ! Lion uses the sign of the beta1 interpolation and keeps an explicit
+    ! beta2 momentum.  The generic trainer and its checkpoint must preserve
+    ! both the sign trajectory and the decoupled weight-decay state.
+    options = trainer_options_t()
+    options%optimizer = FORTML_TRAIN_LION
+    options%learning_rate = 0.1_dp
+    options%beta1 = 0.5_dp
+    options%beta2 = 0.8_dp
+    options%weight_decay = 0.2_dp
+    options%max_steps = 4
+    options%tolerance = 0.0_dp
+    options%step_tolerance = 0.0_dp
+    options%objective_tolerance = 0.0_dp
+    call trainer%initialize(objective, [0.0_dp, 1.0_dp], status, options)
+    call trainer%step(status)
+    parameters = trainer%parameters()
+    call check(status_ok(status) .and. maxval(abs(parameters - [0.1_dp, 0.88_dp])) < 1.0e-14_dp, &
+        "Lion first sign/interpolation update matches independent recurrence", failures)
+    call baseline%initialize(objective, [0.0_dp, 1.0_dp], status, options)
+    call checkpointed%initialize(objective, [0.0_dp, 1.0_dp], status, options)
+    call resumed%initialize(objective, [0.0_dp, 1.0_dp], status, options)
+    do i = 1, 2
+        call baseline%step(status)
+        call checkpointed%step(status)
+    end do
+    call checkpointed%save_checkpoint("trainer_lion_checkpoint_test.txt", status)
+    call check(status_ok(status), "Lion checkpoint save", failures)
+    call resumed%load_checkpoint("trainer_lion_checkpoint_test.txt", status)
+    call check(status_ok(status), "Lion checkpoint load", failures)
+    do i = 1, 2
+        call baseline%step(status)
+        call resumed%step(status)
+    end do
+    call check(status_ok(status) .and. maxval(abs(baseline%parameters() - resumed%parameters())) < 2.0e-14_dp, &
+        "Lion checkpoint continuation matches uninterrupted trajectory", failures)
+    open (unit=93, file="trainer_lion_checkpoint_test.txt", status="old")
+    close (93, status="delete")
 
     ! Independent unfactored Adafactor oracle.  The flat trainer contract has
     ! no matrix shape metadata, so this tests the exact vector recurrence and
