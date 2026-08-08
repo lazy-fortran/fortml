@@ -112,6 +112,8 @@ module fortml_basis_impl
     type, extends(basis_impl_t) :: polynomial_basis_impl_t
         integer :: n_inputs = 0
         integer :: degree = 0
+        logical :: interactions = .false.
+        integer, allocatable :: exponents(:, :)
     contains
         procedure :: input_count => polynomial_input_count
         procedure :: feature_count => polynomial_feature_count
@@ -230,10 +232,11 @@ contains
             "basis hvp: second derivatives are unavailable for this map")
     end subroutine basis_impl_hvp
 
-    subroutine create_polynomial_impl(n_inputs, degree, impl, status)
+    subroutine create_polynomial_impl(n_inputs, degree, impl, status, interactions)
         integer, intent(in) :: n_inputs, degree
         class(basis_impl_t), allocatable, intent(out) :: impl
         type(fortnum_status_t), intent(out) :: status
+        logical, intent(in), optional :: interactions
         type(polynomial_basis_impl_t) :: value
 
         if (n_inputs < 1 .or. degree < 1) then
@@ -243,9 +246,117 @@ contains
         end if
         value%n_inputs = n_inputs
         value%degree = degree
+        value%interactions = .false.
+        if (present(interactions)) value%interactions = interactions
+        if (value%interactions) call build_polynomial_exponents(value, status)
+        if (status%code /= FORTNUM_OK) return
         allocate(impl, source=value)
         call status_set(status, FORTNUM_OK, "")
     end subroutine create_polynomial_impl
+
+    subroutine build_polynomial_exponents(self, status)
+        type(polynomial_basis_impl_t), intent(inout) :: self
+        type(fortnum_status_t), intent(out) :: status
+        integer :: d, n_terms, next
+
+        n_terms = 0
+        do d = 1, self%degree
+            n_terms = n_terms + polynomial_compositions(self%n_inputs, d)
+        end do
+        if (n_terms < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "basis polynomial interactions: term count overflow")
+            return
+        end if
+        allocate(self%exponents(n_terms, self%n_inputs))
+        self%exponents = 0
+        next = 0
+        do d = 1, self%degree
+            call enumerate_polynomial_degree(self%exponents, next, 1, d, &
+                self%n_inputs)
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine build_polynomial_exponents
+
+    integer function polynomial_compositions(n_inputs, degree) result(count)
+        integer, intent(in) :: n_inputs, degree
+        integer :: i, numerator, denominator
+
+        count = 1
+        do i = 1, degree
+            numerator = n_inputs + i - 1
+            denominator = i
+            count = count*numerator/denominator
+        end do
+    end function polynomial_compositions
+
+    recursive subroutine enumerate_polynomial_degree(exponents, next, position, &
+            remaining, n_inputs)
+        integer, intent(inout) :: exponents(:, :), next
+        integer, intent(in) :: position, remaining, n_inputs
+        integer :: value
+
+        if (position == n_inputs) then
+            next = next + 1
+            exponents(next, position) = remaining
+            return
+        end if
+        do value = remaining, 0, -1
+            exponents(next + 1, position) = value
+            call enumerate_polynomial_degree(exponents, next, position + 1, &
+                remaining - value, n_inputs)
+        end do
+    end subroutine enumerate_polynomial_degree
+
+    function monomial_partial(exponents, x, j) result(value)
+        integer, intent(in) :: exponents(:), j
+        real(dp), intent(in) :: x(:, :)
+        real(dp) :: value(size(x, 1))
+        integer :: k, exponent
+
+        value = 1.0_dp
+        if (exponents(j) == 0) then
+            value = 0.0_dp
+            return
+        end if
+        do k = 1, size(exponents)
+            exponent = exponents(k)
+            if (k == j) exponent = exponent - 1
+            if (exponent < 0) then
+                value = 0.0_dp
+                return
+            end if
+            value = value*x(:, k)**exponent
+        end do
+    end function monomial_partial
+
+    function monomial_partial_direction(exponents, x, x_dot, j) result(value)
+        integer, intent(in) :: exponents(:), j
+        real(dp), intent(in) :: x(:, :), x_dot(:, :)
+        real(dp) :: value(size(x, 1)), term(size(x, 1))
+        integer :: k, l, exponent
+
+        value = 0.0_dp
+        if (exponents(j) == 0) return
+        do k = 1, size(exponents)
+            exponent = exponents(k)
+            if (k == j) exponent = exponent - 1
+            if (exponent <= 0) cycle
+            term = 1.0_dp
+            do l = 1, size(exponents)
+                exponent = exponents(l)
+                if (l == j) exponent = exponent - 1
+                if (l == k) exponent = exponent - 1
+                if (exponent < 0) then
+                    term = 0.0_dp
+                    exit
+                end if
+                term = term*x(:, l)**exponent
+            end do
+            value = value + real(exponents(k) - merge(1, 0, k == j), dp)* &
+                term*x_dot(:, k)
+        end do
+    end function monomial_partial_direction
 
     subroutine create_fourier_impl(n_inputs, frequencies, impl, status)
         integer, intent(in) :: n_inputs
@@ -368,7 +479,15 @@ contains
 
     integer function polynomial_feature_count(self) result(count)
         class(polynomial_basis_impl_t), intent(in) :: self
-        count = self%n_inputs*self%degree
+        if (self%interactions) then
+            if (allocated(self%exponents)) then
+                count = size(self%exponents, 1)
+            else
+                count = 0
+            end if
+        else
+            count = self%n_inputs*self%degree
+        end if
     end function polynomial_feature_count
 
     integer function polynomial_parameter_count(self) result(count)
@@ -400,7 +519,7 @@ contains
         real(dp), intent(in) :: x(:, :)
         real(dp), intent(out) :: phi(:, :)
         type(fortnum_status_t), intent(out) :: status
-        integer :: j, p, column
+        integer :: i, j, p, column
 
         if (size(x, 2) /= self%n_inputs .or. &
             size(phi, 2) /= self%feature_count()) then
@@ -409,6 +528,16 @@ contains
             return
         end if
         phi = 0.0_dp
+        if (self%interactions) then
+            do i = 1, size(self%exponents, 1)
+                phi(:, i) = 1.0_dp
+                do j = 1, self%n_inputs
+                    phi(:, i) = phi(:, i)*x(:, j)**self%exponents(i, j)
+                end do
+            end do
+            call status_set(status, FORTNUM_OK, "")
+            return
+        end if
         column = 1
         do j = 1, self%n_inputs
             do p = 1, self%degree
@@ -424,7 +553,7 @@ contains
         real(dp), intent(in) :: x(:, :), theta_dot(:), x_dot(:, :)
         real(dp), intent(out) :: phi(:, :), phi_dot(:, :)
         type(fortnum_status_t), intent(out) :: status
-        integer :: j, p, column
+        integer :: i, j, p, column
 
         if (size(theta_dot) /= 0 .or. any(shape(x_dot) /= shape(x))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -434,6 +563,20 @@ contains
         call self%evaluate(x, phi, status)
         if (status%code /= FORTNUM_OK) return
         phi_dot = 0.0_dp
+        if (self%interactions) then
+            do i = 1, size(self%exponents, 1)
+                phi(:, i) = 1.0_dp
+                phi_dot(:, i) = 0.0_dp
+                do j = 1, self%n_inputs
+                    phi(:, i) = phi(:, i)*x(:, j)**self%exponents(i, j)
+                    phi_dot(:, i) = phi_dot(:, i) + &
+                        real(self%exponents(i, j), dp)* &
+                        monomial_partial(self%exponents(i, :), x, j)*x_dot(:, j)
+                end do
+            end do
+            call status_set(status, FORTNUM_OK, "")
+            return
+        end if
         column = 1
         do j = 1, self%n_inputs
             do p = 1, self%degree
@@ -449,7 +592,7 @@ contains
         real(dp), intent(in) :: x(:, :), u(:, :)
         real(dp), intent(out) :: theta_bar(:), x_bar(:, :)
         type(fortnum_status_t), intent(out) :: status
-        integer :: j, p, column
+        integer :: i, j, p, column
 
         if (size(u, 2) /= self%feature_count() .or. &
             size(theta_bar) /= 0 .or. any(shape(x_bar) /= shape(x))) then
@@ -459,6 +602,17 @@ contains
         end if
         theta_bar = 0.0_dp
         x_bar = 0.0_dp
+        if (self%interactions) then
+            do i = 1, size(self%exponents, 1)
+                do j = 1, self%n_inputs
+                    x_bar(:, j) = x_bar(:, j) + u(:, i)* &
+                        real(self%exponents(i, j), dp)* &
+                        monomial_partial(self%exponents(i, :), x, j)
+                end do
+            end do
+            call status_set(status, FORTNUM_OK, "")
+            return
+        end if
         column = 1
         do j = 1, self%n_inputs
             do p = 1, self%degree
@@ -488,6 +642,18 @@ contains
         end if
         theta_hvp = 0.0_dp
         x_hvp = 0.0_dp
+        if (self%interactions) then
+            do i = 1, size(self%exponents, 1)
+                do j = 1, self%n_inputs
+                    x_hvp(:, j) = x_hvp(:, j) + u(:, i)* &
+                        real(self%exponents(i, j), dp)* &
+                        monomial_partial_direction(self%exponents(i, :), x, &
+                        x_dot, j)
+                end do
+            end do
+            call status_set(status, FORTNUM_OK, "")
+            return
+        end if
         column = 1
         do j = 1, self%n_inputs
             do p = 1, self%degree

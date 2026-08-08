@@ -21,6 +21,8 @@ module fortml_basis
         class(basis_impl_t), allocatable :: implementation
     contains
         procedure, public :: initialize_polynomial => basis_initialize_polynomial
+        procedure, public :: initialize_polynomial_interactions => &
+            basis_initialize_polynomial_interactions
         procedure, public :: initialize_fourier => basis_initialize_fourier
         procedure, public :: initialize_radial => basis_initialize_radial
         procedure, public :: initialize_spline => basis_initialize_spline
@@ -40,6 +42,7 @@ module fortml_basis
     end type basis_map_t
 
     public :: make_polynomial_basis
+    public :: make_polynomial_interaction_basis
     public :: make_fourier_basis
     public :: make_radial_basis
     public :: make_spline_basis
@@ -56,6 +59,17 @@ contains
 
         call map%initialize_polynomial(n_inputs, degree, status, include_intercept)
     end function make_polynomial_basis
+
+    function make_polynomial_interaction_basis(n_inputs, degree, status, &
+            include_intercept) result(map)
+        integer, intent(in) :: n_inputs, degree
+        type(fortnum_status_t), intent(out) :: status
+        logical, intent(in), optional :: include_intercept
+        type(basis_map_t) :: map
+
+        call map%initialize_polynomial_interactions(n_inputs, degree, status, &
+            include_intercept)
+    end function make_polynomial_interaction_basis
 
     function make_fourier_basis(n_inputs, frequencies, status, include_intercept) &
             result(map)
@@ -107,6 +121,22 @@ contains
         if (status%code /= FORTNUM_OK) return
         call move_alloc(implementation, self%implementation)
     end subroutine basis_initialize_polynomial
+
+    subroutine basis_initialize_polynomial_interactions(self, n_inputs, degree, &
+            status, include_intercept)
+        class(basis_map_t), intent(out) :: self
+        integer, intent(in) :: n_inputs, degree
+        type(fortnum_status_t), intent(out) :: status
+        logical, intent(in), optional :: include_intercept
+        class(basis_impl_t), allocatable :: implementation
+
+        self%include_intercept = .false.
+        if (present(include_intercept)) self%include_intercept = include_intercept
+        call create_polynomial_impl(n_inputs, degree, implementation, status, &
+            interactions=.true.)
+        if (status%code /= FORTNUM_OK) return
+        call move_alloc(implementation, self%implementation)
+    end subroutine basis_initialize_polynomial_interactions
 
     subroutine basis_initialize_fourier(self, n_inputs, frequencies, status, &
             include_intercept)

@@ -109,7 +109,9 @@ declared derivative boundaries.
 `basis_map_t` has a value/JVP/VJP contract and an explicit parameter layout.
 The implemented basis families are:
 
-- separate polynomial powers for each input with degree/ordering recorded.
+- separate polynomial powers for each input with degree/ordering recorded;
+  `make_polynomial_interaction_basis` additionally enumerates all nonconstant
+  total-degree monomials in deterministic graded order.
 - Fourier sine/cosine features with explicit angular frequencies.
 - radial basis features with centers and positive log-scales.
 - spline features backed by `fortnum` B-splines.
