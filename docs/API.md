@@ -2480,21 +2480,28 @@ workload is `fortml_bench_bagging_classifier`.
 ### `fortml_adaboost_classifier`
 
 `adaboost_classifier_t%fit(x,labels,status[,n_estimators,max_depth,
-min_samples_leaf,sample_weight])` fits a deterministic binary AdaBoost
-ensemble of weighted CART classifiers. Labels may be any two finite integer
-values and are retained in sorted order. The default weak-learner depth is
-one. The learner weight is `0.5*log((1-error)/error)`, with early stopping for
-a perfect learner and a typed refusal when the first learner is no better than
-chance.
+min_samples_leaf,sample_weight,seed])` fits a deterministic binary or
+multiclass SAMME ensemble of weighted CART classifiers. Labels may be any two
+or more finite integer values and are retained in sorted order. The default
+weak-learner depth is one. Binary learner weights are
+`0.5*log((1-error)/error)`; multiclass SAMME weights are
+`log((1-error)/error)+log(K-1)`. Fitting stops for a perfect learner or when a
+learner reaches the random-guessing bound `1-1/K`; a first learner at that
+bound is a typed domain error. `seed` is validated and retained for
+reproducible future seeded weak-learner policies; the current CART traversal
+is deterministic and resolves all ties by sorted feature/threshold order.
 
-`decision_function` returns the accumulated signed margin. `predict_proba`
-maps twice that margin through a stable logistic link and `predict` uses the
-nonnegative margin threshold. The model exposes feature, estimator, class, and
-fitted metadata. CART split routing is discrete, so `predict_proba_jvp`
-returns `FORTNUM_NOT_IMPLEMENTED`; the CPU prediction path is available
-through `predict_proba_device`, while CUDA requests return the same typed
-refusal until a resident tree ensemble kernel is linked. The independent
-oracle is `test_adaboost_classifier`.
+The rank-one `decision_function` returns the accumulated signed binary margin;
+the rank-two overload returns multiclass weighted-vote margins, and
+`stage_weights`, `class_count`, and `classes` expose the fitted SAMME state.
+`predict_proba` maps binary margins through a stable logistic link and
+multiclass margins through a stabilized softmax; `predict` uses the
+nonnegative binary margin or deterministic lowest-class argmax. CART split
+routing is discrete, so `predict_proba_jvp` returns `FORTNUM_NOT_IMPLEMENTED`;
+the CPU prediction path is available through `predict_proba_device`, while
+CUDA requests return the same typed refusal until a resident tree ensemble
+kernel is linked. Invalid fits are transactional for an already fitted model.
+The independent oracle is `test_adaboost_classifier`.
 
 ### `fortml_discriminant_analysis`
 
