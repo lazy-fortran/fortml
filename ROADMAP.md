@@ -24,7 +24,7 @@ behavior, and benchmark evidence land together.
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
 The checked-in GNU compiler log is the fresh 2026-08-08 run against FortML code
-revision `3330973` (including scheduled AdamW trajectory hypergradients,
+revision `d044552` (including scheduled AdamW trajectory hypergradients,
 calibrated-softmax OOF policies, affine schedule
 outer HVPs, and seeded XGBoost DART), FortAD `origin/main` at
 `5f77c47b1f5027a777e16e2bf1cf9a8958942a83`, and FortNum at
@@ -65,7 +65,7 @@ compiler coverage remains an
 explicit older-build result.
 
 The checked-in evidence is maintained on the clean FortML-bench revision
-`3847b36`; each CSV records the exact clean benchmark revision used to produce
+`d8caa05`; each CSV records the exact clean benchmark revision used to produce
 its rows,
 the trainer-checkpoint, unfactored-Adafactor, binary-objective,
 multiclass-calibration, variational-multiclass-GP, PINN/physics-objective,
@@ -254,7 +254,7 @@ optimizer-group execution, mixed precision, distributed state, and migration
 remain open. The source and benchmark pins for this earlier optimizer-group
 slice were FortML `05632ce8fa95268417c7a2d979fa1461a202abaa` and
 FortML-bench `0fb8ac7`; the current aggregate verification is the newer
-`85cadc3`/`4614527` pair recorded above.
+`d044552`/`d8caa05` pair recorded above.
 
 The variational-GP classification and OVR wrappers now expose fixed-state
 kernel-log-parameter JVP/VJP products for latent margins and normalized
@@ -1532,7 +1532,7 @@ when a lower-level primitive already exists.
 - [ ] Exact fixed-trajectory and implicit hypergradients through all supported
   optimizers, schedules, batch cursors, clipping, weight decay, validation,
   early stopping, and optimizer state. Fixed full-batch SGD/AdamW/Adagrad/
-  RMSprop/RAdam (including typed scheduled RAdam) and deterministic mini-batch
+  RMSprop/RAdam (including typed scheduled RAdam and scheduled AdamW) and deterministic mini-batch
   SGD now have analytic trajectory products. Every unsupported stochastic or
   device path must return a typed refusal.
 - [ ] Mixed precision with master weights, loss scaling, overflow recovery,
