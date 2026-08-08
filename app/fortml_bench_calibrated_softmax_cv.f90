@@ -72,8 +72,10 @@ program fortml_bench_calibrated_softmax_cv
                 "probability,", i, ",", j, ",", probabilities(i, j)
         end do
     end do
-    write (unit, '(a,es26.17e3)') "oof_log_loss,", model%oof_log_loss()
-    write (unit, '(a,es26.17e3)') "calibrated_oof_log_loss,", model%calibrated_oof_log_loss()
+    write (unit, '(a,i0,a,i0,a,es26.17e3)') &
+        "oof_log_loss,", 1, ",", 1, ",", model%oof_log_loss()
+    write (unit, '(a,i0,a,i0,a,es26.17e3)') &
+        "calibrated_oof_log_loss,", 1, ",", 1, ",", model%calibrated_oof_log_loss()
     close (unit)
     write (*, '(a,es24.16)') "calibrated_softmax_cv_fit,temperature,", fit_seconds
     write (*, '(a,es24.16)') "calibrated_softmax_cv_predict,temperature,", predict_seconds
