@@ -116,7 +116,8 @@ input/parameter JVP/VJP products with transactional fixed-state updates,
 fixed-structure XGBoost/LightGBM leaf-coordinate JVP/VJP products, and
 metric-aware plateau training with persisted diagnostics and deterministic
 split/resume recurrence. Their independent NumPy or hand oracles and typed
-CUDA-unavailable rows are pinned in the current bench head `f2f8642`.
+CUDA-unavailable rows are pinned in the benchmark data head `f2f8642` and
+carried by the documentation head `3999ffc`.
 The ARD derivative-GP lane adds dense mixed-observation input JVP/VJP and
 parameter HVP rows in `results/DERIVATIVE_GP.md`; the RAdam trajectory lane is
 `results/MLP_RADAM_HYPERGRADIENT.md`, and the Tweedie tree lane is
