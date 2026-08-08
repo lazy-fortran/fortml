@@ -5,8 +5,10 @@ program fortml_bench_neural_losses
     use fortml_losses, only: binary_cross_entropy_with_logits_hvp, &
         multilabel_binary_cross_entropy_with_logits_hvp, &
         ordinal_cumulative_logit_loss_hvp, &
-        softmax_cross_entropy_hvp, weighted_mse_loss_hvp, huber_loss_hvp, &
-        mae_loss_jvp, focal_binary_cross_entropy_with_logits_jvp, &
+        softmax_cross_entropy_hvp, softmax_hvp, log_softmax_hvp, &
+        weighted_mse_loss_hvp, huber_loss_hvp, mae_loss_jvp, &
+        focal_binary_cross_entropy_with_logits_jvp, &
+        focal_binary_cross_entropy_with_logits_hvp, &
         gaussian_nll_hvp, poisson_nll_hvp
     use fortml_mlp, only: mlp_t
     use fortml_mlp_training, only: mlp_loss_value_gradient
@@ -14,6 +16,7 @@ program fortml_bench_neural_losses
 
     integer, parameter :: n = 64, k = 3, repetitions = 2048
     real(dp) :: logits(n, k), targets(n, k), direction(n, k), product(n, k)
+    real(dp) :: cotangent(n, k)
     real(dp) :: ordinal_logits(n, k - 1), ordinal_direction(n, k - 1)
     real(dp) :: ordinal_product(n, k - 1)
     real(dp) :: prediction(n, 1), target(n, 1), weights(n), value, l2_gradient
@@ -34,6 +37,9 @@ program fortml_bench_neural_losses
             merge(1.0_dp, 0.0_dp, mod(i, 3) == 2)]
         direction(i, :) = [0.01_dp*sin(0.11_dp*real(i, dp)), &
             -0.02_dp*cos(0.17_dp*real(i, dp)), 0.03_dp]
+        cotangent(i, :) = [0.7_dp*sin(0.08_dp*real(i, dp)), &
+            -0.5_dp*cos(0.06_dp*real(i, dp)), &
+            0.2_dp + 0.3_dp*sin(0.04_dp*real(i, dp))]
         log_variance(i, :) = [0.2_dp*sin(0.03_dp*real(i, dp)), &
             -0.1_dp*cos(0.05_dp*real(i, dp)), 0.15_dp*sin(0.07_dp*real(i, dp))]
         count_targets(i, :) = [real(mod(i, 5), dp), real(mod(i + 1, 5), dp), &
@@ -90,6 +96,34 @@ program fortml_bench_neural_losses
     call cpu_time(finish)
     call emit("softmax_cross_entropy_hvp", finish - start, sum(product))
 
+    call softmax_hvp(logits, direction, cotangent, product, status)
+    if (.not. status_ok(status)) error stop "softmax HVP warmup failed"
+    call cpu_time(start)
+    do repetition = 1, repetitions
+        call softmax_hvp(logits, direction, cotangent, product, status)
+    end do
+    call cpu_time(finish)
+    call emit("softmax_hvp", finish - start, sum(product))
+
+    call log_softmax_hvp(logits, direction, cotangent, product, status)
+    if (.not. status_ok(status)) error stop "log-softmax HVP warmup failed"
+    call cpu_time(start)
+    do repetition = 1, repetitions
+        call log_softmax_hvp(logits, direction, cotangent, product, status)
+    end do
+    call cpu_time(finish)
+    call emit("log_softmax_hvp", finish - start, sum(product))
+
+    call softmax_cross_entropy_hvp(logits, labels, direction, product, status, weights)
+    if (.not. status_ok(status)) error stop "weighted softmax warmup failed"
+    call cpu_time(start)
+    do repetition = 1, repetitions
+        call softmax_cross_entropy_hvp(logits, labels, direction, product, status, &
+            weights)
+    end do
+    call cpu_time(finish)
+    call emit("weighted_softmax_cross_entropy_hvp", finish - start, sum(product))
+
     call weighted_mse_loss_hvp(prediction, target, weights, direction(:, 1:1), &
         product(:, 1:1), status)
     if (.not. status_ok(status)) error stop "weighted MSE warmup failed"
@@ -133,6 +167,17 @@ program fortml_bench_neural_losses
     end do
     call cpu_time(finish)
     call emit("focal_bce_jvp", finish - start, value_dot)
+
+    call focal_binary_cross_entropy_with_logits_hvp(logits, targets, 0.25_dp, &
+        2.0_dp, direction, product, status, weights)
+    if (.not. status_ok(status)) error stop "focal BCE HVP warmup failed"
+    call cpu_time(start)
+    do repetition = 1, repetitions
+        call focal_binary_cross_entropy_with_logits_hvp(logits, targets, 0.25_dp, &
+            2.0_dp, direction, product, status, weights)
+    end do
+    call cpu_time(finish)
+    call emit("focal_bce_hvp", finish - start, sum(product))
 
     call gaussian_nll_hvp(logits, targets, log_variance, direction, &
         variance_direction, product, variance_product, status, weights)
