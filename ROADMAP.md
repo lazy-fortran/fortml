@@ -59,8 +59,9 @@ parameter snapshots and transfer counters. NVIDIA
 compiler coverage remains an
 explicit older-build result.
 
-The checked-in evidence rows are generated from the clean FortML-bench
-revision `187d2ff`,
+The checked-in evidence is maintained on the clean FortML-bench revision
+`9aa9713`; each CSV records the exact clean benchmark revision used to produce
+its rows,
 the trainer-checkpoint, unfactored-Adafactor, binary-objective,
 multiclass-calibration, variational-multiclass-GP, PINN/physics-objective,
 physics HVP, grouped K-fold, spectral-mixture, XGBoost-ranking,
@@ -142,6 +143,18 @@ coincident-safe input gradients and mixed Hessians, and parameter JVPs with
 finite-difference and adjoint checks in
 `fortml-bench/results/DERIVATIVE_GP_LOCAL_PERIODIC.md`.
 
+The latest closure slice adds three independently oracle-backed lanes. Dense
+horizontal/sequential/fan-out basis pipelines now validate transactional input
+schemas and stable feature names (`results/PIPELINE_SCHEMA.md`); the typed
+one-cycle trajectory objective differentiates peak and final-rate coordinates
+through warm-up and cosine updates (`results/MLP_ONE_CYCLE_HYPERGRADIENT.md`);
+and multiclass calibration adds weighted one-vs-rest isotonic maps with simplex
+renormalization (`results/MULTICLASS_ISOTONIC_CALIBRATION.md`). Their checked-in
+CSV rows pin FortML `33a5f8a` and clean generating benchmark revisions
+`187d2ff` (pipeline), `ced3cee` (one-cycle), and `a86b8d8` (isotonic); CPU
+oracle errors are below `5e-12` for the one-cycle products and `2e-16` for the isotonic lane, with
+CUDA and unsupported HVP/active-set paths recorded as typed refusals.
+
 ### 2026-08-08 parity and provenance slice
 
 This verification records the current bounded production contracts without
@@ -173,7 +186,7 @@ optimizer-group execution, mixed precision, distributed state, and migration
 remain open. The source and benchmark pins for this earlier optimizer-group
 slice were FortML `05632ce8fa95268417c7a2d979fa1461a202abaa` and
 FortML-bench `0fb8ac7`; the current aggregate verification is the newer
-`7ff43f8`/`187d2ff` pair recorded above.
+`7ff43f8`/`9aa9713` pair recorded above.
 
 The variational-GP classification and OVR wrappers now expose fixed-state
 kernel-log-parameter JVP/VJP products for latent margins and normalized
