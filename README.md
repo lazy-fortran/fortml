@@ -174,6 +174,13 @@ end program exact_gp_example
 | Lazy inference | `fortml_linear_operator`, `fortml_kernel_operator`, `fortml_sparse_operator`, `fortml_structured_operator`, `fortml_toeplitz_operator`, `fortml_banded_precision` | Toeplitz products are host-resident |
 | Supporting contracts | `fortml_kernel_formula`, `fortml_lanczos`, `fortml_multilevel_grid`, `fortml_inference_policy`, `fortml_parameter_registry`, `fortml_parameter_products`, `fortml_hyperparameter_search`, `fortml_device`, `fortml_cuda_metrics` | Product availability depends on the wrapped model. `fortml_hyperparameter_search` provides deterministic grid/random enumeration, bounded single-start and seeded multistart FortOpt L-BFGS-B over shared analytic objectives. `fortml_device` records explicit CPU/CUDA capability, residency ownership, and transfer events. `fortml_cuda_metrics` adds a transfer-inclusive native-CUDA weighted MSE reduction with an unavailable stub and no host fallback. Neither module claims complete GPU execution. |
 
+The multiclass MLP classifier also exposes a weighted softmax cross-entropy
+objective with an optional L2 coordinate. Its parameter/L2 value, JVP, VJP,
+and HVP products are analytic, and bounded FortOpt L-BFGS-B uses the same
+callback. Resident CUDA classifier training remains a typed refusal. The
+independent gate and benchmark are documented in `docs/API.md` and the
+companion `fortml-bench/results/MLP_CLASSIFIER_OBJECTIVE.md` report.
+
 `fortml_mlp_calibrated_classifier` adds the calibrated neural-head slice to
 this surface.  Binary models support deterministic sigmoid, positive
 temperature, and weighted isotonic calibration; multiclass models support a
