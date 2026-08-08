@@ -9,12 +9,13 @@ program fortml_bench_lightgbm
     real(real64) :: x(n, d), target(n), labels(n), weight(n), prediction(n), margin(n)
     real(real64) :: staged(n, 8), contributions(n, 9), sliced_prediction(n)
     real(real64) :: sx(6, 1), sy(6), expected(6), tiny_prediction(6)
-    type(lightgbm_t) :: regression, binary, tiny, prefix
+    type(lightgbm_t) :: regression, binary, tiny, prefix, restored
     type(lightgbm_options_t) :: options, tiny_options
     type(fortnum_status_t) :: status
     type(fortml_device_t) :: cuda
     real(real64) :: started, finished, mse, accuracy, oracle_error, product_error
-    integer :: i
+    integer :: i, snapshot_unit
+    character(*), parameter :: snapshot_path = "fortml_bench_lightgbm_snapshot.txt"
 
     do i = 1, n
         x(i, 1) = -1.0_real64 + 2.0_real64*real(i-1, real64)/real(n-1, real64)
@@ -73,6 +74,26 @@ program fortml_bench_lightgbm
     product_error = maxval(abs(sliced_prediction-staged(:, 4)))
     write (*, '(a,i0,a,i0,a,i0,a,es24.16,a,es24.16)') "lightgbm_slice,", n, ",", d, ",", &
         prefix%estimator_count(), ",", max(0.0_real64, finished-started), ",", product_error
+
+    call cpu_time(started)
+    call regression%save_text(snapshot_path, status)
+    if (status%code /= FORTNUM_OK) error stop "lightgbm text save failed"
+    call restored%load_text(snapshot_path, status)
+    if (status%code /= FORTNUM_OK) error stop "lightgbm text load failed"
+    call restored%predict(x, sliced_prediction, status)
+    call cpu_time(finished)
+    if (status%code /= FORTNUM_OK) error stop "lightgbm restored prediction failed"
+    product_error = maxval(abs(sliced_prediction-prediction))
+    write (*, '(a,i0,a,i0,a,i0,a,es24.16,a,es24.16)') "lightgbm_persistence,", n, ",", d, ",", &
+        restored%estimator_count(), ",", max(0.0_real64, finished-started), ",", product_error
+    open(newunit=snapshot_unit, file=snapshot_path, status="old", position="append", &
+        action="write")
+    write(snapshot_unit, '(a)') "unexpected_record 1"
+    close(snapshot_unit)
+    call restored%load_text(snapshot_path, status)
+    write (*, '(a,i0)') "lightgbm_persistence_invalid,", status%code
+    open(newunit=snapshot_unit, file=snapshot_path, status="old", action="read")
+    close(snapshot_unit, status="delete")
 
     call binary%fit_binary(x, labels, status, options, weight)
     if (status%code /= FORTNUM_OK) error stop "lightgbm binary fit failed"

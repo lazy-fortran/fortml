@@ -3635,6 +3635,12 @@ learning-rate-scaled per-tree terms; summing its columns reproduces
 `predict_margin`. `slice(n_trees,destination,status)` copies a fitted prefix
 transactionally, including all allocatable node/row state, so a prefix can be
 served without refitting.
+`save_text(path,status)` and `load_text(path,status)` round-trip a versioned
+`FORTML_LIGHTGBM_TEXT` snapshot containing model metadata and all live node
+arrays. Loading validates record order, schema, finite scalar bounds, child
+indices, and EOF before replacing the destination; truncated, unknown,
+trailing, or malformed records return `FORTNUM_DOMAIN_ERROR` and leave it
+unchanged.
 
 The finite numeric contract is explicit: NaN and infinity inputs are refused,
 and categorical, missing-value-default, GOSS, EFB, and distributed policies are
@@ -3642,6 +3648,7 @@ not silently approximated. Fixed-tree input JVP/VJP products are zero away from
 learned split surfaces and return `FORTNUM_DOMAIN_ERROR` exactly on a split
 boundary. CPU dispatch is supported; `predict_device` on a selected CUDA
 device returns `FORTNUM_NOT_IMPLEMENTED` until resident leaf-wise histogram
-state is available. Independent hand and tree-walk oracles are
-`test_lightgbm` and `test_lightgbm_staged_slice`; the release benchmark is
+state is available. Independent hand, tree-walk, and persistence oracles are
+`test_lightgbm`, `test_lightgbm_staged_slice`, and
+`test_lightgbm_persistence`; the release benchmark is
 `lightgbm_leafwise.csv` in `../fortml-bench`.
