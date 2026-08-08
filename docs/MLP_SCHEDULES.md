@@ -23,7 +23,9 @@ The constructors are:
 - `make_mlp_schedule_warmup_cosine(warmup_updates, total_updates, min_rate_fraction)`;
 - `make_mlp_schedule_exponential_decay(warmup_updates, decay_factor)`;
 - `make_mlp_schedule_one_cycle(warmup_updates, total_updates,
-  peak_rate_fraction, final_rate_fraction)`.
+  peak_rate_fraction, final_rate_fraction)`;
+- `make_mlp_schedule_plateau(patience_updates, min_delta, factor,
+  metric_mode)`.
 
 `rate(update, base_rate, rate, status)` returns the effective positive rate.
 The cosine schedules clamp after `total_updates`; exponential decay holds the
@@ -48,6 +50,29 @@ d_decay_factor, d_peak_fraction, d_final_fraction, status)`. The two added
 products are exact and are zero for the other schedule families. Integer
 warm-up and total-update counts are structural controls, not differentiable
 coordinates.
+
+## Metric-aware plateau schedule
+
+`MLP_SCHEDULE_PLATEAU` is stateless. The caller supplies the current metric,
+the best metric so far, the consecutive non-improvement count, and the number
+of reductions already applied. `rate_with_metric` returns the effective rate
+and the next values of all four state variables. A minimizing schedule marks
+an improvement when `metric < best_metric-min_delta`. A maximizing schedule
+uses `metric > best_metric+min_delta`. An improvement updates the best value
+and clears the bad counter. Otherwise the counter increases. Once it reaches
+`patience_updates`, one reduction is applied, the counter is cleared, and the
+reduction count increases. The effective rate is
+`base_rate*factor**next_reductions`.
+
+`rate_with_metric_derivatives` also returns exact products for the base rate
+and factor. Products with respect to metric, best metric, and `min_delta` are
+zero on the selected comparison branch. The comparison and integer patience
+decisions are discrete controls. Their branch-boundary convention is therefore
+the documented zero product, not a hidden finite-difference approximation.
+The ordinary `rate` and `mlp_train` surfaces return a typed refusal for a
+plateau schedule because they do not own a validation-metric state channel.
+Use the metric-aware method from a validation-aware trainer adapter and carry
+the returned state in its checkpoint.
 
 ## Trainer integration
 
@@ -94,3 +119,7 @@ call schedule%rate_with_full_derivatives(update, base_rate, rate, d_base, &
 The independent `test_mlp_schedules` fixture checks every recurrence,
 transition and terminal value, finite-difference oracles for each continuous
 field, and typed refusal of malformed schedules.
+`test_mlp_plateau_schedule` checks minimizing and maximizing transitions,
+patience reset semantics, reduction compounding, active-branch derivatives,
+malformed configurations, checkpoint round trips, invalid checkpoint refusal,
+and the trainer capability boundary.

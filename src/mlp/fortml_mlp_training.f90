@@ -15,7 +15,8 @@ module fortml_mlp_training
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
         FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED, FORTNUM_CONVERGENCE_ERROR
     use fortml_mlp, only: mlp_t, mlp_parameter_block_t
-    use fortml_mlp_schedules, only: mlp_learning_rate_schedule_t
+    use fortml_mlp_schedules, only: mlp_learning_rate_schedule_t, &
+        MLP_SCHEDULE_PLATEAU
     use fortml_losses, only: weighted_mse_loss_value, weighted_mse_loss_vjp, &
         weighted_mse_loss_hvp
     use fortopt_objective, only: objective_t
@@ -196,7 +197,7 @@ module fortml_mlp_training
         !! with its structural and continuous fields. Procedure pointers
         !! (custom schedules and callbacks) are intentionally not copied: the
         !! caller must install deterministic procedures again on resumed options.
-        integer :: format_version = 8
+        integer :: format_version = 9
         logical :: initialized = .false.
         logical :: resume_safe = .true.
         integer :: n_samples = 0
@@ -612,7 +613,7 @@ contains
         if (allocated(self%validation_loss_history)) then
             deallocate(self%validation_loss_history)
         end if
-        self%format_version = 8
+        self%format_version = 9
         self%initialized = .false.
         self%resume_safe = .true.
         self%n_samples = 0
@@ -682,7 +683,7 @@ contains
     logical function mlp_checkpoint_valid(self) result(valid)
         class(mlp_training_checkpoint_t), intent(in) :: self
 
-        valid = self%initialized .and. self%format_version == 8 .and. &
+        valid = self%initialized .and. self%format_version == 9 .and. &
             self%n_samples > 0 .and. self%n_features > 0 .and. &
             self%n_outputs > 0 .and. self%n_parameters > 0 .and. &
             self%epoch >= 0 .and. self%updates >= 0 .and. &
@@ -1483,6 +1484,12 @@ contains
         if (has_typed_schedule .and. .not. schedule_config%valid()) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "MLP train: typed schedule is invalid")
+            if (present(state)) state = result
+            return
+        end if
+        if (has_typed_schedule .and. schedule_config%kind == MLP_SCHEDULE_PLATEAU) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "MLP train: plateau schedule requires a metric-aware trainer adapter")
             if (present(state)) state = result
             return
         end if
@@ -2412,7 +2419,7 @@ contains
             return
         end if
         call checkpoint%clear()
-        checkpoint%format_version = 8
+        checkpoint%format_version = 9
         checkpoint%initialized = .true.
         checkpoint%resume_safe = .true.
         checkpoint%n_samples = size(x, 1)
@@ -2785,7 +2792,11 @@ contains
             first%min_rate_fraction == second%min_rate_fraction .and. &
             first%decay_factor == second%decay_factor .and. &
             first%peak_rate_fraction == second%peak_rate_fraction .and. &
-            first%final_rate_fraction == second%final_rate_fraction
+            first%final_rate_fraction == second%final_rate_fraction .and. &
+            first%metric_mode == second%metric_mode .and. &
+            first%patience_updates == second%patience_updates .and. &
+            first%min_delta == second%min_delta .and. &
+            first%plateau_factor == second%plateau_factor
     end function schedules_equal
 
     subroutine adafactor_specs_from_layout(layout, specs, status)

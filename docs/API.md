@@ -192,7 +192,7 @@ repeated resident-batch evidence.
 | `mlp_rmsprop_hypergradient_objective_t` | Validation MSE after fixed full-batch RMSprop trajectory | Packed `[log(learning_rate),log(l2),decay,log(epsilon),momentum]` JVP | Exact trajectory value gradient and scalar VJP | Forward state sensitivities; inner MLP HVP |
 | `mlp_adagrad_hypergradient_objective_t` | Validation MSE after fixed full-batch Adagrad trajectory | Packed `[log(learning_rate),log(l2),log(epsilon)]` JVP | Exact trajectory value gradient and scalar VJP | Forward accumulated-square sensitivities; inner MLP HVP |
 | `mlp_adafactor_hypergradient_objective_t` | Validation MSE after fixed full-batch unfactored Adafactor trajectory | Packed `[log(learning_rate),log(l2),decay,log(epsilon),log(clip_threshold)]` JVP | Exact trajectory value gradient and scalar VJP | Forward second-moment, update-RMS clipping, and denominator sensitivities; active-set and discrete branches refuse |
-| `adafactor_factored_t` | Layout-aware matrix-factorized Adafactor with vector fallback | Parameter update | Dense second-moment inspection | Explicit row/column state for matrix blocks; CPU recurrence; formatted and in-memory schema-8 checkpoint migration; CUDA remains a typed refusal |
+| `adafactor_factored_t` | Layout-aware matrix-factorized Adafactor with vector fallback | Parameter update | Dense second-moment inspection | Explicit row/column state for matrix blocks; CPU recurrence; formatted and in-memory schema-9 checkpoint migration; CUDA remains a typed refusal |
 | `mlp_schedule_hypergradient_objective_t` | Validation MSE after a typed scheduled full-batch trajectory | Packed `[log(base_rate),log(l2),logit(min_fraction),logit(decay_factor)]` JVP | Exact schedule/trajectory value gradient and scalar VJP | Inner MLP HVP; outer hyper-HVP is not approximated |
 | `mlp_minibatch_hypergradient_objective_t` | Validation MSE after a fixed seeded mini-batch SGD trajectory | Packed `[log(learning_rate),log(l2)]` JVP | Exact batch-cursor trajectory value gradient and scalar VJP | Per-batch MLP HVP; outer hyper-HVP is a typed refusal |
 | `mlp_minibatch_adam_hypergradient_objective_t` | Validation MSE after a fixed seeded mini-batch coupled-L2 Adam trajectory | Packed `[log(learning_rate),log(l2)]` JVP | Exact batch-cursor trajectory value gradient and scalar VJP | Forward parameter/moment/bias-correction sensitivities; outer hyper-HVP is a typed refusal |
@@ -1836,7 +1836,7 @@ matrix-factorized state is available by setting
 `options%adafactor_factored=.true.`. The layout-aware path factors dense weight
 blocks and keeps bias/singleton blocks unfactored; see
 [`ADAFACTOR_FACTORED.md`](ADAFACTOR_FACTORED.md). Its ragged row/column state is
-included in the in-memory and formatted schema-8 checkpoints, with block shape
+included in the in-memory and formatted schema-9 checkpoints, with block shape
 metadata and transactional layout validation; CUDA-resident Adafactor remains
 a typed refusal.
 `MLP_OPTIMIZER_AMSGRAD` keeps the Adam first and second moments plus an
@@ -1850,7 +1850,7 @@ maximum active set remain an explicit follow-up contract.
 then applies the RAdam variance-rectification factor once `rho_t > 4`; before
 that threshold it uses the bias-corrected first moment. The two moment arrays,
 step count, and common beta/epsilon configuration are captured in the
-in-memory and text-schema-8 checkpoints. The independent
+in-memory and text-schema-9 checkpoints. The independent
 `test_mlp_radam` fixture checks both sides of the threshold, uninterrupted versus
 formatted checkpoint resume, invalid hyperparameters, and the CPU/CUDA device
 boundary. RAdam is CPU-only in this slice: `radam_t%step_device` returns
@@ -2091,7 +2091,8 @@ training.
 
 `fortml_mlp_schedules` supplies stateless built-in schedule values for that
 callback seam: constant, linear warm-up, cosine decay, warm-up plus cosine,
-exponential decay, and one-cycle warm-up/cosine schedules.
+exponential decay, one-cycle warm-up/cosine, and metric-aware plateau
+schedules.
 `mlp_learning_rate_schedule_t%rate` validates the
 update and returns a finite positive rate; `rate_with_derivatives` additionally
 returns exact products with respect to the base rate, minimum-rate fraction,
@@ -2099,6 +2100,18 @@ and decay factor. `rate_with_full_derivatives` also returns exact products with
 respect to one-cycle peak and final rate fractions (zero for other families).
 The schedule receives an explicit update index rather than
 owning hidden mutable state, so a replayed training run uses the same rates.
+The plateau constructor takes `patience_updates`, `min_delta`, `factor`, and an
+optional minimizing or maximizing metric mode. Its
+`rate_with_metric_derivatives` method takes the current metric, best metric,
+bad-observation count, and reduction count and returns their explicit next
+state. The rate is `base_rate*factor**next_reductions`. Base-rate and factor
+products are exact on the selected branch. Metric, best-metric, and
+`min_delta` products are documented zeros because the comparison is a discrete
+active-set decision. Integer update and patience fields have no products.
+Calling ordinary `rate` or `mlp_train` with a plateau schedule returns
+`FORTNUM_NOT_IMPLEMENTED` until a validation-metric trainer adapter owns that
+state. The metric-aware method remains suitable for such an adapter and its
+state can be carried in the versioned checkpoint.
 `device_supported(kind)` reports CPU-only support in this release: schedules
 have no resident CUDA optimizer lowering yet, so they must not be timed as GPU
 workloads or used to imply device-resident trajectory hypergradients. A CUDA

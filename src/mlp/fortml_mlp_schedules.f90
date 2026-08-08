@@ -22,6 +22,9 @@ module fortml_mlp_schedules
     integer, parameter, public :: MLP_SCHEDULE_WARMUP_COSINE = 4
     integer, parameter, public :: MLP_SCHEDULE_EXPONENTIAL_DECAY = 5
     integer, parameter, public :: MLP_SCHEDULE_ONE_CYCLE = 6
+    integer, parameter, public :: MLP_SCHEDULE_PLATEAU = 7
+    integer, parameter, public :: MLP_SCHEDULE_METRIC_MINIMIZE = 1
+    integer, parameter, public :: MLP_SCHEDULE_METRIC_MAXIMIZE = 2
 
     type, public :: mlp_learning_rate_schedule_t
         !! Stateless schedule parameters.
@@ -32,11 +35,18 @@ module fortml_mlp_schedules
         real(dp) :: decay_factor = 1.0_dp
         real(dp) :: peak_rate_fraction = 1.0_dp
         real(dp) :: final_rate_fraction = 0.1_dp
+        integer :: metric_mode = MLP_SCHEDULE_METRIC_MINIMIZE
+        integer :: patience_updates = 1
+        real(dp) :: min_delta = 0.0_dp
+        real(dp) :: plateau_factor = 0.5_dp
     contains
         procedure, public :: valid => schedule_valid
         procedure, public :: device_supported => schedule_device_supported
         procedure, public :: rate_with_derivatives => schedule_rate_with_derivatives
         procedure, public :: rate_with_full_derivatives => schedule_rate_with_full_derivatives
+        procedure, public :: rate_with_metric => schedule_rate_with_metric
+        procedure, public :: rate_with_metric_derivatives => &
+            schedule_rate_with_metric_derivatives
         procedure, public :: rate => schedule_rate
     end type mlp_learning_rate_schedule_t
 
@@ -46,6 +56,7 @@ module fortml_mlp_schedules
     public :: make_mlp_schedule_warmup_cosine
     public :: make_mlp_schedule_exponential_decay
     public :: make_mlp_schedule_one_cycle
+    public :: make_mlp_schedule_plateau
 
 contains
 
@@ -144,20 +155,52 @@ contains
         schedule%final_rate_fraction = final_rate_fraction
     end function make_mlp_schedule_one_cycle
 
+    function make_mlp_schedule_plateau(patience_updates, min_delta, factor, &
+            metric_mode) result(schedule)
+        !! Construct a stateless metric-aware ReduceLROnPlateau schedule.
+        !!
+        !! A caller supplies the current metric, the best metric observed so
+        !! far, the number of consecutive non-improving observations before
+        !! this call, and the number of reductions already applied.  The
+        !! metric-aware evaluator returns the next values for all four state
+        !! variables, so no mutable cursor is owned by the schedule.
+        integer, intent(in) :: patience_updates
+        real(dp), intent(in) :: min_delta, factor
+        integer, intent(in), optional :: metric_mode
+        type(mlp_learning_rate_schedule_t) :: schedule
+        !! Default-initialized instances, standing in for empty
+        !! structure constructors: nvfortran rejects `T()` outright,
+        !! and a declared local carries the same default init.
+        type(mlp_learning_rate_schedule_t) :: mlp_learning_rate_schedule_t_default
+
+        schedule = mlp_learning_rate_schedule_t_default
+        schedule%kind = MLP_SCHEDULE_PLATEAU
+        schedule%patience_updates = patience_updates
+        schedule%min_delta = min_delta
+        schedule%plateau_factor = factor
+        if (present(metric_mode)) schedule%metric_mode = metric_mode
+    end function make_mlp_schedule_plateau
+
     logical function schedule_valid(self) result(valid)
         class(mlp_learning_rate_schedule_t), intent(in) :: self
 
         valid = self%kind >= MLP_SCHEDULE_CONSTANT .and. &
-            self%kind <= MLP_SCHEDULE_ONE_CYCLE .and. &
+            self%kind <= MLP_SCHEDULE_PLATEAU .and. &
             self%warmup_updates >= 0 .and. self%total_updates >= 0 .and. &
             ieee_is_finite(self%min_rate_fraction) .and. &
             ieee_is_finite(self%decay_factor) .and. &
             ieee_is_finite(self%peak_rate_fraction) .and. &
             ieee_is_finite(self%final_rate_fraction) .and. &
+            ieee_is_finite(self%min_delta) .and. &
+            ieee_is_finite(self%plateau_factor) .and. &
             self%min_rate_fraction >= 0.0_dp .and. &
             self%min_rate_fraction <= 1.0_dp .and. self%decay_factor > 0.0_dp .and. &
             self%decay_factor <= 1.0_dp .and. self%peak_rate_fraction > 0.0_dp .and. &
-            self%final_rate_fraction > 0.0_dp
+            self%final_rate_fraction > 0.0_dp .and. &
+            self%metric_mode >= MLP_SCHEDULE_METRIC_MINIMIZE .and. &
+            self%metric_mode <= MLP_SCHEDULE_METRIC_MAXIMIZE .and. &
+            self%patience_updates >= 1 .and. self%min_delta >= 0.0_dp .and. &
+            self%plateau_factor > 0.0_dp .and. self%plateau_factor < 1.0_dp
         if (.not. valid) return
         select case (self%kind)
         case (MLP_SCHEDULE_LINEAR_WARMUP)
@@ -175,6 +218,9 @@ contains
                 self%total_updates > self%warmup_updates .and. &
                 self%peak_rate_fraction >= 1.0_dp .and. &
                 self%final_rate_fraction <= self%peak_rate_fraction
+        case (MLP_SCHEDULE_PLATEAU)
+            ! Metric mode, patience, delta, and factor are checked above.
+            continue
         end select
     end function schedule_valid
 
@@ -259,6 +305,12 @@ contains
             return
         end if
 
+        if (self%kind == MLP_SCHEDULE_PLATEAU) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP schedule: plateau requires metric-aware evaluation")
+            return
+        end if
+
         factor = 1.0_dp
         d_factor_min = 0.0_dp
         d_factor_decay = 0.0_dp
@@ -327,5 +379,111 @@ contains
         end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine schedule_rate_with_full_derivatives
+
+    subroutine schedule_rate_with_metric(self, update, base_rate, metric, best_metric, &
+            bad_updates, reductions, rate, next_best_metric, next_bad_updates, &
+            next_reductions, improved, reduced, status)
+        class(mlp_learning_rate_schedule_t), intent(in) :: self
+        integer, intent(in) :: update, bad_updates, reductions
+        real(dp), intent(in) :: base_rate, metric, best_metric
+        real(dp), intent(out) :: rate, next_best_metric
+        integer, intent(out) :: next_bad_updates, next_reductions
+        logical, intent(out) :: improved, reduced
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: d_base_rate, d_metric, d_best_metric, d_min_delta, d_factor
+
+        call self%rate_with_metric_derivatives(update, base_rate, metric, best_metric, &
+            bad_updates, reductions, rate, next_best_metric, next_bad_updates, &
+            next_reductions, improved, reduced, d_base_rate, d_metric, d_best_metric, &
+            d_min_delta, d_factor, status)
+    end subroutine schedule_rate_with_metric
+
+    subroutine schedule_rate_with_metric_derivatives(self, update, base_rate, metric, &
+            best_metric, bad_updates, reductions, rate, next_best_metric, &
+            next_bad_updates, next_reductions, improved, reduced, d_base_rate, &
+            d_metric, d_best_metric, d_min_delta, d_factor, status)
+        !! Evaluate a plateau schedule and return its explicit state transition.
+        !!
+        !! `bad_updates` and `reductions` describe the state immediately before
+        !! this metric observation.  An observation improves a minimizing
+        !! schedule when `metric < best_metric-min_delta`, or a maximizing
+        !! schedule when `metric > best_metric+min_delta`.  Improvement resets
+        !! the bad counter and updates the best value.  Otherwise the bad
+        !! counter increases.  When it reaches `patience_updates`, one
+        !! reduction is applied, the counter resets, and the reduction count
+        !! increases.  The rate is `base_rate*factor**next_reductions`.
+        !!
+        !! The derivative with respect to `base_rate` and the continuous
+        !! `factor` is exact on the active branch.  Metric, best-value, and
+        !! `min_delta` products are defined as zero because their comparisons
+        !! select a discrete branch.  Integer update, patience, bad-counter,
+        !! and reduction-count fields have no derivative products.
+        class(mlp_learning_rate_schedule_t), intent(in) :: self
+        integer, intent(in) :: update, bad_updates, reductions
+        real(dp), intent(in) :: base_rate, metric, best_metric
+        real(dp), intent(out) :: rate, next_best_metric
+        integer, intent(out) :: next_bad_updates, next_reductions
+        logical, intent(out) :: improved, reduced
+        real(dp), intent(out) :: d_base_rate, d_metric, d_best_metric, d_min_delta, d_factor
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: factor_power
+
+        rate = 0.0_dp
+        next_best_metric = best_metric
+        next_bad_updates = 0
+        next_reductions = 0
+        improved = .false.
+        reduced = .false.
+        d_base_rate = 0.0_dp
+        d_metric = 0.0_dp
+        d_best_metric = 0.0_dp
+        d_min_delta = 0.0_dp
+        d_factor = 0.0_dp
+        if (self%kind /= MLP_SCHEDULE_PLATEAU .or. .not. self%valid() .or. &
+            update < 1 .or. bad_updates < 0 .or. reductions < 0 .or. &
+            .not. ieee_is_finite(base_rate) .or. base_rate <= 0.0_dp .or. &
+            .not. ieee_is_finite(metric) .or. .not. ieee_is_finite(best_metric)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP schedule: invalid plateau state, metric, or base rate")
+            return
+        end if
+        next_bad_updates = bad_updates
+        next_reductions = reductions
+        if (self%metric_mode == MLP_SCHEDULE_METRIC_MINIMIZE) then
+            improved = metric < best_metric-self%min_delta
+        else
+            improved = metric > best_metric+self%min_delta
+        end if
+        if (improved) then
+            next_best_metric = metric
+            next_bad_updates = 0
+        else if (bad_updates >= self%patience_updates-1) then
+            if (reductions == huge(reductions)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP schedule: plateau reduction count overflow")
+                return
+            end if
+            reduced = .true.
+            next_bad_updates = 0
+            next_reductions = reductions+1
+        else
+            next_bad_updates = bad_updates+1
+        end if
+
+        factor_power = self%plateau_factor**next_reductions
+        rate = base_rate*factor_power
+        d_base_rate = factor_power
+        if (next_reductions > 0) then
+            d_factor = base_rate*real(next_reductions, dp)* &
+                self%plateau_factor**(next_reductions-1)
+        end if
+        if (.not. ieee_is_finite(rate) .or. .not. ieee_is_finite(d_base_rate) .or. &
+            .not. ieee_is_finite(d_factor) .or. rate <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP schedule: plateau rate is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine schedule_rate_with_metric_derivatives
 
 end module fortml_mlp_schedules

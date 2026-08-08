@@ -19,7 +19,7 @@ module fortml_mlp_checkpoint
 
     character(*), parameter, public :: MLP_CHECKPOINT_MAGIC = &
         "FORTML_MLP_CHECKPOINT_TEXT"
-    integer, parameter, public :: MLP_CHECKPOINT_SCHEMA_VERSION = 8
+    integer, parameter, public :: MLP_CHECKPOINT_SCHEMA_VERSION = 9
 
     public :: mlp_checkpoint_save
     public :: mlp_checkpoint_load
@@ -108,6 +108,14 @@ contains
             checkpoint%typed_schedule%peak_rate_fraction, ios)
         if (ios == 0) call write_r(unit, "typed_schedule_final_rate_fraction", &
             checkpoint%typed_schedule%final_rate_fraction, ios)
+        if (ios == 0) call write_i(unit, "typed_schedule_metric_mode", &
+            checkpoint%typed_schedule%metric_mode, ios)
+        if (ios == 0) call write_i(unit, "typed_schedule_patience_updates", &
+            checkpoint%typed_schedule%patience_updates, ios)
+        if (ios == 0) call write_r(unit, "typed_schedule_min_delta", &
+            checkpoint%typed_schedule%min_delta, ios)
+        if (ios == 0) call write_r(unit, "typed_schedule_plateau_factor", &
+            checkpoint%typed_schedule%plateau_factor, ios)
         if (ios == 0) call write_i8(unit, "shuffle_state", checkpoint%shuffle_state, ios)
         if (ios == 0) call write_r(unit, "learning_rate", checkpoint%learning_rate, ios)
         if (ios == 0) call write_r(unit, "beta1", checkpoint%beta1, ios)
@@ -291,6 +299,14 @@ contains
             candidate%typed_schedule%peak_rate_fraction, ios)
         if (ios == 0) call read_r(unit, "typed_schedule_final_rate_fraction", &
             candidate%typed_schedule%final_rate_fraction, ios)
+        if (ios == 0) call read_i(unit, "typed_schedule_metric_mode", &
+            candidate%typed_schedule%metric_mode, ios)
+        if (ios == 0) call read_i(unit, "typed_schedule_patience_updates", &
+            candidate%typed_schedule%patience_updates, ios)
+        if (ios == 0) call read_r(unit, "typed_schedule_min_delta", &
+            candidate%typed_schedule%min_delta, ios)
+        if (ios == 0) call read_r(unit, "typed_schedule_plateau_factor", &
+            candidate%typed_schedule%plateau_factor, ios)
         if (ios == 0) call read_i8(unit, "shuffle_state", candidate%shuffle_state, ios)
         if (ios == 0) call read_r(unit, "learning_rate", candidate%learning_rate, ios)
         if (ios == 0) call read_r(unit, "beta1", candidate%beta1, ios)

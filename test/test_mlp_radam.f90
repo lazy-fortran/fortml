@@ -106,14 +106,14 @@ contains
             checkpoint=resumed_checkpoint)
         call check(status_ok(status) .and. resumed_checkpoint%valid() .and. &
             resumed_checkpoint%optimizer == MLP_OPTIMIZER_RADAM .and. &
-            resumed_checkpoint%format_version == 8 .and. &
+            resumed_checkpoint%format_version == 9 .and. &
             resumed_checkpoint%adam_step_count == 3 .and. &
-            MLP_CHECKPOINT_SCHEMA_VERSION == 8, &
+            MLP_CHECKPOINT_SCHEMA_VERSION == 9, &
             "RAdam checkpoint metadata and format bump", failures)
         call mlp_checkpoint_save(resumed_checkpoint, "test_mlp_radam_checkpoint.txt", status)
         call mlp_checkpoint_load(loaded_checkpoint, "test_mlp_radam_checkpoint.txt", status)
         call check(status_ok(status) .and. loaded_checkpoint%valid() .and. &
-            loaded_checkpoint%format_version == 8, &
+            loaded_checkpoint%format_version == 9, &
             "RAdam formatted checkpoint round trip", failures)
         call mlp_train(resumed_model, x, target, status, full_options, resumed_state, &
             checkpoint=loaded_checkpoint)
