@@ -21,7 +21,7 @@ gate is still open, so this work does not move or recreate that tag.
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
 The checked-in GNU compiler log is the fresh 2026-08-08 run against FortML code
-revision `d6c2c5376d1fa39801966826fd91c19efe232ec1`, FortAD `origin/main` at
+revision `176aac62f2e488b7ee96a93be16a1ae61dffa697`, FortAD `origin/main` at
 `19e8cda7ad71990339f9ed254cc40128fcbff364`, and FortNum at
 `38bc0e578ec5c6c0e636e8fdd3844f54f9e3e473`, run from the clean checkout
 under `/mnt/storage/code/lazy-fortran/fortml`. The run includes the
@@ -54,7 +54,7 @@ compiler coverage remains an
 explicit older-build result.
 
 The companion benchmark harness is clean at FortML-bench revision
-`c3d5b2edd049e113ef6781573c07544c9369468`;
+`0b0d8012d74ddcd88c86e2dafbd202a6bc1b6aaa`;
 the trainer-checkpoint, unfactored-Adafactor, binary-objective,
 multiclass-calibration, variational-multiclass-GP, PINN/physics-objective,
 physics HVP, grouped K-fold, spectral-mixture, XGBoost-ranking,
@@ -682,7 +682,7 @@ reliability diagrams, and calibration-aware cross-validation remain open.
 | --- | --- | --- |
 | Linear regression and generalized linear models | Linear regression, weighted ridge and weighted elastic-net/lasso coordinate descent, weighted Poisson/Gamma log-link GLMs with bounded FortOpt L-BFGS-B, and logistic/softmax sample and positive sorted-class weights are implemented | Robust, quantile/Tweedie, multinomial, calibrated and regularized classifiers with shared solver and derivative contracts; resident GLM GPU kernels |
 | Feature transforms and basis maps | Polynomial, Fourier, radial, B-spline, callback bases, standard/min-max/median-IQR scalers, sparse-safe CSC standard scaling, integer categorical one-hot encoding, horizontal/sequential/column pipelines, analytic basis/pipeline HVPs, a fitted basis-to-linear estimator, and a joint differentiable basis-pipeline training objective are implemented. The objective can also pack a nonnegative ridge coordinate with exact gradient and mixed HVP blocks | CSR/CSC categorical and indicator views, DAG pipelines, leakage-safe cross-validation, callback second derivatives, and resident GPU transforms |
-| Nearest-neighbor and margin methods | Dense exact kNN and closed-radius classification plus scalar regression, weighted linear SVM/SVR, and dense RBF one-class SVM | Multi-output regression, KD-tree or ball-tree search, sparse inputs, kernel SVM/SVR, calibrated probabilities, resident GPU kernels, and differentiable soft-neighbor policies |
+| Nearest-neighbor and margin methods | Dense exact kNN and closed-radius classification plus scalar and multi-output regression, weighted linear SVM/SVR, and dense RBF one-class SVM | KD-tree or ball-tree search, sparse inputs, kernel SVM/SVR, calibrated probabilities, resident GPU kernels, and differentiable soft-neighbor policies |
 | Trees and ensembles | Partial | Deterministic finite-only regression stumps, weighted depth-limited CART regression and classification, seeded bootstrap random-forest classification, seeded randomized-threshold Extra-Trees classification, binary AdaBoost over weighted CART, squared-loss stump boosting, exact/histogram depth-limited second-order squared/logistic/Poisson/squared-log/Huber/quantile boosting, and bounded `rank:pairwise` boosting are implemented. XGBoost-style trees support weighted quantile cuts, bounded histograms, explicit NaN rejection, learned default directions, forced-left/right routing, per-feature monotonic and interaction-group constraints with recursive leaf bounds/masks, staged predictions, contributions, serialization, and transactional fitted-prefix slicing; bagging, multiclass AdaBoost/SAMME, categorical, DART/GOSS/EFB, distributed growth, and resident GPU histograms remain planned |
 | Clustering and unsupervised learning | Centered dense `pca_t` is implemented with deterministic SVD signs, rank selection, whitening, reconstruction, variance metadata, and fixed-state input products; `linear_autoencoder_t` reuses fitted PCA as the tied linear optimum with exact encode/reconstruction JVPs; deterministic dense seeded `kmeans_t` provides fit/predict/transform, inertia, and fixed-center input products with explicit empty-cluster and device refusals | Incremental/randomized/sparse/kernel PCA, ICA, NMF, minibatch k-means, Gaussian mixtures/EM, density and graph clustering, manifold methods, outlier detection, matrix factorization, and density metrics |
 | Neural networks | MLP/BNN/VAE/RNN primitives, a separable Hamiltonian MLP, a named sequential `mlp_chain_t` parameter tree, dense MLP linear/`tanh`/ReLU/GELU/SiLU/ELU/softplus/leaky-ReLU/sigmoid/Mish products, deterministic MLP Adam/AdamW/Adagrad/RMSprop/SGD/Adafactor training, exact fixed full-batch SGD momentum/Nesterov/AdamW/Adam/RMSprop/Adagrad/Adafactor trajectory hypergradients including Adafactor relative-step and parameter-scaling smooth branches, weighted binary BCE, multiclass cross-entropy, and Poisson log-rate FortOpt/L-BFGS-B objectives with exact mixed HVPs, bounded full-batch MLP and composed-chain L-BFGS-B paths, named group-wise log-L2 hyperparameters with exact mixed HVPs, portable trainer checkpoints, resident dense-affine CUDA value/JVP/VJP plus single-layer MSE-update primitives, and a resident no-autodiff CUDA Adagrad state plan exist | Alias-aware module/buffer tree, the remaining activation/loss/module catalog, convolution/attention/sequence/graph extensions, mixed precision, distributed training, compile/fusion, serialized/distributed trainers, and resident multi-layer neural training |
@@ -1790,9 +1790,12 @@ state, scoring, and refusal rules.
   hand-oracle tests, and typed CPU/CUDA/derivative contracts through
   `radius_neighbors_regressor_t`. The selection operation is intentionally
   nondifferentiable and returns `FORTNUM_NOT_IMPLEMENTED` for input JVP/VJP.
-- [ ] Add multi-output nearest-neighbor regression, kernel-density estimation,
-  and large-data exact/brute, KD-tree, and ball-tree search with deterministic
-  ties, metric callbacks, and missing-value policy.
+- [x] Add multi-output nearest-neighbor regression with dense closed-radius
+  uniform or inverse-distance reductions, vector outliers, and typed
+  derivative/device contracts. The dedicated release oracle is recorded in
+  `fortml-bench/results/RADIUS_NEIGHBORS_MULTIOUTPUT.md`; kernel-density,
+  exact/brute, KD-tree, ball-tree, metric-callback, and missing-value-policy
+  extensions remain open.
 - [x] Add weighted dense linear SVM/SVR estimators with arbitrary labels or
   real targets, FortOpt L-BFGS-B fitting, packed affine products, and typed
   nonsmooth/CUDA boundaries. Kernel SVM/SVR and kernel approximation (Nyström
