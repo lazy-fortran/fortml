@@ -863,8 +863,9 @@ contains
 
         valid = allocated(model%layer_sizes) .and. allocated(model%layer)
         if (.not. valid) return
+        ! With one layer there is no hidden activation to apply; only the
+        ! output activation controls whether the map is affine.
         valid = size(model%layer_sizes) == 2 .and. size(model%layer) == 1 .and. &
-            model%hidden_activation == MLP_LINEAR .and. &
             model%output_activation == MLP_LINEAR
     end function affine_one_layer
 
