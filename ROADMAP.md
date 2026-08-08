@@ -536,7 +536,7 @@ only listed as gaps:
 
 The FortBO and FortMC companion pins were rechecked against their remote
 `main` branches on 2026-08-08: FortBO
-`b575209d648d11b7813a635e71ba45376384c585` and FortMC
+`3743edba131d5760725dc38dd9f54156d475f569` and FortMC
 `4dde0ccdc37b4c331126605406b08e1f3bda4f59`. Their roadmaps remain authoritative
 for acquisition and sampling algorithms; FortML owns the posterior/log-density
 protocols and does not embed sampler or acquisition state. FortBO additionally
@@ -548,8 +548,9 @@ history contract. FortBO now also runs its gradient-based DTuRBO in-region
 acquisition search end to end with Sobol multistarts and FortOpt L-BFGS-B,
 beating random search on the Branin fixture at equal budget. The current pin
 also supplies preference learning and noisy-dominance probabilities with
-FortSym-generated Gaussian-comparison derivatives, exact posterior mean
-Hessians from derivative predictions, an
+FortSym-generated Gaussian-comparison derivatives, exact posterior mean and
+standard-deviation Hessians from derivative predictions, and a tested TuRBO-1/
+TuRBO-m driver with deterministic region updates and posterior sampling, an
 indefinite-curvature bound-constrained quadratic subproblem, multi-objective
 Pareto archives with exact hypervolume and scalarizations, and stopping rules
 that report a machine-readable reason. Posterior-
@@ -625,22 +626,24 @@ acquisition work packages:
 
 The companion repositories were checked on 2026-08-08 at FortMC
 `4dde0ccdc37b4c331126605406b08e1f3bda4f59` and FortBO
-`b575209d648d11b7813a635e71ba45376384c585`, both on their `main` branches. The
+`3743edba131d5760725dc38dd9f54156d475f569`, both on their `main` branches. The
 FortBO pin now includes a versioned capability-gated posterior contract,
 gradient-aware observation history/checkpointing, normalized continuous/integer/
 categorical/mixed/conditional search spaces, a differentiable-coordinate mask,
 analytic EI/PI/UCB/log-EI, marginal Monte-Carlo EI/PI with CRN, antithetic
 draws and pathwise gradients, Sobol TuRBO candidates, Thompson selection,
-gradient-based DTuRBO in-region acquisition search, exact posterior mean
-Hessians, an indefinite-curvature quadratic subproblem, Pareto archives with
+gradient-based DTuRBO in-region acquisition search, exact posterior mean and
+standard-deviation Hessians, a tested TuRBO-1/TuRBO-m driver, an
+indefinite-curvature quadratic subproblem, Pareto archives with
 exact hypervolume, scalarizations, machine-readable stopping reasons,
 preference learning, noisy dominance, the FortML derivative-GP input-HVP
 adapter, and FortML value/derivative-GP adapters;
 refresh these pins when
 their protocol or device contracts change.
 
-The current FortBO checkout builds and runs all 15 registered tests with `fo
-test`, including the preference-learning and noisy-dominance oracle. FortMC's current checkout builds cleanly and reports zero registered
+The current FortBO checkout builds and runs all 17 registered tests with `fo
+test`, including the TuRBO driver, preference-learning, and noisy-dominance
+oracles. FortMC's current checkout builds cleanly and reports zero registered
 tests, so its sampler and diagnostics claims remain roadmap items rather than
 FortML verification evidence.
 
