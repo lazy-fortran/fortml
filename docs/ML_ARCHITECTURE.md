@@ -312,8 +312,10 @@ and VJP paths; its generated header records FortSym `f71a1aa`, 15 IR nodes, and
 leaf (`9482261`, 37 IR nodes, 28 compound operations), checked by
 `test_fortsym_matern12`. Matérn 3/2 now also uses a FortSym-generated HVP
 leaf (`b72a23a`, 60 IR nodes, 48 compound operations), checked by
-`test_fortsym_matern32`; Matérn 5/2 retains the FortAD product until a
-symbolic operation-count comparison accepts a smaller replacement.
+`test_fortsym_matern32`. Matérn 5/2 now uses a FortSym-generated HVP leaf
+(`873d33f`, 80 IR nodes, 65 compound operations), checked by
+`test_fortsym_matern52`; mixed derivative-observation HVPs retain their
+typed refusal until the required fourth products are generated.
 
 Exact inference uses dense Cholesky for small problems. Large problems use the
 same lazy operator boundary for tiled products, tensor/Kronecker,
