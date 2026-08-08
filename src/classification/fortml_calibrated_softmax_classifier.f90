@@ -143,6 +143,16 @@ contains
                 "calibrated softmax fit: options are invalid")
             return
         end if
+        ! This wrapper deliberately owns the leakage-safe temperature path.
+        ! The generic multiclass calibrator also exposes Platt and isotonic
+        ! methods, but those methods are not part of this classifier's packed
+        ! parameter/derivative contract yet.  Refuse them explicitly rather
+        ! than silently changing the public calibrated-softmax API.
+        if (config%calibration%method /= CALIBRATION_TEMPERATURE) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "calibrated softmax fit: only temperature calibration is supported")
+            return
+        end if
         if (size(x, 1) < config%cv_folds .or. size(x, 2) < 1 .or. &
             size(labels) /= size(x, 1) .or. any(.not. ieee_is_finite(x))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
