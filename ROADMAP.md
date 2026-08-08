@@ -85,7 +85,7 @@ open; see [`docs/CONTRASTIVE_LOSS.md`](docs/CONTRASTIVE_LOSS.md).
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
 The checked-in GNU compiler log is the fresh 2026-08-09 run against FortML code
-revision `2d7fb2e` (including chronological validation metadata, multiclass
+revision `5df3982` (including chronological validation metadata, multiclass
 focal-softmax products, RBF order-three derivative observations, implicit
 binary GP-classification HVPs, contrastive loss products, stable XGBoost
 classifier log probabilities, multiclass XGBoost validation/early stopping,
@@ -94,10 +94,10 @@ categorical likelihood temperature HVPs, and finite-feature GP/NTK last-layer
 initialization, in addition to scheduled AdamW trajectory hypergradients,
 calibrated-softmax OOF policies, affine schedule
 outer HVPs, and seeded XGBoost DART), FortAD `origin/main` at
-`22e9627e6a1f6cc2861fb6b3d0aa24c22853bd7f`, FortFront at
-`3f9dbfc0f5865692383c4e4e2a93b4f2eac5e619`, and FortNum at
+`8d76ec77fad87d83de035e6cfc1f646e54ddc60a`, FortFront at
+`4a34853c6db0a3b67b4788fe83c20ce510d66487`, and FortNum at
 `7ced2f7aa272920916789fa82a35bfcb2e792d45`, run from the clean checkout
-in a temporary isolated checkout under `/mnt/storage/worktrees/final-gate-wave4`
+in a temporary isolated checkout under `/mnt/storage/worktrees/final-gate-wave4-latest`
 with clean sibling dependency worktrees; the gate worktrees were removed after
 verification.
 The run includes the
@@ -138,7 +138,7 @@ compiler coverage remains an
 explicit older-build result.
 
 The checked-in evidence is maintained on the clean FortML-bench revision
-`abf8982`; each CSV records the exact clean benchmark revision used to produce
+`7343f61`; each CSV records the exact clean benchmark revision used to produce
 its rows,
 the trainer-checkpoint, unfactored-Adafactor, binary-objective,
 multiclass-calibration, variational-multiclass-GP, PINN/physics-objective,
