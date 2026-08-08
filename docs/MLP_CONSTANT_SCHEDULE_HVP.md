@@ -1,8 +1,9 @@
 # Affine constant-schedule outer HVP
 
 `fortml_mlp_schedule_hypergradient` exposes an exact second-order product for
-the useful linear baseline: a single dense MLP layer with linear activations,
-trained by a fixed constant learning-rate schedule.  The packed outer vector
+the useful linear baseline: a single dense MLP layer with a linear output
+activation (there is no hidden activation to apply), trained by a fixed
+constant learning-rate schedule.  The packed outer vector
 is
 
 ```text
