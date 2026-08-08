@@ -2374,6 +2374,25 @@ seeded determinism, invalid options, and the no-fallback CUDA contract. The
 release benchmark is `../fortml-bench/scripts/bench_extra_trees.py` with report
 [`EXTRA_TREES.md`](../fortml-bench/results/EXTRA_TREES.md).
 
+### `fortml_adaboost_classifier`
+
+`adaboost_classifier_t%fit(x,labels,status[,n_estimators,max_depth,
+min_samples_leaf,sample_weight])` fits a deterministic binary AdaBoost
+ensemble of weighted CART classifiers. Labels may be any two finite integer
+values and are retained in sorted order. The default weak-learner depth is
+one. The learner weight is `0.5*log((1-error)/error)`, with early stopping for
+a perfect learner and a typed refusal when the first learner is no better than
+chance.
+
+`decision_function` returns the accumulated signed margin. `predict_proba`
+maps twice that margin through a stable logistic link and `predict` uses the
+nonnegative margin threshold. The model exposes feature, estimator, class, and
+fitted metadata. CART split routing is discrete, so `predict_proba_jvp`
+returns `FORTNUM_NOT_IMPLEMENTED`; the CPU prediction path is available
+through `predict_proba_device`, while CUDA requests return the same typed
+refusal until a resident tree ensemble kernel is linked. The independent
+oracle is `test_adaboost_classifier`.
+
 ### `fortml_discriminant_analysis`
 
 `lda_classifier_t%fit(x,labels,status[,reg_param,priors,sample_weight])` and
