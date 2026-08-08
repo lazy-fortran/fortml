@@ -197,7 +197,7 @@ module fortml_mlp_training
         !! with its structural and continuous fields. Procedure pointers
         !! (custom schedules and callbacks) are intentionally not copied: the
         !! caller must install deterministic procedures again on resumed options.
-        integer :: format_version = 9
+        integer :: format_version = 10
         logical :: initialized = .false.
         logical :: resume_safe = .true.
         integer :: n_samples = 0
@@ -221,6 +221,8 @@ module fortml_mlp_training
         integer :: optimizer = MLP_OPTIMIZER_ADAM
         integer :: precision_kind = MLP_PRECISION_FP64
         integer :: stale_epochs = 0
+        integer :: schedule_bad_updates = 0
+        integer :: schedule_reductions = 0
         integer :: gradient_clipped_updates = 0
         integer :: validation_interval = 1
         integer :: patience = 0
@@ -230,6 +232,7 @@ module fortml_mlp_training
         logical :: early_stopped = .false.
         logical :: restore_best = .true.
         logical :: has_typed_schedule = .false.
+        logical :: schedule_metric_initialized = .false.
         integer(int64) :: shuffle_state = 1_int64
         real(dp) :: learning_rate = 1.0e-3_dp
         real(dp) :: beta1 = 0.9_dp
@@ -253,6 +256,7 @@ module fortml_mlp_training
         real(dp) :: ema_decay = 0.0_dp
         type(mlp_learning_rate_schedule_t) :: typed_schedule
         real(dp) :: last_learning_rate = 0.0_dp
+        real(dp) :: schedule_best_metric = huge(1.0_dp)
         real(dp) :: initial_loss = huge(1.0_dp)
         real(dp) :: final_loss = huge(1.0_dp)
         real(dp) :: best_loss = huge(1.0_dp)
@@ -613,7 +617,7 @@ contains
         if (allocated(self%validation_loss_history)) then
             deallocate(self%validation_loss_history)
         end if
-        self%format_version = 9
+        self%format_version = 10
         self%initialized = .false.
         self%resume_safe = .true.
         self%n_samples = 0
@@ -637,6 +641,8 @@ contains
         self%adam_step_count = 0
         self%optimizer = MLP_OPTIMIZER_ADAM
         self%stale_epochs = 0
+        self%schedule_bad_updates = 0
+        self%schedule_reductions = 0
         self%gradient_clipped_updates = 0
         self%validation_interval = 1
         self%patience = 0
@@ -646,6 +652,7 @@ contains
         self%early_stopped = .false.
         self%restore_best = .true.
         self%has_typed_schedule = .false.
+        self%schedule_metric_initialized = .false.
         self%shuffle_state = 1_int64
         self%learning_rate = 1.0e-3_dp
         self%beta1 = 0.9_dp
@@ -670,6 +677,7 @@ contains
         self%ema_decay = 0.0_dp
         self%typed_schedule = mlp_learning_rate_schedule_t_default
         self%last_learning_rate = 0.0_dp
+        self%schedule_best_metric = huge(1.0_dp)
         self%initial_loss = huge(1.0_dp)
         self%final_loss = huge(1.0_dp)
         self%best_loss = huge(1.0_dp)
@@ -683,7 +691,7 @@ contains
     logical function mlp_checkpoint_valid(self) result(valid)
         class(mlp_training_checkpoint_t), intent(in) :: self
 
-        valid = self%initialized .and. self%format_version == 9 .and. &
+        valid = self%initialized .and. self%format_version == 10 .and. &
             self%n_samples > 0 .and. self%n_features > 0 .and. &
             self%n_outputs > 0 .and. self%n_parameters > 0 .and. &
             self%epoch >= 0 .and. self%updates >= 0 .and. &
@@ -709,6 +717,7 @@ contains
             self%optimizer == MLP_OPTIMIZER_LION) .and. &
             self%validation_interval > 0 .and. self%patience >= 0 .and. &
             self%gradient_clipped_updates >= 0 .and. &
+            self%schedule_bad_updates >= 0 .and. self%schedule_reductions >= 0 .and. &
             allocated(self%parameters) .and. allocated(self%first_moment) .and. &
             allocated(self%second_moment) .and. allocated(self%best_parameters) &
             .and. allocated(self%accumulated_gradient) .and. &
@@ -850,6 +859,7 @@ contains
             ieee_is_finite(self%momentum) .and. &
             ieee_is_finite(self%weight_decay) .and. &
             ieee_is_finite(self%last_learning_rate) .and. &
+            ieee_is_finite(self%schedule_best_metric) .and. &
             ieee_is_finite(self%initial_loss) .and. ieee_is_finite(self%final_loss) &
             .and. ieee_is_finite(self%best_loss) .and. &
             ieee_is_finite(self%tolerance) .and. &
@@ -874,6 +884,9 @@ contains
             ieee_is_finite(self%final_validation_loss) .and. &
             ieee_is_finite(self%best_validation_loss)
         if (self%has_typed_schedule) valid = valid .and. self%typed_schedule%valid()
+        if (self%has_typed_schedule .and. self%typed_schedule%kind == MLP_SCHEDULE_PLATEAU) then
+            valid = valid .and. self%schedule_metric_initialized
+        end if
         if (self%n_optimizer_groups < 0) then
             valid = .false.
         else if (self%n_optimizer_groups == 0) then
@@ -1464,10 +1477,14 @@ contains
         integer :: batch, epoch
         integer :: microbatch_count, accumulated_samples
         integer :: stale_epochs
+        integer :: schedule_bad_updates, schedule_reductions
+        integer :: next_schedule_bad_updates, next_schedule_reductions
         integer :: start_epoch, history_length
         logical :: stop_now, event_stop, has_batch, resuming, resume_active_epoch
         logical :: incompatible_checkpoint
         logical :: has_typed_schedule
+        logical :: schedule_metric_initialized, schedule_improved, schedule_reduced
+        real(dp) :: schedule_best_metric, next_schedule_best_metric
         type(mlp_learning_rate_schedule_t) :: schedule_config
         type(mlp_parameter_block_t), allocatable :: parameter_layout(:)
         type(adafactor_block_spec_t), allocatable :: adafactor_specs(:)
@@ -1475,6 +1492,10 @@ contains
         resuming = .false.
         validation_loss = huge(1.0_dp)
         gradient_norm = 0.0_dp
+        schedule_bad_updates = 0
+        schedule_reductions = 0
+        schedule_best_metric = huge(1.0_dp)
+        schedule_metric_initialized = .false.
         if (present(checkpoint)) resuming = checkpoint%initialized
         resume_active_epoch = .false.
         if (present(options)) config = options
@@ -1484,12 +1505,6 @@ contains
         if (has_typed_schedule .and. .not. schedule_config%valid()) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "MLP train: typed schedule is invalid")
-            if (present(state)) state = result
-            return
-        end if
-        if (has_typed_schedule .and. schedule_config%kind == MLP_SCHEDULE_PLATEAU) then
-            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
-                "MLP train: plateau schedule requires a metric-aware trainer adapter")
             if (present(state)) state = result
             return
         end if
@@ -1603,6 +1618,10 @@ contains
                 if (.not. schedules_equal(checkpoint%typed_schedule, schedule_config)) then
                     incompatible_checkpoint = .true.
                 end if
+                if (schedule_config%kind == MLP_SCHEDULE_PLATEAU .and. &
+                    .not. checkpoint%schedule_metric_initialized) then
+                    incompatible_checkpoint = .true.
+                end if
             end if
             if (checkpoint%epoch > config%max_epochs) incompatible_checkpoint = .true.
             if (incompatible_checkpoint) then
@@ -1635,6 +1654,10 @@ contains
             if (config%optimizer == MLP_OPTIMIZER_LION) then
                 allocate(lion_momentum, source=checkpoint%first_moment)
             end if
+            schedule_bad_updates = checkpoint%schedule_bad_updates
+            schedule_reductions = checkpoint%schedule_reductions
+            schedule_best_metric = checkpoint%schedule_best_metric
+            schedule_metric_initialized = checkpoint%schedule_metric_initialized
         else
             theta = model%parameters()
             allocate(best_theta, source=theta)
@@ -1710,6 +1733,11 @@ contains
                 best_loss = validation_loss
                 monitored_loss = validation_loss
             end if
+        end if
+        if (has_typed_schedule .and. schedule_config%kind == MLP_SCHEDULE_PLATEAU .and. &
+            .not. schedule_metric_initialized) then
+            schedule_best_metric = monitored_loss
+            schedule_metric_initialized = .true.
         end if
         call emit_training_event(config, MLP_EVENT_TRAIN_BEGIN, 0, result%updates, &
             result%initial_loss, result%initial_validation_loss, 0.0_dp, &
@@ -1947,8 +1975,19 @@ contains
                         end if
                         effective_rate = config%learning_rate
                         if (has_typed_schedule) then
-                            call schedule_config%rate(result%updates + 1, &
-                                config%learning_rate, effective_rate, status)
+                            if (schedule_config%kind == MLP_SCHEDULE_PLATEAU) then
+                                effective_rate = config%learning_rate*schedule_config%plateau_factor** &
+                                    schedule_reductions
+                                if (.not. ieee_is_finite(effective_rate)) then
+                                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                                        "MLP train: plateau schedule rate is not finite")
+                                    if (present(state)) state = result
+                                    return
+                                end if
+                            else
+                                call schedule_config%rate(result%updates + 1, &
+                                    config%learning_rate, effective_rate, status)
+                            end if
                             if (status%code /= FORTNUM_OK) then
                                 if (present(state)) state = result
                                 return
@@ -2058,7 +2097,9 @@ contains
                         best_theta, stale_epochs, &
                         epoch, microbatch_count, accumulated_samples, &
                         accumulated_gradient, ema_parameters, has_typed_schedule, &
-                        schedule_config, present(validation_x), status)
+                        schedule_config, present(validation_x), schedule_bad_updates, &
+                        schedule_reductions, schedule_best_metric, &
+                        schedule_metric_initialized, status)
                     if (status%code /= FORTNUM_OK) then
                         if (present(state)) state = result
                         return
@@ -2105,6 +2146,23 @@ contains
                 if (event_stop) result%early_stopped = .true.
             else
                 monitored_loss = loss
+            end if
+            if (has_typed_schedule .and. schedule_config%kind == MLP_SCHEDULE_PLATEAU) then
+                call schedule_config%rate_with_metric(epoch, config%learning_rate, &
+                    monitored_loss, schedule_best_metric, schedule_bad_updates, &
+                    schedule_reductions, effective_rate, next_schedule_best_metric, &
+                    next_schedule_bad_updates, next_schedule_reductions, schedule_improved, &
+                    schedule_reduced, status)
+                if (status%code /= FORTNUM_OK) then
+                    if (present(state)) state = result
+                    return
+                end if
+                schedule_best_metric = next_schedule_best_metric
+                schedule_bad_updates = next_schedule_bad_updates
+                schedule_reductions = next_schedule_reductions
+                schedule_metric_initialized = .true.
+                result%last_learning_rate = effective_rate
+                result%learning_rate_history(epoch) = effective_rate
             end if
             if (present(validation_x) .and. &
                 mod(epoch, config%validation_interval) /= 0) then
@@ -2158,7 +2216,9 @@ contains
                     best_theta, stale_epochs, &
                     epoch, microbatch_count, accumulated_samples, &
                     accumulated_gradient, ema_parameters, has_typed_schedule, &
-                    schedule_config, present(validation_x), status)
+                    schedule_config, present(validation_x), schedule_bad_updates, &
+                    schedule_reductions, schedule_best_metric, &
+                    schedule_metric_initialized, status)
                 if (status%code /= FORTNUM_OK) then
                     if (present(state)) state = result
                     return
@@ -2235,12 +2295,12 @@ contains
         integer :: i
 
         if (size(theta) < 1 .or. size(momentum) /= size(theta) .or. &
-                size(gradient) /= size(theta) .or. beta1 < 0.0_dp .or. &
-                beta1 >= 1.0_dp .or. beta2 < 0.0_dp .or. beta2 >= 1.0_dp .or. &
-                learning_rate <= 0.0_dp .or. weight_decay < 0.0_dp .or. &
-                .not. all(ieee_is_finite(theta)) .or. &
-                .not. all(ieee_is_finite(gradient)) .or. &
-                .not. all(ieee_is_finite(momentum))) then
+            size(gradient) /= size(theta) .or. beta1 < 0.0_dp .or. &
+            beta1 >= 1.0_dp .or. beta2 < 0.0_dp .or. beta2 >= 1.0_dp .or. &
+            learning_rate <= 0.0_dp .or. weight_decay < 0.0_dp .or. &
+            .not. all(ieee_is_finite(theta)) .or. &
+            .not. all(ieee_is_finite(gradient)) .or. &
+            .not. all(ieee_is_finite(momentum))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "MLP Lion: update state or options are invalid")
             return
@@ -2272,7 +2332,9 @@ contains
             radam_optimizer, sgd_optimizer, lion_momentum, theta, best_theta, &
             stale_epochs, active_epoch, &
             active_microbatches, accumulated_samples, accumulated_gradient, &
-            ema_parameters, has_typed_schedule, typed_schedule, has_validation, status)
+            ema_parameters, has_typed_schedule, typed_schedule, has_validation, &
+            schedule_bad_updates, schedule_reductions, schedule_best_metric, &
+            schedule_metric_initialized, status)
         type(mlp_training_checkpoint_t), intent(inout) :: checkpoint
         real(dp), intent(in) :: x(:, :), target(:, :)
         type(mlp_training_options_t), intent(in) :: config
@@ -2296,6 +2358,9 @@ contains
         logical, intent(in) :: has_typed_schedule
         type(mlp_learning_rate_schedule_t), intent(in) :: typed_schedule
         logical, intent(in) :: has_validation
+        integer, intent(in) :: schedule_bad_updates, schedule_reductions
+        real(dp), intent(in) :: schedule_best_metric
+        logical, intent(in) :: schedule_metric_initialized
         type(fortnum_status_t), intent(out) :: status
         integer :: n
         logical :: invalid_state
@@ -2303,7 +2368,11 @@ contains
         invalid_state = size(theta) < 1 .or. size(best_theta) /= size(theta) .or. &
             size(accumulated_gradient) /= size(theta) .or. &
             active_epoch < result%epochs .or. active_microbatches < 0 .or. &
-            accumulated_samples < 0 .or. .not. iterator%initialized()
+            accumulated_samples < 0 .or. .not. iterator%initialized() .or. &
+            schedule_bad_updates < 0 .or. schedule_reductions < 0 .or. &
+            .not. ieee_is_finite(schedule_best_metric)
+        if (has_typed_schedule .and. typed_schedule%kind == MLP_SCHEDULE_PLATEAU .and. &
+            .not. schedule_metric_initialized) invalid_state = .true.
         if (config%ema_decay > 0.0_dp) then
             if (.not. allocated(ema_parameters)) then
                 invalid_state = .true.
@@ -2361,8 +2430,8 @@ contains
             end if
         else if (config%optimizer == MLP_OPTIMIZER_AMSGRAD) then
             if (.not. allocated(amsgrad_optimizer%first_moment) .or. &
-                    .not. allocated(amsgrad_optimizer%second_moment) .or. &
-                    .not. allocated(amsgrad_optimizer%max_second_moment)) then
+                .not. allocated(amsgrad_optimizer%second_moment) .or. &
+                .not. allocated(amsgrad_optimizer%max_second_moment)) then
                 invalid_state = .true.
             end if
             if (allocated(amsgrad_optimizer%first_moment)) then
@@ -2376,7 +2445,7 @@ contains
             end if
         else if (config%optimizer == MLP_OPTIMIZER_RADAM) then
             if (.not. allocated(radam_optimizer%first_moment) .or. &
-                    .not. allocated(radam_optimizer%second_moment)) then
+                .not. allocated(radam_optimizer%second_moment)) then
                 invalid_state = .true.
             end if
             if (allocated(radam_optimizer%first_moment)) then
@@ -2419,7 +2488,7 @@ contains
             return
         end if
         call checkpoint%clear()
-        checkpoint%format_version = 9
+        checkpoint%format_version = 10
         checkpoint%initialized = .true.
         checkpoint%resume_safe = .true.
         checkpoint%n_samples = size(x, 1)
@@ -2479,6 +2548,8 @@ contains
             checkpoint%adam_step_count = rmsprop_optimizer%step_count
         end if
         checkpoint%stale_epochs = stale_epochs
+        checkpoint%schedule_bad_updates = schedule_bad_updates
+        checkpoint%schedule_reductions = schedule_reductions
         checkpoint%validation_interval = config%validation_interval
         checkpoint%patience = config%patience
         checkpoint%shuffle = config%shuffle
@@ -2487,7 +2558,9 @@ contains
         checkpoint%early_stopped = result%early_stopped
         checkpoint%restore_best = config%restore_best
         checkpoint%has_typed_schedule = has_typed_schedule
+        checkpoint%schedule_metric_initialized = schedule_metric_initialized
         checkpoint%typed_schedule = typed_schedule
+        checkpoint%schedule_best_metric = schedule_best_metric
         checkpoint%shuffle_state = iterator%shuffle_state
         checkpoint%learning_rate = config%learning_rate
         checkpoint%beta1 = config%beta1
@@ -2675,8 +2748,8 @@ contains
             end if
             do j = 1, i - 1
                 if (trim(groups(i)%name) == trim(groups(j)%name) .or. &
-                        ranges_overlap(groups(i)%first, groups(i)%last, &
-                        groups(j)%first, groups(j)%last)) then
+                    ranges_overlap(groups(i)%first, groups(i)%last, &
+                    groups(j)%first, groups(j)%last)) then
                     valid = .false.
                     return
                 end if
@@ -2735,8 +2808,8 @@ contains
         if (.not. equal) return
         if (size(groups) == 0) return
         if (.not. allocated(checkpoint%optimizer_group_first) .or. &
-                .not. allocated(checkpoint%optimizer_group_last) .or. &
-                .not. allocated(checkpoint%optimizer_group_learning_rate_multiplier)) then
+            .not. allocated(checkpoint%optimizer_group_last) .or. &
+            .not. allocated(checkpoint%optimizer_group_learning_rate_multiplier)) then
             equal = .false.
             return
         end if
@@ -2744,7 +2817,7 @@ contains
             equal = checkpoint%optimizer_group_first(i) == groups(i)%first .and. &
                 checkpoint%optimizer_group_last(i) == groups(i)%last .and. &
                 checkpoint%optimizer_group_learning_rate_multiplier(i) == &
-                    groups(i)%learning_rate_multiplier
+                groups(i)%learning_rate_multiplier
             if (.not. equal) return
         end do
     end function optimizer_groups_equal
@@ -2757,7 +2830,7 @@ contains
         integer :: i, first, last
 
         if (size(theta) /= size(theta_before) .or. &
-                .not. optimizer_groups_fit(size(theta), groups)) then
+            .not. optimizer_groups_fit(size(theta), groups)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "MLP optimizer groups: parameter state is incompatible")
             return
@@ -2835,7 +2908,7 @@ contains
         integer :: row_position, column_position, second_position
 
         if (.not. optimizer%initialized() .or. .not. allocated(optimizer%blocks) .or. &
-                .not. allocated(optimizer%state)) then
+            .not. allocated(optimizer%state)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "MLP checkpoint: factored Adafactor is not initialized")
             return
@@ -2897,17 +2970,17 @@ contains
         integer :: row_position, column_position, second_position
 
         if (.not. checkpoint%adafactor_factored .or. checkpoint%n_adafactor_blocks /= size(specs) .or. &
-                .not. optimizer%initialized() .or. size(optimizer%blocks) /= size(specs)) then
+            .not. optimizer%initialized() .or. size(optimizer%blocks) /= size(specs)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "MLP checkpoint: factored Adafactor layout is incompatible")
             return
         end if
         do i = 1, size(specs)
             if (checkpoint%adafactor_block_first(i) /= specs(i)%first .or. &
-                    checkpoint%adafactor_block_last(i) /= specs(i)%last .or. &
-                    checkpoint%adafactor_block_rows(i) /= specs(i)%rows .or. &
-                    checkpoint%adafactor_block_columns(i) /= specs(i)%columns .or. &
-                    (checkpoint%adafactor_block_factored(i) == 1) .neqv. specs(i)%factored) then
+                checkpoint%adafactor_block_last(i) /= specs(i)%last .or. &
+                checkpoint%adafactor_block_rows(i) /= specs(i)%rows .or. &
+                checkpoint%adafactor_block_columns(i) /= specs(i)%columns .or. &
+                (checkpoint%adafactor_block_factored(i) == 1) .neqv. specs(i)%factored) then
                 call status_set(status, FORTNUM_DOMAIN_ERROR, &
                     "MLP checkpoint: factored Adafactor layout is incompatible")
                 return
@@ -2917,11 +2990,11 @@ contains
         column_total = sum(merge(specs%columns, 0, specs%factored))
         second_total = sum(merge(specs%last - specs%first + 1, 0, .not. specs%factored))
         if (.not. allocated(checkpoint%adafactor_row_moment) .or. &
-                .not. allocated(checkpoint%adafactor_column_moment) .or. &
-                .not. allocated(checkpoint%adafactor_second_moment) .or. &
-                size(checkpoint%adafactor_row_moment) /= row_total .or. &
-                size(checkpoint%adafactor_column_moment) /= column_total .or. &
-                size(checkpoint%adafactor_second_moment) /= second_total) then
+            .not. allocated(checkpoint%adafactor_column_moment) .or. &
+            .not. allocated(checkpoint%adafactor_second_moment) .or. &
+            size(checkpoint%adafactor_row_moment) /= row_total .or. &
+            size(checkpoint%adafactor_column_moment) /= column_total .or. &
+            size(checkpoint%adafactor_second_moment) /= second_total) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "MLP checkpoint: factored Adafactor state is malformed")
             return

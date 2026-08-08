@@ -311,7 +311,7 @@ prediction checks, provenance, and typed CUDA refusals. These slices do not
 claim SAMME.R, tree-search backends, or resident radius/boosting kernels.
 
 The same release slice now records CPU RAdam flat-state and MLP training with
-format-9/text-schema-9 checkpoint replay, an independent NumPy recurrence, and
+format-10/text-schema-10 checkpoint replay, an independent NumPy recurrence, and
 a typed CUDA-unavailable row in `fortml-bench/results/RADAM.md`. Ordered-gradient
 integer categorical XGBoost partitions are covered by
 `fortml-bench/results/XGBOOST_CATEGORICAL.md`; the fixture checks the bounded
@@ -1493,10 +1493,11 @@ when a lower-level primitive already exists.
   minimizing and maximizing metrics, and returns the next state without a
   hidden cursor. Base-rate and factor derivatives are exact on each active
   branch, while metric, best-value, min-delta, and integer decision products
-  are documented zeros. Formatted checkpoint schema 9 validates and round-trips
-  the plateau fields. The ordinary trainer path returns a typed refusal until
-  a validation-metric adapter owns the returned state. Independent transition,
-  finite-difference, persistence, and refusal oracles are in
+  are documented zeros. Formatted checkpoint schema 10 validates and round-trips
+  the plateau fields. `mlp_train` now owns this state at epoch boundaries,
+  selects validation loss when present (training loss otherwise), and reproduces
+  the schedule through split checkpoint/resume. Independent transition,
+  finite-difference, trainer, persistence, resume, and refusal oracles are in
   `test_mlp_plateau_schedule` and `fortml-bench/results/MLP_PLATEAU_SCHEDULE.md`.
 - [ ] Remaining production optimizer gaps: cosine/one-cycle/warmup schedule
   derivatives through optimizer groups, validation policy, and device state.
@@ -2912,6 +2913,14 @@ trials remain visible in the result schema.
   quadratic oracle covers the callback sequence, split continuation, and
   transactional callback-presence refusal. Validation callbacks remain
   process-local and host-owned.
+- [x] Integrate the typed metric-aware plateau schedule into `mlp_train`.
+  Epoch validation loss (or training loss without a held-out stream) drives a
+  deterministic best-metric/bad-observation/reduction state machine.  The
+  base-rate and plateau-factor products are analytic on the active branch;
+  version-10 in-memory and formatted checkpoints preserve the counters and
+  best metric, and an independent fixture checks recurrence, malformed state,
+  and interrupted-versus-uninterrupted resume.  Resident CUDA metric
+  reduction and optimizer state remain an explicit typed boundary.
 - [ ] Add production optimizers and schedules: SGD with momentum/Nesterov,
   Adam/AdamW, L-BFGS/L-BFGS-B, natural gradient, cosine,
   one-cycle, warmup/decay, plateau, and user callbacks. Optimizer state is

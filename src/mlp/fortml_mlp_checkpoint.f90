@@ -19,7 +19,7 @@ module fortml_mlp_checkpoint
 
     character(*), parameter, public :: MLP_CHECKPOINT_MAGIC = &
         "FORTML_MLP_CHECKPOINT_TEXT"
-    integer, parameter, public :: MLP_CHECKPOINT_SCHEMA_VERSION = 9
+    integer, parameter, public :: MLP_CHECKPOINT_SCHEMA_VERSION = 10
 
     public :: mlp_checkpoint_save
     public :: mlp_checkpoint_load
@@ -82,6 +82,10 @@ contains
         if (ios == 0) call write_i(unit, "optimizer", checkpoint%optimizer, ios)
         if (ios == 0) call write_i(unit, "precision_kind", checkpoint%precision_kind, ios)
         if (ios == 0) call write_i(unit, "stale_epochs", checkpoint%stale_epochs, ios)
+        if (ios == 0) call write_i(unit, "schedule_bad_updates", &
+            checkpoint%schedule_bad_updates, ios)
+        if (ios == 0) call write_i(unit, "schedule_reductions", &
+            checkpoint%schedule_reductions, ios)
         if (ios == 0) call write_i(unit, "gradient_clipped_updates", &
             checkpoint%gradient_clipped_updates, ios)
         if (ios == 0) call write_i(unit, "validation_interval", &
@@ -94,6 +98,8 @@ contains
         if (ios == 0) call write_l(unit, "restore_best", checkpoint%restore_best, ios)
         if (ios == 0) call write_l(unit, "has_typed_schedule", &
             checkpoint%has_typed_schedule, ios)
+        if (ios == 0) call write_l(unit, "schedule_metric_initialized", &
+            checkpoint%schedule_metric_initialized, ios)
         if (ios == 0) call write_i(unit, "typed_schedule_kind", &
             checkpoint%typed_schedule%kind, ios)
         if (ios == 0) call write_i(unit, "typed_schedule_warmup_updates", &
@@ -117,6 +123,8 @@ contains
         if (ios == 0) call write_r(unit, "typed_schedule_plateau_factor", &
             checkpoint%typed_schedule%plateau_factor, ios)
         if (ios == 0) call write_i8(unit, "shuffle_state", checkpoint%shuffle_state, ios)
+        if (ios == 0) call write_r(unit, "schedule_best_metric", &
+            checkpoint%schedule_best_metric, ios)
         if (ios == 0) call write_r(unit, "learning_rate", checkpoint%learning_rate, ios)
         if (ios == 0) call write_r(unit, "beta1", checkpoint%beta1, ios)
         if (ios == 0) call write_r(unit, "beta2", checkpoint%beta2, ios)
@@ -273,6 +281,10 @@ contains
         if (ios == 0) call read_i(unit, "optimizer", candidate%optimizer, ios)
         if (ios == 0) call read_i(unit, "precision_kind", candidate%precision_kind, ios)
         if (ios == 0) call read_i(unit, "stale_epochs", candidate%stale_epochs, ios)
+        if (ios == 0) call read_i(unit, "schedule_bad_updates", &
+            candidate%schedule_bad_updates, ios)
+        if (ios == 0) call read_i(unit, "schedule_reductions", &
+            candidate%schedule_reductions, ios)
         if (ios == 0) call read_i(unit, "gradient_clipped_updates", &
             candidate%gradient_clipped_updates, ios)
         if (ios == 0) call read_i(unit, "validation_interval", &
@@ -285,6 +297,8 @@ contains
         if (ios == 0) call read_l(unit, "restore_best", candidate%restore_best, ios)
         if (ios == 0) call read_l(unit, "has_typed_schedule", &
             candidate%has_typed_schedule, ios)
+        if (ios == 0) call read_l(unit, "schedule_metric_initialized", &
+            candidate%schedule_metric_initialized, ios)
         if (ios == 0) call read_i(unit, "typed_schedule_kind", &
             candidate%typed_schedule%kind, ios)
         if (ios == 0) call read_i(unit, "typed_schedule_warmup_updates", &
@@ -308,6 +322,8 @@ contains
         if (ios == 0) call read_r(unit, "typed_schedule_plateau_factor", &
             candidate%typed_schedule%plateau_factor, ios)
         if (ios == 0) call read_i8(unit, "shuffle_state", candidate%shuffle_state, ios)
+        if (ios == 0) call read_r(unit, "schedule_best_metric", &
+            candidate%schedule_best_metric, ios)
         if (ios == 0) call read_r(unit, "learning_rate", candidate%learning_rate, ios)
         if (ios == 0) call read_r(unit, "beta1", candidate%beta1, ios)
         if (ios == 0) call read_r(unit, "beta2", candidate%beta2, ios)
@@ -599,7 +615,7 @@ contains
 
         call read_i(unit, count_key, count, ios)
         if (ios /= 0 .or. count < 0 .or. &
-                (expected_count >= 0 .and. count /= expected_count)) then
+            (expected_count >= 0 .and. count /= expected_count)) then
             ios = 1
             return
         end if
@@ -623,7 +639,7 @@ contains
 
         call read_i(unit, count_key, count, ios)
         if (ios /= 0 .or. count < 0 .or. &
-                (expected_count >= 0 .and. count /= expected_count)) then
+            (expected_count >= 0 .and. count /= expected_count)) then
             ios = 1
             return
         end if

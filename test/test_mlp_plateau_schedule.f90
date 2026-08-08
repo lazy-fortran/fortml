@@ -19,11 +19,12 @@ program test_mlp_plateau_schedule
     real(dp) :: plus, minus, base
     integer :: bad, reductions, next_bad, next_reductions, failures
     logical :: improved, reduced
-    type(mlp_t) :: model
-    type(mlp_training_options_t) :: options
-    type(mlp_training_state_t) :: state
-    type(mlp_training_checkpoint_t) :: checkpoint, loaded
+    type(mlp_t) :: model, split_model
+    type(mlp_training_options_t) :: options, split_options
+    type(mlp_training_state_t) :: state, split_state
+    type(mlp_training_checkpoint_t) :: checkpoint, loaded, split_checkpoint
     real(dp) :: x(3, 1), target(3, 1)
+    real(dp) :: trajectory_error
     character(*), parameter :: path = "test_mlp_plateau_schedule_checkpoint.txt"
 
     failures = 0
@@ -116,6 +117,8 @@ program test_mlp_plateau_schedule
     call check(status_ok(status), "checkpoint fixture training", failures)
     checkpoint%typed_schedule = make_mlp_schedule_plateau(2, 0.02_dp, 0.4_dp, &
         MLP_SCHEDULE_METRIC_MAXIMIZE)
+    checkpoint%schedule_metric_initialized = .true.
+    checkpoint%schedule_best_metric = 0.0_dp
     call mlp_checkpoint_save(checkpoint, path, status)
     call check(status_ok(status), "plateau checkpoint save", failures)
     call mlp_checkpoint_load(loaded, path, status)
@@ -129,10 +132,27 @@ program test_mlp_plateau_schedule
     call mlp_checkpoint_save(checkpoint, path, status)
     call check(status%code == FORTNUM_DOMAIN_ERROR, &
         "invalid plateau checkpoint refusal", failures)
+    options%max_epochs = 4
+    options%learning_rate = 1.0e-12_dp
     options%typed_schedule = make_mlp_schedule_plateau(2, 0.02_dp, 0.4_dp)
-    call mlp_train(model, x, target, status, options)
-    call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
-        "trainer metric-aware adapter refusal", failures)
+    call model%set_parameters([0.0_dp, 0.0_dp], status)
+    call mlp_train(model, x, target, status, options, state)
+    call check(status_ok(status), "trainer metric-aware plateau schedule", failures)
+    call check(state%updates == 4 .and. abs(state%last_learning_rate-1.6e-13_dp) < &
+        1.0e-24_dp, "trainer plateau reductions follow independent recurrence", failures)
+    call split_model%initialize([1, 1], status, output_activation=MLP_LINEAR)
+    call split_model%set_parameters([0.0_dp, 0.0_dp], status)
+    split_options = options
+    split_options%max_epochs = 2
+    call mlp_train(split_model, x, target, status, split_options, split_state, &
+        checkpoint=split_checkpoint)
+    call check(status_ok(status), "trainer plateau checkpoint prefix", failures)
+    call mlp_train(split_model, x, target, status, options, split_state, &
+        checkpoint=split_checkpoint)
+    trajectory_error = maxval(abs(model%parameters()-split_model%parameters()))
+    call check(status_ok(status) .and. trajectory_error < 1.0e-24_dp .and. &
+        split_checkpoint%schedule_reductions == 2, &
+        "trainer plateau checkpoint resume matches uninterrupted trajectory", failures)
 
     call remove_file(path)
     if (failures > 0) error stop 1

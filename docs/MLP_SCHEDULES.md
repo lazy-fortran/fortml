@@ -69,10 +69,13 @@ and factor. Products with respect to metric, best metric, and `min_delta` are
 zero on the selected comparison branch. The comparison and integer patience
 decisions are discrete controls. Their branch-boundary convention is therefore
 the documented zero product, not a hidden finite-difference approximation.
-The ordinary `rate` and `mlp_train` surfaces return a typed refusal for a
-plateau schedule because they do not own a validation-metric state channel.
-Use the metric-aware method from a validation-aware trainer adapter and carry
-the returned state in its checkpoint.
+The ordinary `rate` surface returns a typed refusal for a plateau schedule
+because it does not own a metric state channel. `mlp_train` is validation-aware:
+it observes validation loss at each completed epoch when a held-out stream is
+present (training loss otherwise), owns the four state variables, and carries
+them in the version-10 checkpoint. A split/resumed run therefore uses the same
+reduction sequence as an uninterrupted run. Custom trainer adapters can still
+call the metric-aware method directly.
 
 ## Trainer integration
 
