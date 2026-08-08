@@ -21,7 +21,7 @@ gate is still open, so this work does not move or recreate that tag.
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
 The checked-in GNU compiler log is the fresh 2026-08-08 run against FortML code
-revision `83d088a8e428912b7b25dab7e4648627468547e3`, FortAD `origin/main` at
+revision `f6456e68ba019cb92c1cbd01095fb5b8ce76e2b4`, FortAD `origin/main` at
 `9cbfb0ef46cf7f6c57488b311c2ff3144193a34e`, and FortNum at
 `38bc0e578ec5c6c0e636e8fdd3844f54f9e3e473`, run from the clean checkout
 under `/mnt/storage/code/lazy-fortran/fortml`. The run includes the
@@ -54,7 +54,7 @@ compiler coverage remains an
 explicit older-build result.
 
 The companion benchmark harness is clean at FortML-bench revision
-`19f3655eac2b916ca65e7e2bf9018c00f3c97a65`;
+`d26e8c71ab5fca907a36548baf4f8931dadb2bf6`;
 the trainer-checkpoint, unfactored-Adafactor, binary-objective,
 multiclass-calibration, variational-multiclass-GP, PINN/physics-objective,
 physics HVP, grouped K-fold, spectral-mixture, XGBoost-ranking,
@@ -117,8 +117,8 @@ optimizer-group execution, mixed precision, distributed state, and migration
 remain open. The source and benchmark pins for this earlier optimizer-group
 slice were FortML `05632ce8fa95268417c7a2d979fa1461a202abaa` and
 FortML-bench `0fb8ac7`; the current aggregate verification is the newer
-`83d088a8e428912b7b25dab7e4648627468547e3`/
-`19f3655eac2b916ca65e7e2bf9018c00f3c97a65` pair recorded above.
+`f6456e68ba019cb92c1cbd01095fb5b8ce76e2b4`/
+`d26e8c71ab5fca907a36548baf4f8931dadb2bf6` pair recorded above.
 
 The variational-GP classification and OVR wrappers now expose fixed-state
 kernel-log-parameter JVP/VJP products for latent margins and normalized
