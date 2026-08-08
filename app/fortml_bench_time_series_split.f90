@@ -9,9 +9,9 @@ program fortml_bench_time_series_split
     use fortnum_status, only: fortnum_status_t, status_ok
     implicit none
 
-    integer, parameter :: n_samples = 1000, n_splits = 5
-    integer, parameter :: test_size = 100, gap = 3, max_train_size = 250
-    integer, parameter :: repetitions = 256
+    integer, parameter :: n_samples = 29, n_splits = 4
+    integer, parameter :: test_size = 3, gap = 2, max_train_size = 7
+    integer, parameter :: repetitions = 2048
     type(time_series_splitter_t) :: splitter
     type(estimator_score_metadata_t) :: score
     type(fortnum_status_t) :: status
