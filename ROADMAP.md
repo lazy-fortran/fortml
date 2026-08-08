@@ -13,6 +13,9 @@ The GitHub `v0.1.0` tag currently points to the earlier release-verification
 commit `a387cc5`; the trainer, calibration, variational-GP, transform, and CUDA
 VJP closure slices documented below are post-tag additions. The broad parity
 gate is still open, so this work does not move or recreate that tag.
+The checklist currently records 282 completed and 133 open items; open rows are
+retained until their implementation, independent oracle, device/refusal
+behavior, and benchmark evidence land together.
 
 | Compiler | Command | Result |
 | --- | --- | --- |
