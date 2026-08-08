@@ -64,8 +64,9 @@ outer HVPs, and seeded XGBoost DART), FortAD `origin/main` at
 `22e9627e6a1f6cc2861fb6b3d0aa24c22853bd7f`, FortFront at
 `3f9dbfc0f5865692383c4e4e2a93b4f2eac5e619`, and FortNum at
 `7ced2f7aa272920916789fa82a35bfcb2e792d45`, run from the clean checkout
-under `/mnt/storage/worktrees/final-gate-wave2` with clean sibling
-dependency worktrees.
+in a temporary isolated checkout under `/mnt/storage/worktrees/final-gate-wave2`
+with clean sibling dependency worktrees; the gate worktrees were removed after
+verification.
 The run includes the
   kernel-catalog, weighted LDA/QDA, robust/absolute XGBoost, neural NLL, random-forest,
 Extra-Trees, grouped MLP HVP and L-BFGS-B, basis/pipeline HVP, cosine

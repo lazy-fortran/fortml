@@ -8,7 +8,7 @@ FortNum dependency: origin/main 7ced2f7aa272920916789fa82a35bfcb2e792d45
 FortSparse dependency: origin/main 7ad20738b3f888a3bbec37324eff3117c630221d
 FortML-bench revision: origin/main 8edb0bc (clean benchmark data and documentation head)
 Command: FO_SCAN_FALLBACK=regex fo
-Worktree: clean isolated checkout at /mnt/storage/worktrees/final-gate-wave2/fortml; dependencies are sibling clean worktrees
+Worktree: clean temporary isolated checkout at /mnt/storage/worktrees/final-gate-wave2/fortml; sibling dependency worktrees were removed after verification
 Static: OK (561 modules, 561 changed, 561 affected)
 Build: OK (897 units)
 Tests: OK (257/257)
