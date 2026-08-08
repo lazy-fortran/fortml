@@ -51,6 +51,12 @@ program fortml_bench_radius_neighbors_multioutput
     write (*, '(a,es24.16)') "radius_multioutput_predict_seconds,", predict_seconds
     write (*, '(a,es24.16)') "radius_multioutput_max_abs_prediction,", &
         maxval(abs(predictions(1:7, :)))
+    do i = 1, 7
+        write (*, '(a,i0,a,i0,a,es24.16)') "radius_multioutput_prediction,", i, &
+            ",", 1, ",", predictions(i, 1)
+        write (*, '(a,i0,a,i0,a,es24.16)') "radius_multioutput_prediction,", i, &
+            ",", 2, ",", predictions(i, 2)
+    end do
 
     cuda%kind = FORTML_DEVICE_CUDA
     cuda%selected = .true.
