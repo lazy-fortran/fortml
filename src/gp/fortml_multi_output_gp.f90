@@ -282,7 +282,7 @@ contains
         !! keeps this product composable with posterior-mean products.
         class(multi_output_gp_t), intent(in) :: self
         real(dp), intent(in) :: inputs(:, :), direction(:)
-        real(dp), intent(inout) :: matrix(:, :), matrix_dot(:, :)
+        real(dp), intent(out) :: matrix(:, :), matrix_dot(:, :)
         type(fortnum_status_t), intent(out) :: status
         real(dp), allocatable :: block(:, :), block_dot(:, :), local(:, :)
         real(dp), allocatable :: local_dot(:, :), b_dot(:, :), kernel_direction(:)
@@ -359,7 +359,7 @@ contains
         !! is symmetric because both `B` and `K` are symmetric.
         class(multi_output_gp_t), intent(in) :: self
         real(dp), intent(in) :: inputs(:, :), matrix_bar(:, :)
-        real(dp), intent(inout) :: parameter_bar(:)
+        real(dp), intent(out) :: parameter_bar(:)
         type(fortnum_status_t), intent(out) :: status
         real(dp), allocatable :: block(:, :), kbar(:, :), b_bar(:, :), local(:)
         real(dp), allocatable :: parameter_local(:)
