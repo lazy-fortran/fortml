@@ -13,7 +13,7 @@ program fortml_bench_lightgbm_validation_warm_start
     type(lightgbm_options_t) :: prefix_options, warm_options
     type(fortnum_status_t) :: status
     type(fortml_device_t) :: cuda
-    integer :: i, clock_start, clock_finish, clock_rate
+    integer :: i, clock_start, clock_finish, clock_rate, invalid_status
     real(real64) :: elapsed, preservation_error
 
     x(:, 1) = real([(i, i = 0, n-1)], real64)
@@ -67,9 +67,10 @@ program fortml_bench_lightgbm_validation_warm_start
     call invalid%predict(x, before, status)
     call invalid%fit_warm_start(x, target, status, warm_options, validation_x=x, &
         validation_y=validation_target(:3))
+    invalid_status = status%code
     call invalid%predict(x, after, status)
     preservation_error = maxval(abs(after-before))
-    write (*, '(a,i0,a,i0,a,es24.16)') "lgbm_warm_invalid,", status%code, ",", &
+    write (*, '(a,i0,a,i0,a,es24.16)') "lgbm_warm_invalid,", invalid_status, ",", &
         invalid%estimator_count(), ",", preservation_error
 
     cuda%kind = FORTML_DEVICE_CUDA
