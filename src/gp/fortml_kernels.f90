@@ -54,6 +54,10 @@ module fortml_kernels
     !! use logarithmic unconstrained coordinates while frequencies (means)
     !! remain signed physical coordinates.
     integer, parameter, public :: KERNEL_SPECTRAL_MIXTURE = 16
+    !! Product of a squared-exponential envelope and a periodic factor.
+    !! Parameters are packed as [log_variance, log_envelope_lengthscale,
+    !! log_periodic_lengthscale, log_period].
+    integer, parameter, public :: KERNEL_LOCAL_PERIODIC = 17
 
     type, public :: kernel_t
         integer :: kind = 0
@@ -86,6 +90,7 @@ module fortml_kernels
     public :: make_constant_kernel
     public :: make_white_noise_kernel
     public :: make_periodic_kernel
+    public :: make_local_periodic_kernel
     public :: make_rational_quadratic_kernel
     public :: make_cosine_kernel
     public :: make_polynomial_kernel
@@ -253,6 +258,37 @@ contains
             variance, lengthscale, period, status)
     end function make_periodic_kernel
 
+    function make_local_periodic_kernel(input_dim, variance, envelope_lengthscale, &
+            periodic_lengthscale, period, status) result(kernel)
+        !! Construct the locally-periodic covariance
+        !!
+        !! ``k(x,x') = variance * exp(-||x-x'||^2/(2 ell_e^2)) *
+        !! exp(-2 sin^2(pi ||x-x'|| / period) / ell_p^2)``.
+        !! All four parameters are positive and stored in logarithmic
+        !! coordinates, so the kernel composes directly with exact GP
+        !! inference and its hyperparameter products.
+        integer, intent(in) :: input_dim
+        real(dp), intent(in) :: variance, envelope_lengthscale
+        real(dp), intent(in) :: periodic_lengthscale, period
+        type(fortnum_status_t), intent(out) :: status
+        type(kernel_t) :: kernel
+
+        if (input_dim < 1 .or. variance <= 0.0_dp .or. envelope_lengthscale <= 0.0_dp .or. &
+            periodic_lengthscale <= 0.0_dp .or. period <= 0.0_dp .or. &
+            .not. ieee_is_finite(variance) .or. .not. ieee_is_finite(envelope_lengthscale) .or. &
+            .not. ieee_is_finite(periodic_lengthscale) .or. .not. ieee_is_finite(period)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "local periodic constructor: dimensions and scales must be positive and finite")
+            return
+        end if
+        kernel%kind = KERNEL_LOCAL_PERIODIC
+        kernel%input_dim = input_dim
+        allocate(kernel%log_parameters(4))
+        kernel%log_parameters = [log(variance), log(envelope_lengthscale), &
+            log(periodic_lengthscale), log(period)]
+        call status_set(status, FORTNUM_OK, "")
+    end function make_local_periodic_kernel
+
     function make_rational_quadratic_kernel( &
             input_dim, variance, lengthscale, alpha, status) result(kernel)
         integer, intent(in) :: input_dim
@@ -387,6 +423,8 @@ contains
             count = 2
         case (KERNEL_PERIODIC, KERNEL_RATIONAL_QUADRATIC)
             count = 3
+        case (KERNEL_LOCAL_PERIODIC)
+            count = 4
         case (KERNEL_POLYNOMIAL)
             count = 4
         case (KERNEL_LINEAR, KERNEL_CONSTANT, KERNEL_WHITE_NOISE, KERNEL_USER)
@@ -473,6 +511,8 @@ contains
             value = ard_rbf_value(self, x1, x2)
         case (KERNEL_SPECTRAL_MIXTURE)
             value = spectral_value(self, x1, x2)
+        case (KERNEL_LOCAL_PERIODIC)
+            value = local_periodic_value(self, x1, x2)
         case default
             variance = exp(self%log_parameters(1))
             if (self%kind == KERNEL_RBF .or. self%kind == KERNEL_MATERN12 .or. &
@@ -690,6 +730,10 @@ contains
             call spectral_parameter_hvp(self, x1, x2, matrix_bar, direction, &
                 parameter_bar, parameter_bar_dot, offset, status)
             return
+        case (KERNEL_LOCAL_PERIODIC)
+            call local_periodic_parameter_hvp(self, x1, x2, matrix_bar, direction, &
+                parameter_bar, parameter_bar_dot, offset, status)
+            return
         case default
             continue
         end select
@@ -854,6 +898,220 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine kernel_parameter_hvp_impl
+
+    real(dp) function local_periodic_value(self, x1, x2) result(value)
+        class(kernel_t), intent(in) :: self
+        real(dp), intent(in) :: x1(:), x2(:)
+        real(dp) :: derivative(4), squared_distance
+
+        squared_distance = sum((x1 - x2)**2)
+        call local_periodic_value_derivatives(self%log_parameters, squared_distance, &
+            value, derivative)
+    end function local_periodic_value
+
+    subroutine local_periodic_value_derivatives(log_parameters, squared_distance, &
+            value, derivative)
+        real(dp), intent(in) :: log_parameters(:), squared_distance
+        real(dp), intent(out) :: value, derivative(4)
+        real(dp) :: variance, envelope_scale, periodic_scale, period
+        real(dp) :: distance, argument, sine_value, cosine_value, pi
+        real(dp) :: a, b
+        real(dp) :: log_direction(4)
+
+        variance = exp(log_parameters(1))
+        envelope_scale = exp(log_parameters(2))
+        periodic_scale = exp(log_parameters(3))
+        period = exp(log_parameters(4))
+        pi = acos(-1.0_dp)
+        distance = sqrt(max(squared_distance, 0.0_dp))
+        argument = pi*distance/period
+        sine_value = sin(argument)
+        cosine_value = cos(argument)
+        a = 0.5_dp/(envelope_scale*envelope_scale)
+        b = 2.0_dp/(periodic_scale*periodic_scale)
+        value = variance*exp(-a*squared_distance - b*sine_value*sine_value)
+        log_direction(1) = 1.0_dp
+        log_direction(2) = 2.0_dp*a*squared_distance
+        log_direction(3) = 2.0_dp*b*sine_value*sine_value
+        log_direction(4) = 2.0_dp*b*argument*sine_value*cosine_value
+        derivative = value*log_direction
+    end subroutine local_periodic_value_derivatives
+
+    subroutine local_periodic_value_hvp(log_parameters, direction, squared_distance, &
+            value, value_dot, derivative, derivative_dot)
+        real(dp), intent(in) :: log_parameters(:), direction(:), squared_distance
+        real(dp), intent(out) :: value, value_dot, derivative(4), derivative_dot(4)
+        real(dp) :: variance, envelope_scale, periodic_scale, period
+        real(dp) :: distance, argument, sine_value, cosine_value, pi
+        real(dp) :: sine_dot, cosine_dot, argument_dot, a, b, b_dot
+        real(dp) :: log_derivative(4), log_derivative_dot(4), log_direction
+        integer :: i
+
+        variance = exp(log_parameters(1))
+        envelope_scale = exp(log_parameters(2))
+        periodic_scale = exp(log_parameters(3))
+        period = exp(log_parameters(4))
+        pi = acos(-1.0_dp)
+        distance = sqrt(max(squared_distance, 0.0_dp))
+        argument = pi*distance/period
+        sine_value = sin(argument)
+        cosine_value = cos(argument)
+        a = 0.5_dp/(envelope_scale*envelope_scale)
+        b = 2.0_dp/(periodic_scale*periodic_scale)
+        argument_dot = -argument*direction(4)
+        sine_dot = cosine_value*argument_dot
+        cosine_dot = -sine_value*argument_dot
+        b_dot = -2.0_dp*b*direction(3)
+        value = variance*exp(-a*squared_distance - b*sine_value*sine_value)
+        log_derivative(1) = 1.0_dp
+        log_derivative(2) = 2.0_dp*a*squared_distance
+        log_derivative(3) = 2.0_dp*b*sine_value*sine_value
+        log_derivative(4) = 2.0_dp*b*argument*sine_value*cosine_value
+        log_derivative_dot(1) = 0.0_dp
+        log_derivative_dot(2) = -2.0_dp*log_derivative(2)*direction(2)
+        log_derivative_dot(3) = 2.0_dp*(b_dot*sine_value*sine_value + &
+            2.0_dp*b*sine_value*sine_dot)
+        log_derivative_dot(4) = 2.0_dp*(b_dot*argument*sine_value*cosine_value + &
+            b*(argument_dot*sine_value*cosine_value + argument*sine_dot*cosine_value + &
+            argument*sine_value*cosine_dot))
+        log_direction = 0.0_dp
+        do i = 1, 4
+            log_direction = log_direction + log_derivative(i)*direction(i)
+        end do
+        value_dot = value*log_direction
+        derivative = value*log_derivative
+        derivative_dot = value_dot*log_derivative + value*log_derivative_dot
+    end subroutine local_periodic_value_hvp
+
+    subroutine local_periodic_matrix(self, x1, x2, matrix)
+        class(kernel_t), intent(in) :: self
+        real(dp), intent(in) :: x1(:, :), x2(:, :)
+        real(dp), intent(out) :: matrix(:, :)
+        integer :: i, j
+
+        do j = 1, size(x2, 1)
+            do i = 1, size(x1, 1)
+                matrix(i, j) = local_periodic_value(self, x1(i, :), x2(j, :))
+            end do
+        end do
+    end subroutine local_periodic_matrix
+
+    subroutine local_periodic_matrix_jvp(self, x1, x2, direction, matrix, matrix_dot)
+        class(kernel_t), intent(in) :: self
+        real(dp), intent(in) :: x1(:, :), x2(:, :), direction(:)
+        real(dp), intent(out) :: matrix(:, :), matrix_dot(:, :)
+        real(dp) :: derivative(4), derivative_dot(4), squared_distance
+        integer :: i, j
+
+        do j = 1, size(x2, 1)
+            do i = 1, size(x1, 1)
+                squared_distance = sum((x1(i, :) - x2(j, :))**2)
+                call local_periodic_value_hvp(self%log_parameters, direction, &
+                    squared_distance, matrix(i, j), matrix_dot(i, j), derivative, derivative_dot)
+            end do
+        end do
+    end subroutine local_periodic_matrix_jvp
+
+    subroutine local_periodic_input_derivatives(self, x1, x2, value, gradient_x1, &
+            gradient_x2, mixed_hessian, status)
+        class(kernel_t), intent(in) :: self
+        real(dp), intent(in) :: x1(:), x2(:)
+        real(dp), intent(out) :: value, gradient_x1(:), gradient_x2(:)
+        real(dp), intent(out) :: mixed_hessian(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: difference(size(x1)), squared_distance, distance
+        real(dp) :: parameter_derivative(4)
+        real(dp) :: envelope_scale, periodic_scale, period, a, b, c
+        real(dp) :: argument, sine_value, cosine_value, pi
+        real(dp) :: first_r, second_r, first_t, second_t
+        real(dp) :: log_r, log_rr
+        integer :: i, j
+
+        difference = x1 - x2
+        squared_distance = sum(difference*difference)
+        call local_periodic_value_derivatives(self%log_parameters, squared_distance, &
+            value, parameter_derivative)
+        envelope_scale = exp(self%log_parameters(2))
+        periodic_scale = exp(self%log_parameters(3))
+        period = exp(self%log_parameters(4))
+        a = 0.5_dp/(envelope_scale*envelope_scale)
+        b = 2.0_dp/(periodic_scale*periodic_scale)
+        pi = acos(-1.0_dp)
+        c = pi/period
+        distance = sqrt(max(squared_distance, 0.0_dp))
+        if (distance == 0.0_dp) then
+            first_t = -value*(a + b*c*c)
+            second_t = value*((a + b*c*c)**2 + 2.0_dp*b*c**4/3.0_dp)
+        else
+            argument = c*distance
+            sine_value = sin(argument)
+            cosine_value = cos(argument)
+            log_r = -2.0_dp*a*distance - 2.0_dp*b*c*sine_value*cosine_value
+            log_rr = -2.0_dp*a - 2.0_dp*b*c*c*(cosine_value*cosine_value - &
+                sine_value*sine_value)
+            first_r = value*log_r
+            second_r = value*(log_r*log_r + log_rr)
+            first_t = first_r/(2.0_dp*distance)
+            second_t = (second_r - first_r/distance)/(4.0_dp*squared_distance)
+        end if
+        gradient_x1 = 2.0_dp*first_t*difference
+        gradient_x2 = -gradient_x1
+        do i = 1, size(x1)
+            do j = 1, size(x2)
+                mixed_hessian(i, j) = -2.0_dp*first_t*merge(1.0_dp, 0.0_dp, i == j) - &
+                    4.0_dp*second_t*difference(i)*difference(j)
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine local_periodic_input_derivatives
+
+    subroutine local_periodic_parameter_vjp(self, x1, x2, matrix_bar, parameter_bar, offset)
+        class(kernel_t), intent(in) :: self
+        real(dp), intent(in) :: x1(:, :), x2(:, :), matrix_bar(:, :)
+        real(dp), intent(inout) :: parameter_bar(:)
+        integer, intent(in) :: offset
+        real(dp) :: derivative(4), value, squared_distance
+        integer :: i, j, parameter
+
+        do j = 1, size(x2, 1)
+            do i = 1, size(x1, 1)
+                squared_distance = sum((x1(i, :) - x2(j, :))**2)
+                call local_periodic_value_derivatives(self%log_parameters, squared_distance, &
+                    value, derivative)
+                do parameter = 1, 4
+                    parameter_bar(offset + parameter - 1) = parameter_bar(offset + parameter - 1) + &
+                        matrix_bar(i, j)*derivative(parameter)
+                end do
+            end do
+        end do
+    end subroutine local_periodic_parameter_vjp
+
+    subroutine local_periodic_parameter_hvp(self, x1, x2, matrix_bar, direction, &
+            parameter_bar, parameter_bar_dot, offset, status)
+        class(kernel_t), intent(in) :: self
+        real(dp), intent(in) :: x1(:, :), x2(:, :), matrix_bar(:, :), direction(:)
+        real(dp), intent(inout) :: parameter_bar(:), parameter_bar_dot(:)
+        integer, intent(in) :: offset
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: derivative(4), derivative_dot(4), value, value_dot, squared_distance
+        integer :: i, j, parameter
+
+        do j = 1, size(x2, 1)
+            do i = 1, size(x1, 1)
+                squared_distance = sum((x1(i, :) - x2(j, :))**2)
+                call local_periodic_value_hvp(self%log_parameters, direction, squared_distance, &
+                    value, value_dot, derivative, derivative_dot)
+                do parameter = 1, 4
+                    parameter_bar(offset + parameter - 1) = parameter_bar(offset + parameter - 1) + &
+                        matrix_bar(i, j)*derivative(parameter)
+                    parameter_bar_dot(offset + parameter - 1) = &
+                        parameter_bar_dot(offset + parameter - 1) + &
+                        matrix_bar(i, j)*derivative_dot(parameter)
+                end do
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine local_periodic_parameter_hvp
 
     subroutine periodic_value_derivatives(variance, lengthscale, period, squared_distance, &
             value, derivative_variance, derivative_lengthscale, derivative_period)
@@ -1424,6 +1682,8 @@ contains
             call ard_rbf_matrix(self, x1, x2, matrix)
         case (KERNEL_SPECTRAL_MIXTURE)
             call spectral_matrix(self, x1, x2, matrix)
+        case (KERNEL_LOCAL_PERIODIC)
+            call local_periodic_matrix(self, x1, x2, matrix)
         case default
             variance = exp(self%log_parameters(1))
             if (self%kind == KERNEL_RBF .or. self%kind == KERNEL_MATERN12 .or. &
@@ -1547,6 +1807,9 @@ contains
                 gradient_x2, mixed_hessian, status)
         case (KERNEL_SPECTRAL_MIXTURE)
             call spectral_input_derivatives(self, x1, x2, value, gradient_x1, &
+                gradient_x2, mixed_hessian, status)
+        case (KERNEL_LOCAL_PERIODIC)
+            call local_periodic_input_derivatives(self, x1, x2, value, gradient_x1, &
                 gradient_x2, mixed_hessian, status)
         case (KERNEL_RBF)
             variance = exp(self%log_parameters(1))
@@ -1860,6 +2123,8 @@ contains
             call ard_rbf_matrix_jvp(self, x1, x2, direction, matrix, matrix_dot)
         case (KERNEL_SPECTRAL_MIXTURE)
             call spectral_matrix_jvp(self, x1, x2, direction, matrix, matrix_dot)
+        case (KERNEL_LOCAL_PERIODIC)
+            call local_periodic_matrix_jvp(self, x1, x2, direction, matrix, matrix_dot)
         case default
             variance = exp(self%log_parameters(1))
             log_variance_dot = direction(1)
@@ -1966,6 +2231,8 @@ contains
                 matrix_bar*left_matrix, parameter_bar, offset + left_count)
         case (KERNEL_SPECTRAL_MIXTURE)
             call spectral_parameter_vjp(self, x1, x2, matrix_bar, parameter_bar, offset)
+        case (KERNEL_LOCAL_PERIODIC)
+            call local_periodic_parameter_vjp(self, x1, x2, matrix_bar, parameter_bar, offset)
         case default
             variance = exp(self%log_parameters(1))
             if (self%kind == KERNEL_RBF .or. self%kind == KERNEL_MATERN12 .or. &
@@ -2338,6 +2605,10 @@ contains
             valid = allocated(self%log_parameters)
             if (.not. valid) return
             valid = size(self%log_parameters) == 3
+        case (KERNEL_LOCAL_PERIODIC)
+            valid = allocated(self%log_parameters)
+            if (.not. valid) return
+            valid = size(self%log_parameters) == 4
         case (KERNEL_POLYNOMIAL)
             valid = allocated(self%log_parameters)
             if (.not. valid) return
