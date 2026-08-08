@@ -151,8 +151,8 @@ beta, epsilon, and schedule coordinates through CPU trajectories and feeds
 FortOpt L-BFGS-B; the GP lane covers all periodic log-kernel/noise coordinates
 with coincidence-safe fourth-input products; GOSS records top/other gradient-
 Hessian reweighting, persistence, replay, and transactional rate validation.
-Their CSV rows pin clean source revisions `af6273b`, `4493428`, and `0fe7eff`
-to generating benchmark revisions `ef88c30`, `d10ce1f`, and `14afd70`,
+Their CSV rows pin clean source revisions `af6273b`, `7c2a004`, and `0fe7eff`
+to generating benchmark revisions `ef88c30`, `e307326`, and `14afd70`,
 respectively. CPU products pass independent oracles (GOSS replay error is zero;
 the periodic HVP oracle error is `2.53e-6`), and unsupported CUDA/outer-HVP
 paths remain explicit typed refusals.
