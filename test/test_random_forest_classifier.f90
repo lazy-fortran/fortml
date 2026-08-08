@@ -6,7 +6,7 @@ program test_random_forest_classifier
     use fortml_device, only: fortml_device_t, FORTML_DEVICE_CUDA
     use fortml_random_forest_classifier, only: random_forest_classifier_t, &
         random_forest_cuda_plan_t, RANDOM_FOREST_MAX_TREES, &
-        RANDOM_FOREST_CUDA_PLAN_ABI_VERSION
+        RANDOM_FOREST_CUDA_PLAN_ABI_VERSION, RANDOM_FOREST_OOB_INSUFFICIENT
     implicit none
 
     type(random_forest_classifier_t) :: model, repeat_model, other_model
@@ -15,19 +15,24 @@ program test_random_forest_classifier
     type(fortml_device_t) :: cuda
     real(real64) :: x(12, 2), query(3, 2), probabilities(3, 3), &
         repeat_probabilities(3, 3), other_probabilities(3, 3), &
-        cuda_probabilities(3, 3)
-    integer :: labels(12), predictions(3), cuda_predictions(3), failures
+        cuda_probabilities(3, 3), oob_probabilities(12, 3), &
+        repeat_oob_probabilities(12, 3), oob_score, sentinel_score, &
+        x_small(2, 2), oob_small(2, 2)
+    integer :: labels(12), labels_small(2), predictions(3), cuda_predictions(3), failures
+    logical :: inclusion(12, 17)
 
     x = reshape([ &
         -3.0_real64, -2.8_real64, -3.2_real64, -2.9_real64, &
-         0.0_real64,  0.2_real64, -0.2_real64,  0.1_real64, &
-         3.0_real64,  2.8_real64,  3.2_real64,  2.9_real64, &
+        0.0_real64,  0.2_real64, -0.2_real64,  0.1_real64, &
+        3.0_real64,  2.8_real64,  3.2_real64,  2.9_real64, &
         -3.0_real64,  0.1_real64,  3.0_real64,  0.0_real64, &
         -2.8_real64,  0.2_real64,  2.8_real64, -0.1_real64, &
         -3.2_real64, -0.2_real64,  3.2_real64,  0.1_real64], shape(x))
     ! Reshape above is column-major: rows 1--4 are class -5, 5--8 class 0,
     ! and 9--12 class 8 with well-separated first coordinates.
     labels = [-5, -5, -5, -5, 0, 0, 0, 0, 8, 8, 8, 8]
+    x_small = x([1, 5], :)
+    labels_small = labels([1, 5])
     query(:, 1) = [-3.1_real64, 0.0_real64, 3.1_real64]
     query(:, 2) = [0.0_real64, 0.1_real64, 0.0_real64]
     failures = 0
@@ -55,6 +60,25 @@ program test_random_forest_classifier
     call check(status_ok(status) .and. other_model%random_seed() == 124 .and. &
         maxval(abs(sum(other_probabilities, dim=2) - 1.0_real64)) < 2.0e-14_real64, &
         "alternate seed remains a valid bootstrap ensemble", failures)
+
+    inclusion = model%bootstrap_inclusion()
+    call check(count(inclusion) > 0 .and. count(.not. inclusion) > 0 .and. &
+        model%oob_coverage() > 0.99_real64, &
+        "stored bootstrap inclusion has complete OOB coverage", failures)
+    oob_probabilities = -41.0_real64
+    call model%oob_decision_function(x, oob_probabilities, status)
+    call check(status_ok(status) .and. &
+        maxval(abs(sum(oob_probabilities, dim=2) - 1.0_real64)) < 2.0e-14_real64 .and. &
+        all(oob_probabilities >= 0.0_real64), &
+        "OOB decision probabilities are a simplex", failures)
+    call repeat_model%oob_decision_function(x, repeat_oob_probabilities, status)
+    call check(status_ok(status) .and. &
+        maxval(abs(repeat_oob_probabilities - oob_probabilities)) < 2.0e-14_real64, &
+        "OOB predictions are deterministic from stored inclusion", failures)
+    oob_score = -9.0_real64
+    call model%oob_score(x, labels, oob_score, status)
+    call check(status_ok(status) .and. oob_score > 0.90_real64 .and. &
+        oob_score <= 1.0_real64, "independent separated-cluster OOB score oracle", failures)
 
     call model%fit(x, labels, status, n_trees=17, max_depth=2, &
         criterion=2, seed=123)
@@ -95,6 +119,24 @@ program test_random_forest_classifier
         "CUDA label refusal preserves the output buffer", failures)
     call check(.not. model%device_supported(FORTML_DEVICE_CUDA), &
         "CUDA capability refusal", failures)
+
+    cuda_probabilities = -47.0_real64
+    call model%oob_decision_function_device(cuda, x(1:3, :), cuda_probabilities, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED .and. &
+        all(cuda_probabilities == -47.0_real64), &
+        "CUDA OOB refusal preserves the output buffer", failures)
+    sentinel_score = -13.0_real64
+    call model%oob_score_device(cuda, x(1:3, :), labels(1:3), sentinel_score, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED .and. sentinel_score == -13.0_real64, &
+        "CUDA OOB score refusal preserves the scalar", failures)
+
+    call other_model%fit(x_small, labels_small, status, n_trees=1, &
+        max_depth=0, seed=123)
+    oob_small = -53.0_real64
+    call other_model%oob_decision_function(x_small, oob_small, status)
+    call check(status%code == RANDOM_FOREST_OOB_INSUFFICIENT .and. &
+        all(oob_small == -53.0_real64), &
+        "insufficient OOB coverage refuses without in-bag fallback", failures)
 
     call cuda_plan%create(model, cuda, status)
     call check(status%code == FORTNUM_NOT_IMPLEMENTED .and. &

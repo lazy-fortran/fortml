@@ -204,7 +204,7 @@ repeated resident-batch evidence.
 | `xgboost_t` | Squared/squared-log (RMSLE)/logistic/Poisson/fixed-shape Gamma/Tweedie/Huber/quantile/absolute/rank:pairwise margins, predictions, additive tree contributions, fitted-prefix slicing, and bounded ordered-gradient integer categorical partitions | Fixed-tree input JVP away from split boundaries; categorical models refuse discrete tangents | Fixed-tree input VJP away from split boundaries; categorical models refuse discrete cotangents | No |
 | `xgboost_classifier_t` | Binary integer labels, logistic `(n,2)` probabilities, staged margins, and feature diagnostics | Fixed-tree probability/input JVP away from split boundaries | Fixed-tree probability/input VJP away from split boundaries | No |
 | `lightgbm_t` | Weighted numeric regression/binary logistic histogram boosting with deterministic globally best-leaf growth | Fixed-tree input JVP away from split boundaries | Fixed-tree input VJP away from split boundaries | No |
-| `random_forest_classifier_t` | Bootstrap-ensemble probabilities and labels | Refused: split routing is discrete | Refused: split routing is discrete | No |
+| `random_forest_classifier_t` | Bootstrap-ensemble probabilities/labels plus transactional OOB decision probabilities, OOB accuracy, coverage, and bootstrap-inclusion audit state | Refused: split routing is discrete | Refused: split routing is discrete | CPU OOB products; CUDA returns typed `FORTNUM_NOT_IMPLEMENTED` |
 | `extra_trees_classifier_t` | Randomized-threshold ensemble probabilities and labels | Refused: split routing is discrete | Refused: split routing is discrete | No |
 | `bagging_classifier_t` | Seeded bootstrap or without-replacement CART probabilities and labels | Refused: split routing is discrete | Refused: split routing is discrete | No |
 | `gp_regression_t` | Mean, variance, LML | Prediction and LML parameters | Prediction and LML parameters | Mean and LML parameters |
@@ -2554,6 +2554,21 @@ before averaging. `criterion` accepts `CART_CRITERION_GINI` or
 `predict_proba` averages the aligned leaf probabilities and `predict` maps the
 first maximum back to the sorted integer `classes`. Accessors expose the class,
 feature, tree, depth, criterion, seed, and fitted metadata.
+
+The fitted bootstrap-inclusion matrix is retained for audit through
+`bootstrap_inclusion()` and `oob_coverage()`. `oob_decision_function(x,p,status)`
+(also named `predict_proba_oob`) requires the original training row set and
+averages only trees that did not include each row; `oob_score(x,labels,score,
+status)` computes accuracy from that same transactional product. Every OOB row
+must have at least one excluded tree. Otherwise both methods leave caller
+outputs untouched and return `RANDOM_FOREST_OOB_INSUFFICIENT` (the generic
+`FORTNUM_CONVERGENCE_ERROR` code), never falling back to in-bag predictions.
+`oob_decision_function_device` and `oob_score_device` dispatch on CPU and
+return `FORTNUM_NOT_IMPLEMENTED` for CUDA while preserving their output
+buffers. Class columns are mapped by the sorted global `classes()` labels even
+when an individual bootstrap CART omits a class. See
+`docs/RANDOM_FOREST_OOB.md` and the independent benchmark report for the
+coverage, score, and CUDA evidence.
 
 Tree routing is piecewise constant, so this estimator intentionally exposes no
 derivative products. `device_supported`, `predict_proba_device`, and
