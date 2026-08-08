@@ -1836,12 +1836,13 @@ matrix-factorized state is available by setting
 `options%adafactor_factored=.true.`. The layout-aware path factors dense weight
 blocks and keeps bias/singleton blocks unfactored; see
 [`ADAFACTOR_FACTORED.md`](ADAFACTOR_FACTORED.md). Its ragged row/column state is
-not yet part of the checkpoint schema, so a checkpoint argument returns
-`FORTNUM_NOT_IMPLEMENTED`, and CUDA-resident Adafactor remains a typed refusal.
+included in the in-memory and formatted schema-8 checkpoints, with block shape
+metadata and transactional layout validation; CUDA-resident Adafactor remains
+a typed refusal.
 `MLP_OPTIMIZER_AMSGRAD` keeps the Adam first and second moments plus an
 elementwise maximum second moment. Bias correction is applied to both moments,
-and the maximum is checkpointed in `max_second_moment` (in-memory format 8,
-text schema 7). The independent `test_mlp_amsgrad` fixture checks the
+and the maximum is checkpointed in `max_second_moment` (in-memory and text
+format 8). The independent `test_mlp_amsgrad` fixture checks the
 recurrence and formatted checkpoint continuation. AMSGrad remains CPU-only;
 there is no hidden CUDA fallback, and fixed-trajectory derivatives through the
 maximum active set remain an explicit follow-up contract.
@@ -1849,7 +1850,7 @@ maximum active set remain an explicit follow-up contract.
 then applies the RAdam variance-rectification factor once `rho_t > 4`; before
 that threshold it uses the bias-corrected first moment. The two moment arrays,
 step count, and common beta/epsilon configuration are captured in the
-in-memory format-8 and text-schema-7 checkpoints. The independent
+in-memory and text-schema-8 checkpoints. The independent
 `test_mlp_radam` fixture checks both sides of the threshold, uninterrupted versus
 formatted checkpoint resume, invalid hyperparameters, and the CPU/CUDA device
 boundary. RAdam is CPU-only in this slice: `radam_t%step_device` returns
