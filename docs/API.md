@@ -3020,8 +3020,14 @@ Cholesky factor of the inducing covariance. Its diagonal must be positive.
 
 `elbo(x,y,value,status[,expected_log_likelihood,kl_value])` evaluates the
 closed-form bound. `predict(x_star,mean,variance,status)` returns variational
-latent marginals. The type does not optimize or pack its inducing and
-variational parameters. The caller owns that update loop.
+latent marginals. `parameter_count()`/`parameters()` and `set_parameters()` pack
+the variational mean followed by lower-Cholesky columns (log diagonals), while
+`elbo_gradient`, `elbo_jvp`, and the scalar-cotangent `elbo_vjp` provide exact
+CPU products for that vector. Their independent finite-difference and
+dot-product oracles live in `test_sparse_gp`; `elbo_device` and the product
+dispatchers execute on CPU and return `FORTNUM_NOT_IMPLEMENTED` for CUDA until
+the inducing solve and reductions are resident. Kernel, inducing-location, and
+noise hyperparameter products remain outside this bounded variational state.
 
 ### `fortml_gp_variational_classification`
 
