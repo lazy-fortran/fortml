@@ -10,13 +10,14 @@ program test_tree_shap
     implicit none
 
     integer, parameter :: dp = real64
-    type(xgboost_t) :: xgb
-    type(lightgbm_t) :: lgb
+    type(xgboost_t) :: xgb, xgb_wide
+    type(lightgbm_t) :: lgb, lgb_wide
     type(xgboost_options_t) :: xgb_options
     type(lightgbm_options_t) :: lgb_options
     type(fortml_device_t) :: cuda
     type(fortnum_status_t) :: status
-    real(dp) :: x(4, 2), target(4), prediction(4), shap(4, 3)
+    real(dp) :: x(4, 2), x_wide(4, 13), target(4), prediction(4)
+    real(dp) :: shap(4, 3), shap_wide(4, 14)
     integer :: failures
 
     x(:, 1) = [0.0_dp, 1.0_dp, 2.0_dp, 3.0_dp]
@@ -45,6 +46,14 @@ program test_tree_shap
     call check(maxval(abs(shap(:, 3))) < 2.0e-13_dp, &
         "XGBoost unused-feature zero attribution", failures)
 
+    x_wide = 0.0_dp
+    x_wide(:, 1) = x(:, 1)
+    call xgb_wide%fit_regression(x_wide, target, status, xgb_options)
+    call check(status_ok(status), "wide XGBoost stump fit", failures)
+    call xgb_wide%predict_shap(x_wide, shap_wide, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
+        "wide XGBoost feature-cap refusal", failures)
+
     lgb_options = lightgbm_options_t()
     lgb_options%n_estimators = 1
     lgb_options%num_leaves = 2
@@ -66,6 +75,12 @@ program test_tree_shap
         "LightGBM SHAP one-feature leaf oracle", failures)
     call check(maxval(abs(shap(:, 3))) < 2.0e-13_dp, &
         "LightGBM unused-feature zero attribution", failures)
+
+    call lgb_wide%fit_regression(x_wide, target, status, lgb_options)
+    call check(status_ok(status), "wide LightGBM stump fit", failures)
+    call lgb_wide%predict_shap(x_wide, shap_wide, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
+        "wide LightGBM feature-cap refusal", failures)
 
     cuda%kind = FORTML_DEVICE_CUDA
     cuda%selected = .true.
