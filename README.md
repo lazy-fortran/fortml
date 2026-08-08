@@ -21,10 +21,13 @@ linear algebra. Full estimator-family parity, histogram tree growth, model
 serialization, and distributed execution remain parity work packages. The MLP
 trainer now has an in-memory resumable checkpoint API, AdamW, Adagrad, RMSprop, and
 FortOpt-backed SGD, and binary logistic objectives have a bounded FortOpt
-L-BFGS-B adapters for logistic objectives and binary/shared-kernel Laplace GP
+L-BFGS-B adapter for logistic objectives and binary/shared-kernel Laplace GP
 classification. Adagrad's accumulated-square state is checkpointed and
-resumed exactly. A fixed full-batch MLP trajectory also exposes exact learning-rate/L2
-hypergradients; see [docs/MLP_HYPERGRADIENT.md](docs/MLP_HYPERGRADIENT.md).
+resumed exactly. The multiclass MLP classifier also exposes weighted softmax
+cross-entropy value/JVP/VJP/HVP products and a bounded FortOpt L-BFGS-B
+objective. Fixed full-batch MLP trajectories expose exact learning-rate/L2
+hypergradients for SGD, Adam, AdamW, RMSprop, Adagrad, and Adafactor; see
+[docs/MLP_HYPERGRADIENT.md](docs/MLP_HYPERGRADIENT.md).
 [ROADMAP.md](ROADMAP.md) records their acceptance criteria and delivery order.
 
 The library uses separate Fortran modules instead of an umbrella `fortml`

@@ -1066,7 +1066,10 @@ The source inventory is dated 2026-08-08.
 | Serialization and distributed execution | Partial | `fortml_mlp_checkpoint` provides a versioned compiler-independent formatted-text representation with schema magic/version, exact optimizer/iterator/history state, validated temporary loading, and malformed/truncated/extra-record refusals. Other model/pipeline files and distributed execution remain open. | Versioned model and trainer files round-trip across supported compilers, and MPI training or inference agrees with a one-rank oracle. |
 | Benchmark coverage | Partial | Correctness-gated model and GP applications feed release harnesses in `../fortml-bench`; current release lanes include Bernoulli/Multinomial/ComplementNB, integer one-hot encoding, weighted ridge and elastic-net derivative products, OVR/OVO/multilabel/ordinal/RBF-SVM classification, multilabel precision/recall/F1/Jaccard/Hamming and ROC/PR-AUC metrics, temperature/sigmoid/isotonic probability calibration, the shared objective trainer and portable checkpoint, weighted binary MLP objective/L-BFGS-B, transformed softmax log-L2 products, additive XGBoost contributions and pairwise ranking, bounded LightGBM leaf-wise boosting, MLP activation products, MLP SGD/Nesterov/Adam/AdamW, coupled-Adam and other fixed-trajectory hypergradients, typed schedules including one-cycle, fixed-trajectory Adagrad hypergradients, differentiable imputation, basis/pipeline, exact/approximate and correlated multi-output GP products including OVR variational multiclass prediction, analytic GP likelihood products, derivative-GP spectral-mixture products, exact and weighted-histogram squared/logistic/Poisson boosting, monotonic-constraint query grids, general Hamiltonian MLP products, generic grid/L-BFGS-B search, resident CUDA dense-affine value/JVP/VJP and MSE-update device-contract gates, and resident forest prediction. | Every completed parity package has a pinned external oracle, release timings, memory measurements, provenance, raw data, and a maintained report. |
 
-The current classification baseline also includes positive temperature scaling,
+The benchmark matrix includes the weighted multiclass MLP objective and
+bounded L-BFGS-B gate in `fortml-bench/results/mlp_classifier_objective.csv`;
+its CUDA row is an explicit unavailable contract. The current classification
+baseline also includes positive temperature scaling,
 the current GP baseline includes bounded Bernoulli variational classification
 with sorted-label OVR multiclass prediction/JVPs, and the current physics
 baseline includes the four-slot residual objective seam;
@@ -1681,7 +1684,11 @@ trials remain visible in the result schema.
   mean-squared-error objectives.
 - [x] Add the multiclass MLP cross-entropy trainer adapter with deterministic
   Adam state, sorted labels, probability products, and a packed parameter
-  gradient. Other likelihoods and shared parameter-tree routing remain open.
+  gradient. The weighted `mlp_classifier_training_objective_t` now adds
+  optional L2, analytic parameter/L2 JVP/VJP/HVP products, and bounded FortOpt
+  L-BFGS-B. Its independent gate is `test_mlp_classifier_objective`, with
+  release evidence in `fortml-bench/results/MLP_CLASSIFIER_OBJECTIVE.md`.
+  Other likelihoods and shared parameter-tree routing remain open.
 - [x] Add the exact MSE+L2 MLP joint HVP product, including the mixed
   parameter/L2 hyperparameter block. Independent linear and nonlinear finite-
   difference tests cover the product used by outer FortOpt objectives. Adam
