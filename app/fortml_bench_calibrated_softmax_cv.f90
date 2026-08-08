@@ -3,7 +3,8 @@ program fortml_bench_calibrated_softmax_cv
     use, intrinsic :: iso_fortran_env, only: dp => real64, int64
     use fortml_calibrated_softmax_classifier, only: &
         calibrated_softmax_classifier_t, calibrated_softmax_classifier_options_t
-    use fortml_probability_calibration, only: CALIBRATION_TEMPERATURE
+    use fortml_probability_calibration, only: CALIBRATION_SIGMOID, CALIBRATION_ISOTONIC, &
+        CALIBRATION_TEMPERATURE
     use fortnum_status, only: fortnum_status_t, status_ok
     implicit none
 
@@ -18,6 +19,7 @@ program fortml_bench_calibrated_softmax_cv
     integer(int64) :: clock_start, clock_end, clock_rate
     real(dp) :: fit_seconds, predict_seconds
     character(len=1024) :: oracle_path
+    character(len=32) :: method_name
     integer :: environment_status, unit, i, j, repetition
 
     call get_environment_variable("FORTML_BENCH_CALIBRATED_SOFTMAX_ORACLE", oracle_path, &
@@ -25,6 +27,10 @@ program fortml_bench_calibrated_softmax_cv
     if (environment_status /= 0 .or. len_trim(oracle_path) == 0) then
         error stop "FORTML_BENCH_CALIBRATED_SOFTMAX_ORACLE is required"
     end if
+    method_name = "temperature"
+    call get_environment_variable("FORTML_BENCH_CALIBRATED_SOFTMAX_METHOD", method_name, &
+        status=environment_status)
+    if (environment_status /= 0 .or. len_trim(method_name) == 0) method_name = "temperature"
     call make_fixture(x, labels)
     options = calibrated_softmax_classifier_options_t()
     options%l2 = 0.2_dp
@@ -33,7 +39,19 @@ program fortml_bench_calibrated_softmax_cv
     options%cv_folds = 3
     options%cv_shuffle = .true.
     options%cv_seed = 31
-    options%calibration%method = CALIBRATION_TEMPERATURE
+    select case (trim(adjustl(method_name)))
+    case ("temperature")
+        options%calibration%method = CALIBRATION_TEMPERATURE
+    case ("sigmoid", "platt")
+        method_name = "sigmoid"
+        options%calibration%method = CALIBRATION_SIGMOID
+    case ("isotonic")
+        options%calibration%method = CALIBRATION_ISOTONIC
+        options%calibration%max_iterations = 1
+        options%calibration%l2 = 0.0_dp
+    case default
+        error stop "FORTML_BENCH_CALIBRATED_SOFTMAX_METHOD must be temperature, sigmoid, or isotonic"
+    end select
     options%calibration%max_iterations = 500
     options%calibration%tolerance = 1.0e-10_dp
     options%calibration%l2 = 0.05_dp
@@ -77,8 +95,8 @@ program fortml_bench_calibrated_softmax_cv
     write (unit, '(a,i0,a,i0,a,es26.17e3)') &
         "calibrated_oof_log_loss,", 1, ",", 1, ",", model%calibrated_oof_log_loss()
     close (unit)
-    write (*, '(a,es24.16)') "calibrated_softmax_cv_fit,temperature,", fit_seconds
-    write (*, '(a,es24.16)') "calibrated_softmax_cv_predict,temperature,", predict_seconds
+    write (*, '(a,a,a,es24.16)') "calibrated_softmax_cv_fit,", trim(method_name), ",", fit_seconds
+    write (*, '(a,a,a,es24.16)') "calibrated_softmax_cv_predict,", trim(method_name), ",", predict_seconds
 
 contains
 

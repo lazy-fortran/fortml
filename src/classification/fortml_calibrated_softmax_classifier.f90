@@ -1,15 +1,19 @@
 module fortml_calibrated_softmax_classifier
-    !! Leakage-safe multiclass temperature calibration with stratified OOF logits.
+    !! Leakage-safe multiclass calibration with stratified OOF logits.
     !!
     !! ``calibrated_softmax_classifier_t`` fits a softmax model on each
     !! stratified training fold, collects one held-out logit row per sample,
-    !! fits a single positive temperature on those logits, and finally fits
-    !! the deployment softmax model on all rows.  The calibration head is
-    !! therefore never trained on in-sample logits.  The packed parameter
-    !! vector is the softmax parameters followed by the positive temperature.
-    !! CPU prediction and exact fixed-state input/parameter JVP and VJP
-    !! products are available.  CUDA requests return a typed refusal until a
-    !! resident softmax-plus-calibration kernel is linked.
+    !! fits the requested positive temperature, one-vs-rest Platt sigmoid, or
+    !! weighted isotonic head on those logits, and finally fits the deployment
+    !! softmax model on all rows.  The calibration head is therefore never
+    !! trained on in-sample logits.  The packed parameter vector is the
+    !! softmax parameters followed by one temperature coordinate or interleaved
+    !! Platt slope/intercept coordinates.  Isotonic knots are fitted buffers,
+    !! not trainable parameters.  CPU prediction and exact fixed-state
+    !! input/parameter JVP and VJP products are available for temperature and
+    !! Platt; isotonic active-set products return a typed refusal.  CUDA
+    !! requests return a typed refusal until a resident softmax-plus-
+    !! calibration kernel is linked.
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
@@ -19,7 +23,8 @@ module fortml_calibrated_softmax_classifier
     use fortml_softmax_regression, only: softmax_regression_t
     use fortml_probability_calibration, only: &
         multiclass_probability_calibrator_t, probability_calibration_options_t, &
-        probability_calibration_state_t, CALIBRATION_TEMPERATURE
+        probability_calibration_state_t, CALIBRATION_SIGMOID, CALIBRATION_ISOTONIC, &
+        CALIBRATION_TEMPERATURE
     use fortml_validation, only: stratified_kfold_splitter_t
     implicit none
     private
@@ -41,10 +46,14 @@ module fortml_calibrated_softmax_classifier
         integer :: cv_folds = 0
         integer :: cv_samples = 0
         integer :: class_count = 0
+        integer :: calibration_method = CALIBRATION_TEMPERATURE
+        integer :: calibration_parameter_count = 0
+        integer :: calibration_knot_count = 0
         integer :: calibration_iterations = 0
         logical :: cv_converged = .false.
         logical :: classifier_converged = .false.
         logical :: calibration_converged = .false.
+        logical :: calibration_derivatives_available = .false.
         logical :: converged = .false.
         real(dp) :: oof_log_loss = huge(1.0_dp)
         real(dp) :: calibrated_oof_log_loss = huge(1.0_dp)
@@ -90,6 +99,10 @@ module fortml_calibrated_softmax_classifier
         procedure, public :: calibrated_oof_log_loss => &
             calibrated_softmax_calibrated_oof_log_loss
         procedure, public :: temperature => calibrated_softmax_temperature
+        procedure, public :: calibration_parameter_count => &
+            calibrated_softmax_calibration_parameter_count
+        procedure, public :: calibration_derivatives_available => &
+            calibrated_softmax_calibration_derivatives_available
     end type calibrated_softmax_classifier_t
 
     public :: calibrated_softmax_fit
@@ -141,16 +154,6 @@ contains
         if (.not. valid_options(config)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "calibrated softmax fit: options are invalid")
-            return
-        end if
-        ! This wrapper deliberately owns the leakage-safe temperature path.
-        ! The generic multiclass calibrator also exposes Platt and isotonic
-        ! methods, but those methods are not part of this classifier's packed
-        ! parameter/derivative contract yet.  Refuse them explicitly rather
-        ! than silently changing the public calibrated-softmax API.
-        if (config%calibration%method /= CALIBRATION_TEMPERATURE) then
-            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
-                "calibrated softmax fit: only temperature calibration is supported")
             return
         end if
         if (size(x, 1) < config%cv_folds .or. size(x, 2) < 1 .or. &
@@ -236,6 +239,7 @@ contains
         result%cv_folds = config%cv_folds
         result%cv_samples = size(labels)
         result%class_count = n_classes
+        result%calibration_method = config%calibration%method
         result%cv_converged = .true.
         allocate(oof_probabilities(size(labels), n_classes))
         call raw_probabilities(oof_scores, oof_probabilities, status)
@@ -253,6 +257,10 @@ contains
         self%calibration_method_code = config%calibration%method
         result%calibration_iterations = calibration_state%iterations
         result%calibration_converged = calibration_state%converged
+        result%calibration_parameter_count = self%calibrator%parameter_count()
+        result%calibration_knot_count = calibration_state%knot_count
+        result%calibration_derivatives_available = &
+            config%calibration%method /= CALIBRATION_ISOTONIC
         result%calibration_objective = calibration_state%objective
         call self%calibrator%predict_proba(oof_scores, oof_probabilities, status)
         if (status%code /= FORTNUM_OK) return
@@ -486,7 +494,7 @@ contains
         real(dp), intent(out) :: theta_bar(:), x_bar(:, :)
         type(fortnum_status_t), intent(out) :: status
         real(dp), allocatable :: scores(:, :), scores_bar(:, :), base_bar(:), calibration_bar(:)
-        integer :: n_base
+        integer :: n_base, n_calibration
 
         theta_bar = 0.0_dp
         x_bar = 0.0_dp
@@ -502,8 +510,9 @@ contains
             return
         end if
         n_base = self%classifier%parameter_count()
+        n_calibration = self%calibrator%parameter_count()
         allocate(scores(size(x, 1), self%class_count()), scores_bar(size(x, 1), &
-            self%class_count()), base_bar(n_base), calibration_bar(1))
+            self%class_count()), base_bar(n_base), calibration_bar(n_calibration))
         call self%decision_function(x, scores, status)
         if (status%code /= FORTNUM_OK) return
         call self%calibrator%predict_proba_vjp(scores, probabilities_bar, scores_bar, status)
@@ -513,7 +522,9 @@ contains
         theta_bar(:n_base) = base_bar
         call self%calibrator%predict_proba_parameter_vjp(scores, probabilities_bar, &
             calibration_bar, status)
-        if (status%code == FORTNUM_OK) theta_bar(n_base + 1:) = calibration_bar
+        if (status%code == FORTNUM_OK .and. n_calibration > 0) then
+            theta_bar(n_base + 1:) = calibration_bar
+        end if
     end subroutine calibrated_softmax_predict_proba_vjp
 
     subroutine calibrated_softmax_predict_proba_parameter_vjp(self, x, probabilities_bar, &
@@ -674,6 +685,22 @@ contains
             value = 1.0_dp
         end if
     end function calibrated_softmax_temperature
+
+    integer function calibrated_softmax_calibration_parameter_count(self) result(count)
+        class(calibrated_softmax_classifier_t), intent(in) :: self
+
+        if (.not. self%is_fitted) then
+            count = 0
+        else
+            count = self%calibrator%parameter_count()
+        end if
+    end function calibrated_softmax_calibration_parameter_count
+
+    logical function calibrated_softmax_calibration_derivatives_available(self) result(value)
+        class(calibrated_softmax_classifier_t), intent(in) :: self
+
+        value = self%is_fitted .and. self%calibration_method_code /= CALIBRATION_ISOTONIC
+    end function calibrated_softmax_calibration_derivatives_available
 
     logical function valid_options(config) result(valid)
         type(calibrated_softmax_classifier_options_t), intent(in) :: config

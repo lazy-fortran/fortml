@@ -4,16 +4,17 @@ program test_calibrated_softmax_classifier
     use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_NOT_IMPLEMENTED
     use fortml_device, only: fortml_device_t, FORTML_DEVICE_CUDA
     use fortml_probability_calibration, only: &
-        probability_calibration_options_t, CALIBRATION_TEMPERATURE, CALIBRATION_SIGMOID
+        probability_calibration_options_t, CALIBRATION_TEMPERATURE, CALIBRATION_SIGMOID, &
+        CALIBRATION_ISOTONIC
     use fortml_calibrated_softmax_classifier, only: &
         calibrated_softmax_classifier_t, calibrated_softmax_classifier_options_t, &
         calibrated_softmax_classifier_state_t
     implicit none
 
-    type(calibrated_softmax_classifier_t) :: model, repeated, invalid, unfitted
+    type(calibrated_softmax_classifier_t) :: model, repeated, platt, isotonic, invalid, unfitted
     type(calibrated_softmax_classifier_options_t) :: options
-    type(calibrated_softmax_classifier_options_t) :: invalid_options
-    type(calibrated_softmax_classifier_state_t) :: state
+    type(calibrated_softmax_classifier_options_t) :: invalid_options, platt_options, isotonic_options
+    type(calibrated_softmax_classifier_state_t) :: state, platt_state, isotonic_state
     type(fortnum_status_t) :: status
     type(fortml_device_t) :: cuda
     real(dp) :: x(12, 2), probabilities(12, 3), probabilities_dot(12, 3)
@@ -21,7 +22,7 @@ program test_calibrated_softmax_classifier
     real(dp) :: probabilities_bar(12, 3), x_dot(12, 2), x_bar(12, 2)
     real(dp), allocatable :: parameters(:), parameters_dot(:), parameters_plus(:)
     real(dp), allocatable :: parameters_minus(:), parameters_bar(:)
-    integer :: labels(12), predicted(12), class_labels(3), failures
+    integer :: labels(12), predicted(12), class_labels(3), failures, i
     real(dp) :: h, lhs, rhs
 
     x = reshape([ &
@@ -138,11 +139,93 @@ program test_calibrated_softmax_classifier
     call check(.not. status_ok(status), "insufficient per-class fold support refusal", failures)
     call invalid%fit(x, labels, status, options=options, sample_weight=[1.0_dp, 1.0_dp])
     call check(.not. status_ok(status), "sample-weight shape refusal", failures)
-    invalid_options = options
-    invalid_options%calibration = probability_calibration_options_t(method=CALIBRATION_SIGMOID)
-    call invalid%fit(x, labels, status, options=invalid_options)
+
+    ! Platt calibration follows the same leakage-safe OOF route.  Its
+    ! interleaved slope/intercept block is part of the packed smooth graph.
+    platt_options = options
+    platt_options%calibration = probability_calibration_options_t( &
+        method=CALIBRATION_SIGMOID, max_iterations=500, tolerance=1.0e-10_dp, &
+        damping=1.0_dp, l2=0.05_dp)
+    call platt%fit(x, labels, status, options=platt_options, state=platt_state)
+    call check(status_ok(status) .and. platt%fitted() .and. platt_state%converged, &
+        "multiclass OOF Platt fit status", failures)
+    call check(platt_state%calibration_method == CALIBRATION_SIGMOID .and. &
+        platt_state%calibration_derivatives_available .and. &
+        platt_state%calibration_parameter_count == 2*size(class_labels) .and. &
+        platt%calibration_parameter_count() == 2*size(class_labels), &
+        "Platt calibration metadata and packed count", failures)
+    call platt%predict_proba(x, probabilities_plus, status)
+    call check(status_ok(status) .and. maxval(abs(sum(probabilities_plus, dim=2) - 1.0_dp)) < &
+        2.0e-14_dp, "Platt calibrated probability simplex", failures)
+    parameters = platt%parameters()
+    call check(size(parameters) == platt%parameter_count() .and. &
+        size(parameters) == model%parameter_count() - model%calibration_parameter_count() + &
+        2*size(class_labels), &
+        "Platt packed parameter layout", failures)
+    if (allocated(parameters_dot)) deallocate(parameters_dot)
+    if (allocated(parameters_plus)) deallocate(parameters_plus)
+    if (allocated(parameters_minus)) deallocate(parameters_minus)
+    if (allocated(parameters_bar)) deallocate(parameters_bar)
+    allocate(parameters_dot(size(parameters)), parameters_plus(size(parameters)), &
+        parameters_minus(size(parameters)), parameters_bar(size(parameters)))
+    parameters_dot = 0.0_dp
+    do i = 1, min(4, size(parameters))
+        parameters_dot(i) = 0.02_dp*real(i, dp)
+    end do
+    parameters_dot(size(parameters)) = 0.04_dp
+    parameters_bar = 0.0_dp
+    do i = 1, min(4, size(parameters))
+        parameters_bar(i) = -0.11_dp*real(i, dp)
+    end do
+    parameters_bar(size(parameters)) = 0.13_dp
+    call platt%predict_proba_jvp(x, parameters_dot, x_dot, probabilities, probabilities_dot, status)
+    parameters_plus = parameters + h*parameters_dot
+    parameters_minus = parameters - h*parameters_dot
+    call platt%set_parameters(parameters_plus, status)
+    call platt%predict_proba(x + h*x_dot, probabilities_plus, status)
+    call platt%set_parameters(parameters_minus, status)
+    call platt%predict_proba(x - h*x_dot, probabilities_minus, status)
+    call platt%set_parameters(parameters, status)
+    call check(status_ok(status) .and. maxval(abs(probabilities_dot - &
+        (probabilities_plus-probabilities_minus)/(2.0_dp*h))) < 2.0e-5_dp, &
+        "Platt full probability JVP finite difference", failures)
+    call platt%predict_proba_vjp(x, probabilities_bar, parameters_bar, x_bar, status)
+    lhs = sum(probabilities_bar*probabilities_dot)
+    rhs = sum(parameters_bar*parameters_dot) + sum(x_bar*x_dot)
+    call check(status_ok(status) .and. abs(lhs-rhs) < 2.0e-5_dp, &
+        "Platt full probability VJP adjoint identity", failures)
+
+    ! Isotonic calibration has deterministic values and simplex normalization,
+    ! while its active-set derivatives are an explicit typed boundary.
+    isotonic_options = options
+    isotonic_options%calibration = probability_calibration_options_t( &
+        method=CALIBRATION_ISOTONIC, max_iterations=1, tolerance=1.0e-10_dp, &
+        damping=1.0_dp, l2=0.0_dp)
+    call isotonic%fit(x, labels, status, options=isotonic_options, state=isotonic_state)
+    call check(status_ok(status) .and. isotonic%fitted() .and. isotonic_state%converged, &
+        "multiclass OOF isotonic fit status", failures)
+    call check(isotonic_state%calibration_method == CALIBRATION_ISOTONIC .and. &
+        .not. isotonic_state%calibration_derivatives_available .and. &
+        isotonic_state%calibration_parameter_count == 0 .and. &
+        isotonic%calibration_parameter_count() == 0, &
+        "isotonic active-set metadata", failures)
+    call isotonic%predict_proba(x, probabilities_plus, status)
+    call check(status_ok(status) .and. maxval(abs(sum(probabilities_plus, dim=2) - 1.0_dp)) < &
+        2.0e-14_dp, "isotonic calibrated probability simplex", failures)
+    parameters = isotonic%parameters()
+    deallocate(parameters_dot, parameters_plus, parameters_minus, parameters_bar)
+    allocate(parameters_dot(size(parameters)), parameters_plus(size(parameters)), &
+        parameters_minus(size(parameters)), parameters_bar(size(parameters)))
+    parameters_dot = 0.0_dp
+    parameters_bar = 0.0_dp
+    call isotonic%predict_proba_jvp(x, parameters_dot, x_dot, probabilities_plus, &
+        probabilities_dot, status)
     call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
-        "multiclass non-temperature refusal", failures)
+        "isotonic input derivative active-set refusal", failures)
+    call isotonic%predict_proba_vjp(x, probabilities_bar, parameters_bar, x_bar, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
+        "isotonic reverse derivative active-set refusal", failures)
+
     call unfitted%predict_proba(x, probabilities, status)
     call check(.not. status_ok(status), "unfitted prediction refusal", failures)
 

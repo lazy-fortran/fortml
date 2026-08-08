@@ -186,8 +186,13 @@ The fixed-SGD momentum validation objective accepts positive nonuniform
 validation weights with exact value/gradient/JVP products, retains the uniform
 HVP path, and returns typed refusals for nonuniform HVP and CUDA; its
 independent NumPy row pins `8f0b705`/`232e7b12` and records weighted MSE
-`0.014998256378050192`. The calibrated-softmax OOF wrapper remains explicitly
-temperature-only; callers needing Platt use the generic multiclass calibrator.
+`0.014998256378050192`. The calibrated-softmax OOF wrapper now routes
+temperature, weighted one-vs-rest Platt sigmoid, and weighted isotonic maps
+through the same leakage-safe stratified folds. Temperature and Platt retain
+exact packed input/parameter products; isotonic values are complete while
+active-set products remain typed refusals. The wrapper state records the
+calibration method, packed calibration count, knot count, and derivative
+availability.
 
 ### 2026-08-08 parity and provenance slice
 
@@ -970,9 +975,10 @@ diagrams now have a deterministic metric/API and benchmark oracle.
 `calibrated_logistic_classifier_t` adds leakage-safe binary calibration from
 stratified out-of-fold margins, fold diagnostics, and exact smooth products.
 The standalone `multiclass_probability_calibrator_t` now fits weighted
-one-vs-rest Platt sigmoid and isotonic maps with simplex normalization;
-multiclass calibrated cross-validation for those policies and generic estimator
-routing remain open.
+one-vs-rest Platt sigmoid and isotonic maps with simplex normalization.
+`calibrated_softmax_classifier_t` routes both policies through deterministic
+stratified out-of-fold logits and refits the deployment softmax on all rows;
+multiclass generic estimator routing remains open.
 
 | Family | Required variants | Current FortML baseline | Missing production gates |
 | --- | --- | --- | --- |
@@ -1959,7 +1965,8 @@ CUDA refusal until private CART storage is safely bound to the C ABI.
   `test_multiclass_platt_calibration` supplies central-difference and adjoint
   oracles, deterministic weighted replay, tie handling, and typed CUDA refusal;
   `fortml-bench/results/MULTICLASS_PLATT_CALIBRATION.md` records the independent
-  NumPy correctness-gated lane. Multiclass OOF routing remains open.
+  NumPy correctness-gated lane. The calibrated-softmax OOF wrapper now routes
+  this smooth policy and records its packed calibration metadata and products.
 - [x] Add leakage-safe binary calibration-aware cross-validation through
   `calibrated_logistic_classifier_t`. Each deterministic stratified fold fits
   an independent logistic model, produces held-out margins for every sample,
@@ -1970,7 +1977,9 @@ CUDA refusal until private CART storage is safely bound to the C ABI.
   JVP/VJP products; isotonic active sets and CUDA prediction return typed
   refusals. `test_calibrated_logistic_classifier` supplies central
   finite-difference, adjoint, sorted-label, simplex, and device-boundary
-  oracles. Multiclass and generic estimator CV routing remain open.
+  oracles. The parallel multiclass calibrated-softmax OOF route covers
+  temperature, Platt, and isotonic policies with typed isotonic active-set and
+  CUDA boundaries; generic estimator CV routing remains open.
 
 Acceptance: hand-computed separable and nonseparable fixtures cover labels,
 weights, ties, probabilities, multilabel thresholds, and ordinal cut points.
