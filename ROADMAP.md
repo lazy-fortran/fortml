@@ -610,8 +610,8 @@ only listed as gaps:
 
 The FortBO and FortMC companion pins were rechecked against their remote
 `main` branches on 2026-08-08: FortBO
-`9f581ce8c4e4b220517da7a89eb2445014ae9db5` and FortMC
-`a75fc6bd952c6dacbcb3bd958e6386405f9fd58d`. Their roadmaps remain authoritative
+`559c85edc2d78bed457c400edf16758d97444dd1` and FortMC
+`e5e42a0ac1d4a4d92fa6b2ee2750b50723342a48`. Their roadmaps remain authoritative
 for acquisition and sampling algorithms; FortML owns the posterior/log-density
 protocols and does not embed sampler or acquisition state. FortBO additionally
 provides analytic EI/PI/UCB/log-EI products and marginal Monte-Carlo EI/PI with
@@ -621,7 +621,12 @@ adapter that chooses value-only versus derivative-observation GPs from the
 history contract. FortBO now also runs its gradient-based DTuRBO in-region
 acquisition search end to end with Sobol multistarts and FortOpt L-BFGS-B,
 beating random search on the Branin fixture at equal budget. The current pin
-also supplies preference learning and noisy-dominance probabilities with
+also implements predictive-entropy constraints C1.2 and C2 by
+expectation-propagation latent constraints (with the existing C1.1 and C3
+variance safeguard), wires all three TuRBO ordering arms and a pinned
+Ackley-200 reference comparison, emits posterior-moment derivative leaves from
+FortSym, and enforces host placement for incomplete FortAD acquisition graphs.
+It also supplies preference learning and noisy-dominance probabilities with
 FortSym-generated Gaussian-comparison derivatives, noisy expected improvement,
 joint qEI/qNEI/qUCB batch acquisitions, risk-sensitive and multi-fidelity
 criteria, constrained/cost-aware acquisitions, active-learning and level-set
@@ -630,7 +635,8 @@ per-evaluation benchmark metrics, asynchronous worker bookkeeping with
 mean/incumbent/worst fantasies and bounded retries, a Bayesian-linear
 posterior provider, high-dimensional gradient fixtures, and the 60D rover
 trajectory fixture,
-paper-aligned predictive-entropy C3 conditioning with its variance safeguard,
+paper-aligned predictive-entropy C1.2/C2 conditioning with its variance
+safeguard,
 and constrained/noisy/multi-objective benchmark fixtures,
 FortSym-derived trust-region length rescaling, exact posterior mean and
 standard-deviation Hessians from derivative predictions, and tested TuRBO-1/
@@ -639,8 +645,8 @@ posterior sampling, posterior-derivative local models, trust-region traces,
 and an indefinite-curvature bound-constrained quadratic subproblem, multi-objective
 Pareto archives with exact hypervolume and scalarizations, and stopping rules
 that report a machine-readable reason. qKG and batch Thompson/fantasy
-policies, predictive-entropy search, posterior-gradient device execution, and
-wider sparse/variational adapters remain open. Any future adapter must add
+policies, posterior-gradient device execution, and wider sparse/variational
+adapters remain open. Any future adapter must add
 a focused oracle, typed GPU/refusal row, and a benchmark record in the companion
 harness. The current FortBO pin also adds the 60-dimensional rover trajectory
 fixture and its independent oracle. It routes FortML multi-output and
@@ -729,8 +735,8 @@ acquisition work packages:
 - [`fortbo/ROADMAP.md`](https://github.com/lazy-fortran/fortbo/blob/main/ROADMAP.md)
 
 The companion repositories were checked on 2026-08-08 at FortMC
-`a75fc6bd952c6dacbcb3bd958e6386405f9fd58d` and FortBO
-`9f581ce8c4e4b220517da7a89eb2445014ae9db5`, both on their `main` branches. The
+`e5e42a0ac1d4a4d92fa6b2ee2750b50723342a48` and FortBO
+`559c85edc2d78bed457c400edf16758d97444dd1`, both on their `main` branches. The
 FortBO pin now includes a versioned capability-gated posterior contract,
 gradient-aware observation history/checkpointing, normalized continuous/integer/
 categorical/mixed/conditional search spaces, a differentiable-coordinate mask,
@@ -751,18 +757,22 @@ preference learning, noisy dominance, the FortML derivative-GP input-HVP
 adapter, FortML value/derivative-GP adapters, asynchronous worker bookkeeping
 with selectable fantasies and bounded retries, a Bayesian-linear posterior
 provider, fixed-choice/constraint-penalty feasibility utilities, constrained
-and multi-objective fixtures, paper-aligned PES C3 conditioning, and the 60D
+and multi-objective fixtures, paper-aligned PES C1.2/C2 conditioning, and the 60D
 rover trajectory fixture, multi-task and deep-kernel posterior adapters,
-resident candidate/TuRBO reductions, cross-framework correctness/regret
-fixtures, and the 14D robot-pushing fixture;
+resident candidate/TuRBO reductions, FortSym-generated posterior-moment
+derivatives, host-placement refusals for incomplete autodiff graphs, cross-
+framework correctness/regret fixtures, and the 14D robot-pushing fixture;
+the three-arm TuRBO ordering harness and pinned Ackley-200 reference are
+included, while the standalone OpenACC hardware probe and acquisition-speed
+benchmark remain separately gated on a dependency-complete GPU host;
 refresh these pins when
 their protocol or device contracts change.
 
-The current `9f581ce` remote builds cleanly, but a clean
-`FO_SCAN_FALLBACK=regex fo check --json=compact` discovers 44 test targets with
-22 passing and 22 link failures because the generated acquisition,
-trust-region, and preference leaves are not linked. The 14D ordering harness
-is a separate slow fixture and remains limited to the pushing arm. This is
+The FortBO pin includes a standalone OpenACC hardware probe and an
+acquisition-level wall-clock benchmark; these are separate from the
+auto-discovered test tree and require a dependency-complete GPU host before
+publishing device timings. The 14D ordering harness is a separate slow fixture
+and remains limited to the pushing arm. Any build or link failures are
 recorded as a FortBO boundary failure, not FortML verification evidence.
 FortMC's current checkout builds cleanly and passes its one registered
 slice-sampler test (normal and correlated moments, bounded support,
@@ -770,10 +780,12 @@ reproducibility, and refusal cases); the remaining samplers, diagnostics, and
 checkpoint claims remain roadmap items rather than FortML verification evidence.
 
 This companion check was repeated from clean source trees on 2026-08-08:
-`origin/main` resolves exactly to the two pins above; FortBO's current clean
-run is 22/44 with generated-leaf link failures and FortMC's is 1/1, and neither repository has a runtime
-dependency on the FortSym executable. These are boundary checks, not a
-claim that FortMC samplers or the remaining FortBO policy catalog are shipped.
+`origin/main` resolves exactly to the two pins above, and neither repository
+has a runtime dependency on the FortSym executable. FortMC's artifact-cleanup
+tip does not expand its sampler catalog: its slice sampler remains the only
+registered sampler evidence, while HMC/NUTS/SMC, diagnostics, checkpoints,
+and device execution remain roadmap items. These are boundary checks, not a
+claim that the remaining FortBO policy catalog or FortMC samplers are shipped.
 
 Both pinned companion revisions also clarify that FortSym is a generation-time
 dependency: generated/proven kernels may be checked into or consumed by the
