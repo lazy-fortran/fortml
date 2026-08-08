@@ -10,7 +10,8 @@ program test_sparse_gp
     use, intrinsic :: iso_fortran_env, only: dp => real64, error_unit
     use fortml_kernels, only: kernel_t, make_rbf_kernel
     use fortml_sparse_gp, only: sparse_gp_t
-    use fortnum_status, only: fortnum_status_t, status_ok
+    use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU, FORTML_DEVICE_CUDA
+    use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_NOT_IMPLEMENTED
     implicit none
 
     integer, parameter :: n = 9, d = 1
@@ -25,6 +26,7 @@ program test_sparse_gp
     call test_collapsed_bound_is_tight(failures)
     call test_bound_is_a_lower_bound(failures)
     call test_predictions_match_the_exact_posterior(failures)
+    call test_variational_products(failures)
     call test_refusals(failures)
     if (failures /= 0) then
         write (error_unit, '(i0,a)') failures, " sparse GP test(s) failed"
@@ -235,6 +237,113 @@ contains
             failures = failures + 1
         end if
     end subroutine test_predictions_match_the_exact_posterior
+
+    subroutine test_variational_products(failures)
+        !! Independent central differences and a scalar duality oracle for the
+        !! packed variational ELBO products.
+        integer, intent(inout) :: failures
+        type(sparse_gp_t) :: model
+        type(kernel_t) :: kernel
+        type(fortnum_status_t) :: status
+        type(fortml_device_t) :: device
+        real(dp) :: inducing(3, d), mean(3), factor(3, 3)
+        real(dp), allocatable :: parameters(:), shifted(:), gradient(:), &
+            parameter_bar(:), finite_difference(:)
+        real(dp) :: value, tangent, plus, minus, value_bar, h
+        real(dp) :: direction(9)
+        integer :: i, j
+
+        do i = 1, 3
+            inducing(i, 1) = -0.75_dp + 0.65_dp*real(i - 1, dp)
+        end do
+        kernel = make_rbf_kernel(d, variance, lengthscale, status)
+        call model%initialize(inducing, kernel, noise, status)
+        if (.not. status_ok(status)) then
+            failures = failures + 1
+            return
+        end if
+        mean = [0.2_dp, -0.15_dp, 0.1_dp]
+        factor = 0.0_dp
+        factor(1, 1) = 0.8_dp
+        factor(2, 1) = -0.08_dp
+        factor(2, 2) = 0.65_dp
+        factor(3, 1) = 0.05_dp
+        factor(3, 2) = 0.04_dp
+        factor(3, 3) = 0.9_dp
+        call model%set_variational(mean, factor, status)
+        allocate(parameters(model%parameter_count()), shifted(model%parameter_count()), &
+            gradient(model%parameter_count()), parameter_bar(model%parameter_count()), &
+            finite_difference(model%parameter_count()))
+        parameters = model%parameters()
+        call model%elbo(x, y, value, status)
+        call model%elbo_gradient(x, y, value, gradient, status)
+        if (.not. status_ok(status)) then
+            write (error_unit, '(a)') "FAIL [products] ELBO gradient status"
+            failures = failures + 1
+            return
+        end if
+
+        h = 2.0e-6_dp
+        do i = 1, size(parameters)
+            shifted = parameters
+            shifted(i) = shifted(i) + h
+            call model%set_parameters(shifted, status)
+            call model%elbo(x, y, plus, status)
+            shifted(i) = shifted(i) - 2.0_dp*h
+            call model%set_parameters(shifted, status)
+            call model%elbo(x, y, minus, status)
+            finite_difference(i) = (plus - minus)/(2.0_dp*h)
+        end do
+        call model%set_parameters(parameters, status)
+        if (maxval(abs(gradient - finite_difference)) > 3.0e-5_dp) then
+            write (error_unit, '(a,es12.4)') &
+                "FAIL [products] ELBO gradient finite difference ", &
+                maxval(abs(gradient - finite_difference))
+            failures = failures + 1
+        end if
+
+        direction = [0.08_dp, -0.11_dp, 0.06_dp, 0.04_dp, -0.03_dp, &
+            0.05_dp, 0.02_dp, -0.07_dp, 0.09_dp]
+        call model%elbo_jvp(x, y, direction, value, tangent, status)
+        shifted = parameters + h*direction
+        call model%set_parameters(shifted, status)
+        call model%elbo(x, y, plus, status)
+        shifted = parameters - h*direction
+        call model%set_parameters(shifted, status)
+        call model%elbo(x, y, minus, status)
+        call model%set_parameters(parameters, status)
+        if (.not. status_ok(status) .or. &
+            abs(tangent - (plus - minus)/(2.0_dp*h)) > 3.0e-5_dp) then
+            write (error_unit, '(a,es12.4)') &
+                "FAIL [products] ELBO JVP finite difference ", &
+                abs(tangent - (plus - minus)/(2.0_dp*h))
+            failures = failures + 1
+        end if
+
+        value_bar = -1.7_dp
+        call model%elbo_vjp(x, y, value_bar, parameter_bar, status)
+        if (.not. status_ok(status) .or. maxval(abs(parameter_bar - value_bar*gradient)) &
+            > 3.0e-12_dp .or. abs(dot_product(parameter_bar, direction) - &
+            value_bar*tangent) > 3.0e-10_dp) then
+            write (error_unit, '(a)') "FAIL [products] ELBO VJP duality"
+            failures = failures + 1
+        end if
+
+        device%kind = FORTML_DEVICE_CPU
+        device%selected = .true.
+        device%available = .true.
+        call model%elbo_device(device, x, y, plus, status)
+        if (.not. status_ok(status)) then
+            write (error_unit, '(a)') "FAIL [products] CPU ELBO dispatch"
+            failures = failures + 1
+        end if
+        device%kind = FORTML_DEVICE_CUDA
+        call model%elbo_gradient_device(device, x, y, plus, gradient, status)
+        if (status%code /= FORTNUM_NOT_IMPLEMENTED) then
+            write (error_unit, '(a)') "FAIL [products] CUDA ELBO refusal"
+            failures = failures + 1
+        end if
+    end subroutine test_variational_products
 
     subroutine test_refusals(failures)
         integer, intent(inout) :: failures

@@ -669,7 +669,6 @@ contains
         integer :: objective_code, tree_method_code, missing_code
         integer :: n_samples, n_features, n_validation, start_estimators
         integer :: target_estimators, i, completed_estimators, best_iteration, stale_rounds
-        integer :: expected_parameter
         integer(int64) :: sampling_state
         real(dp) :: weight_sum, validation_loss, best_validation_loss
         logical :: have_validation, improved, is_ranking, early_stop

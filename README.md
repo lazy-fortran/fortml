@@ -26,7 +26,10 @@ classification. Adagrad's accumulated-square state is checkpointed and
 resumed exactly. The multiclass MLP classifier also exposes weighted softmax
 cross-entropy value/JVP/VJP/HVP products and a bounded FortOpt L-BFGS-B
 objective. Fixed full-batch MLP trajectories expose exact learning-rate/L2
-hypergradients for SGD, Adam, AdamW, RMSprop, Adagrad, and Adafactor; see
+hypergradients for SGD, Adam, AdamW, RMSprop, Adagrad, and unfactored Adafactor.
+Adafactor's relative-step and parameter-scale branches carry exact smooth-state
+products as well; clip, rate, and scale active-set boundaries return typed
+refusals. See
 [docs/MLP_HYPERGRADIENT.md](docs/MLP_HYPERGRADIENT.md).
 [ROADMAP.md](ROADMAP.md) records their acceptance criteria and delivery order.
 

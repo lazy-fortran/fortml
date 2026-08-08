@@ -2,16 +2,17 @@ module fortml_mlp_adafactor_hypergradient
     !! Exact fixed full-batch hypergradients through vector Adafactor.
     !!
     !! The supported branch matches `fortml_adafactor` with an unfactored
-    !! second-moment vector, fixed full-batch updates, and both relative-step
-    !! and parameter-scaling modes disabled.  The packed outer variable is
+    !! second-moment vector and fixed full-batch updates.  Relative-step and
+    !! parameter-scaling modes are differentiated on their smooth active
+    !! branches.  The packed outer variable is
     !! `[log(learning_rate), log(l2), decay, log(epsilon),
     !!   log(clip_threshold)]`.
     !!
     !! The clip and square-root transitions are differentiated piecewise.  A
     !! trajectory that lands on a clip boundary is refused with a typed status
     !! instead of silently differentiating an active-set change.  Relative-step
-    !! and parameter-scaling branches have their own discrete state and are
-    !! refused until their state derivatives receive a separate contract.
+    !! and parameter-scaling transitions use the same typed refusal policy;
+    !! matrix-factored state and resident CUDA remain unsupported.
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
@@ -133,11 +134,6 @@ contains
 
         self%initialized = .false.
         self%layout = mlp_adafactor_hypergradient_metadata_t()
-        if (options%relative_step .or. options%scale_parameter) then
-            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
-                "MLP Adafactor hypergradient: relative-step or parameter-scaling state is unsupported")
-            return
-        end if
         if (.not. valid_options(options)) then
             if (options%optimizer /= MLP_OPTIMIZER_ADAFACTOR .or. &
                     options%device_kind /= FORTML_DEVICE_CPU) then
@@ -325,8 +321,7 @@ contains
         real(dp) :: gradient(MLP_ADAFACTOR_HYPERPARAMETER_COUNT)
 
         result = mlp_adafactor_hypergradient_result_t()
-        if (.not. valid_options(options) .or. options%relative_step .or. &
-                options%scale_parameter) then
+        if (.not. valid_options(options)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "MLP Adafactor hyperparameter optimization: options are invalid")
             return
@@ -386,7 +381,10 @@ contains
         real(dp) :: learning_rate_dot, l2_dot, decay_dot, epsilon_dot, clip_dot
         real(dp) :: train_value, l2_gradient, scalar_hvp
         real(dp) :: update_rms, update_rms_dot, clip_scale, clip_scale_dot
-        real(dp) :: denominator_value, sqrt_value
+        real(dp) :: relative_cap
+        real(dp) :: base_rate, base_rate_dot, effective_rate
+        real(dp) :: effective_rate_dot, scale_factor, scale_factor_dot
+        real(dp) :: parameter_rms, parameter_rms_dot
         integer :: n_parameters, step, parameter_index
 
         value = huge(1.0_dp)
@@ -431,6 +429,17 @@ contains
                 return
             end if
             clip_scale = max(1.0_dp, update_rms/clip_threshold)
+            base_rate = learning_rate
+            if (self%layout%relative_step) then
+                relative_cap = 1.0_dp/sqrt(real(step, dp))
+                if (abs(learning_rate-relative_cap) <= ACTIVE_SET_TOLERANCE* &
+                    max(1.0_dp, relative_cap)) then
+                    call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                        "MLP Adafactor hypergradient: relative-step boundary is nondifferentiable")
+                    return
+                end if
+                if (learning_rate > relative_cap) base_rate = relative_cap
+            end if
             sqrt_second = sqrt(max(second, 0.0_dp))
             denominator = sqrt_second+epsilon_value
             update = raw_gradient/clip_scale/denominator
@@ -466,10 +475,50 @@ contains
                 update_dot = gradient_dot/clip_scale/denominator - &
                     raw_gradient*clip_scale_dot/(clip_scale*clip_scale*denominator) - &
                     raw_gradient*denominator_dot/(clip_scale*denominator*denominator)
+                base_rate_dot = learning_rate_dot
+                if (self%layout%relative_step) then
+                    if (learning_rate > relative_cap) base_rate_dot = 0.0_dp
+                end if
+                scale_factor = 1.0_dp
+                scale_factor_dot = 0.0_dp
+                if (self%layout%scale_parameter) then
+                    parameter_rms = sqrt(sum(theta*theta)/real(n_parameters, dp))
+                    if (abs(parameter_rms-epsilon_value) <= ACTIVE_SET_TOLERANCE* &
+                        max(1.0_dp, epsilon_value)) then
+                        call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                            "MLP Adafactor hypergradient: parameter-scale boundary is nondifferentiable")
+                        return
+                    end if
+                    if (parameter_rms > epsilon_value) then
+                        scale_factor = parameter_rms
+                        parameter_rms_dot = dot_product(theta, theta_dot(:, parameter_index)) / &
+                            (real(n_parameters, dp)*parameter_rms)
+                        scale_factor_dot = parameter_rms_dot
+                    else
+                        scale_factor = epsilon_value
+                        if (parameter_index == MLP_ADAFACTOR_LOG_EPSILON) &
+                            scale_factor_dot = epsilon_value
+                    end if
+                end if
+                effective_rate = base_rate*scale_factor
+                effective_rate_dot = base_rate_dot*scale_factor + base_rate*scale_factor_dot
                 theta_dot(:, parameter_index) = theta_dot(:, parameter_index) - &
-                    learning_rate_dot*update-learning_rate*update_dot
+                    effective_rate_dot*update-effective_rate*update_dot
             end do
-            theta = theta-learning_rate*update
+            if (self%layout%scale_parameter) then
+                parameter_rms = sqrt(sum(theta*theta)/real(n_parameters, dp))
+                if (abs(parameter_rms-epsilon_value) <= ACTIVE_SET_TOLERANCE* &
+                    max(1.0_dp, epsilon_value)) then
+                    call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                        "MLP Adafactor hypergradient: parameter-scale boundary is nondifferentiable")
+                    return
+                end if
+                scale_factor = max(parameter_rms, epsilon_value)
+            else
+                scale_factor = 1.0_dp
+            end if
+            effective_rate = base_rate*scale_factor
+            theta = theta-effective_rate*update
             if (any(.not. ieee_is_finite(theta)) .or. any(.not. ieee_is_finite(theta_dot)) .or. &
                     any(.not. ieee_is_finite(second_dot))) then
                 call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -524,8 +573,7 @@ contains
         type(mlp_adafactor_hypergradient_options_t), intent(in) :: options
 
         valid = options%steps >= 1 .and. options%optimizer == MLP_OPTIMIZER_ADAFACTOR .and. &
-            options%device_kind == FORTML_DEVICE_CPU .and. .not. options%relative_step .and. &
-            .not. options%scale_parameter .and. ieee_is_finite(options%learning_rate) .and. &
+            options%device_kind == FORTML_DEVICE_CPU .and. ieee_is_finite(options%learning_rate) .and. &
             ieee_is_finite(options%l2) .and. ieee_is_finite(options%decay) .and. &
             ieee_is_finite(options%epsilon) .and. ieee_is_finite(options%clip_threshold) .and. &
             options%learning_rate > 0.0_dp .and. options%l2 > 0.0_dp .and. &
