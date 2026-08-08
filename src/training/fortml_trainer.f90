@@ -881,24 +881,42 @@ contains
         end if
         if (n < 1 .or. self%state%steps < 0 .or. h < 1 .or. &
             h > size(self%state%value_history) .or. h > self%options%max_steps + 1 .or. &
-            size(self%state%parameters) /= n .or. size(self%state%ema_parameters) /= n .or. &
+            self%state%validation_history_length < 0 .or. &
+            self%state%validation_history_length > self%options%max_steps + 1 .or. &
+            self%state%validation_bad_steps < 0 .or. self%state%validation_best_step < 0) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "trainer checkpoint save: state is malformed or non-finite")
+            return
+        end if
+        if (size(self%state%parameters) /= n .or. size(self%state%ema_parameters) /= n .or. &
             size(self%state%value_history) /= self%options%max_steps + 1 .or. &
             size(self%state%gradient_norm_history) /= self%options%max_steps + 1 .or. &
             size(self%state%validation_history) /= self%options%max_steps + 1 .or. &
             size(self%state%validation_best_parameters) /= n .or. &
-            self%state%validation_history_length < 0 .or. &
-            self%state%validation_history_length > self%options%max_steps + 1 .or. &
-            self%state%validation_bad_steps < 0 .or. &
-            self%state%validation_best_step < 0 .or. &
-            any(.not. ieee_is_finite(self%state%parameters)) .or. &
+            self%state%validation_history_length > size(self%state%validation_history) .or. &
+            self%state%validation_best_step > self%state%steps) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "trainer checkpoint save: state shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(self%state%parameters)) .or. &
             any(.not. ieee_is_finite(self%state%ema_parameters)) .or. &
             any(.not. ieee_is_finite(self%state%value_history(:h))) .or. &
             any(.not. ieee_is_finite(self%state%gradient_norm_history(:h))) .or. &
-            any(.not. ieee_is_finite(self%state%validation_best_parameters)) .or. &
-            (self%state%validation_history_length > 0 .and. &
-                any(.not. ieee_is_finite(self%state%validation_history(: &
-                self%state%validation_history_length)))) .or. &
-            .not. ieee_is_finite(self%state%initial_value) .or. &
+            any(.not. ieee_is_finite(self%state%validation_best_parameters))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "trainer checkpoint save: state contains non-finite values")
+            return
+        end if
+        if (self%state%validation_history_length > 0) then
+            if (any(.not. ieee_is_finite(self%state%validation_history(: &
+                self%state%validation_history_length)))) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "trainer checkpoint save: validation history is non-finite")
+                return
+            end if
+        end if
+        if (.not. ieee_is_finite(self%state%initial_value) .or. &
             .not. ieee_is_finite(self%state%final_value) .or. &
             .not. ieee_is_finite(self%state%best_value) .or. &
             .not. ieee_is_finite(self%state%gradient_norm) .or. &
@@ -906,7 +924,7 @@ contains
             .not. ieee_is_finite(self%state%validation_value) .or. &
             .not. ieee_is_finite(self%state%best_validation_value)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
-                "trainer checkpoint save: state is malformed or non-finite")
+                "trainer checkpoint save: scalar state is non-finite")
             return
         end if
         select case (self%options%optimizer)
