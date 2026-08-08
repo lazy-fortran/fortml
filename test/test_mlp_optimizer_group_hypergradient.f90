@@ -275,6 +275,7 @@ contains
         type(mlp_optimizer_group_t) :: overlap
 
         call fixture(model, options, train_x, train_target, validation_x, validation_target, status)
+        options%gradient_clip_norm = 0.1_dp
         options%max_iterations = 12
         options%gradient_tolerance = 1.0e-4_dp
         call mlp_optimize_optimizer_group_hyperparameters(model, train_x, train_target, &
