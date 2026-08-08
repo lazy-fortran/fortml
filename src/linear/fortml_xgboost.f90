@@ -1592,6 +1592,11 @@ contains
                 "xgboost predict_margin: input has unsupported nonfinite values")
             return
         end if
+        if (.not. valid_categorical_query(self, x)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost predict_margin: categorical query values must be integer codes")
+            return
+        end if
         allocate(correction(size(x, 1)))
         margin = self%base_score
         do i = 1, self%n_estimators
@@ -1710,6 +1715,11 @@ contains
         if (.not. valid_query_values(self%missing_code, x)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "xgboost predict_contributions: input has unsupported nonfinite values")
+            return
+        end if
+        if (.not. valid_categorical_query(self, x)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost predict_contributions: categorical query values must be integer codes")
             return
         end if
 
@@ -4194,6 +4204,33 @@ contains
         if (.not. valid) return
         valid = missing_code /= XGB_MISSING_ERROR .or. .not. any(ieee_is_nan(x))
     end function valid_query_values
+
+    logical function valid_categorical_query(model, x) result(valid)
+        class(xgboost_t), intent(in) :: model
+        real(dp), intent(in) :: x(:, :)
+        integer :: j, i, feature
+
+        valid = .true.
+        if (model%categorical_policy_code /= XGB_CATEGORICAL_ORDERED) return
+        if (.not. allocated(model%categorical_features)) then
+            valid = .false.
+            return
+        end if
+        do j = 1, size(model%categorical_features)
+            feature = model%categorical_features(j)
+            if (feature < 1 .or. feature > size(x, 2)) then
+                valid = .false.
+                return
+            end if
+            do i = 1, size(x, 1)
+                if (ieee_is_nan(x(i, feature))) cycle
+                if (.not. is_integer_code(x(i, feature))) then
+                    valid = .false.
+                    return
+                end if
+            end do
+        end do
+    end function valid_categorical_query
 
     !> Select deterministic weighted-quantile boundaries for a histogram node.
     !>
