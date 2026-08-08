@@ -1095,6 +1095,18 @@ typed domain refusal. These new loss kernels are CPU reference paths only;
 CUDA requests remain unavailable until resident loss kernels are linked and
 never fall back through a host copy.
 
+`contrastive_loss_value`, `contrastive_loss_jvp`, `contrastive_loss_vjp`, and
+`contrastive_loss_hvp` provide a pairwise metric-learning objective for two
+equal-shaped row-wise embedding matrices. A one label denotes a matching pair
+and zero denotes a non-matching pair; the branches are `0.5*d**2` and
+`0.5*max(0,margin-d)**2` for Euclidean distance `d`. Optional nonnegative row
+weights and `LOSS_REDUCTION_MEAN`/`LOSS_REDUCTION_SUM` follow the shared
+positive-weight-mass contract. Product calls return a typed domain error for a
+non-matching zero distance or an exact margin boundary, while matching pairs
+remain smooth at zero. `contrastive_loss_value_device` routes CPU exactly and
+returns `FORTNUM_NOT_IMPLEMENTED` for CUDA until a resident pair-distance and
+reduction kernel is available; it never hides a host fallback.
+
 ### `fortml_softmax_regression`
 
 `softmax_regression_t%fit(x,labels,status[,l2,fit_intercept,max_iterations,
