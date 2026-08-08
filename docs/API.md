@@ -175,7 +175,7 @@ repeated resident-batch evidence.
 | `basis_map_t` | `evaluate` | Parameters and inputs | Parameters and inputs | Analytic for polynomial/Fourier/radial/spline; callback maps refuse |
 | `one_hot_encoder_t` | Dense one-hot `transform` | Refused: integer categories have no canonical tangent space | Refused: integer categories have no canonical cotangent space | No |
 | `mlp_t` | `predict` | Parameters and inputs | Parameters and inputs | Weighted-output HVP |
-| `mlp_classifier_t` | Logits, probabilities, and labels | Parameter/input JVP, probability JVP | Parameter/input VJP, probability VJP | No |
+| `mlp_classifier_t` | Logits, probabilities, and labels | Parameter/input JVP, probability JVP, fixed-input probability-parameter JVP | Parameter/input VJP, probability VJP, fixed-input probability-parameter VJP | No |
 | `mlp_classifier_training_objective_t` | Weighted multiclass cross-entropy + optional L2 | Packed network/L2 JVP | Packed network/L2 gradient and scalar VJP | Exact joint network/L2 HVP |
 | `mlp_calibrated_classifier_t` | MLP logits with binary sigmoid/temperature/isotonic or multiclass temperature probabilities and labels | Exact joint network/input plus smooth calibration JVP; isotonic active-set refusal | Exact joint network/input plus smooth calibration VJP; isotonic active-set refusal | No |
 | `mlp_ordinal_classifier_t` | Ordered cumulative-logit neural score, probabilities, and labels | Packed network/threshold and input JVP | Packed network/threshold and input VJP | No |
@@ -2407,11 +2407,19 @@ optional sample-weight vector uses the same positive-mass reduction.
 `decision_function_jvp`/`decision_function_vjp` provide exact fixed-state
 products with respect to packed network parameters and continuous inputs.
 `predict_proba_jvp`/`predict_proba_vjp` compose those products with the stable
-softmax. The device methods `decision_function_device`,
+softmax. The fixed-input `predict_proba_parameter_jvp` and
+`predict_proba_parameter_vjp` specializations expose the same graph with a
+zero input tangent, which is useful for hyperparameter and posterior-sensitivity
+calculations that only perturb the classifier state. Their
+`predict_proba_parameter_jvp_device` and
+`predict_proba_parameter_vjp_device` wrappers dispatch CPU explicitly and
+return `FORTNUM_NOT_IMPLEMENTED` for CUDA until a resident MLP classifier
+graph is linked. The device methods `decision_function_device`,
 `predict_proba_device`, and `predict_device` execute on a selected CPU context;
 selected CUDA contexts return `FORTNUM_NOT_IMPLEMENTED` until a resident MLP
 classifier kernel is linked. The derivative tests cover central differences,
-the VJP/JVP duality identity, and the explicit device refusal.
+the VJP/JVP duality identity, and the explicit device refusal, including the
+fixed-input parameter products.
 
 `mlp_classifier_training_objective_t` is the FortOpt-facing multiclass
 objective adapter. `initialize(model,x,labels,l2,status[,optimize_l2,

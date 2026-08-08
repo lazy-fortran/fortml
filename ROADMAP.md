@@ -1721,6 +1721,13 @@ CUDA refusal until private CART storage is safely bound to the C ABI.
   normalization, sample/class weighting, and a packed parameter-gradient
   product. Binary, multilabel,
   ordinal, and variational GP adapters remain separate contracts.
+- [x] Add fixed-input multiclass MLP probability parameter products. The
+  `predict_proba_parameter_jvp`/`predict_proba_parameter_vjp` pair differentiates
+  the complete packed network state with a zero input tangent, while the
+  corresponding device wrappers execute CPU explicitly and return typed CUDA
+  refusals. The independent `test_mlp_classifier_parameter_products` gate
+  checks central differences, VJP/JVP duality, and both device boundaries; see
+  `docs/MLP_CLASSIFIER_PARAMETER_PRODUCTS.md` and the companion benchmark.
 - [x] Add `mlp_binary_classifier_t` with a one-logit sigmoid head, weighted
   BCE, deterministic Adam minibatches, early stopping, packed input/parameter
   JVP/VJP products, exact parameter loss HVPs, and typed CUDA refusal. Multilabel,
