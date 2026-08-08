@@ -26,6 +26,7 @@ the requested pair is smooth and finite. A refusal is a typed
 | Matérn 3/2 | Yes | Gradient/JVP/VJP; mixed HVP refusal | Yes away from coincidence | Nonzero directional third derivative at coincidence is `FORTNUM_NOT_IMPLEMENTED` |
 | Matérn 5/2 | Yes | Gradient/JVP/VJP; value-only HVP is a FortSym-generated leaf; mixed HVP refusal | Yes | mixed HVP `FORTNUM_NOT_IMPLEMENTED` |
 | Periodic, rational-quadratic, cosine | Yes | Gradient/JVP/VJP; mixed HVP refusal | Yes | mixed HVP `FORTNUM_NOT_IMPLEMENTED` |
+| Local-periodic | Yes, including coincident radial limits | Gradient/JVP/VJP; mixed HVP refusal | Yes, including coincident query blocks | mixed HVP `FORTNUM_NOT_IMPLEMENTED`; CUDA covariance graph is not linked |
 | Linear, constant | Yes | Yes; mixed-observation HVPs are analytic | Yes | none |
 | Polynomial | Yes when the positive polynomial base is finite | Gradient/JVP/VJP and analytic mixed HVP (all four logarithmic parameters) | Yes when the positive base is finite | `FORTNUM_DOMAIN_ERROR` for a nonpositive base |
 | Spectral mixture | Yes | Gradient/JVP/VJP for packed log-weights, log-scales, and signed means; mixed HVP refusal | Yes | mixed HVP `FORTNUM_NOT_IMPLEMENTED` until fourth input/parameter products exist |
