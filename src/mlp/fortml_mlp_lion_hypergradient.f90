@@ -360,10 +360,10 @@ contains
         type(fortnum_status_t), intent(out) :: status
         real(dp), allocatable :: theta(:), theta_dot(:, :), momentum(:), momentum_dot(:, :)
         real(dp), allocatable :: raw_gradient(:), gradient_dot(:, :), hvp(:)
-        real(dp), allocatable :: interpolated(:), interpolated_dot(:, :), sign_update(:)
+        real(dp), allocatable :: interpolated(:), sign_update(:)
         real(dp), allocatable :: validation_gradient(:)
         real(dp) :: learning_rate, l2, beta1, beta2
-        real(dp) :: learning_rate_dot, l2_dot, beta1_dot, beta2_dot
+        real(dp) :: learning_rate_dot, l2_dot, beta2_dot
         real(dp) :: train_value, l2_gradient, scalar_hvp
         integer :: n_parameters, step, parameter_index
 
@@ -382,8 +382,7 @@ contains
             MLP_LION_HYPERPARAMETER_COUNT))
         allocate(raw_gradient(n_parameters), gradient_dot(n_parameters, &
             MLP_LION_HYPERPARAMETER_COUNT), hvp(n_parameters))
-        allocate(interpolated(n_parameters), interpolated_dot(n_parameters, &
-            MLP_LION_HYPERPARAMETER_COUNT), sign_update(n_parameters))
+        allocate(interpolated(n_parameters), sign_update(n_parameters))
         theta_dot = 0.0_dp
         momentum = 0.0_dp
         momentum_dot = 0.0_dp
@@ -402,11 +401,8 @@ contains
                     theta_dot(:, parameter_index), l2_dot, hvp, scalar_hvp, status)
                 if (status%code /= FORTNUM_OK) return
                 gradient_dot(:, parameter_index) = hvp
-                beta1_dot = 0.0_dp
-                if (parameter_index == MLP_LION_LOGIT_BETA1) beta1_dot = beta1*(1.0_dp-beta1)
-                interpolated_dot(:, parameter_index) = beta1*momentum_dot(:, parameter_index) + &
-                    (1.0_dp-beta1)*gradient_dot(:, parameter_index) + &
-                    beta1_dot*(momentum-raw_gradient)
+                ! The sign map has zero derivative on this fixed branch.  Its
+                ! candidate tangent is therefore not needed by the recurrence.
             end do
             do parameter_index = 1, n_parameters
                 if (abs(interpolated(parameter_index)) <= self%layout%sign_margin) then
