@@ -18,6 +18,7 @@ module fortml_xgboost
     integer, parameter, public :: XGB_OBJECTIVE_SQUARED_LOG = 6
     integer, parameter, public :: XGB_OBJECTIVE_RANK_PAIRWISE = 7
     integer, parameter, public :: XGB_OBJECTIVE_ABSOLUTE = 8
+    integer, parameter, public :: XGB_OBJECTIVE_TWEEDIE = 9
     integer, parameter, public :: XGB_MISSING_ERROR = 0
     integer, parameter, public :: XGB_MISSING_LEARN = 1
     integer, parameter, public :: XGB_MISSING_LEFT = 2
@@ -28,12 +29,13 @@ module fortml_xgboost
     integer, parameter, public :: XGB_CATEGORICAL_ORDERED = 1
     character(*), parameter, public :: XGB_MODEL_TEXT_MAGIC = &
         "FORTML_XGBOOST_TEXT"
-    integer, parameter, public :: XGB_MODEL_TEXT_SCHEMA_VERSION = 3
+    integer, parameter, public :: XGB_MODEL_TEXT_SCHEMA_VERSION = 4
     integer, parameter :: XGB_MAX_SERIALIZED_NODES = 1000000
     integer, parameter :: XGB_MAX_CATEGORICAL_VALUES = 64
 
     public :: xgb_pairwise_loss, xgb_pairwise_derivatives
     public :: xgb_histogram_cut_positions
+    public :: xgb_tweedie_loss, xgb_tweedie_derivatives
 
     !> Options for the deterministic exact- or histogram-split
     !> XGBoost-style estimator.
@@ -72,6 +74,9 @@ module fortml_xgboost
         character(len=32) :: objective = "squared"
         real(dp) :: huber_delta = 1.0_dp
         real(dp) :: quantile_alpha = 0.5_dp
+        !! Tweedie variance power.  The bounded production path supports
+        !! 1 < power < 2, matching XGBoost's compound-Poisson regime.
+        real(dp) :: tweedie_variance_power = 1.5_dp
         character(len=16) :: missing_policy = "error"
         character(len=16) :: tree_method = "exact"
         integer :: max_bin = 256
@@ -124,7 +129,7 @@ module fortml_xgboost
     end type xgb_tree_t
 
     !> Second-order boosting for squared, squared-log (RMSLE), binary
-    !> logistic, Poisson count, Huber, quantile, and absolute objectives.
+    !> logistic, Poisson count, Tweedie, Huber, quantile, and absolute objectives.
     !> Fit is discrete; predictions are deterministic and the objective's
     !> Hessians are aggregated exactly for every retained candidate split.
     type, public :: xgboost_t
@@ -167,6 +172,7 @@ module fortml_xgboost
         procedure, public :: fit_regression => xgb_fit_regression
         procedure, public :: fit_binary => xgb_fit_binary
         procedure, public :: fit_poisson => xgb_fit_poisson
+        procedure, public :: fit_tweedie => xgb_fit_tweedie
         procedure, public :: fit_huber => xgb_fit_huber
         procedure, public :: fit_quantile => xgb_fit_quantile
         procedure, public :: fit_squared_log => xgb_fit_squared_log
@@ -479,16 +485,17 @@ contains
                     return
                 end if
             end if
-        else if (objective_code == XGB_OBJECTIVE_POISSON) then
+        else if (objective_code == XGB_OBJECTIVE_POISSON .or. &
+            objective_code == XGB_OBJECTIVE_TWEEDIE) then
             if (any(y < 0.0_dp)) then
                 call status_set(status, FORTNUM_DOMAIN_ERROR, &
-                    "xgboost fit: poisson targets must be nonnegative counts")
+                    "xgboost fit: count/Tweedie targets must be nonnegative")
                 return
             end if
             if (have_validation) then
                 if (any(validation_y < 0.0_dp)) then
                     call status_set(status, FORTNUM_DOMAIN_ERROR, &
-                        "xgboost fit: validation poisson targets must be nonnegative counts")
+                        "xgboost fit: validation count/Tweedie targets must be nonnegative")
                     return
                 end if
             end if
@@ -519,6 +526,14 @@ contains
                 settings%quantile_alpha >= 1.0_dp) then
                 call status_set(status, FORTNUM_DOMAIN_ERROR, &
                     "xgboost fit: quantile_alpha must lie strictly between zero and one")
+                return
+            end if
+        else if (objective_code == XGB_OBJECTIVE_TWEEDIE) then
+            if (.not. ieee_is_finite(settings%tweedie_variance_power) .or. &
+                settings%tweedie_variance_power <= 1.0_dp .or. &
+                settings%tweedie_variance_power >= 2.0_dp) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "xgboost fit: tweedie_variance_power must lie strictly between one and two")
                 return
             end if
         end if
@@ -613,7 +628,8 @@ contains
         sampling_state = settings%seed
         do i = 1, settings%n_estimators
             call objective_derivatives(objective_code, prediction, y, gradient, &
-                hessian, settings%huber_delta, settings%quantile_alpha, status, &
+                hessian, settings%huber_delta, settings%quantile_alpha, &
+                settings%tweedie_variance_power, status, &
                 group, observation_weight)
             if (status%code /= FORTNUM_OK) return
             if (is_ranking) hessian = max(hessian, 1.0e-12_dp)
@@ -639,7 +655,8 @@ contains
                 validation_prediction = validation_prediction + rate*validation_correction
                 call xgb_objective_loss(objective_code, validation_prediction, &
                     validation_y, validation_observation_weight, settings%huber_delta, &
-                    settings%quantile_alpha, validation_loss, status, validation_group)
+                    settings%quantile_alpha, settings%tweedie_variance_power, &
+                    validation_loss, status, validation_group)
                 if (status%code /= FORTNUM_OK) return
                 improved = validation_loss < best_validation_loss - &
                     settings%early_stopping_min_delta
@@ -704,6 +721,8 @@ contains
             self%objective_parameter = settings%huber_delta
         else if (objective_code == XGB_OBJECTIVE_QUANTILE) then
             self%objective_parameter = settings%quantile_alpha
+        else if (objective_code == XGB_OBJECTIVE_TWEEDIE) then
+            self%objective_parameter = settings%tweedie_variance_power
         else
             self%objective_parameter = 0.0_dp
         end if
@@ -830,6 +849,14 @@ contains
                 "xgboost warm start: unsupported objective, tree method, or missing policy")
             return
         end if
+        if (objective_code == XGB_OBJECTIVE_TWEEDIE .and. &
+            (.not. ieee_is_finite(settings%tweedie_variance_power) .or. &
+             settings%tweedie_variance_power <= 1.0_dp .or. &
+             settings%tweedie_variance_power >= 2.0_dp)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost warm start: tweedie_variance_power must lie strictly between one and two")
+            return
+        end if
         if (allocated(settings%monotone_constraints)) then
             if (size(settings%monotone_constraints) /= self%n_inputs .or. &
                 any(settings%monotone_constraints /= self%monotone_constraints)) then
@@ -869,6 +896,12 @@ contains
             settings%quantile_alpha /= self%objective_parameter) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "xgboost warm start: quantile_alpha differs from the fitted model")
+            return
+        end if
+        if (objective_code == XGB_OBJECTIVE_TWEEDIE .and. &
+            settings%tweedie_variance_power /= self%objective_parameter) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost warm start: tweedie_variance_power differs from the fitted model")
             return
         end if
 
@@ -980,6 +1013,7 @@ contains
                 return
             end if
         else if (self%objective_code == XGB_OBJECTIVE_POISSON .or. &
+            self%objective_code == XGB_OBJECTIVE_TWEEDIE .or. &
             self%objective_code == XGB_OBJECTIVE_SQUARED_LOG) then
             if (any(y < 0.0_dp)) then
                 call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -1044,6 +1078,7 @@ contains
             call xgb_objective_loss(self%objective_code, validation_prediction, validation_y, &
                 validation_observation_weight, self%objective_parameter, &
                 merge(self%objective_parameter, 0.5_dp, self%objective_code == XGB_OBJECTIVE_QUANTILE), &
+                self%objective_parameter, &
                 best_validation_loss, status, validation_group)
             if (status%code /= FORTNUM_OK) return
             best_iteration = start_estimators
@@ -1068,6 +1103,7 @@ contains
             call objective_derivatives(self%objective_code, prediction, y, gradient, hessian, &
                 merge(self%objective_parameter, 1.0_dp, self%objective_code == XGB_OBJECTIVE_HUBER), &
                 merge(self%objective_parameter, 0.5_dp, self%objective_code == XGB_OBJECTIVE_QUANTILE), &
+                self%objective_parameter, &
                 status, group, observation_weight)
             if (status%code /= FORTNUM_OK) return
             if (is_ranking) hessian = max(hessian, 1.0e-12_dp)
@@ -1091,6 +1127,7 @@ contains
                 call xgb_objective_loss(self%objective_code, validation_prediction, validation_y, &
                     validation_observation_weight, self%objective_parameter, &
                     merge(self%objective_parameter, 0.5_dp, self%objective_code == XGB_OBJECTIVE_QUANTILE), &
+                    self%objective_parameter, &
                     validation_loss, status, validation_group)
                 if (status%code /= FORTNUM_OK) return
                 improved = validation_loss < best_validation_loss - settings%early_stopping_min_delta
@@ -1263,6 +1300,55 @@ contains
             call xgb_fit(self, x, y, status, settings)
         end if
     end subroutine xgb_fit_poisson
+
+    subroutine xgb_fit_tweedie(self, x, y, status, options, sample_weight, &
+            validation_x, validation_y, validation_weight)
+        !! Fit the bounded XGBoost `reg:tweedie` objective.
+        !!
+        !! Margins are log means and predictions use the positive inverse link
+        !! `exp(margin)`.  The compound-Poisson variance-power regime is
+        !! intentionally explicit: `1 < tweedie_variance_power < 2`.
+        !! Gradients and Hessians are analytic and finite-guarded.  Tree
+        !! fitting remains CPU-only; CUDA prediction is a typed refusal until
+        !! a resident tree kernel is linked.
+        class(xgboost_t), intent(out) :: self
+        real(dp), intent(in) :: x(:, :), y(:)
+        type(fortnum_status_t), intent(out) :: status
+        type(xgboost_options_t), intent(in), optional :: options
+        real(dp), intent(in), optional :: sample_weight(:)
+        real(dp), intent(in), optional :: validation_x(:, :), validation_y(:), &
+            validation_weight(:)
+        type(xgboost_options_t) :: settings
+
+        settings = xgboost_options_t()
+        if (present(options)) settings = options
+        settings%objective = "tweedie"
+        if (present(validation_x) .or. present(validation_y)) then
+            if (present(sample_weight)) then
+                if (present(validation_weight)) then
+                    call xgb_fit(self, x, y, status, settings, sample_weight, &
+                        validation_x, validation_y, validation_weight)
+                else
+                    call xgb_fit(self, x, y, status, settings, sample_weight, &
+                        validation_x, validation_y)
+                end if
+            else if (present(validation_weight)) then
+                call xgb_fit(self, x, y, status, settings, &
+                    validation_x=validation_x, validation_y=validation_y, &
+                    validation_weight=validation_weight)
+            else
+                call xgb_fit(self, x, y, status, settings, &
+                    validation_x=validation_x, validation_y=validation_y)
+            end if
+        else if (present(validation_weight)) then
+            call xgb_fit(self, x, y, status, settings, &
+                validation_weight=validation_weight)
+        else if (present(sample_weight)) then
+            call xgb_fit(self, x, y, status, settings, sample_weight)
+        else
+            call xgb_fit(self, x, y, status, settings)
+        end if
+    end subroutine xgb_fit_tweedie
 
     subroutine xgb_fit_squared_log(self, x, y, status, options, sample_weight, &
             validation_x, validation_y, validation_weight)
@@ -1468,6 +1554,8 @@ contains
             y(:, 1) = stable_sigmoid_array(margin)
         else if (self%objective_code == XGB_OBJECTIVE_POISSON) then
             y(:, 1) = stable_poisson_array(margin)
+        else if (self%objective_code == XGB_OBJECTIVE_TWEEDIE) then
+            y(:, 1) = stable_poisson_array(margin)
         else if (self%objective_code == XGB_OBJECTIVE_SQUARED_LOG) then
             y(:, 1) = stable_squared_log_array(margin)
         else
@@ -1494,6 +1582,8 @@ contains
         if (self%objective_code == XGB_OBJECTIVE_LOGISTIC) then
             y = stable_sigmoid_array(margin)
         else if (self%objective_code == XGB_OBJECTIVE_POISSON) then
+            y = stable_poisson_array(margin)
+        else if (self%objective_code == XGB_OBJECTIVE_TWEEDIE) then
             y = stable_poisson_array(margin)
         else if (self%objective_code == XGB_OBJECTIVE_SQUARED_LOG) then
             y = stable_squared_log_array(margin)
@@ -1611,7 +1701,7 @@ contains
     !>
     !> The second dimension is ordered from the first fitted tree through the
     !> complete ensemble. Regression stages contain margins; logistic stages
-    !> contain positive-class probabilities; Poisson stages contain positive
+    !> contain positive-class probabilities; Poisson and Tweedie stages contain positive
     !> expected counts, matching `predict`.
     subroutine xgb_predict_staged(self, x, staged, status)
         class(xgboost_t), intent(in) :: self
@@ -1641,6 +1731,8 @@ contains
             if (self%objective_code == XGB_OBJECTIVE_LOGISTIC) then
                 staged(:, i) = stable_sigmoid_array(margin)
             else if (self%objective_code == XGB_OBJECTIVE_POISSON) then
+                staged(:, i) = stable_poisson_array(margin)
+            else if (self%objective_code == XGB_OBJECTIVE_TWEEDIE) then
                 staged(:, i) = stable_poisson_array(margin)
             else if (self%objective_code == XGB_OBJECTIVE_SQUARED_LOG) then
                 staged(:, i) = stable_squared_log_array(margin)
@@ -2176,6 +2268,8 @@ contains
             name = "logistic"
         case (XGB_OBJECTIVE_POISSON)
             name = "poisson"
+        case (XGB_OBJECTIVE_TWEEDIE)
+            name = "tweedie"
         case (XGB_OBJECTIVE_HUBER)
             name = "huber"
         case (XGB_OBJECTIVE_QUANTILE)
@@ -2749,7 +2843,7 @@ contains
         valid = model%n_inputs >= 1 .and. model%n_estimators >= 1 .and. &
             model%requested_estimators >= model%n_estimators .and. &
             model%objective_code >= XGB_OBJECTIVE_SQUARED .and. &
-            model%objective_code <= XGB_OBJECTIVE_ABSOLUTE .and. &
+            model%objective_code <= XGB_OBJECTIVE_TWEEDIE .and. &
             (model%tree_method_code == XGB_TREE_EXACT .or. &
              model%tree_method_code == XGB_TREE_HIST) .and. &
             model%max_bin >= 2 .and. model%max_depth_value >= 1 .and. &
@@ -2780,6 +2874,10 @@ contains
                 model%categorical_max_categories_value >= 0) .or. &
                 (model%categorical_policy_code == XGB_CATEGORICAL_ORDERED .and. &
                 model%categorical_max_categories_value >= 2)
+        end if
+        if (valid .and. model%objective_code == XGB_OBJECTIVE_TWEEDIE) then
+            valid = model%objective_parameter > 1.0_dp .and. &
+                model%objective_parameter < 2.0_dp
         end if
     end function valid_serialized_scalars
 
@@ -3136,14 +3234,113 @@ contains
         end if
     end function valid_pairwise_arrays
 
+    subroutine xgb_tweedie_loss(margin, target, variance_power, value, status, weights)
+        !! Return the weighted mean Tweedie negative log-likelihood (up to the
+        !! target-only normalization constant) in the log-mean margin.
+        !!
+        !! For `1 < p < 2`, the per-row value is
+        !! `y*exp((1-p)*margin)/(p-1) + exp((2-p)*margin)/(2-p)`.
+        !! Optional positive weights are normalized by their total mass.
+        real(dp), intent(in) :: margin(:), target(:), variance_power
+        real(dp), intent(out) :: value
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: weights(:)
+        real(dp), allocatable :: row_weight(:)
+        real(dp) :: weight_sum, row_value, first_term, second_term
+        integer :: i
+
+        value = huge(1.0_dp)
+        if (size(margin) < 1 .or. size(target) /= size(margin) .or. &
+            .not. ieee_is_finite(variance_power) .or. variance_power <= 1.0_dp .or. &
+            variance_power >= 2.0_dp .or. any(.not. ieee_is_finite(margin)) .or. &
+            any(.not. ieee_is_finite(target)) .or. any(target < 0.0_dp)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost Tweedie loss: finite margins, nonnegative targets, and 1 < power < 2 are required")
+            return
+        end if
+        allocate(row_weight(size(target)))
+        row_weight = 1.0_dp
+        if (present(weights)) then
+            if (size(weights) /= size(target) .or. any(.not. ieee_is_finite(weights)) .or. &
+                any(weights <= 0.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "xgboost Tweedie loss: weights must be positive and finite")
+                return
+            end if
+            row_weight = weights
+        end if
+        weight_sum = sum(row_weight)
+        if (.not. ieee_is_finite(weight_sum) .or. weight_sum <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost Tweedie loss: weight mass must be positive and finite")
+            return
+        end if
+        value = 0.0_dp
+        do i = 1, size(target)
+            first_term = stable_tweedie_exp(margin(i), 1.0_dp - variance_power)
+            second_term = stable_tweedie_exp(margin(i), 2.0_dp - variance_power)
+            row_value = target(i)*first_term/(variance_power - 1.0_dp) + &
+                second_term/(2.0_dp - variance_power)
+            if (.not. ieee_is_finite(row_value)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "xgboost Tweedie loss: objective value is nonfinite")
+                return
+            end if
+            value = value + row_weight(i)*row_value
+        end do
+        if (.not. ieee_is_finite(value)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost Tweedie loss: weighted objective is nonfinite")
+            return
+        end if
+        value = value/weight_sum
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine xgb_tweedie_loss
+
+    subroutine xgb_tweedie_derivatives(margin, target, variance_power, gradient, &
+            hessian, status)
+        !! Return exact per-row Tweedie derivatives with respect to log mean.
+        !! The Hessian is strictly nonnegative in the supported compound-
+        !! Poisson power interval; no artificial floor is included here.
+        real(dp), intent(in) :: margin(:), target(:), variance_power
+        real(dp), intent(out) :: gradient(:), hessian(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: first_term, second_term
+        integer :: i
+
+        if (size(margin) < 1 .or. size(target) /= size(margin) .or. &
+            size(gradient) /= size(margin) .or. size(hessian) /= size(margin) .or. &
+            .not. ieee_is_finite(variance_power) .or. variance_power <= 1.0_dp .or. &
+            variance_power >= 2.0_dp .or. any(.not. ieee_is_finite(margin)) .or. &
+            any(.not. ieee_is_finite(target)) .or. any(target < 0.0_dp)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost Tweedie derivatives: finite margins, nonnegative targets, and 1 < power < 2 are required")
+            return
+        end if
+        do i = 1, size(margin)
+            first_term = stable_tweedie_exp(margin(i), 1.0_dp - variance_power)
+            second_term = stable_tweedie_exp(margin(i), 2.0_dp - variance_power)
+            gradient(i) = -target(i)*first_term + second_term
+            hessian(i) = target(i)*(variance_power - 1.0_dp)*first_term + &
+                (2.0_dp - variance_power)*second_term
+        end do
+        if (any(.not. ieee_is_finite(gradient)) .or. &
+            any(.not. ieee_is_finite(hessian))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost Tweedie derivatives: gradient or Hessian is nonfinite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine xgb_tweedie_derivatives
+
     subroutine xgb_objective_loss(objective_code, margin, target, weights, &
-            huber_delta, quantile_alpha, loss, status, group)
+            huber_delta, quantile_alpha, tweedie_power, loss, status, group)
         !! Evaluate a finite weighted validation objective independently of
         !! the tree gain calculation.  All supported objectives are losses,
         !! so lower values are better for deterministic early stopping.
         integer, intent(in) :: objective_code
         real(dp), intent(in) :: margin(:), target(:), weights(:)
-        real(dp), intent(in) :: huber_delta, quantile_alpha
+        real(dp), intent(in) :: huber_delta, quantile_alpha, tweedie_power
         real(dp), intent(out) :: loss
         type(fortnum_status_t), intent(out) :: status
         integer, intent(in), optional :: group(:)
@@ -3190,6 +3387,9 @@ contains
             end do
         case (XGB_OBJECTIVE_POISSON)
             term = sum(weights*(stable_poisson_array(margin) - target*margin))
+        case (XGB_OBJECTIVE_TWEEDIE)
+            call xgb_tweedie_loss(margin, target, tweedie_power, loss, status, weights)
+            return
         case (XGB_OBJECTIVE_SQUARED_LOG)
             term = 0.5_dp*sum(weights*(margin - log(1.0_dp + target))**2)
         case (XGB_OBJECTIVE_HUBER)
@@ -3228,11 +3428,11 @@ contains
     end subroutine xgb_objective_loss
 
     subroutine objective_derivatives(objective_code, margin, target, gradient, &
-            hessian, huber_delta, quantile_alpha, status, group, weights)
+            hessian, huber_delta, quantile_alpha, tweedie_power, status, group, weights)
         integer, intent(in) :: objective_code
         real(dp), intent(in) :: margin(:), target(:)
         real(dp), intent(out) :: gradient(:), hessian(:)
-        real(dp), intent(in) :: huber_delta, quantile_alpha
+        real(dp), intent(in) :: huber_delta, quantile_alpha, tweedie_power
         type(fortnum_status_t), intent(out) :: status
         integer, intent(in), optional :: group(:)
         real(dp), intent(in), optional :: weights(:)
@@ -3271,6 +3471,10 @@ contains
             probability = stable_poisson_array(margin)
             gradient = probability - target
             hessian = max(probability, minimum_hessian)
+        case (XGB_OBJECTIVE_TWEEDIE)
+            call xgb_tweedie_derivatives(margin, target, tweedie_power, gradient, &
+                hessian, status)
+            if (status%code /= FORTNUM_OK) return
         case (XGB_OBJECTIVE_SQUARED_LOG)
             ! f(m) = 1/2 [m-log(1+y)]^2 after setting prediction=expm1(m).
             ! The chain rule gives g=(m-log1p(y))/exp(m) and
@@ -3993,6 +4197,8 @@ contains
             code = XGB_OBJECTIVE_LOGISTIC
         case ("poisson", "count:poisson", "reg:poisson")
             code = XGB_OBJECTIVE_POISSON
+        case ("tweedie", "reg:tweedie", "reg:tweedieerror")
+            code = XGB_OBJECTIVE_TWEEDIE
         case ("huber", "reg:pseudohubererror")
             code = XGB_OBJECTIVE_HUBER
         case ("quantile", "reg:quantile", "pinball")
@@ -4362,6 +4568,30 @@ contains
             log(huge(1.0_dp)) - 1.0_dp)
         mean_value = exp(clipped)
     end function stable_poisson_mean
+
+    pure real(dp) function stable_tweedie_exp(margin, exponent) result(value)
+        !! Evaluate `exp(exponent*margin)` without allowing an intermediate
+        !! product overflow.  The caller validates finite inputs and the
+        !! supported Tweedie power interval, so clipping only protects the
+        !! tails of otherwise valid objective evaluations.
+        real(dp), intent(in) :: margin, exponent
+        real(dp), parameter :: lower = log(tiny(1.0_dp))
+        real(dp), parameter :: upper = log(huge(1.0_dp)) - 1.0_dp
+        real(dp) :: scaled
+
+        scaled = exponent*margin
+        if (.not. ieee_is_finite(scaled)) then
+            if ((exponent > 0.0_dp .and. margin > 0.0_dp) .or. &
+                (exponent < 0.0_dp .and. margin < 0.0_dp)) then
+                scaled = upper
+            else
+                scaled = lower
+            end if
+        else
+            scaled = min(max(scaled, lower), upper)
+        end if
+        value = exp(scaled)
+    end function stable_tweedie_exp
 
     pure elemental real(dp) function stable_poisson_element(value) result(mean_value)
         real(dp), intent(in) :: value

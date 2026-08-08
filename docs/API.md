@@ -195,7 +195,7 @@ repeated resident-batch evidence.
 | `vae_t` | `elbo`, `reconstruct` | No | ELBO gradient | No |
 | `rnn_t` | `forward`, squared-error `loss` | No | Loss gradient by BPTT | No |
 | `kernel_t` | Scalar value and matrix | Parameter JVP | Parameter VJP | Parameter HVP |
-| `xgboost_t` | Squared/squared-log (RMSLE)/logistic/Poisson/Huber/quantile/absolute/rank:pairwise margins, predictions, additive tree contributions, fitted-prefix slicing, and bounded ordered-gradient integer categorical partitions | Fixed-tree input JVP away from split boundaries; categorical models refuse discrete tangents | Fixed-tree input VJP away from split boundaries; categorical models refuse discrete cotangents | No |
+| `xgboost_t` | Squared/squared-log (RMSLE)/logistic/Poisson/Tweedie/Huber/quantile/absolute/rank:pairwise margins, predictions, additive tree contributions, fitted-prefix slicing, and bounded ordered-gradient integer categorical partitions | Fixed-tree input JVP away from split boundaries; categorical models refuse discrete tangents | Fixed-tree input VJP away from split boundaries; categorical models refuse discrete cotangents | No |
 | `xgboost_classifier_t` | Binary integer labels, logistic `(n,2)` probabilities, staged margins, and feature diagnostics | Fixed-tree probability/input JVP away from split boundaries | Fixed-tree probability/input VJP away from split boundaries | No |
 | `lightgbm_t` | Weighted numeric regression/binary logistic histogram boosting with deterministic globally best-leaf growth | Fixed-tree input JVP away from split boundaries | Fixed-tree input VJP away from split boundaries | No |
 | `random_forest_classifier_t` | Bootstrap-ensemble probabilities and labels | Refused: split routing is discrete | Refused: split routing is discrete | No |
@@ -2550,12 +2550,14 @@ are linked; there is no hidden host fallback.
 `xgboost_t` is a deterministic second-order boosting estimator. Use
 `fit_regression` for a squared objective, `fit_binary` for a logistic
 objective, `fit_poisson` for nonnegative count targets with a log link,
+`fit_tweedie` for a compound-Poisson Tweedie objective with a log link,
 `fit_huber` for robust Huber regression, or `fit_quantile` for pinball
 regression. Use `fit_squared_log` for XGBoost's `reg:squaredlogerror`
 (RMSLE) objective, or `fit_ranking` for the `rank:pairwise` objective.
 The generic `fit` accepts `objective="squared"`,
 `"squaredlog"`/`"reg:squaredlogerror"`/`"rmsle"`, `"logistic"`,
-`"poisson"`, `"huber"`/`"pseudohuber"`, `"quantile"`/`"pinball"`, or
+`"poisson"`, `"tweedie"`/`"reg:tweedie"`, `"huber"`/`"pseudohuber"`,
+`"quantile"`/`"pinball"`, or
 `"rank:pairwise"`.
 All fit methods accept an optional positive `sample_weight(:)`;
 weights affect the base score and every gradient/Hessian reduction. The
@@ -2566,8 +2568,10 @@ number of finite bins per node; every NaN remains an explicit missing bin and
 is routed by `missing_policy` (`error`, `learn`, `left`, or `right`). The
 histogram policy remains weighted-quantile even when `max_bin` is large; use
 `tree_method="exact"` when exhaustive split equivalence is required. The
-The `huber_delta` and `quantile_alpha` options control the robust objectives;
-the fitted value is available through `objective_parameter_value()`.
+`huber_delta`, `quantile_alpha`, and `tweedie_variance_power` options
+control the robust and Tweedie objectives; `tweedie_variance_power` must
+satisfy `1 < tweedie_variance_power < 2`. The fitted value is available
+through `objective_parameter_value()`.
 Huber uses the exact piecewise gradient with a positive Hessian floor on its
 linear tails. Quantile uses the declared subgradient (`alpha` at a zero or
 positive residual, `alpha-1` below zero) and the same explicit Hessian floor.
@@ -2607,12 +2611,24 @@ gradient/Hessian score (code order breaks ties), and every prefix partition is
 evaluated with the ordinary second-order gain.  Non-integer codes and a
 cardinality above the explicit bound return `FORTNUM_NOT_IMPLEMENTED`.
 The policy and feature metadata survive warm starts, prefix slices, and the
-version-3 text snapshot.  CPU value prediction is supported; CUDA dispatch is
+version-4 text snapshot.  CPU value prediction is supported; CUDA dispatch is
 a typed refusal until a resident categorical-tree kernel exists.  Categorical
 models refuse `predict_jvp` and `predict_vjp` because integer categories have
 no canonical continuous tangent space.  See
 [`docs/XGBOOST_CATEGORICAL.md`](XGBOOST_CATEGORICAL.md) and the independent
 `test_xgboost_categorical` fixture.
+
+The Tweedie lane uses the compound-Poisson variance-power interval
+`1 < p < 2`, where `p` is `tweedie_variance_power`. Margins are log means and
+`predict`/`predict_staged` apply `exp(margin)`. Up to a target-only constant,
+the weighted mean objective is
+`y*exp((1-p)*margin)/(p-1) + exp((2-p)*margin)/(2-p)`;
+`xgb_tweedie_loss` exposes this value and
+`xgb_tweedie_derivatives` exposes the exact per-row gradient and Hessian.
+Nonfinite inputs, negative targets, powers at either endpoint, and nonfinite
+objective products are rejected. The tree fit and CPU prediction are
+deterministic; CUDA prediction returns `FORTNUM_NOT_IMPLEMENTED` rather than
+silently falling back to the host.
 
 The
 `missing_policy` option is `error` by default and rejects IEEE NaNs. `learn`
@@ -2632,7 +2648,7 @@ Every fit method also accepts an optional validation set through
 `early_stopping_rounds` to a positive patience count and optionally set
 `early_stopping_min_delta` to require a minimum weighted-loss improvement.
 The validation objective matches the selected squared, logistic, Poisson,
-squared-log, Huber, or quantile objective. `restore_best` trims the fitted
+Tweedie, squared-log, Huber, or quantile objective. `restore_best` trims the fitted
 ensemble to the best round. `best_iteration()`, `best_validation_loss()`, and
 `early_stopped()` expose the resulting lifecycle state. Validation arguments
 must be supplied together and are shape-, weight-, target-, and NaN-checked.
