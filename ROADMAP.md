@@ -912,9 +912,10 @@ scalar temperature for binary, pre-oriented logits and exposes exact score and
 temperature-parameter JVP/VJP products. Weighted equal-width reliability
 diagrams now have a deterministic metric/API and benchmark oracle.
 `calibrated_logistic_classifier_t` adds leakage-safe binary calibration from
-stratified out-of-fold margins, fold diagnostics, and exact smooth products;
-multiclass calibrated cross-validation and generic estimator routing remain
-open.
+stratified out-of-fold margins, fold diagnostics, and exact smooth products.
+The standalone `multiclass_probability_calibrator_t` now also fits weighted
+one-vs-rest isotonic maps with simplex normalization; multiclass calibrated
+cross-validation, multiclass Platt, and generic estimator routing remain open.
 
 | Family | Required variants | Current FortML baseline | Missing production gates |
 | --- | --- | --- | --- |
@@ -1064,8 +1065,8 @@ when a lower-level primitive already exists.
   products. `test_calibrated_softmax_classifier` checks weighted OOF replay,
   temperature products, malformed weight shapes, and the typed CUDA refusal;
   `fortml-bench/results/CALIBRATED_SOFTMAX_CV.md` supplies the independent
-  NumPy lane. Generic estimator routing and multiclass Platt/isotonic policies
-  remain open.
+  NumPy lane. Generic estimator routing and multiclass Platt policies remain
+  open; the standalone multiclass isotonic policy is covered below.
 - [x] Deterministic seeded random-forest and randomized-threshold Extra-Trees
   classifiers provide aligned probabilities, arbitrary integer labels, Gini or
   entropy criteria, depth/leaf controls, positive sample weights, seeded
@@ -1862,8 +1863,18 @@ CUDA refusal until private CART storage is safely bound to the C ABI.
   probabilities, first-class tie policy, logit/temperature JVP/VJP products,
   and explicit CUDA refusal are independently covered by
   `test_multiclass_probability_calibration` and the multiclass calibration
-  benchmark lane. Multiclass Platt and isotonic maps remain typed
-  `FORTNUM_NOT_IMPLEMENTED` policies rather than independent binary fits.
+  benchmark lane.
+- [x] Extend `multiclass_probability_calibrator_t` with weighted one-vs-rest
+  isotonic probability calibration. Each raw softmax column is fitted with a
+  weighted pool-adjacent-violators map, linearly interpolated at prediction,
+  and renormalized to the simplex while preserving sorted arbitrary labels.
+  `test_multiclass_isotonic_calibration` checks an independent PAVA oracle,
+  weighted simplex values, deterministic ties, typed active-set JVP/VJP and
+  parameter-product refusals, the typed CUDA boundary, and the remaining
+  multiclass Platt refusal. The companion
+  `fortml-bench/results/MULTICLASS_ISOTONIC_CALIBRATION.md` report records the
+  NumPy/Fortran correctness-gated lane. Multiclass Platt and generic estimator
+  routing remain open.
 - [x] Add leakage-safe binary calibration-aware cross-validation through
   `calibrated_logistic_classifier_t`. Each deterministic stratified fold fits
   an independent logistic model, produces held-out margins for every sample,

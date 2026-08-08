@@ -897,22 +897,27 @@ probability is strictly greater, preserving first-class ties.  The explicit
 device contract supports selected CPU contexts; CUDA returns
 `FORTNUM_NOT_IMPLEMENTED` until a resident calibration kernel is linked.
 
-`multiclass_probability_calibrator_t` provides the matching multiclass
-temperature contract.  `fit(logits,labels,status[,options,sample_weight,state])`
-requires one logit column for every observed class, stores arbitrary integer
-classes in ascending order, and fits one positive temperature by weighted
-softmax negative log likelihood.  `predict_proba` returns columns in that
-stored class order and uses a stable row-wise softmax; `predict` chooses the
-first class on equal probabilities.  Platt and isotonic multiclass policies
-return `FORTNUM_NOT_IMPLEMENTED` rather than fitting independent binary maps.
+`multiclass_probability_calibrator_t` provides multiclass temperature and
+weighted one-vs-rest isotonic calibration.  `fit(logits,labels,status
+[,options,sample_weight,state])` requires one logit column for every observed
+class and stores arbitrary integer classes in ascending order.  Temperature
+scaling fits one positive scalar by weighted softmax negative log likelihood.
+Isotonic scaling first computes a stable raw softmax, fits a weighted PAVA map
+against each one-vs-rest class indicator, and normalizes the interpolated
+columns back to a simplex.  `predict_proba` returns columns in stored class
+order; `predict` chooses the first class on equal probabilities.  Multiclass
+Platt scaling remains a typed `FORTNUM_NOT_IMPLEMENTED` policy rather than an
+implicit independent binary fit.
 
-The multiclass `predict_proba_jvp/vjp` products cover logit tangents and
-cotangents.  The parameter products cover the single packed `[temperature]`
-coordinate and agree with finite differences and the adjoint identity.
+Temperature `predict_proba_jvp/vjp` products cover logit tangents and
+cotangents, and its parameter products cover the single packed `[temperature]`
+coordinate.  Isotonic values are complete on selected CPU, while score and
+parameter products return `FORTNUM_NOT_IMPLEMENTED` because PAVA active-set
+derivatives are not yet defined; isotonic `parameter_count()` is zero.
 `classes`, `parameters`, `parameter_count`, `method`, `fitted`, and
-`device_supported` expose the fitted state.  Selected CPU prediction is
-supported; CUDA prediction returns a typed `FORTNUM_NOT_IMPLEMENTED` refusal
-until a resident calibration kernel is linked.
+`device_supported` expose deterministic state.  Selected CPU prediction is
+supported for both methods; CUDA prediction returns a typed
+`FORTNUM_NOT_IMPLEMENTED` refusal until a resident calibration kernel is linked.
 
 ### `fortml_calibrated_logistic_classifier`
 
