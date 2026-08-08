@@ -6,13 +6,13 @@ program fortml_bench_mlp_optimizer_group_hypergradient
     use fortml_mlp_optimizer_group_hypergradient, only: &
         mlp_optimizer_group_hypergradient_objective_t, &
         mlp_optimizer_group_hypergradient_options_t
-    use fortnum_status, only: fortnum_status_t, status_ok
+    use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_NOT_IMPLEMENTED
     implicit none
 
     integer, parameter :: n_train = 6, n_validation = 3, repetitions = 16
     real(dp) :: train_x(n_train, 1), train_target(n_train, 1)
     real(dp) :: validation_x(n_validation, 1), validation_target(n_validation, 1)
-    real(dp) :: parameters(4), direction(4), gradient(4)
+    real(dp) :: parameters(4), direction(4), gradient(4), product(4)
     real(dp) :: value, tangent, elapsed
     integer(int64) :: clock_start, clock_end, clock_rate
     integer :: oracle_unit, environment_status, repetition
@@ -56,6 +56,11 @@ program fortml_bench_mlp_optimizer_group_hypergradient
     direction = [0.23_dp, -0.17_dp, 0.13_dp, -0.11_dp]
     call objective%jvp(parameters, direction, value, tangent, status)
     if (.not. status_ok(status)) error stop "optimizer-group benchmark JVP failed"
+    product = 1.0_dp
+    call objective%hvp(parameters, direction, product, status)
+    if (status%code /= FORTNUM_NOT_IMPLEMENTED .or. any(product /= 0.0_dp)) then
+        error stop "optimizer-group benchmark HVP refusal contract failed"
+    end if
 
     oracle_unit = -1
     call get_environment_variable("FORTML_BENCH_OPTIMIZER_GROUP_HYPERGRADIENT_ORACLE", &
@@ -70,6 +75,7 @@ program fortml_bench_mlp_optimizer_group_hypergradient
         write (oracle_unit, '(a,es26.17e3)') "gradient,3,", gradient(3)
         write (oracle_unit, '(a,es26.17e3)') "gradient,4,", gradient(4)
         write (oracle_unit, '(a,es26.17e3)') "jvp,1,", tangent
+        write (oracle_unit, '(a,i0)') "hvp_status,1,", status%code
         close (oracle_unit)
     end if
     if (oracle_only_requested()) stop

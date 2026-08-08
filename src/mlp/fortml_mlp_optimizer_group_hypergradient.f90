@@ -10,6 +10,11 @@ module fortml_mlp_optimizer_group_hypergradient
     !! The trajectory is plain full-batch SGD, which is the first complete
     !! group-product adapter.  MLP analytic HVPs propagate every smooth outer
     !! coordinate, and FortOpt consumes the resulting value/gradient callback.
+    !! The outer HVP is intentionally a typed refusal: producing it would
+    !! require third network derivatives (the inner recurrence already uses
+    !! an MLP HVP).  Keeping the method on the public objective gives callers
+    !! one stable derivative surface and prevents accidental finite-difference
+    !! fallbacks.
     !! CUDA is an explicit refusal until the complete model, update, and group
     !! metadata are resident on a device.
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
@@ -99,6 +104,7 @@ module fortml_mlp_optimizer_group_hypergradient
         procedure, public :: value_gradient => mlp_optimizer_group_hypergradient_value_gradient
         procedure, public :: jvp => mlp_optimizer_group_hypergradient_jvp
         procedure, public :: vjp => mlp_optimizer_group_hypergradient_vjp
+        procedure, public :: hvp => mlp_optimizer_group_hypergradient_hvp
         procedure, public :: fortopt => mlp_optimizer_group_hypergradient_fortopt
         procedure, public :: is_initialized => mlp_optimizer_group_hypergradient_is_initialized
     end type mlp_optimizer_group_hypergradient_objective_t
@@ -335,6 +341,39 @@ contains
         gradient = output_bar*gradient
         call status_set(status, FORTNUM_OK, "")
     end subroutine mlp_optimizer_group_hypergradient_vjp
+
+    subroutine mlp_optimizer_group_hypergradient_hvp(self, parameters, direction, product, status)
+        !! Return a typed refusal until third network derivatives are available.
+        !!
+        !! `value_gradient`, `jvp`, and `vjp` are exact.  An outer HVP would
+        !! differentiate the inner MLP HVP with respect to the trajectory and
+        !! therefore needs third derivatives of the network loss.  Returning
+        !! zero with `FORTNUM_NOT_IMPLEMENTED` makes the unsupported product
+        !! explicit and keeps FortOpt from silently consuming a numerical
+        !! approximation.
+        class(mlp_optimizer_group_hypergradient_objective_t), intent(in) :: self
+        real(dp), intent(in) :: parameters(:), direction(:)
+        real(dp), intent(out) :: product(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        product = 0.0_dp
+        if (size(parameters) /= self%layout%parameter_count .or. &
+                size(direction) /= self%layout%parameter_count .or. &
+                size(product) /= self%layout%parameter_count .or. &
+                any(.not. ieee_is_finite(parameters)) .or. &
+                any(.not. ieee_is_finite(direction))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP optimizer-group hypergradient HVP: packed shape is invalid")
+            return
+        end if
+        if (.not. self%is_initialized()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP optimizer-group hypergradient HVP: objective is not initialized")
+            return
+        end if
+        call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+            "MLP optimizer-group hypergradient HVP requires third network derivatives")
+    end subroutine mlp_optimizer_group_hypergradient_hvp
 
     subroutine mlp_optimizer_group_hypergradient_fortopt(self, objective, status)
         class(mlp_optimizer_group_hypergradient_objective_t), target, intent(inout) :: self

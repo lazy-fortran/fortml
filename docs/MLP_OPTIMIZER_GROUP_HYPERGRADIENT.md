@@ -15,7 +15,10 @@ parameters retain multiplier one. The outer coordinates are differentiable
 through the MLP analytic HVP, the learning rate, L2, and every group
 multiplier. `value_gradient`, `jvp`, `vjp`, and the FortOpt bounded L-BFGS-B
 adapter share one deterministic objective; no finite-difference optimizer
-fallback is used.
+fallback is used. The public `hvp` entry point is equally explicit: it
+returns a zero product with `FORTNUM_NOT_IMPLEMENTED` until third network
+derivatives are available. Shape or non-finite inputs return
+`FORTNUM_DOMAIN_ERROR`; no numerical hyper-HVP is hidden behind the API.
 
 The current adapter deliberately covers plain full-batch SGD first. Momentum,
 Adam-family state, schedules, clipping, minibatch cursors, and resident CUDA
@@ -39,4 +42,5 @@ call mlp_optimize_optimizer_group_hyperparameters(model, train_x, train_y, &
 `test_mlp_optimizer_group_hypergradient` checks an independent central-
 finite-difference oracle for every packed coordinate, JVP contraction, scalar
 VJP scaling, exact parity with `mlp_train`'s group update, FortOpt result
-coordinates, overlap validation, and the typed CUDA refusal.
+coordinates, overlap validation, the typed outer-HVP refusal, and the typed
+CUDA refusal.

@@ -3,7 +3,7 @@ program test_mlp_optimizer_group_hypergradient
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_NOT_IMPLEMENTED, &
-        FORTNUM_CONVERGENCE_ERROR
+        FORTNUM_DOMAIN_ERROR, FORTNUM_CONVERGENCE_ERROR
     use fortml_device, only: FORTML_DEVICE_CUDA
     use fortml_mlp, only: mlp_t, MLP_LINEAR
     use fortml_mlp_training, only: mlp_optimizer_group_t, mlp_training_options_t, &
@@ -151,7 +151,7 @@ contains
         type(fortnum_status_t) :: status
         real(dp) :: train_x(4, 1), train_target(4, 1)
         real(dp) :: validation_x(3, 1), validation_target(3, 1)
-        real(dp) :: value, gradient(4)
+        real(dp) :: value, gradient(4), direction(4), product(4)
         type(mlp_optimizer_group_t) :: overlap
 
         call fixture(model, options, train_x, train_target, validation_x, validation_target, status)
@@ -170,6 +170,22 @@ contains
             validation_target, options, status)
         call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
             "optimizer-group CUDA refusal", failures)
+
+        ! The inner trajectory uses an exact MLP HVP, but an outer HVP would
+        ! require third network derivatives.  The public method must refuse
+        ! explicitly rather than silently finite-differencing the objective.
+        call fixture(model, options, train_x, train_target, validation_x, validation_target, status)
+        call objective%initialize(model, train_x, train_target, validation_x, &
+            validation_target, options, status)
+        direction = [0.2_dp, -0.1_dp, 0.07_dp, -0.05_dp]
+        product = 1.0_dp
+        call objective%hvp(objective%parameters(), direction, product, status)
+        call check(status%code == FORTNUM_NOT_IMPLEMENTED .and. all(product == 0.0_dp), &
+            "optimizer-group outer HVP typed refusal", failures)
+        product = 1.0_dp
+        call objective%hvp(objective%parameters(), direction(:3), product, status)
+        call check(status%code == FORTNUM_DOMAIN_ERROR .and. all(product == 0.0_dp), &
+            "optimizer-group HVP shape refusal", failures)
 
         call fixture(model, options, train_x, train_target, validation_x, validation_target, status)
         call overlap%initialize("overlap", 1, 2, 1.0_dp, status)
