@@ -36,6 +36,15 @@ refusals. See
 [docs/MLP_HYPERGRADIENT.md](docs/MLP_HYPERGRADIENT.md).
 [ROADMAP.md](ROADMAP.md) records their acceptance criteria and delivery order.
 
+The GP surface also includes a latent-Gaussian ordinal classification baseline
+and dense Student-t and heteroskedastic process regression references. The ordinal adapter exposes
+fixed-cut probability and input/parameter products; the Student-t process keeps
+the GP mean but scales posterior variance by the observed Mahalanobis distance,
+and the heteroskedastic process conditions on supplied input-dependent noise.
+Both CPU contracts have independent tests and explicit typed CUDA boundaries;
+native ordinal likelihood optimization and resident Student-t inference remain
+roadmap work.
+
 The library uses separate Fortran modules instead of an umbrella `fortml`
 module. For example, exact GP regression uses `fortml_kernels` and
 `fortml_gaussian_process`.

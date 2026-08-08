@@ -3454,6 +3454,19 @@ data-dependent variance contrast, and invalid-input refusals are checked by
 This is a CPU dense reference path: derivative products, sparse/variational
 inference, and resident CUDA execution remain open.
 
+### `fortml_heteroskedastic_gp`
+
+`heteroskedastic_gp_t` accepts a positive observation-variance vector in
+`fit(x,y,noise_variance,signal_kernel,noise_kernel,status[,jitter])`. The
+signal posterior uses the row-specific diagonal and `predict` returns latent
+mean/variance. `noise_at` interpolates the supplied log variances with the
+second kernel and exponentiates the result, retaining positivity and reverting
+to the geometric-mean level away from observations. Constant noise reduces
+exactly to `gp_regression_t`; `test_heteroskedastic_gp` covers that oracle,
+quiet/noisy posterior behavior, interpolation, and typed refusals. Joint noise
+inference, derivative products, approximate inference, and resident CUDA remain
+open; see [`docs/GP_HETEROSKEDASTIC.md`](GP_HETEROSKEDASTIC.md).
+
 ### `fortml_sparse_prior_gp`
 
 `sparse_prior_gp_t` implements `SPARSE_SOR`, `SPARSE_DTC`, `SPARSE_FITC`, and
