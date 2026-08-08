@@ -12,8 +12,8 @@ program test_derivative_gp_ard
     type(gp_derivative_regression_t) :: model
     type(kernel_t) :: kernel
     type(fortnum_status_t) :: status
-    real(dp) :: x(4, 2), y(4, 1), theta(5), gradient(5), finite_gradient(5)
-    real(dp) :: direction(5), hvp(5), gradient_plus(5), gradient_minus(5)
+    real(dp) :: x(4, 2), y(4, 1), theta(4), gradient(4), finite_gradient(4)
+    real(dp) :: direction(4), hvp(4), gradient_plus(4), gradient_minus(4)
     real(dp) :: h, hvp_h
     integer :: i, failures
 
@@ -39,7 +39,7 @@ program test_derivative_gp_ard
     call check(status_ok(status) .and. maxval(abs(gradient - finite_gradient)) < 4.0e-6_dp, &
         "ARD derivative-GP hyperparameter gradient oracle", failures)
 
-    direction = [0.11_dp, -0.07_dp, 0.19_dp, -0.13_dp, 0.05_dp]
+    direction = [0.11_dp, -0.07_dp, 0.19_dp, 0.05_dp]
     call model%hyperparameter_hvp(direction, hvp, status)
     hvp_h = 2.0e-4_dp
     gradient_plus = oracle_gradient(theta + hvp_h*direction, x, [0, 1, 2, 0], y, &
