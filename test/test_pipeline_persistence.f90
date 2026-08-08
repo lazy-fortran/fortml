@@ -62,7 +62,7 @@ contains
         real(dp) :: theta_dot(1), theta_hvp(1), theta_hvp_loaded(1)
         real(dp), allocatable :: theta(:), theta_loaded(:)
         character(len=*), parameter :: path = &
-            "/mnt/storage/worktrees/fortml-basis-pipeline-persistence/pipeline_state.txt"
+            "/mnt/storage/fortml_pipeline_persistence_state.txt"
         real(dp), parameter :: tolerance = 5.0e-13_dp
         integer :: unit, ios, i
 
@@ -141,7 +141,7 @@ contains
         type(fortnum_status_t) :: status
         real(dp) :: x(3, 1), before(1), after(1)
         character(len=*), parameter :: path = &
-            "/mnt/storage/worktrees/fortml-basis-pipeline-persistence/pipeline_state_invalid.txt"
+            "/mnt/storage/fortml_pipeline_persistence_state_invalid.txt"
         integer :: unit, ios
 
         call make_fixture(pipeline, x, status)
