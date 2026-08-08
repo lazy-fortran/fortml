@@ -4,7 +4,7 @@ program fortml_bench_multiclass_platt_calibration
         multiclass_probability_calibrator_t, probability_calibration_options_t, &
         CALIBRATION_SIGMOID
     use fortml_device, only: fortml_device_t, FORTML_DEVICE_CUDA
-    use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_NOT_IMPLEMENTED
+    use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_OK, FORTNUM_NOT_IMPLEMENTED
     implicit none
 
     integer, parameter :: n_samples = 192, n_classes = 3
@@ -71,8 +71,9 @@ program fortml_bench_multiclass_platt_calibration
     cuda%available = .true.
     call model%predict_proba_device(cuda, scores, probabilities, status)
     cuda_status = status%code
-    if (jvp_status /= 0 .or. vjp_status /= 0 .or. parameter_jvp_status /= 0 .or. &
-        parameter_vjp_status /= 0 .or. cuda_status /= FORTNUM_NOT_IMPLEMENTED) then
+    if (jvp_status /= FORTNUM_OK .or. vjp_status /= FORTNUM_OK .or. &
+        parameter_jvp_status /= FORTNUM_OK .or. parameter_vjp_status /= FORTNUM_OK .or. &
+        cuda_status /= FORTNUM_NOT_IMPLEMENTED) then
         error stop "multiclass Platt derivative/device contract failed"
     end if
 
