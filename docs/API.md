@@ -1858,8 +1858,12 @@ trajectory whose packed FortOpt coordinates are
 `[log_learning_rate,log_l2,log(multiplier_i)]`. Group ranges and names are
 validated as contiguous, non-overlapping metadata. Each multiplier is applied
 to the post-optimizer parameter delta used by `mlp_train`; uncovered
-parameters use multiplier one. `value_gradient`, `jvp`, `vjp`, and the bounded
-FortOpt adapter share the same analytic MLP HVP products. Momentum,
+parameters use multiplier one. Set `gradient_clip_norm` to apply the same
+global norm clipping as `mlp_train` after L2 and before group scaling. Its
+derivatives propagate on a fixed active set, while a trajectory on the clipping
+boundary returns `FORTNUM_NOT_IMPLEMENTED`; the clipping norm is not a packed
+coordinate. `value_gradient`, `jvp`, `vjp`, and the bounded FortOpt adapter
+share the same analytic MLP HVP products. Momentum,
 Adam-family state, schedules, minibatch cursors, and resident CUDA groups are
 explicitly outside this adapter and return typed refusals where requested.
 See [`docs/MLP_OPTIMIZER_GROUP_HYPERGRADIENT.md`](MLP_OPTIMIZER_GROUP_HYPERGRADIENT.md)
