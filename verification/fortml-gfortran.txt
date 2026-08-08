@@ -7,7 +7,7 @@ FortOpt dependency: release/context-objective 883aa7ee0a3f2b3a508d0309b907adccc3
 FortNum dependency: clean origin/main 7ced2f7aa272920916789fa82a35bfcb2e792d45
 FortML-bench revision: origin/main dddf34e (categorical likelihood, SHAP-like tree, and trainer-validation oracle rows included)
 Command: FO_SCAN_FALLBACK=regex fo
-Worktree: /mnt/storage/compile/final-lazy-fortran/fortml
+Worktree: isolated clean-dependency checkout (removed after verification)
 Static: OK (541 modules, 541 changed, 541 affected)
 Build: OK (885 units)
 Tests: OK (248/248)

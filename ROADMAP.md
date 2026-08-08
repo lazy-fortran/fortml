@@ -31,7 +31,8 @@ outer HVPs, and seeded XGBoost DART), FortAD `origin/main` at
 `7c65a88194b4cce796d58f90e12f147be29cd63e`, FortFront at
 `0bce426a0b69920e867d580b163508afba51d439`, and FortNum at
 `7ced2f7aa272920916789fa82a35bfcb2e792d45`, run from the clean checkout
-under `/mnt/storage/compile/final-lazy-fortran/fortml`. The run includes the
+under an isolated clean-dependency checkout that was removed after verification.
+The run includes the
   kernel-catalog, weighted LDA/QDA, robust/absolute XGBoost, neural NLL, random-forest,
 Extra-Trees, grouped MLP HVP and L-BFGS-B, basis/pipeline HVP, cosine
 derivative-GP, multilabel/ROC-AUC/PR-AUC/F-beta ranking, derivative-GP
