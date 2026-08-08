@@ -33,7 +33,8 @@ module fortml_calibrated_softmax_classifier
         integer :: cv_folds = 5
         logical :: cv_shuffle = .false.
         integer :: cv_seed = 17
-        type(probability_calibration_options_t) :: calibration
+        type(probability_calibration_options_t) :: calibration = &
+            probability_calibration_options_t(method=CALIBRATION_TEMPERATURE)
     end type calibrated_softmax_classifier_options_t
 
     type, public :: calibrated_softmax_classifier_state_t
