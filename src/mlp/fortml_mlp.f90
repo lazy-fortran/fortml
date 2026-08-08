@@ -63,6 +63,8 @@ module fortml_mlp
         procedure, public :: parameters => mlp_parameters
         procedure, public :: set_parameters => mlp_set_parameters
         procedure, public :: set_linear_parameters => mlp_set_linear_parameters
+        procedure, public :: set_last_layer_parameters => mlp_set_last_layer_parameters
+        procedure, public :: feature_map => mlp_feature_map
         procedure, public :: predict => mlp_predict
         procedure, public :: jvp => mlp_jvp
         procedure, public :: vjp => mlp_vjp
@@ -401,6 +403,75 @@ contains
         self%layer(2)%bias = bias2
         call status_set(status, FORTNUM_OK, "")
     end subroutine mlp_set_linear_parameters
+
+    subroutine mlp_set_last_layer_parameters(self, weight, bias, status)
+        !! Replace only the final dense layer after validating the full state.
+        !!
+        !! This is the mutation seam used by finite-feature GP/NTK
+        !! initializers.  No layer is modified when the model is not allocated,
+        !! when the final activation is nonlinear, or when the supplied values
+        !! do not match the final layer.
+        class(mlp_t), intent(inout) :: self
+        real(dp), intent(in) :: weight(:, :), bias(:)
+        type(fortnum_status_t), intent(out) :: status
+        integer :: last
+
+        if (.not. model_allocated(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP set_last_layer_parameters: model is uninitialized")
+            return
+        end if
+        last = size(self%layer)
+        if (self%output_activation /= MLP_LINEAR) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP set_last_layer_parameters: final activation is nonlinear")
+            return
+        end if
+        if (size(weight, 1) /= size(self%layer(last)%weight, 1) .or. &
+                size(weight, 2) /= size(self%layer(last)%weight, 2) .or. &
+                size(bias) /= size(self%layer(last)%bias)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP set_last_layer_parameters: dimensions are invalid")
+            return
+        end if
+        if (.not. all(ieee_is_finite(weight)) .or. &
+                .not. all(ieee_is_finite(bias))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP set_last_layer_parameters: values are nonfinite")
+            return
+        end if
+        self%layer(last)%weight = weight
+        self%layer(last)%bias = bias
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine mlp_set_last_layer_parameters
+
+    subroutine mlp_feature_map(self, x, features, status)
+        !! Return the activation immediately before the final dense layer.
+        !!
+        !! The map is useful for finite-feature GP/NTK adapters.  It never
+        !! exposes internal storage: callers receive a fresh matrix and may
+        !! safely mutate it.
+        class(mlp_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        real(dp), allocatable, intent(out) :: features(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        type(matrix_holder_t), allocatable :: activations(:), preactivations(:)
+
+        if (.not. model_allocated(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP feature_map: model is uninitialized")
+            return
+        end if
+        if (size(self%layer) < 2 .or. size(x, 1) < 1 .or. &
+                size(x, 2) /= self%layer_sizes(1)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP feature_map: topology or input shape is invalid")
+            return
+        end if
+        call forward_cache(self, x, activations, preactivations, status)
+        if (status%code /= FORTNUM_OK) return
+        allocate(features, source=activations(size(activations) - 1)%value)
+    end subroutine mlp_feature_map
 
     subroutine mlp_predict(self, x, y, status)
         class(mlp_t), intent(in) :: self

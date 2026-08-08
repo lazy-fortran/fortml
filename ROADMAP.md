@@ -655,6 +655,23 @@ variants, count/dispersion extensions, contrastive/triplet/CTC objectives,
 probabilistic reconstruction, broader PDE residuals, and resident CUDA loss
 kernels require separate contracts.
 
+### 2026-08-09 finite-feature GP/NTK initializer slice
+
+`fortml_mlp_last_layer_gp` now provides a deterministic, production-quality
+last-layer kernel-ridge initializer for an existing MLP. It freezes the hidden
+feature map, solves the regularized augmented normal equations, exposes
+transactional final-layer application, named regularization metadata, and an
+analytic fixed-feature regularization JVP. An independent closed-form oracle,
+central-difference product check, transaction/refusal checks, and typed CUDA
+no-mutation boundary are in `test_mlp_last_layer_gp`; the API contract is
+`docs/MLP_LAST_LAYER_GP.md` and the release lane is
+`fortml-bench/results/mlp_last_layer_gp.csv`.
+
+This closes only the finite-feature last-layer warm-start contract. It does not
+close NNGP covariance propagation, sampled prior draws, full GP-posterior
+weight maps, or structure-preserving Hamiltonian/symplectic/PINN
+initialization; those remain explicit research and implementation gaps.
+
 ### 2026-08-07 closure slice
 
 The current release adds several cross-package contracts that were previously
@@ -3925,11 +3942,17 @@ checkouts before deciding that a product is unavailable.
   GP correspondence](https://arxiv.org/abs/1711.00165). On a user design set,
   estimate covariance from a seeded finite-width ensemble and report its error,
   mean, and variance calibration against the limiting kernel.
-- [ ] Add three separate MLP initialization contracts: a sampled prior draw,
-  deterministic fitting of a GP posterior mean, and last-layer kernel-ridge
-  initialization. Each records the kernel, architecture, width, seed, design
-  set, and solve tolerance, and states whether it promises a mean fit or a
-  covariance approximation.
+- [x] Add the finite-feature last-layer kernel-ridge initialization contract
+  for an existing affine-output MLP. The initializer records dimensions,
+  regularization, fixed-feature derivative scope, and its explicit
+  `exact_infinite_width=.false.` boundary; it has independent normal-equation,
+  central-difference, transaction, and typed CUDA refusal oracles plus a
+  benchmark lane. This is a deterministic posterior-mean warm start, not an
+  NNGP covariance or exact infinite-width claim.
+- [ ] Add sampled prior draws, NNGP covariance propagation, and deterministic
+  full GP-posterior/NTK weight maps. Each must record the kernel, architecture,
+  width, seed, design set, solve tolerance, and whether it promises a mean fit
+  or a covariance approximation.
 - [ ] Add structure-aware GP-posterior initialization for ordinary MLPs,
   Hamiltonian and symplectic networks, and PINN residual networks. The mapping
   from the infinite-width GP or NNGP/NTK feature representation to finite

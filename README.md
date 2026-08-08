@@ -270,6 +270,13 @@ input, and calibration-parameter JVP/VJP products are exact, while isotonic
 active-set products and all CUDA requests return explicit typed refusals.  See
 [`docs/MLP_CALIBRATED_CLASSIFIER.md`](docs/MLP_CALIBRATED_CLASSIFIER.md).
 
+`fortml_mlp_last_layer_gp` adds a deterministic finite-feature GP/NTK
+last-layer warm start. It solves a regularized closed-form posterior for an
+existing MLP's final affine layer, exposes named regularization metadata and a
+CPU hyperparameter JVP, and returns a typed CUDA refusal. This is explicitly a
+finite-width approximation, not an exact NNGP or infinite-width equivalence;
+see [`docs/MLP_LAST_LAYER_GP.md`](docs/MLP_LAST_LAYER_GP.md).
+
 The newly added elastic-net, OVO, multilabel logistic, Laplace-GP
 classification, probability calibration, typed schedule, and derivative-GP
 APIs expose explicit CPU/CUDA capability/refusal methods. They are CPU-only
