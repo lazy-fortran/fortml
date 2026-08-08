@@ -15,7 +15,7 @@ module fortml_mlp_sgd_momentum_hypergradient
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
         FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED, FORTNUM_CONVERGENCE_ERROR
     use fortml_device, only: FORTML_DEVICE_CPU
-    use fortml_mlp, only: mlp_t
+    use fortml_mlp, only: mlp_t, MLP_LINEAR
     use fortml_mlp_training, only: mlp_loss_value_gradient, mlp_loss_hvp, &
         MLP_OPTIMIZER_SGD
     use fortopt_objective, only: objective_t
@@ -93,6 +93,7 @@ module fortml_mlp_sgd_momentum_hypergradient
         procedure, public :: value_gradient => mlp_sgd_momentum_hypergradient_value_gradient
         procedure, public :: jvp => mlp_sgd_momentum_hypergradient_jvp
         procedure, public :: vjp => mlp_sgd_momentum_hypergradient_vjp
+        procedure, public :: hvp => mlp_sgd_momentum_hypergradient_hvp
         procedure, public :: fortopt => mlp_sgd_momentum_hypergradient_fortopt
         procedure, public :: is_initialized => mlp_sgd_momentum_hypergradient_is_initialized
     end type mlp_sgd_momentum_hypergradient_objective_t
@@ -251,6 +252,200 @@ contains
         gradient = output_bar*gradient
         call status_set(status, FORTNUM_OK, "")
     end subroutine mlp_sgd_momentum_hypergradient_vjp
+
+    subroutine mlp_sgd_momentum_hypergradient_hvp(self, parameters, direction, product, status)
+        !! Exact outer Hessian-vector product on the affine one-layer branch.
+        !!
+        !! For one dense linear layer the MSE+L2 gradient is affine in the
+        !! packed model parameters, so its Hessian is constant and has no
+        !! third network derivative.  We therefore propagate mixed second
+        !! tangents through the complete momentum/Nesterov recurrence.  The
+        !! general nonlinear and multilayer cases intentionally retain a
+        !! typed refusal rather than finite-differencing a trajectory.
+        class(mlp_sgd_momentum_hypergradient_objective_t), intent(inout) :: self
+        real(dp), intent(in) :: parameters(:), direction(:)
+        real(dp), intent(out) :: product(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: theta(:), theta_dot(:, :), theta_dot_old(:, :)
+        real(dp), allocatable :: theta_ddot(:, :)
+        real(dp), allocatable :: velocity(:), velocity_old(:)
+        real(dp), allocatable :: velocity_dot(:, :), velocity_dot_old(:, :)
+        real(dp), allocatable :: velocity_dot_new(:, :)
+        real(dp), allocatable :: velocity_ddot(:, :), velocity_ddot_new(:, :)
+        real(dp), allocatable :: raw_gradient(:), raw_gradient_dot(:, :)
+        real(dp), allocatable :: raw_gradient_ddot(:)
+        real(dp), allocatable :: validation_gradient(:), validation_hvp(:)
+        real(dp), allocatable :: theta_dir(:), velocity_dir(:), velocity_dir_new(:)
+        real(dp), allocatable :: update(:), update_dot(:, :), update_dir(:)
+        real(dp), allocatable :: update_ddot(:)
+        real(dp) :: learning_rate, l2, momentum, learning_rate_dir, l2_dir
+        real(dp) :: train_value, l2_gradient, scalar_hvp
+        real(dp) :: lr_i, lr_id, l2_i, l2_id, momentum_i, momentum_d
+        real(dp) :: lr_dir
+        integer :: n_parameters, step, i
+
+        product = 0.0_dp
+        if (.not. self%is_initialized()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP SGD momentum hypergradient HVP: objective is not initialized")
+            return
+        end if
+        if (size(parameters) /= MLP_SGD_MOMENTUM_HYPERPARAMETER_COUNT .or. &
+            size(direction) /= MLP_SGD_MOMENTUM_HYPERPARAMETER_COUNT .or. &
+            size(product) /= MLP_SGD_MOMENTUM_HYPERPARAMETER_COUNT .or. &
+            any(.not. ieee_is_finite(parameters)) .or. &
+            any(.not. ieee_is_finite(direction))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP SGD momentum hypergradient HVP: packed shape is invalid")
+            return
+        end if
+        if (.not. affine_one_layer(self%model)) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "MLP SGD momentum hypergradient HVP requires one linear dense layer")
+            return
+        end if
+        if (.not. finite_parameters(parameters, learning_rate, l2, momentum)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP SGD momentum hypergradient HVP: packed parameters are invalid")
+            return
+        end if
+
+        n_parameters = size(self%initial_parameters)
+        allocate(theta, source=self%initial_parameters)
+        allocate(theta_dot(n_parameters, MLP_SGD_MOMENTUM_HYPERPARAMETER_COUNT))
+        allocate(theta_dot_old(n_parameters, MLP_SGD_MOMENTUM_HYPERPARAMETER_COUNT))
+        allocate(theta_ddot(n_parameters, MLP_SGD_MOMENTUM_HYPERPARAMETER_COUNT))
+        allocate(velocity(n_parameters), velocity_old(n_parameters))
+        allocate(velocity_dot(n_parameters, MLP_SGD_MOMENTUM_HYPERPARAMETER_COUNT))
+        allocate(velocity_dot_old(n_parameters, MLP_SGD_MOMENTUM_HYPERPARAMETER_COUNT))
+        allocate(velocity_dot_new(n_parameters, MLP_SGD_MOMENTUM_HYPERPARAMETER_COUNT))
+        allocate(velocity_ddot(n_parameters, MLP_SGD_MOMENTUM_HYPERPARAMETER_COUNT))
+        allocate(velocity_ddot_new(n_parameters, MLP_SGD_MOMENTUM_HYPERPARAMETER_COUNT))
+        allocate(raw_gradient(n_parameters), raw_gradient_dot(n_parameters, &
+            MLP_SGD_MOMENTUM_HYPERPARAMETER_COUNT), raw_gradient_ddot(n_parameters))
+        allocate(theta_dir(n_parameters), velocity_dir(n_parameters), &
+            velocity_dir_new(n_parameters), validation_gradient(n_parameters), &
+            validation_hvp(n_parameters))
+        allocate(update(n_parameters), update_dot(n_parameters, &
+            MLP_SGD_MOMENTUM_HYPERPARAMETER_COUNT), update_dir(n_parameters), &
+            update_ddot(n_parameters))
+        theta_dot = 0.0_dp
+        theta_ddot = 0.0_dp
+        velocity = 0.0_dp
+        velocity_dot = 0.0_dp
+        velocity_ddot = 0.0_dp
+        do step = 1, self%layout%inner_steps
+            call self%model%set_parameters(theta, status)
+            if (status%code /= FORTNUM_OK) return
+            call mlp_loss_value_gradient(self%model, self%train_x, self%train_target, &
+                l2, train_value, raw_gradient, l2_gradient, status)
+            if (status%code /= FORTNUM_OK) return
+            velocity_old = velocity
+            theta_dot_old = theta_dot
+            velocity_dot_old = velocity_dot
+            velocity = momentum*velocity_old + raw_gradient
+            update = raw_gradient
+            if (.not. self%layout%nesterov) update = velocity
+            if (self%layout%nesterov) update = raw_gradient + momentum*velocity
+
+            do i = 1, MLP_SGD_MOMENTUM_HYPERPARAMETER_COUNT
+                lr_i = 0.0_dp
+                l2_i = 0.0_dp
+                momentum_i = 0.0_dp
+                if (i == MLP_SGD_LOG_LEARNING_RATE) then
+                    lr_i = learning_rate
+                else if (i == MLP_SGD_LOG_L2) then
+                    l2_i = l2
+                else
+                    momentum_i = 1.0_dp
+                end if
+                call mlp_loss_hvp(self%model, self%train_x, self%train_target, l2, &
+                    theta_dot_old(:, i), l2_i, raw_gradient_dot(:, i), scalar_hvp, status)
+                if (status%code /= FORTNUM_OK) return
+                velocity_dot_new(:, i) = momentum*velocity_dot_old(:, i) + &
+                    momentum_i*velocity_old + raw_gradient_dot(:, i)
+                if (self%layout%nesterov) then
+                    update_dot(:, i) = raw_gradient_dot(:, i) + momentum_i*velocity + &
+                        momentum*velocity_dot_new(:, i)
+                else
+                    update_dot(:, i) = velocity_dot_new(:, i)
+                end if
+                theta_dot(:, i) = theta_dot(:, i) - lr_i*update - &
+                    learning_rate*update_dot(:, i)
+            end do
+            theta_dir = matmul(theta_dot_old, direction)
+            velocity_dir = matmul(velocity_dot_old, direction)
+            velocity_dir_new = matmul(velocity_dot_new, direction)
+            update_dir = matmul(update_dot, direction)
+            learning_rate_dir = learning_rate*direction(MLP_SGD_LOG_LEARNING_RATE)
+            l2_dir = l2*direction(MLP_SGD_LOG_L2)
+            lr_dir = learning_rate_dir
+
+            do i = 1, MLP_SGD_MOMENTUM_HYPERPARAMETER_COUNT
+                lr_i = 0.0_dp
+                lr_id = 0.0_dp
+                l2_i = 0.0_dp
+                l2_id = 0.0_dp
+                momentum_i = 0.0_dp
+                if (i == MLP_SGD_LOG_LEARNING_RATE) then
+                    lr_i = learning_rate
+                    lr_id = learning_rate*direction(MLP_SGD_LOG_LEARNING_RATE)
+                else if (i == MLP_SGD_LOG_L2) then
+                    l2_i = l2
+                    l2_id = l2*direction(MLP_SGD_LOG_L2)
+                else
+                    momentum_i = 1.0_dp
+                end if
+                momentum_d = direction(MLP_SGD_MOMENTUM)
+                call mlp_loss_hvp(self%model, self%train_x, self%train_target, l2, &
+                    theta_ddot(:, i), l2_id, raw_gradient_ddot, scalar_hvp, status)
+                if (status%code /= FORTNUM_OK) return
+                raw_gradient_ddot = raw_gradient_ddot + l2_dir*theta_dot_old(:, i) + &
+                    l2_i*theta_dir
+                velocity_ddot_new(:, i) = momentum*velocity_ddot(:, i) + &
+                    momentum_i*velocity_dir + momentum_d*velocity_dot_old(:, i) + &
+                    raw_gradient_ddot
+                if (self%layout%nesterov) then
+                    update_ddot = raw_gradient_ddot + momentum_i*velocity_dir_new + &
+                        momentum_d*velocity_dot_new(:, i) + momentum*velocity_ddot_new(:, i)
+                else
+                    update_ddot = velocity_ddot_new(:, i)
+                end if
+                theta_ddot(:, i) = theta_ddot(:, i) - lr_id*update - &
+                    lr_i*update_dir - lr_dir*update_dot(:, i) - &
+                    learning_rate*update_ddot
+            end do
+            velocity_dot = velocity_dot_new
+            velocity_ddot = velocity_ddot_new
+            theta = theta-learning_rate*update
+            if (any(.not. ieee_is_finite(theta)) .or. &
+                any(.not. ieee_is_finite(theta_dot)) .or. &
+                any(.not. ieee_is_finite(theta_ddot))) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP SGD momentum hypergradient HVP: trajectory is not finite")
+                return
+            end if
+        end do
+        call self%model%set_parameters(theta, status)
+        if (status%code /= FORTNUM_OK) return
+        call mlp_loss_value_gradient(self%model, self%validation_x, self%validation_target, &
+            0.0_dp, train_value, validation_gradient, l2_gradient, status)
+        if (status%code /= FORTNUM_OK) return
+        theta_dir = matmul(theta_dot, direction)
+        call mlp_loss_hvp(self%model, self%validation_x, self%validation_target, 0.0_dp, &
+            theta_dir, 0.0_dp, validation_hvp, scalar_hvp, status)
+        if (status%code /= FORTNUM_OK) return
+        do i = 1, MLP_SGD_MOMENTUM_HYPERPARAMETER_COUNT
+            product(i) = dot_product(validation_hvp, theta_dot(:, i)) + &
+                dot_product(validation_gradient, theta_ddot(:, i))
+        end do
+        if (any(.not. ieee_is_finite(product))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP SGD momentum hypergradient HVP: product is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine mlp_sgd_momentum_hypergradient_hvp
 
     subroutine mlp_sgd_momentum_hypergradient_fortopt(self, objective, status)
         class(mlp_sgd_momentum_hypergradient_objective_t), target, intent(inout) :: self
@@ -532,5 +727,14 @@ contains
             size(target, 2) /= model%layer_sizes(size(model%layer_sizes))) return
         valid = all(ieee_is_finite(x)) .and. all(ieee_is_finite(target))
     end function valid_data
+
+    logical function affine_one_layer(model) result(valid)
+        !! The only branch with a parameter-independent MSE Hessian.
+        class(mlp_t), intent(in) :: model
+
+        valid = allocated(model%layer_sizes) .and. allocated(model%layer) .and. &
+            size(model%layer_sizes) == 2 .and. size(model%layer) == 1 .and. &
+            model%output_activation == MLP_LINEAR
+    end function affine_one_layer
 
 end module fortml_mlp_sgd_momentum_hypergradient

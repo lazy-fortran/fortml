@@ -12,7 +12,7 @@ program fortml_bench_sgd_momentum_hypergradient
     integer, parameter :: steps = 4
     real(dp) :: train_x(n_train, 1), train_target(n_train, 1)
     real(dp) :: validation_x(n_validation, 1), validation_target(n_validation, 1)
-    real(dp) :: parameters(3), direction(3), gradient(3)
+    real(dp) :: parameters(3), direction(3), gradient(3), hvp_product(3)
     real(dp) :: value, tangent, elapsed
     integer(int64) :: clock_start, clock_end, clock_rate
     integer :: oracle_unit, environment_status, repetition
@@ -50,6 +50,8 @@ program fortml_bench_sgd_momentum_hypergradient
     direction = [0.31_dp, -0.27_dp, 0.17_dp]
     call objective%jvp(parameters, direction, value, tangent, status)
     if (.not. status_ok(status)) error stop "SGD momentum hypergradient JVP failed"
+    call objective%hvp(parameters, direction, hvp_product, status)
+    if (.not. status_ok(status)) error stop "SGD momentum affine outer HVP failed"
 
     oracle_unit = -1
     call get_environment_variable("FORTML_BENCH_SGD_MOMENTUM_HYPERGRADIENT_ORACLE", &
@@ -63,6 +65,9 @@ program fortml_bench_sgd_momentum_hypergradient
         write (oracle_unit, '(a,es26.17e3)') "gradient,2,", gradient(2)
         write (oracle_unit, '(a,es26.17e3)') "gradient,3,", gradient(3)
         write (oracle_unit, '(a,es26.17e3)') "jvp,1,", tangent
+        write (oracle_unit, '(a,es26.17e3)') "hvp,1,", hvp_product(1)
+        write (oracle_unit, '(a,es26.17e3)') "hvp,2,", hvp_product(2)
+        write (oracle_unit, '(a,es26.17e3)') "hvp,3,", hvp_product(3)
         close (oracle_unit)
     end if
     if (oracle_only_requested()) stop
@@ -76,6 +81,15 @@ program fortml_bench_sgd_momentum_hypergradient
     elapsed = real(clock_end-clock_start, dp)/real(clock_rate, dp) &
         /real(repetitions, dp)
     write (*, '(a,es24.16)') "sgd_momentum_hypergradient_value_gradient,", elapsed
+    call system_clock(clock_start)
+    do repetition = 1, repetitions
+        call objective%hvp(parameters, direction, hvp_product, status)
+        if (.not. status_ok(status)) error stop "SGD momentum HVP timing failed"
+    end do
+    call system_clock(clock_end)
+    elapsed = real(clock_end-clock_start, dp)/real(clock_rate, dp) &
+        /real(repetitions, dp)
+    write (*, '(a,es24.16)') "sgd_momentum_hypergradient_hvp,", elapsed
 
 contains
 

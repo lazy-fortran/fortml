@@ -33,6 +33,15 @@ over the same packed objective.  CUDA, mini-batch, schedule, clipping, and
 stochastic trajectories return `FORTNUM_NOT_IMPLEMENTED` until their resident
 state derivatives are implemented.
 
+The `hvp(parameters, direction, product, status)` entry point additionally
+provides an exact outer hyper-HVP for the one-layer affine branch (one dense
+layer with linear output). That branch has a parameter-independent MSE
+Hessian, so mixed second tangents through both classical and Nesterov velocity
+states are analytic and are suitable for second-order FortOpt callers. A
+nonlinear or multilayer model returns `FORTNUM_NOT_IMPLEMENTED`, preserving the
+third-network-derivative boundary rather than finite-differencing an inner
+trajectory.
+
 Minimal use:
 
 ```fortran
@@ -52,5 +61,6 @@ p = objective%parameters()
 call objective%value_gradient(p, value, gradient, status)
 ```
 
-Independent finite-difference, JVP, VJP, Nesterov, FortOpt, and typed refusal
-oracles are in `test/test_mlp_sgd_momentum_hypergradient.f90`.
+Independent finite-difference, JVP, VJP, affine outer-HVP, Nesterov, FortOpt,
+and typed refusal oracles are in
+`test/test_mlp_sgd_momentum_hypergradient.f90`.

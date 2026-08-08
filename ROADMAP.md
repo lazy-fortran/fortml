@@ -13,7 +13,7 @@ The GitHub `v0.1.0` tag currently points to the earlier release-verification
 commit `a387cc5`; the trainer, calibration, variational-GP, transform, and CUDA
 VJP closure slices documented below are post-tag additions. The broad parity
 gate is still open, so this work does not move or recreate that tag.
-The checklist currently records 301 completed and 129 open items; open rows are
+The checklist currently records 302 completed and 129 open items; open rows are
 retained until their implementation, independent oracle, device/refusal
 behavior, and benchmark evidence land together.
 
@@ -2395,6 +2395,13 @@ trials remain visible in the result schema.
   difference, adjoint, Nesterov, and typed CPU/CUDA/optimizer-refusal oracles.
   Mini-batch, schedules, clipping, stochastic, and CUDA-resident state
   derivatives remain explicit follow-up contracts.
+- [x] Add exact outer hyper-HVP products to the fixed full-batch SGD
+  momentum/Nesterov objective on the one-layer all-linear MLP branch. The
+  constant network Hessian permits analytic mixed second tangents through
+  velocity, look-ahead, learning-rate, L2, and momentum state; an independent
+  central-difference oracle covers both classical and Nesterov recurrences.
+  Nonlinear/multilayer networks, mini-batches, schedules, clipping, and CUDA
+  remain typed third-derivative or resident-state refusals.
 - [x] Add the exact fixed full-batch AdamW trajectory hypergradient objective
   over `[log(learning_rate), log(l2), log(weight_decay)]`, including analytic
   moment/decoupled-decay sensitivities, JVP/VJP products, independent central

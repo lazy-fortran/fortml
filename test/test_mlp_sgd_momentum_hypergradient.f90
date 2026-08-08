@@ -3,7 +3,7 @@ program test_mlp_sgd_momentum_hypergradient
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_NOT_IMPLEMENTED
     use fortml_device, only: FORTML_DEVICE_CUDA
-    use fortml_mlp, only: mlp_t
+    use fortml_mlp, only: mlp_t, MLP_LINEAR
     use fortml_mlp_training, only: MLP_OPTIMIZER_ADAM
     use fortml_mlp_sgd_momentum_hypergradient, only: &
         mlp_sgd_momentum_hypergradient_objective_t, &
@@ -15,7 +15,7 @@ program test_mlp_sgd_momentum_hypergradient
         MLP_SGD_LOG_L2, MLP_SGD_MOMENTUM
     implicit none
 
-    type(mlp_t), target :: model, nesterov_model
+    type(mlp_t), target :: model, nesterov_model, linear_model
     type(mlp_sgd_momentum_hypergradient_objective_t) :: objective
     type(mlp_sgd_momentum_hypergradient_options_t) :: options, bad_options
     type(mlp_sgd_momentum_hypergradient_result_t) :: result
@@ -27,6 +27,9 @@ program test_mlp_sgd_momentum_hypergradient
     real(dp) :: direction(MLP_SGD_MOMENTUM_HYPERPARAMETER_COUNT)
     real(dp) :: gradient(MLP_SGD_MOMENTUM_HYPERPARAMETER_COUNT)
     real(dp) :: vjp_gradient(MLP_SGD_MOMENTUM_HYPERPARAMETER_COUNT)
+    real(dp) :: hvp_product(MLP_SGD_MOMENTUM_HYPERPARAMETER_COUNT)
+    real(dp) :: hvp_plus(MLP_SGD_MOMENTUM_HYPERPARAMETER_COUNT)
+    real(dp) :: hvp_minus(MLP_SGD_MOMENTUM_HYPERPARAMETER_COUNT)
     real(dp) :: value, value_plus, value_minus, tangent, h
     integer :: i, failures
 
@@ -130,6 +133,52 @@ program test_mlp_sgd_momentum_hypergradient
         validation_target, bad_options, status)
     call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
         "CUDA SGD hypergradient refusal", failures)
+
+    ! The affine one-layer branch has a constant network Hessian and therefore
+    ! an exact outer hyper-HVP.  Compare it against an independent gradient
+    ! central difference for both classical and Nesterov recurrences.
+    call linear_model%initialize([1, 1], status, hidden_activation=MLP_LINEAR, &
+        output_activation=MLP_LINEAR)
+    call linear_model%set_parameters([0.15_dp, -0.1_dp], status)
+    options%nesterov = .false.
+    options%momentum = 0.31_dp
+    options%lower_momentum = 0.05_dp
+    call objective%initialize(linear_model, train_x, train_target, validation_x, &
+        validation_target, options, status)
+    call check(status_ok(status), "affine SGD HVP initialization", failures)
+    parameters = objective%parameters()
+    direction = [0.22_dp, -0.19_dp, 0.13_dp]
+    call objective%hvp(parameters, direction, hvp_product, status)
+    call check(status_ok(status), "affine SGD exact outer HVP", failures)
+    call objective%value_gradient(parameters+h*direction, value_plus, hvp_plus, status)
+    call objective%value_gradient(parameters-h*direction, value_minus, hvp_minus, status)
+    call check(status_ok(status) .and. maxval(abs(hvp_product - &
+        (hvp_plus-hvp_minus)/(2.0_dp*h))) < 3.0e-6_dp, &
+        "affine SGD outer HVP central-difference oracle", failures)
+
+    options%nesterov = .true.
+    options%momentum = 0.37_dp
+    call objective%initialize(linear_model, train_x, train_target, validation_x, &
+        validation_target, options, status)
+    call check(status_ok(status), "affine Nesterov HVP initialization", failures)
+    parameters = objective%parameters()
+    call objective%hvp(parameters, direction, hvp_product, status)
+    call check(status_ok(status), "affine Nesterov exact outer HVP", failures)
+    call objective%value_gradient(parameters+h*direction, value_plus, hvp_plus, status)
+    call objective%value_gradient(parameters-h*direction, value_minus, hvp_minus, status)
+    call check(status_ok(status) .and. maxval(abs(hvp_product - &
+        (hvp_plus-hvp_minus)/(2.0_dp*h))) < 4.0e-6_dp, &
+        "affine Nesterov outer HVP central-difference oracle", failures)
+
+    ! Nonlinear trajectories preserve the explicit third-derivative boundary.
+    options%nesterov = .false.
+    call model%initialize([1, 2, 1], status)
+    call objective%initialize(model, train_x, train_target, validation_x, &
+        validation_target, options, status)
+    parameters = objective%parameters()
+    call objective%hvp(parameters, direction, hvp_product, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
+        "nonlinear outer HVP typed refusal", failures)
 
     if (failures > 0) error stop 1
     write (*, '(a)') "PASS MLP SGD momentum hypergradient independent behavioral oracles"
