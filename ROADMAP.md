@@ -2892,6 +2892,12 @@ trials remain visible in the result schema.
   iterator/schedule, and
   validation state. Event typing and serialized/distributed checkpoint
   coordination remain open.
+- [x] Extend the model-agnostic trainer with a finite validation callback,
+  minimum-improvement threshold, patience stop, best-parameter restoration,
+  validation diagnostics, and schema-4 checkpoint persistence. The independent
+  quadratic oracle covers the callback sequence, split continuation, and
+  transactional callback-presence refusal. Validation callbacks remain
+  process-local and host-owned.
 - [ ] Add production optimizers and schedules: SGD with momentum/Nesterov,
   Adam/AdamW, L-BFGS/L-BFGS-B, natural gradient, cosine,
   one-cycle, warmup/decay, plateau, and user callbacks. Optimizer state is
@@ -3988,6 +3994,10 @@ The maintained reports and their raw artifacts are in `../fortml-bench/results`:
 - [`TRAINER_CHECKPOINT.md`](../fortml-bench/results/TRAINER_CHECKPOINT.md),
   backed by `trainer_checkpoint.csv` for uninterrupted-versus-resumed
   optimizer trajectories and malformed/truncated/extra-record refusals.
+- [`TRAINER_VALIDATION.md`](../fortml-bench/results/TRAINER_VALIDATION.md),
+  backed by `trainer_validation.csv` for callback-driven patience,
+  best-state restoration, schema-4 continuation, and callback-presence
+  refusal.
 - [`ADAFACTOR_FACTORED.md`](../fortml-bench/results/ADAFACTOR_FACTORED.md),
   backed by `adafactor_factored.csv` for the independent row/column state,
   vector fallback, split/resume recurrence, and typed CUDA boundary.
