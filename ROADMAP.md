@@ -996,8 +996,8 @@ when a lower-level primitive already exists.
   latent margins, simplex-normalized probabilities, packed-parameter JVPs/VJPs,
   deterministic ties, and explicit CUDA refusal; its independent behavioral
   oracle is `test_gp_variational_multiclass_classification`. Kernel/inducing
-  hyperparameter products, natural gradients, coupled categorical likelihoods,
-  and resident GPU inference stay open.
+  hyperparameter products, natural gradients, and resident GPU inference stay
+  open. The separate coupled categorical variational slice is documented below.
 - [x] Extend the Bernoulli variational-GP binary contract with exact query-input
   JVP/VJP products for latent marginals and corrected probabilities. The
   products differentiate the cross-kernel and Schur-complement variance with
@@ -1026,6 +1026,15 @@ when a lower-level primitive already exists.
   `test_gp_variational_kernel_products` fixture covers central differences,
   duality, simplex preservation, and typed CUDA refusal; inducing-state,
   likelihood, natural-gradient, and resident-GPU products remain open.
+- [x] Add the bounded coupled categorical variational-GP slice
+  `gp_variational_categorical_classification_t`. It owns one sorted-label
+  inducing posterior per class and evaluates a shared categorical ELBO with a
+  variance-corrected softmax likelihood and analytic inducing KL terms. The
+  FortOpt L-BFGS-B `fit` path, packed ELBO gradients/JVPs, probability
+  parameter/input JVPs and VJPs, deterministic tie policy, and explicit CUDA
+  refusals are covered by `test_gp_variational_categorical_classification` and
+  `docs/GP_VARIATIONAL_CATEGORICAL.md`. HVP, kernel-hyperparameter, natural
+  gradient, and resident-GPU products remain open.
 - [ ] Derivative observations for every supported smooth kernel, mixed orders,
   vector fields, Hessian observations, operator-valued outputs, analytic
   third-order query products, and covariance products over value/derivative
@@ -1517,8 +1526,9 @@ CUDA refusal until private CART storage is safely bound to the C ABI.
   logistic/probit ELBO sums, analytic packed gradients and JVPs, latent
   margins, simplex-normalized predictive probabilities, parameter JVPs/VJPs,
   and explicit CPU/CUDA device contracts. The independent oracle is
-  `test_gp_variational_multiclass_classification`; coupled categorical,
-  quadrature, calibrated uncertainty, and resident GPU inference remain open.
+  `test_gp_variational_multiclass_classification`; quadrature, calibrated
+  uncertainty, and resident GPU inference remain open. Coupled categorical
+  inference is covered by `gp_variational_categorical_classification_t` below.
 - [x] Add a shared-head multilabel neural classifier with indicator validation,
   configurable per-label thresholds, deterministic full-batch Adam, exact
   logits/probability input and parameter JVP/VJP products, BCE parameter HVPs,

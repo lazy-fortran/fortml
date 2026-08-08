@@ -54,6 +54,8 @@ module fortml_gp_variational_classification
         procedure, public :: elbo => gvc_elbo
         procedure, public :: elbo_gradient => gvc_elbo_gradient
         procedure, public :: elbo_jvp => gvc_elbo_jvp
+        procedure, public :: kl => gvc_kl
+        procedure, public :: kl_gradient => gvc_kl_gradient_public
         procedure, public :: predict_latent => gvc_predict_latent
         procedure, public :: predict_proba => gvc_predict_proba
         procedure, public :: predict_latent_parameter_jvp => &
@@ -93,6 +95,58 @@ module fortml_gp_variational_classification
     end type gp_variational_classification_t
 
 contains
+
+    !> Return the analytic KL divergence ``KL[q(u)||p(u)]``.
+    !!
+    !! This accessor is intentionally separate from `elbo`: coupled
+    !! categorical wrappers can reuse the same inducing posterior while
+    !! replacing the Bernoulli likelihood, without reimplementing the
+    !! Cholesky-state algebra.
+    subroutine gvc_kl(self, value, status)
+        class(gp_variational_classification_t), intent(in) :: self
+        real(dp), intent(out) :: value
+        type(fortnum_status_t), intent(out) :: status
+
+        call variational_kl(self, value, status)
+    end subroutine gvc_kl
+
+    !> Return the analytic gradient of the KL in packed parameter order.
+    !! The ordering matches `parameters()`: inducing mean, log diagonal
+    !! Cholesky entries, then strict lower-triangular entries.
+    subroutine gvc_kl_gradient_public(self, gradient, status)
+        class(gp_variational_classification_t), intent(in) :: self
+        real(dp), intent(out) :: gradient(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: mean_gradient(:), factor_gradient(:, :), solve_factor(:, :)
+        integer :: i, j, position
+
+        gradient = 0.0_dp
+        if (self%n_inducing < 1 .or. size(gradient) /= self%parameter_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP classification KL gradient: shape is invalid")
+            return
+        end if
+        allocate(mean_gradient(self%n_inducing), factor_gradient(self%n_inducing, &
+            self%n_inducing), solve_factor(self%n_inducing, self%n_inducing))
+        call variational_kl_gradient(self, mean_gradient, factor_gradient, solve_factor, status)
+        if (status%code /= FORTNUM_OK) return
+        gradient(1:self%n_inducing) = mean_gradient
+        position = self%n_inducing + 1
+        do j = 1, self%n_inducing
+            gradient(position) = self%variational_factor(j, j)*factor_gradient(j, j)
+            position = position + 1
+            do i = j + 1, self%n_inducing
+                gradient(position) = factor_gradient(i, j)
+                position = position + 1
+            end do
+        end do
+        if (any(.not. ieee_is_finite(gradient))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP classification KL gradient: nonfinite result")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gvc_kl_gradient_public
 
     subroutine gvc_initialize(self, inducing_points, kernel, n_mc_samples, seed, &
             status, likelihood, jitter)
