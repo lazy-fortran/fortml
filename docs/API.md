@@ -1708,14 +1708,15 @@ adapter is CPU-only in this slice: CUDA initialization and selection return
 ### `fortml_mlp_training`
 
 `mlp_train(model,x,target,status,options,state[,validation_x,validation_target,checkpoint])`
-trains an existing `mlp_t` with deterministic Adam, AMSGrad, AdamW, Adagrad, RMSprop,
+trains an existing `mlp_t` with deterministic Adam, AMSGrad, RAdam, AdamW, Adagrad, RMSprop,
 unfactored Adafactor, or FortOpt-backed SGD. A zero `batch_size`
 selects full-batch updates.
 Mini-batch shuffling uses an explicit Park-Miller stream controlled by
 `shuffle_seed`, and does not mutate process-global random state. The options
 also provide optimizer selection (`MLP_OPTIMIZER_ADAM`, `MLP_OPTIMIZER_SGD`,
-`MLP_OPTIMIZER_ADAMW`, `MLP_OPTIMIZER_ADAGRAD`, `MLP_OPTIMIZER_RMSPROP`, or
-`MLP_OPTIMIZER_ADAFACTOR`, or `MLP_OPTIMIZER_AMSGRAD`), learning-rate and Adam
+`MLP_OPTIMIZER_ADAMW`, `MLP_OPTIMIZER_ADAGRAD`, `MLP_OPTIMIZER_RMSPROP`,
+`MLP_OPTIMIZER_ADAFACTOR`, `MLP_OPTIMIZER_AMSGRAD`, or `MLP_OPTIMIZER_RADAM`),
+learning-rate and Adam
 coefficients, optional SGD
 momentum/Nesterov acceleration, L2 regularization, gradient tolerance,
 patience, best-state restoration, and an epoch callback.
@@ -1725,7 +1726,7 @@ allocate `options%optimizer_groups(:)` and initialize each
 range and a positive `learning_rate_multiplier`. After the optimizer updates
 its moments, the selected block receives that multiplier on the complete
 parameter delta; uncovered parameters use one. This post-update definition
-is identical for Adam, AdamW, Adagrad, RMSprop, Adafactor, and SGD (including
+is identical for Adam, AdamW, Adagrad, RMSprop, Adafactor, RAdam, and SGD (including
 AdamW's decoupled decay), keeps moment state shared, and is deterministic.
 Duplicate names, overlapping ranges, non-finite/non-positive multipliers, and
 ranges beyond the model parameter count are rejected before the first update.
@@ -1753,11 +1754,22 @@ matrix-factorized state, optimizer-trajectory hypergradients, and CUDA-resident
 Adafactor remain explicit follow-up contracts.
 `MLP_OPTIMIZER_AMSGRAD` keeps the Adam first and second moments plus an
 elementwise maximum second moment. Bias correction is applied to both moments,
-and the maximum is checkpointed in `max_second_moment` (in-memory format 7,
-text schema 5). The independent `test_mlp_amsgrad` fixture checks the
+and the maximum is checkpointed in `max_second_moment` (in-memory format 8,
+text schema 6). The independent `test_mlp_amsgrad` fixture checks the
 recurrence and formatted checkpoint continuation. AMSGrad remains CPU-only;
 there is no hidden CUDA fallback, and fixed-trajectory derivatives through the
 maximum active set remain an explicit follow-up contract.
+`MLP_OPTIMIZER_RADAM` keeps the same bias-corrected first and second moments,
+then applies the RAdam variance-rectification factor once `rho_t > 4`; before
+that threshold it uses the bias-corrected first moment. The two moment arrays,
+step count, and common beta/epsilon configuration are captured in the
+in-memory format-8 and text-schema-6 checkpoints. The independent
+`test_mlp_radam` fixture checks both sides of the threshold, uninterrupted versus
+formatted checkpoint resume, invalid hyperparameters, and the CPU/CUDA device
+boundary. RAdam is CPU-only in this slice: `radam_t%step_device` returns
+`FORTNUM_NOT_IMPLEMENTED` for CUDA without modifying parameters. Optimizer-
+trajectory hypergradients, matrix/device state, and FortOpt RAdam adapters are
+deliberately not claimed yet.
 The separate `mlp_adagrad_hypergradient_objective_t` provides that fixed full-batch product
 over learning rate, L2, and epsilon; it is CPU-only and routes exact
 value/JVP/VJP products to FortOpt L-BFGS-B with explicit log bounds. Mini-batch,
