@@ -54,6 +54,13 @@ one type and its product methods, not a case to every façade operation. The
 kernel expression tree follows the same separation. Explicit opcodes appear
 only at its static lowering boundary.
 
+Pipeline input metadata is represented by the value-type
+`basis_input_schema_t`. It owns one unique bounded name per dense input column,
+supports transactional replacement and exact candidate validation, and is
+embedded in horizontal, sequential, and fan-out pipelines. Schema validation
+is deliberately separate from numerical transform execution, so a rejected
+batch cannot partially mutate pipeline state or output buffers.
+
 ## MLP baseline
 
 The MLP baseline stores each dense weight as `(input_width, output_width)` and

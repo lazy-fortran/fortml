@@ -13,6 +13,25 @@ module fortml_pipeline
 
     integer, parameter :: PIPELINE_NAME_LENGTH = 128
 
+    !> Names and validation rules for the dense input columns of a pipeline.
+    !>
+    !> All feature maps in the current API use real(dp) dense columns.  This
+    !> value object carries the missing schema part of the transformer
+    !> contract: callers may install stable names once and validate a later
+    !> batch before consuming it.  Failed updates are transactional.
+    type, public :: basis_input_schema_t
+        private
+        integer :: n_features = 0
+        character(len=PIPELINE_NAME_LENGTH), allocatable :: names(:)
+    contains
+        procedure, public :: initialize => input_schema_initialize
+        procedure, public :: set_names => input_schema_set_names
+        procedure, public :: name => input_schema_name
+        procedure, public :: validate_names => input_schema_validate_names
+        procedure, public :: count => input_schema_count
+        procedure, public :: valid => input_schema_valid
+    end type basis_input_schema_t
+
     !> A horizontal pipeline of basis maps.
     !>
     !> Each stage sees the original input matrix and contributes a block of
@@ -29,6 +48,7 @@ module fortml_pipeline
         logical :: fitted = .false.
         type(basis_map_t), allocatable :: stages(:)
         character(len=PIPELINE_NAME_LENGTH), allocatable :: stage_names(:)
+        type(basis_input_schema_t) :: input_schema
     contains
         procedure, public :: initialize => pipeline_initialize
         procedure, public :: append => pipeline_append
@@ -50,6 +70,10 @@ module fortml_pipeline
         procedure, public :: stage_feature_offset => pipeline_stage_feature_offset
         procedure, public :: stage_parameter_offset => &
             pipeline_stage_parameter_offset
+        procedure, public :: set_input_schema => pipeline_set_input_schema
+        procedure, public :: input_schema_name => pipeline_input_schema_name
+        procedure, public :: validate_input_schema => &
+            pipeline_validate_input_schema
         procedure, public :: static_lowering_eligible => &
             pipeline_static_lowering_eligible
         procedure, public :: capabilities => pipeline_capabilities
@@ -75,6 +99,7 @@ module fortml_pipeline
         logical :: fitted = .false.
         type(basis_map_t), allocatable :: stages(:)
         character(len=PIPELINE_NAME_LENGTH), allocatable :: stage_names(:)
+        type(basis_input_schema_t) :: input_schema
     contains
         procedure, public :: initialize => sequential_pipeline_initialize
         procedure, public :: append => sequential_pipeline_append
@@ -97,6 +122,11 @@ module fortml_pipeline
             sequential_pipeline_stage_feature_offset
         procedure, public :: stage_parameter_offset => &
             sequential_pipeline_stage_parameter_offset
+        procedure, public :: set_input_schema => sequential_pipeline_set_input_schema
+        procedure, public :: input_schema_name => &
+            sequential_pipeline_input_schema_name
+        procedure, public :: validate_input_schema => &
+            sequential_pipeline_validate_input_schema
         procedure, public :: static_lowering_eligible => &
             sequential_pipeline_static_lowering_eligible
         procedure, public :: capabilities => sequential_pipeline_capabilities
@@ -121,6 +151,7 @@ module fortml_pipeline
         logical :: fitted = .false.
         type(sequential_basis_pipeline_t), allocatable :: branches(:)
         character(len=PIPELINE_NAME_LENGTH), allocatable :: branch_names(:)
+        type(basis_input_schema_t) :: input_schema
     contains
         procedure, public :: initialize => fanout_pipeline_initialize
         procedure, public :: append => fanout_pipeline_append
@@ -147,6 +178,10 @@ module fortml_pipeline
             fanout_pipeline_branch_feature_offset
         procedure, public :: branch_parameter_offset => &
             fanout_pipeline_branch_parameter_offset
+        procedure, public :: set_input_schema => fanout_pipeline_set_input_schema
+        procedure, public :: input_schema_name => fanout_pipeline_input_schema_name
+        procedure, public :: validate_input_schema => &
+            fanout_pipeline_validate_input_schema
         procedure, public :: static_lowering_eligible => &
             fanout_pipeline_static_lowering_eligible
         procedure, public :: capabilities => fanout_pipeline_capabilities
@@ -160,6 +195,129 @@ module fortml_pipeline
     public :: make_basis_fanout_pipeline
 
 contains
+
+    subroutine input_schema_initialize(self, n_features, status, names)
+        class(basis_input_schema_t), intent(out) :: self
+        integer, intent(in) :: n_features
+        type(fortnum_status_t), intent(out) :: status
+        character(*), intent(in), optional :: names(:)
+        integer :: i
+
+        self%n_features = 0
+        if (allocated(self%names)) deallocate(self%names)
+        if (n_features < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "input schema: feature count must be positive")
+            return
+        end if
+        allocate(self%names(n_features))
+        self%n_features = n_features
+        do i = 1, n_features
+            self%names(i) = "feature_"//integer_text(i)
+        end do
+        if (present(names)) then
+            call self%set_names(names, status)
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine input_schema_initialize
+
+    subroutine input_schema_set_names(self, names, status)
+        class(basis_input_schema_t), intent(inout) :: self
+        character(*), intent(in) :: names(:)
+        type(fortnum_status_t), intent(out) :: status
+        character(len=PIPELINE_NAME_LENGTH), allocatable :: candidate(:)
+        integer :: i, j
+
+        if (self%n_features < 1 .or. .not. allocated(self%names) .or. &
+                size(names) /= self%n_features) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "input schema: name count does not match feature count")
+            return
+        end if
+        allocate(candidate(self%n_features))
+        do i = 1, self%n_features
+            if (len_trim(names(i)) < 1 .or. len_trim(names(i)) > &
+                    PIPELINE_NAME_LENGTH) then
+                deallocate(candidate)
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "input schema: names must be nonempty and bounded")
+                return
+            end if
+            candidate(i) = trim(names(i))
+            do j = 1, i - 1
+                if (trim(candidate(j)) == trim(candidate(i))) then
+                    deallocate(candidate)
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "input schema: names must be unique")
+                    return
+                end if
+            end do
+        end do
+        call move_alloc(candidate, self%names)
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine input_schema_set_names
+
+    function input_schema_name(self, feature) result(name)
+        class(basis_input_schema_t), intent(in) :: self
+        integer, intent(in) :: feature
+        character(:), allocatable :: name
+
+        name = ""
+        if (.not. self%valid()) return
+        if (feature < 1 .or. feature > self%n_features) return
+        name = trim(self%names(feature))
+    end function input_schema_name
+
+    subroutine input_schema_validate_names(self, names, status)
+        class(basis_input_schema_t), intent(in) :: self
+        character(*), intent(in) :: names(:)
+        type(fortnum_status_t), intent(out) :: status
+        integer :: i
+
+        if (.not. self%valid() .or. size(names) /= self%n_features) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "input schema: candidate shape is invalid")
+            return
+        end if
+        do i = 1, self%n_features
+            if (trim(names(i)) /= trim(self%names(i))) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "input schema: candidate names do not match")
+                return
+            end if
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine input_schema_validate_names
+
+    integer function input_schema_count(self) result(count)
+        class(basis_input_schema_t), intent(in) :: self
+        count = self%n_features
+    end function input_schema_count
+
+    logical function input_schema_valid(self) result(valid)
+        class(basis_input_schema_t), intent(in) :: self
+        integer :: i, j
+
+        valid = self%n_features > 0 .and. allocated(self%names)
+        if (.not. valid) return
+        if (size(self%names) /= self%n_features) then
+            valid = .false.
+            return
+        end if
+        do i = 1, self%n_features
+            if (len_trim(self%names(i)) < 1) then
+                valid = .false.
+                return
+            end if
+            do j = 1, i - 1
+                if (trim(self%names(i)) == trim(self%names(j))) then
+                    valid = .false.
+                    return
+                end if
+            end do
+        end do
+    end function input_schema_valid
 
     !> Construct an empty pipeline.  Append one or more basis maps before fit.
     function make_basis_pipeline(n_inputs, status) result(pipeline)
@@ -203,6 +361,8 @@ contains
         self%fitted = .false.
         allocate(self%stages(0))
         allocate(self%stage_names(0))
+        call self%input_schema%initialize(n_inputs, status)
+        if (status%code /= FORTNUM_OK) return
         call status_set(status, FORTNUM_OK, "")
     end subroutine pipeline_initialize
 
@@ -524,6 +684,30 @@ contains
         end do
     end function pipeline_stage_parameter_offset
 
+    subroutine pipeline_set_input_schema(self, names, status)
+        class(basis_pipeline_t), intent(inout) :: self
+        character(*), intent(in) :: names(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        call self%input_schema%set_names(names, status)
+    end subroutine pipeline_set_input_schema
+
+    function pipeline_input_schema_name(self, feature) result(name)
+        class(basis_pipeline_t), intent(in) :: self
+        integer, intent(in) :: feature
+        character(:), allocatable :: name
+
+        name = self%input_schema%name(feature)
+    end function pipeline_input_schema_name
+
+    subroutine pipeline_validate_input_schema(self, names, status)
+        class(basis_pipeline_t), intent(in) :: self
+        character(*), intent(in) :: names(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        call self%input_schema%validate_names(names, status)
+    end subroutine pipeline_validate_input_schema
+
     function pipeline_feature_name(self, feature) result(name)
         class(basis_pipeline_t), intent(in) :: self
         integer, intent(in) :: feature
@@ -626,7 +810,8 @@ contains
         integer :: i
 
         valid = self%n_inputs > 0 .and. self%n_stages > 0 .and. &
-            allocated(self%stages) .and. allocated(self%stage_names)
+            allocated(self%stages) .and. allocated(self%stage_names) .and. &
+            self%input_schema%valid()
         if (.not. valid) return
         if (size(self%stages) < self%n_stages .or. &
             size(self%stage_names) < self%n_stages) then
@@ -688,6 +873,8 @@ contains
         self%fitted = .false.
         allocate(self%stages(0))
         allocate(self%stage_names(0))
+        call self%input_schema%initialize(n_inputs, status)
+        if (status%code /= FORTNUM_OK) return
         call status_set(status, FORTNUM_OK, "")
     end subroutine sequential_pipeline_initialize
 
@@ -1104,6 +1291,30 @@ contains
         end do
     end function sequential_pipeline_stage_parameter_offset
 
+    subroutine sequential_pipeline_set_input_schema(self, names, status)
+        class(sequential_basis_pipeline_t), intent(inout) :: self
+        character(*), intent(in) :: names(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        call self%input_schema%set_names(names, status)
+    end subroutine sequential_pipeline_set_input_schema
+
+    function sequential_pipeline_input_schema_name(self, feature) result(name)
+        class(sequential_basis_pipeline_t), intent(in) :: self
+        integer, intent(in) :: feature
+        character(:), allocatable :: name
+
+        name = self%input_schema%name(feature)
+    end function sequential_pipeline_input_schema_name
+
+    subroutine sequential_pipeline_validate_input_schema(self, names, status)
+        class(sequential_basis_pipeline_t), intent(in) :: self
+        character(*), intent(in) :: names(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        call self%input_schema%validate_names(names, status)
+    end subroutine sequential_pipeline_validate_input_schema
+
     function sequential_pipeline_feature_name(self, feature) result(name)
         class(sequential_basis_pipeline_t), intent(in) :: self
         integer, intent(in) :: feature
@@ -1204,6 +1415,7 @@ contains
 
         valid = .true.
         if (self%n_inputs < 1) valid = .false.
+        if (.not. self%input_schema%valid()) valid = .false.
         if (.not. allocated(self%stages) .or. &
             .not. allocated(self%stage_names)) valid = .false.
         if (self%n_stages < 1) valid = .false.
@@ -1275,6 +1487,8 @@ contains
         self%fitted = .false.
         allocate(self%branches(0))
         allocate(self%branch_names(0))
+        call self%input_schema%initialize(n_inputs, status)
+        if (status%code /= FORTNUM_OK) return
         call status_set(status, FORTNUM_OK, "")
     end subroutine fanout_pipeline_initialize
 
@@ -1758,6 +1972,30 @@ contains
         end do
     end function fanout_pipeline_branch_parameter_offset
 
+    subroutine fanout_pipeline_set_input_schema(self, names, status)
+        class(basis_fanout_pipeline_t), intent(inout) :: self
+        character(*), intent(in) :: names(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        call self%input_schema%set_names(names, status)
+    end subroutine fanout_pipeline_set_input_schema
+
+    function fanout_pipeline_input_schema_name(self, feature) result(name)
+        class(basis_fanout_pipeline_t), intent(in) :: self
+        integer, intent(in) :: feature
+        character(:), allocatable :: name
+
+        name = self%input_schema%name(feature)
+    end function fanout_pipeline_input_schema_name
+
+    subroutine fanout_pipeline_validate_input_schema(self, names, status)
+        class(basis_fanout_pipeline_t), intent(in) :: self
+        character(*), intent(in) :: names(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        call self%input_schema%validate_names(names, status)
+    end subroutine fanout_pipeline_validate_input_schema
+
     function fanout_pipeline_feature_name(self, feature) result(name)
         class(basis_fanout_pipeline_t), intent(in) :: self
         integer, intent(in) :: feature
@@ -1830,6 +2068,7 @@ contains
 
         valid = .true.
         if (self%n_inputs < 1) valid = .false.
+        if (.not. self%input_schema%valid()) valid = .false.
         if (.not. allocated(self%branches)) valid = .false.
         if (.not. allocated(self%branch_names)) valid = .false.
         if (self%n_branches < 1) valid = .false.

@@ -1510,6 +1510,18 @@ diagnostics without duplicating the pipeline's packing rules. Sequential
 transforms and DAG branches require separate input and output contracts and
 are not inferred from this horizontal union.
 
+Each pipeline also carries a dense `basis_input_schema_t`. Its default names
+are `feature_1`, ..., `feature_n`; call `set_input_schema(names,status)` to
+install nonempty unique names such as `time` and `velocity`, then use
+`input_schema_name(index)` or `validate_input_schema(names,status)` at a data
+boundary. Name updates and validation are transactional: duplicate, empty,
+overlong, wrong-count, or mismatched names return `FORTNUM_DOMAIN_ERROR` and
+leave the previous schema unchanged. The same methods are available on
+`sequential_basis_pipeline_t` and `basis_fanout_pipeline_t`, so metadata can
+be routed before a transform consumes a batch. This is a dense name/schema
+contract; dtype, sparse layout, and estimator-wide metadata routing remain
+explicit follow-up boundaries.
+
 `sequential_basis_pipeline_t` provides that explicit sequential contract.
 Construct it with `make_sequential_basis_pipeline`, append a stage whose input
 count equals the previous stage's feature count, and call `fit` before

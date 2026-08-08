@@ -2,7 +2,7 @@ program test_pipeline_metadata
     use, intrinsic :: iso_fortran_env, only: dp => real64, error_unit
     use fortml_basis, only: basis_map_t, make_fourier_basis, &
         make_polynomial_basis
-    use fortml_pipeline, only: basis_pipeline_t, &
+    use fortml_pipeline, only: basis_input_schema_t, basis_pipeline_t, &
         make_basis_pipeline, make_sequential_basis_pipeline, &
         sequential_basis_pipeline_t
     use fortml_column_pipeline, only: column_basis_pipeline_t, &
@@ -15,6 +15,7 @@ program test_pipeline_metadata
     failures = 0
     call test_horizontal_metadata(failures)
     call test_sequential_metadata(failures)
+    call test_input_schema_contract(failures)
     call test_column_metadata(failures)
     if (failures /= 0) then
         write (error_unit, '(i0,a)') failures, &
@@ -118,6 +119,60 @@ contains
             failures = failures + 1
         end if
     end subroutine test_sequential_metadata
+
+    subroutine test_input_schema_contract(failures)
+        integer, intent(inout) :: failures
+        type(basis_input_schema_t) :: schema
+        type(basis_map_t) :: polynomial
+        type(basis_pipeline_t) :: pipeline
+        type(fortnum_status_t) :: status
+        character(len=16) :: names(2), same_names(2), bad_names(2)
+
+        names = [character(len=16) :: "time", "position"]
+        same_names = names
+        bad_names = [character(len=16) :: "time", "velocity"]
+        call schema%initialize(2, status, names)
+        if (.not. status_ok(status) .or. .not. schema%valid() .or. &
+                schema%count() /= 2 .or. schema%name(1) /= "time" .or. &
+                schema%name(2) /= "position") then
+            write (error_unit, '(a)') "FAIL [input schema] initialization oracle"
+            failures = failures + 1
+        end if
+        call schema%validate_names(same_names, status)
+        if (.not. status_ok(status)) then
+            write (error_unit, '(a)') "FAIL [input schema] matching validation"
+            failures = failures + 1
+        end if
+        call schema%validate_names(bad_names, status)
+        if (status%code /= FORTNUM_DOMAIN_ERROR .or. &
+                schema%name(2) /= "position") then
+            write (error_unit, '(a)') "FAIL [input schema] mismatch/refusal transaction"
+            failures = failures + 1
+        end if
+        call schema%set_names([character(len=16) :: "time", "time"], status)
+        if (status%code /= FORTNUM_DOMAIN_ERROR .or. &
+                schema%name(2) /= "position") then
+            write (error_unit, '(a)') "FAIL [input schema] duplicate refusal transaction"
+            failures = failures + 1
+        end if
+
+        polynomial = make_polynomial_basis(2, 1, status)
+        pipeline = make_basis_pipeline(2, status)
+        call pipeline%append(polynomial, status, name="identity")
+        call pipeline%set_input_schema(names, status)
+        call pipeline%validate_input_schema(same_names, status)
+        if (.not. status_ok(status) .or. pipeline%input_schema_name(1) /= "time" .or. &
+                pipeline%input_schema_name(2) /= "position") then
+            write (error_unit, '(a)') "FAIL [horizontal pipeline] schema routing"
+            failures = failures + 1
+        end if
+        call pipeline%validate_input_schema(bad_names, status)
+        if (status%code /= FORTNUM_DOMAIN_ERROR .or. &
+                pipeline%input_schema_name(2) /= "position") then
+            write (error_unit, '(a)') "FAIL [horizontal pipeline] schema refusal transaction"
+            failures = failures + 1
+        end if
+    end subroutine test_input_schema_contract
 
     subroutine test_column_metadata(failures)
         integer, intent(inout) :: failures
