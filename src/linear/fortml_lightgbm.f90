@@ -15,9 +15,10 @@ module fortml_lightgbm
     integer, parameter, public :: LIGHTGBM_OBJECTIVE_BINARY = 2
     character(*), parameter, public :: LIGHTGBM_MODEL_TEXT_MAGIC = &
         "FORTML_LIGHTGBM_TEXT"
-    integer, parameter, public :: LIGHTGBM_MODEL_TEXT_SCHEMA_VERSION = 2
+    integer, parameter, public :: LIGHTGBM_MODEL_TEXT_SCHEMA_VERSION = 3
     integer, parameter, public :: LIGHTGBM_BOOSTING_GBDT = 0
     integer, parameter, public :: LIGHTGBM_BOOSTING_GOSS = 1
+    integer, parameter, public :: LIGHTGBM_BOOSTING_DART = 2
     integer, parameter :: LIGHTGBM_MAX_SERIALIZED_NODES = 1000000
 
     !> Options for the deterministic numeric LightGBM-style path.  The
@@ -49,6 +50,15 @@ module fortml_lightgbm
         character(len=16) :: boosting_type = "gbdt"
         real(dp) :: top_rate = 0.2_dp
         real(dp) :: other_rate = 0.1_dp
+        !! Bounded DART controls.  A fitted DART round independently drops
+        !! prior trees with probability `dart_drop_rate`, skips the round
+        !! with probability `dart_skip_drop`, and caps the number dropped at
+        !! `dart_max_drop` (zero means no cap).  Dropped and new trees use
+        !! deterministic tree-normalisation `1/(k+1)`; no stochastic fit
+        !! derivative is claimed.
+        real(dp) :: dart_drop_rate = 0.1_dp
+        real(dp) :: dart_skip_drop = 0.0_dp
+        integer :: dart_max_drop = 0
         integer(int64) :: seed = 104729_int64
     end type lightgbm_options_t
 
@@ -67,6 +77,7 @@ module fortml_lightgbm
     type :: lgbm_tree_t
         integer :: n_nodes = 0
         integer :: depth = 0
+        real(dp) :: scale = 1.0_dp
         type(lgbm_node_t), allocatable :: node(:)
     end type lgbm_tree_t
 
@@ -106,6 +117,9 @@ module fortml_lightgbm
         integer :: boosting_type_code = LIGHTGBM_BOOSTING_GBDT
         real(dp) :: top_rate_value = 0.2_dp
         real(dp) :: other_rate_value = 0.1_dp
+        real(dp) :: dart_drop_rate_value = 0.1_dp
+        real(dp) :: dart_skip_drop_value = 0.0_dp
+        integer :: dart_max_drop_value = 0
         integer(int64) :: seed_value = 104729_int64
         integer :: best_iteration_value = 0
         real(dp) :: best_validation_loss_value = huge(1.0_dp)
@@ -144,6 +158,10 @@ module fortml_lightgbm
         procedure, public :: boosting_type => lgbm_boosting_type
         procedure, public :: top_rate => lgbm_top_rate
         procedure, public :: other_rate => lgbm_other_rate
+        procedure, public :: dart_drop_rate => lgbm_dart_drop_rate
+        procedure, public :: dart_skip_drop => lgbm_dart_skip_drop
+        procedure, public :: dart_max_drop => lgbm_dart_max_drop
+        procedure, public :: tree_scale => lgbm_tree_scale
     end type lightgbm_t
 
 contains
@@ -209,10 +227,10 @@ contains
         type(lgbm_tree_t), allocatable :: expanded_estimators(:)
         real(dp), allocatable :: weights(:), margin(:), gradient(:), hessian(:), correction(:)
         real(dp), allocatable :: gradient_for_tree(:), hessian_for_tree(:), row_scale(:)
-        integer, allocatable :: rows(:), sampled_rows(:)
+        integer, allocatable :: rows(:), sampled_rows(:), dropped_trees(:)
         integer :: objective_code, boosting_type_code, n_samples, n_features, start_estimators, target_estimators
-        integer :: i, j
-        real(dp) :: weight_sum
+        integer :: i, j, drop_count
+        real(dp) :: weight_sum, normalization
 
         if (.not. self%initialized .or. .not. allocated(self%estimator)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -249,7 +267,9 @@ contains
             settings%l2 /= self%l2_value .or. &
             settings%min_gain_to_split /= self%min_gain_value .or. &
             settings%top_rate /= self%top_rate_value .or. settings%other_rate /= self%other_rate_value .or. &
-            settings%seed /= self%seed_value) then
+            settings%dart_drop_rate /= self%dart_drop_rate_value .or. &
+            settings%dart_skip_drop /= self%dart_skip_drop_value .or. &
+            settings%dart_max_drop /= self%dart_max_drop_value .or. settings%seed /= self%seed_value) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "lightgbm warm start: tree options must match the fitted prefix")
             return
@@ -297,9 +317,15 @@ contains
             (boosting_type_code == LIGHTGBM_BOOSTING_GOSS .and. &
             (settings%top_rate <= 0.0_dp .or. settings%top_rate >= 1.0_dp .or. &
             settings%other_rate <= 0.0_dp .or. settings%other_rate > 1.0_dp .or. &
-            settings%top_rate + settings%other_rate >= 1.0_dp))) then
+            settings%top_rate + settings%other_rate >= 1.0_dp)) .or. &
+            (boosting_type_code == LIGHTGBM_BOOSTING_DART .and. &
+            (.not. ieee_is_finite(settings%dart_drop_rate) .or. &
+             settings%dart_drop_rate < 0.0_dp .or. settings%dart_drop_rate >= 1.0_dp .or. &
+             .not. ieee_is_finite(settings%dart_skip_drop) .or. &
+             settings%dart_skip_drop < 0.0_dp .or. settings%dart_skip_drop >= 1.0_dp .or. &
+             settings%dart_max_drop < 0))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
-                "lightgbm warm start: invalid GOSS rates or seed")
+                "lightgbm warm start: invalid sampling/dropout rates or seed")
             return
         end if
         allocate(margin(n_samples), gradient(n_samples), hessian(n_samples), &
@@ -312,11 +338,25 @@ contains
         do i = 1, start_estimators
             call lgbm_tree_predict(self%estimator(i), x, correction, status)
             if (status%code /= FORTNUM_OK) return
-            margin = margin + self%learning_rate*correction
+            margin = margin + self%learning_rate*self%estimator(i)%scale*correction
         end do
         allocate(expanded_estimators(target_estimators))
         expanded_estimators(:start_estimators) = self%estimator
         do i = start_estimators + 1, target_estimators
+            if (boosting_type_code == LIGHTGBM_BOOSTING_DART) then
+                call select_dart_trees(i-1, settings, i, dropped_trees, &
+                    drop_count, status)
+                if (status%code /= FORTNUM_OK) return
+                do j = 1, drop_count
+                    call lgbm_tree_predict(expanded_estimators(dropped_trees(j)), x, &
+                        correction, status)
+                    if (status%code /= FORTNUM_OK) return
+                    margin = margin - self%learning_rate * &
+                        expanded_estimators(dropped_trees(j))%scale*correction
+                end do
+            else
+                drop_count = 0
+            end if
             call lgbm_objective_derivatives(objective_code, margin, y, weights, gradient, &
                 hessian, status)
             if (status%code /= FORTNUM_OK) return
@@ -335,9 +375,23 @@ contains
             call build_leafwise_tree(x, gradient_for_tree, hessian_for_tree, weights, settings, sampled_rows, &
                 expanded_estimators(i), status)
             if (status%code /= FORTNUM_OK) return
+            expanded_estimators(i)%scale = 1.0_dp
+            if (drop_count > 0) then
+                normalization = 1.0_dp/real(drop_count+1, dp)
+                do j = 1, drop_count
+                    expanded_estimators(dropped_trees(j))%scale = &
+                        expanded_estimators(dropped_trees(j))%scale*normalization
+                    call lgbm_tree_predict(expanded_estimators(dropped_trees(j)), x, &
+                        correction, status)
+                    if (status%code /= FORTNUM_OK) return
+                    margin = margin + self%learning_rate * &
+                        expanded_estimators(dropped_trees(j))%scale*correction
+                end do
+                expanded_estimators(i)%scale = normalization
+            end if
             call lgbm_tree_predict(expanded_estimators(i), x, correction, status)
             if (status%code /= FORTNUM_OK) return
-            margin = margin + self%learning_rate*correction
+            margin = margin + self%learning_rate*expanded_estimators(i)%scale*correction
         end do
         call move_alloc(expanded_estimators, self%estimator)
         self%n_estimators = target_estimators
@@ -366,10 +420,11 @@ contains
         real(dp), allocatable :: validation_weights(:), validation_margin(:), &
             validation_correction(:)
         type(lgbm_tree_t), allocatable :: best_estimators(:), retained_estimators(:)
-        integer, allocatable :: rows(:), sampled_rows(:)
+        integer, allocatable :: rows(:), sampled_rows(:), dropped_trees(:)
         integer :: objective_code, boosting_type_code, i, n_samples, n_features, n_validation
-        integer :: completed_estimators, best_iteration, stale_rounds, j
+        integer :: completed_estimators, best_iteration, stale_rounds, j, drop_count
         real(dp) :: weight_sum, mean_target, validation_loss, best_validation_loss
+        real(dp) :: normalization
         logical :: have_validation, improved
         !! Default-initialized instances, standing in for empty
         !! structure constructors: nvfortran rejects `T()` outright,
@@ -407,7 +462,7 @@ contains
         boosting_type_code = parse_lgbm_boosting_type(settings%boosting_type)
         if (boosting_type_code < 0) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
-                "lightgbm fit: boosting_type must be gbdt or goss")
+                "lightgbm fit: boosting_type must be gbdt, goss, or dart")
             return
         end if
         n_samples = size(x, 1)
@@ -437,7 +492,13 @@ contains
             (boosting_type_code == LIGHTGBM_BOOSTING_GOSS .and. &
             (settings%top_rate <= 0.0_dp .or. settings%top_rate >= 1.0_dp .or. &
             settings%other_rate <= 0.0_dp .or. &
-            settings%other_rate > 1.0_dp .or. settings%top_rate + settings%other_rate >= 1.0_dp))) then
+            settings%other_rate > 1.0_dp .or. settings%top_rate + settings%other_rate >= 1.0_dp)) .or. &
+            (boosting_type_code == LIGHTGBM_BOOSTING_DART .and. &
+            (.not. ieee_is_finite(settings%dart_drop_rate) .or. &
+             settings%dart_drop_rate < 0.0_dp .or. settings%dart_drop_rate >= 1.0_dp .or. &
+             .not. ieee_is_finite(settings%dart_skip_drop) .or. &
+             settings%dart_skip_drop < 0.0_dp .or. settings%dart_skip_drop >= 1.0_dp .or. &
+             settings%dart_max_drop < 0))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "lightgbm fit: invalid dimensions or options")
             return
@@ -530,6 +591,26 @@ contains
         end if
         completed_estimators = 0
         do i = 1, settings%n_estimators
+            if (boosting_type_code == LIGHTGBM_BOOSTING_DART) then
+                call select_dart_trees(i-1, settings, i, dropped_trees, drop_count, status)
+                if (status%code /= FORTNUM_OK) return
+                do j = 1, drop_count
+                    call lgbm_tree_predict(self%estimator(dropped_trees(j)), x, &
+                        correction, status)
+                    if (status%code /= FORTNUM_OK) return
+                    margin = margin - settings%learning_rate * &
+                        self%estimator(dropped_trees(j))%scale*correction
+                    if (have_validation) then
+                        call lgbm_tree_predict(self%estimator(dropped_trees(j)), &
+                            validation_x, validation_correction, status)
+                        if (status%code /= FORTNUM_OK) return
+                        validation_margin = validation_margin - settings%learning_rate * &
+                            self%estimator(dropped_trees(j))%scale*validation_correction
+                    end if
+                end do
+            else
+                drop_count = 0
+            end if
             call lgbm_objective_derivatives(objective_code, margin, y, weights, gradient, &
                 hessian, status)
             if (status%code /= FORTNUM_OK) return
@@ -548,16 +629,37 @@ contains
             call build_leafwise_tree(x, gradient_for_tree, hessian_for_tree, weights, settings, sampled_rows, &
                 self%estimator(i), status)
             if (status%code /= FORTNUM_OK) return
+            self%estimator(i)%scale = 1.0_dp
+            if (drop_count > 0) then
+                normalization = 1.0_dp/real(drop_count+1, dp)
+                do j = 1, drop_count
+                    self%estimator(dropped_trees(j))%scale = &
+                        self%estimator(dropped_trees(j))%scale*normalization
+                    call lgbm_tree_predict(self%estimator(dropped_trees(j)), x, &
+                        correction, status)
+                    if (status%code /= FORTNUM_OK) return
+                    margin = margin + settings%learning_rate * &
+                        self%estimator(dropped_trees(j))%scale*correction
+                    if (have_validation) then
+                        call lgbm_tree_predict(self%estimator(dropped_trees(j)), &
+                            validation_x, validation_correction, status)
+                        if (status%code /= FORTNUM_OK) return
+                        validation_margin = validation_margin + settings%learning_rate * &
+                            self%estimator(dropped_trees(j))%scale*validation_correction
+                    end if
+                end do
+                self%estimator(i)%scale = normalization
+            end if
             call lgbm_tree_predict(self%estimator(i), x, correction, status)
             if (status%code /= FORTNUM_OK) return
-            margin = margin + settings%learning_rate*correction
+            margin = margin + settings%learning_rate*self%estimator(i)%scale*correction
             completed_estimators = i
             if (have_validation) then
                 call lgbm_tree_predict(self%estimator(i), validation_x, &
                     validation_correction, status)
                 if (status%code /= FORTNUM_OK) return
-                validation_margin = validation_margin + settings%learning_rate* &
-                    validation_correction
+                validation_margin = validation_margin + settings%learning_rate * &
+                    self%estimator(i)%scale*validation_correction
                 call lgbm_objective_loss(objective_code, validation_margin, validation_y, &
                     validation_weights, validation_loss, status)
                 if (status%code /= FORTNUM_OK) return
@@ -618,6 +720,9 @@ contains
         self%boosting_type_code = boosting_type_code
         self%top_rate_value = settings%top_rate
         self%other_rate_value = settings%other_rate
+        self%dart_drop_rate_value = settings%dart_drop_rate
+        self%dart_skip_drop_value = settings%dart_skip_drop
+        self%dart_max_drop_value = settings%dart_max_drop
         self%seed_value = settings%seed
         self%initialized = .true.
         call status_set(status, FORTNUM_OK, "")
@@ -653,7 +758,7 @@ contains
         do i = 1, self%n_estimators
             call lgbm_tree_predict(self%estimator(i), x, correction, status)
             if (status%code /= FORTNUM_OK) return
-            margin = margin + self%learning_rate*correction
+            margin = margin + self%learning_rate*self%estimator(i)%scale*correction
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine lgbm_predict_margin
@@ -693,9 +798,11 @@ contains
             call lgbm_tree_predict(self%estimator(i), x, correction, status)
             if (status%code /= FORTNUM_OK) return
             if (i == 1) then
-                staged(:, i) = self%base_score + self%learning_rate*correction
+                staged(:, i) = self%base_score + self%learning_rate * &
+                    self%estimator(i)%scale*correction
             else
-                staged(:, i) = staged(:, i-1) + self%learning_rate*correction
+                staged(:, i) = staged(:, i-1) + self%learning_rate * &
+                    self%estimator(i)%scale*correction
             end if
         end do
         call status_set(status, FORTNUM_OK, "")
@@ -759,7 +866,7 @@ contains
         do i = 1, self%n_estimators
             call lgbm_tree_predict(self%estimator(i), x, correction, status)
             if (status%code /= FORTNUM_OK) return
-            contributions(:, i+1) = self%learning_rate*correction
+            contributions(:, i+1) = self%learning_rate * self%estimator(i)%scale*correction
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine lgbm_predict_contributions
@@ -884,6 +991,9 @@ contains
         if (ios == 0) call lgbm_write_i(unit, "boosting_type_code", self%boosting_type_code, ios)
         if (ios == 0) call lgbm_write_r(unit, "top_rate", self%top_rate_value, ios)
         if (ios == 0) call lgbm_write_r(unit, "other_rate", self%other_rate_value, ios)
+        if (ios == 0) call lgbm_write_r(unit, "dart_drop_rate", self%dart_drop_rate_value, ios)
+        if (ios == 0) call lgbm_write_r(unit, "dart_skip_drop", self%dart_skip_drop_value, ios)
+        if (ios == 0) call lgbm_write_i(unit, "dart_max_drop", self%dart_max_drop_value, ios)
         if (ios == 0) call lgbm_write_i64(unit, "seed", self%seed_value, ios)
         if (ios == 0) call lgbm_write_i(unit, "tree_count", self%n_estimators, ios)
         do i = 1, self%n_estimators
@@ -891,6 +1001,7 @@ contains
             call lgbm_write_i(unit, "tree_begin", i, ios)
             if (ios == 0) call lgbm_write_i(unit, "n_nodes", self%estimator(i)%n_nodes, ios)
             if (ios == 0) call lgbm_write_i(unit, "depth", self%estimator(i)%depth, ios)
+            if (ios == 0) call lgbm_write_r(unit, "scale", self%estimator(i)%scale, ios)
             do j = 1, self%estimator(i)%n_nodes
                 if (ios /= 0) exit
                 call lgbm_write_i(unit, "node_begin", j, ios)
@@ -972,6 +1083,9 @@ contains
         if (ios == 0) call lgbm_read_i(unit, "boosting_type_code", candidate%boosting_type_code, ios)
         if (ios == 0) call lgbm_read_r(unit, "top_rate", candidate%top_rate_value, ios)
         if (ios == 0) call lgbm_read_r(unit, "other_rate", candidate%other_rate_value, ios)
+        if (ios == 0) call lgbm_read_r(unit, "dart_drop_rate", candidate%dart_drop_rate_value, ios)
+        if (ios == 0) call lgbm_read_r(unit, "dart_skip_drop", candidate%dart_skip_drop_value, ios)
+        if (ios == 0) call lgbm_read_i(unit, "dart_max_drop", candidate%dart_max_drop_value, ios)
         if (ios == 0) call lgbm_read_i64(unit, "seed", candidate%seed_value, ios)
         if (ios /= 0 .or. .not. valid_lgbm_scalars(candidate)) goto 900
         call lgbm_read_i(unit, "tree_count", tree_count, ios)
@@ -983,6 +1097,7 @@ contains
             if (ios /= 0 .or. j /= i) goto 900
             call lgbm_read_i(unit, "n_nodes", candidate%estimator(i)%n_nodes, ios)
             if (ios == 0) call lgbm_read_i(unit, "depth", candidate%estimator(i)%depth, ios)
+            if (ios == 0) call lgbm_read_r(unit, "scale", candidate%estimator(i)%scale, ios)
             if (ios /= 0 .or. candidate%estimator(i)%n_nodes < 1 .or. &
                 candidate%estimator(i)%n_nodes > LIGHTGBM_MAX_SERIALIZED_NODES) goto 900
             allocate(candidate%estimator(i)%node(candidate%estimator(i)%n_nodes), stat=ios)
@@ -1210,6 +1325,8 @@ contains
         class(lightgbm_t), intent(in) :: self
         if (self%boosting_type_code == LIGHTGBM_BOOSTING_GOSS) then
             name = "goss"
+        else if (self%boosting_type_code == LIGHTGBM_BOOSTING_DART) then
+            name = "dart"
         else if (self%boosting_type_code == LIGHTGBM_BOOSTING_GBDT) then
             name = "gbdt"
         else
@@ -1226,6 +1343,32 @@ contains
         class(lightgbm_t), intent(in) :: self
         value = self%other_rate_value
     end function lgbm_other_rate
+
+    real(dp) function lgbm_dart_drop_rate(self) result(value)
+        class(lightgbm_t), intent(in) :: self
+        value = self%dart_drop_rate_value
+    end function lgbm_dart_drop_rate
+
+    real(dp) function lgbm_dart_skip_drop(self) result(value)
+        class(lightgbm_t), intent(in) :: self
+        value = self%dart_skip_drop_value
+    end function lgbm_dart_skip_drop
+
+    integer function lgbm_dart_max_drop(self) result(value)
+        class(lightgbm_t), intent(in) :: self
+        value = self%dart_max_drop_value
+    end function lgbm_dart_max_drop
+
+    real(dp) function lgbm_tree_scale(self, tree_index) result(value)
+        class(lightgbm_t), intent(in) :: self
+        integer, intent(in) :: tree_index
+
+        value = 0.0_dp
+        if (.not. self%initialized) return
+        if (.not. allocated(self%estimator)) return
+        if (tree_index < 1 .or. tree_index > self%n_estimators) return
+        value = self%estimator(tree_index)%scale
+    end function lgbm_tree_scale
 
     subroutine lgbm_objective_derivatives(code, margin, target, weights, gradient, hessian, status)
         integer, intent(in) :: code
@@ -1529,7 +1672,8 @@ contains
             model%min_gain_value >= 0.0_dp .and. ieee_is_finite(model%base_score)
         if (.not. valid) return
         valid = model%boosting_type_code == LIGHTGBM_BOOSTING_GBDT .or. &
-            model%boosting_type_code == LIGHTGBM_BOOSTING_GOSS
+            model%boosting_type_code == LIGHTGBM_BOOSTING_GOSS .or. &
+            model%boosting_type_code == LIGHTGBM_BOOSTING_DART
         if (.not. valid) return
         valid = model%seed_value > 0_int64 .and. ieee_is_finite(model%top_rate_value) .and. &
             ieee_is_finite(model%other_rate_value)
@@ -1537,6 +1681,11 @@ contains
             valid = valid .and. model%top_rate_value > 0.0_dp .and. model%top_rate_value < 1.0_dp .and. &
                 model%other_rate_value > 0.0_dp .and. model%other_rate_value <= 1.0_dp .and. &
                 model%top_rate_value + model%other_rate_value < 1.0_dp
+        else if (model%boosting_type_code == LIGHTGBM_BOOSTING_DART) then
+            valid = valid .and. model%dart_drop_rate_value >= 0.0_dp .and. &
+                model%dart_drop_rate_value < 1.0_dp .and. &
+                model%dart_skip_drop_value >= 0.0_dp .and. &
+                model%dart_skip_drop_value < 1.0_dp .and. model%dart_max_drop_value >= 0
         end if
         if (.not. valid) return
         valid = model%early_stopping_rounds_value >= 0 .and. &
@@ -1553,7 +1702,8 @@ contains
         integer :: i
 
         valid = tree%n_nodes >= 1 .and. tree%n_nodes <= LIGHTGBM_MAX_SERIALIZED_NODES .and. &
-            tree%depth >= 0 .and. allocated(tree%node)
+            tree%depth >= 0 .and. ieee_is_finite(tree%scale) .and. tree%scale > 0.0_dp .and. &
+            allocated(tree%node)
         if (.not. valid) return
         if (size(tree%node) < tree%n_nodes) then
             valid = .false.
@@ -1690,9 +1840,64 @@ contains
         select case (normalized)
         case ("gbdt"); code = LIGHTGBM_BOOSTING_GBDT
         case ("goss"); code = LIGHTGBM_BOOSTING_GOSS
+        case ("dart"); code = LIGHTGBM_BOOSTING_DART
         case default; code = -1
         end select
     end function parse_lgbm_boosting_type
+
+    !> Select prior trees for one bounded DART round.  Selection is a stable
+    !> ascending tree-index walk over the integer hash stream used by GOSS;
+    !> this keeps seeded replay independent of compiler RNG implementations.
+    !! A skip draw is keyed by tree index zero.  `dart_max_drop=0` means all
+    !! eligible trees; positive caps retain the lowest selected indices.
+    subroutine select_dart_trees(n_previous, options, round, trees, count, status)
+        integer, intent(in) :: n_previous, round
+        type(lightgbm_options_t), intent(in) :: options
+        integer, allocatable, intent(out) :: trees(:)
+        integer, intent(out) :: count
+        type(fortnum_status_t), intent(out) :: status
+        integer :: i, limit
+
+        count = 0
+        if (n_previous < 0 .or. round < 1 .or. options%dart_drop_rate < 0.0_dp .or. &
+            options%dart_drop_rate >= 1.0_dp .or. options%dart_skip_drop < 0.0_dp .or. &
+            options%dart_skip_drop >= 1.0_dp .or. options%dart_max_drop < 0) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm DART: dropout controls are invalid")
+            return
+        end if
+        if (n_previous == 0 .or. dart_uniform(options%seed, round, 0) < &
+            options%dart_skip_drop) then
+            allocate(trees(0))
+            call status_set(status, FORTNUM_OK, "")
+            return
+        end if
+        limit = n_previous
+        if (options%dart_max_drop > 0) limit = min(limit, options%dart_max_drop)
+        allocate(trees(limit))
+        do i = 1, n_previous
+            if (dart_uniform(options%seed, round, i) < options%dart_drop_rate) then
+                count = count + 1
+                if (count <= limit) trees(count) = i
+            end if
+            if (count >= limit) exit
+        end do
+        if (count == 0) then
+            deallocate(trees)
+            allocate(trees(0))
+        else if (count < limit) then
+            trees = trees(:count)
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine select_dart_trees
+
+    pure real(dp) function dart_uniform(seed, round, index) result(value)
+        integer(int64), intent(in) :: seed
+        integer, intent(in) :: round, index
+        integer(int64), parameter :: modulus = 2147483629_int64
+
+        value = real(goss_hash(seed, round, index), dp)/real(modulus, dp)
+    end function dart_uniform
 
     !> Select one GOSS row set for a boosting round.  The largest absolute
     !> gradients are retained exactly; the remaining rows are ranked by a
