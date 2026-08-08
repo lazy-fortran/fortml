@@ -92,7 +92,7 @@ program test_mlp_plateau_schedule
         "maximizing metric mode", failures)
 
     call schedule%rate(1, base, rate, status)
-    call check(status%code == FORTNUM_DOMAIN_ERROR, &
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
         "ordinary rate rejects metric-aware schedule", failures)
     invalid = make_mlp_schedule_plateau(0, 0.0_dp, 0.5_dp)
     call check(.not. invalid%valid(), "invalid plateau patience refusal", failures)

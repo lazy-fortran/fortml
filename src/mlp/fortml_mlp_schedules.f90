@@ -11,7 +11,7 @@ module fortml_mlp_schedules
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
-        FORTNUM_DOMAIN_ERROR
+        FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED
     use fortml_device, only: FORTML_DEVICE_CPU, FORTML_DEVICE_CUDA
     implicit none
     private
@@ -306,7 +306,7 @@ contains
         end if
 
         if (self%kind == MLP_SCHEDULE_PLATEAU) then
-            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
                 "MLP schedule: plateau requires metric-aware evaluation")
             return
         end if
