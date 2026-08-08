@@ -217,6 +217,10 @@ boundaries without requiring a CUDA driver.
 The same rule covers `basis_map_t%hvp` and the horizontal, column-selecting,
 and sequential pipeline HVP methods: the analytic CPU products are tested by
 finite-difference-of-VJP oracles, but no CUDA derivative kernel is claimed.
+The named `basis_residual_pipeline_t` uses the same explicit boundary for its
+summed main/residual branches. Its value and derivative device entry points
+take output buffers in-place, so a CUDA `FORTNUM_NOT_IMPLEMENTED` refusal leaves
+all caller state untouched rather than exposing a hidden host fallback.
 `basis_linear_regression_t%static_lowering_eligible()` reports only whether
 its fitted feature pipeline can be statically lowered (and is false for
 callback stages). It does not claim a resident GPU solve or prediction path.
