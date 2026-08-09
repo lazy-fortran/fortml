@@ -21,7 +21,7 @@ boosted-tree partial-dependence/ICE, learned basis fan-in, fixed-full-batch
 SGD clipping hypergradient, and fixed-shape Gamma-GP likelihood slices.
 The broad parity
 gate is still open, so this work does not move or recreate that tag.
-The checklist currently records 420 completed and 144 open items. Open rows are
+The checklist currently records 424 completed and 148 open items. Open rows are
 retained until their implementation, independent oracle, device/refusal
 behavior, and benchmark evidence land together.
 
@@ -225,6 +225,30 @@ typed refusal, state transaction, and release benchmark land together.
 | Gaussian processes | Derivative observations and predictions advertise a generated kernel/method capability matrix. Smooth kernels use analytic or FortSym products. Nonsmooth or unavailable device paths refuse before mutation. | Value/gradient/JVP/VJP/HVP observations, hyperparameter products through fitting, coincidence boundaries, and resident-device transfer accounting. |
 | Boosted trees | Numeric XGBoost and LightGBM prediction use the resident additive-tree ABI when available. Categorical, missing, ranking, DART, GOSS, histogram-growth, and unavailable plans remain typed capabilities. | CPU/resident parity, query-only transfer counts, binary/multiclass probabilities, topology refusal, and external XGBoost/LightGBM fixtures. |
 | Composition and release | Basis and pipeline nodes carry named feature/parameter paths through training, derivatives, cloning, and device planning. | Clone/persistence round trips, sparse/categorical schema tests, derivative capability rows, strict v1 provenance, and benchmark scaling tiers. |
+
+Wave 10 closure evidence now promotes the completed vertical slices:
+
+- [x] Naive Bayes transactional `partial_fit` is shared by Bernoulli,
+  Multinomial, Complement, and Categorical variants. The independent stream,
+  rollback, and CUDA-capability gate is `test_naive_bayes_partial_fit`; the
+  clean eight-row release lane is
+  `fortml-bench/results/naive_bayes_partial_fit.csv`.
+- [x] The affine AdamW outer HVP covers learning rate, L2, decoupled weight
+  decay, and both beta logits with an independent 24-row NumPy/Fortran gate in
+  `fortml-bench/results/adamw_beta_hypergradient.csv`. Nonlinear, multilayer,
+  and CUDA requests remain typed boundaries.
+- [x] The derivative-observation GP catalog covers 14 kernel families with
+  analytic input gradients, mixed Hessians, and mixed value/first-derivative
+  prediction checks. The 29-row CPU/CUDA capability matrix is
+  `fortml-bench/results/gp_derivative_kernel_matrix.csv`.
+- [x] Numeric XGBoost resident prediction now exposes reusable device plans,
+  transfer accounting, and output-preserving typed refusals for unsupported
+  policies. The clean six-row lane is
+  `fortml-bench/results/xgboost_cuda.csv`; the corresponding LightGBM ABI lane
+  remains pinned by the preceding release evidence.
+
+Composition/release closure remains open until the broader basis/pipeline,
+matched external-library, and scaling tiers are complete.
 
 ## 2026-08 parity expansion backlog
 
