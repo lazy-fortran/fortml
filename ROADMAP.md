@@ -16,7 +16,7 @@ fixed-leaf-product, plateau-trainer, affine Adagrad HVP, and CUDA VJP closure
 slices documented below are post-tag additions.
 The broad parity
 gate is still open, so this work does not move or recreate that tag.
-The checklist currently records 374 completed and 124 open items. Open rows are
+The checklist currently records 375 completed and 124 open items. Open rows are
 retained until their implementation, independent oracle, device/refusal
 behavior, and benchmark evidence land together.
 
@@ -3099,7 +3099,13 @@ return status errors.
   exact input JVPs. `test_preprocessing` checks an independent percentile
   interpolation oracle, reconstruction, constant-column behavior, and the
   unfitted/nonfinite refusal boundary. Sparse and device variants remain open.
-- [ ] Add quantile and power transforms, normalization, ordinal encoding,
+- [x] Add the bounded uniform empirical `quantile_transformer_t`. It stores
+  deterministic per-feature order statistics, provides piecewise-linear
+  transform/inverse products and exact input JVPs on open knot segments, and
+  returns typed boundaries for knots and normal-output requests. The independent
+  `test_quantile_transformer` oracle covers values, inverse reconstruction,
+  slopes, endpoint clamping, and refusal transactionality.
+- [ ] Add normal-output and power transforms, normalization, ordinal encoding,
   target encoding with leakage guards, hashing, and sparse CSR/CSC feature
   views. The total-degree `make_polynomial_interaction_basis` now provides
   deterministic polynomial interactions with analytic value/JVP/VJP/HVP

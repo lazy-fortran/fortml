@@ -1619,6 +1619,15 @@ operations. Fitted statistics are state rather than differentiable parameters.
 The JVPs are with respect to the input batch. Unfitted models, nonfinite values,
 invalid quantile ranges, and shape mismatches are refused.
 
+`quantile_transformer_t%fit` stores up to the requested number of empirical
+order statistics per feature and maps values to the uniform distribution on
+`[0,1]` by piecewise-linear interpolation. `inverse_transform` uses the same
+fixed knots, and `transform_jvp` is exact on an open knot segment. Values
+outside the fitted range clamp to the endpoint. Knot JVPs and the normal-output
+variant are explicit typed boundaries because their derivatives are not smooth
+under this fixed-state contract. `quantiles`, `quantile_count`, and
+`feature_count` expose fitted metadata.
+
 ### `fortml_simple_imputer`
 
 `simple_imputer_t%fit(x,status[,strategy,fill_value])` fits one statistic per

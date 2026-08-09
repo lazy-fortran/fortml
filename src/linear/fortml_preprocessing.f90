@@ -3,9 +3,12 @@ module fortml_preprocessing
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
-        FORTNUM_DOMAIN_ERROR
+        FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED
     implicit none
     private
+
+    integer, parameter, public :: QUANTILE_OUTPUT_UNIFORM = 1
+    integer, parameter, public :: QUANTILE_OUTPUT_NORMAL = 2
 
     type, public :: standard_scaler_t
         private
@@ -65,6 +68,28 @@ module fortml_preprocessing
         procedure, public :: feature_count => robust_scaler_feature_count
         procedure, public :: fitted => robust_scaler_fitted
     end type robust_scaler_t
+
+    !> Empirical quantile map with row-oriented sample semantics.
+    !>
+    !> The bounded production contract currently implements the uniform
+    !> distribution on [0,1].  The fitted order statistics are explicit state;
+    !> inverse interpolation and input JVPs are exact on a fixed open segment.
+    !> Knot points and the normal-output variant retain typed boundaries rather
+    !> than silently differentiating a discontinuous branch.
+    type, public :: quantile_transformer_t
+        private
+        real(dp), allocatable :: quantile_values(:, :)
+        integer :: output_distribution = QUANTILE_OUTPUT_UNIFORM
+    contains
+        procedure, public :: fit => quantile_transformer_fit
+        procedure, public :: transform => quantile_transformer_transform
+        procedure, public :: inverse_transform => quantile_transformer_inverse
+        procedure, public :: transform_jvp => quantile_transformer_transform_jvp
+        procedure, public :: quantiles => quantile_transformer_quantiles
+        procedure, public :: feature_count => quantile_transformer_feature_count
+        procedure, public :: quantile_count => quantile_transformer_quantile_count
+        procedure, public :: fitted => quantile_transformer_fitted
+    end type quantile_transformer_t
 
 contains
 
@@ -423,6 +448,255 @@ contains
 
         value = allocated(self%center_value) .and. allocated(self%scale_value)
     end function robust_scaler_fitted
+
+    subroutine quantile_transformer_fit(self, x, status, n_quantiles, &
+            output_distribution)
+        class(quantile_transformer_t), intent(out) :: self
+        real(dp), intent(in) :: x(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        integer, intent(in), optional :: n_quantiles, output_distribution
+        integer :: count, j, k
+        real(dp), allocatable :: sorted(:)
+        real(dp) :: quantile
+
+        self%output_distribution = QUANTILE_OUTPUT_UNIFORM
+        if (.not. valid_matrix(x)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "quantile transformer fit: input must be a finite matrix with at least two rows")
+            return
+        end if
+        count = min(1000, size(x, 1))
+        if (present(n_quantiles)) count = n_quantiles
+        if (present(output_distribution)) self%output_distribution = output_distribution
+        if (size(x, 1) < 2 .or. count < 2 .or. count > size(x, 1)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "quantile transformer fit: n_quantiles must be in [2,n_samples]")
+            return
+        end if
+        if (self%output_distribution /= QUANTILE_OUTPUT_UNIFORM) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "quantile transformer fit: only uniform output is implemented")
+            return
+        end if
+
+        allocate(self%quantile_values(count, size(x, 2)))
+        allocate(sorted(size(x, 1)))
+        do j = 1, size(x, 2)
+            sorted = x(:, j)
+            call sort_real_values(sorted)
+            do k = 1, count
+                quantile = 100.0_dp*real(k - 1, dp)/real(count - 1, dp)
+                self%quantile_values(k, j) = percentile_value(sorted, quantile)
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine quantile_transformer_fit
+
+    subroutine quantile_transformer_transform(self, x, transformed, status)
+        class(quantile_transformer_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: transformed(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        integer :: i, j
+
+        if (.not. quantile_transformer_valid(self, x, transformed, status, &
+                "quantile transformer transform")) return
+        do j = 1, size(x, 2)
+            do i = 1, size(x, 1)
+                transformed(i, j) = quantile_map_value( &
+                    self%quantile_values(:, j), x(i, j))
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine quantile_transformer_transform
+
+    subroutine quantile_transformer_inverse(self, x, transformed, status)
+        class(quantile_transformer_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: transformed(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        integer :: i, j
+
+        if (.not. quantile_transformer_valid(self, x, transformed, status, &
+                "quantile transformer inverse_transform")) return
+        do j = 1, size(x, 2)
+            do i = 1, size(x, 1)
+                transformed(i, j) = quantile_inverse_value( &
+                    self%quantile_values(:, j), x(i, j))
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine quantile_transformer_inverse
+
+    subroutine quantile_transformer_transform_jvp(self, x, x_dot, transformed_dot, status)
+        class(quantile_transformer_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), x_dot(:, :)
+        real(dp), intent(out) :: transformed_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        integer :: i, j
+        real(dp) :: slope
+        logical :: interior
+
+        transformed_dot = 0.0_dp
+        if (.not. quantile_transformer_fitted(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "quantile transformer JVP: model is not fitted")
+            return
+        end if
+        if (self%output_distribution /= QUANTILE_OUTPUT_UNIFORM) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "quantile transformer JVP: only uniform output is implemented")
+            return
+        end if
+        if (.not. valid_matrix(x) .or. .not. valid_matrix(x_dot) .or. &
+                any(shape(x) /= shape(x_dot)) .or. &
+                any(shape(transformed_dot) /= shape(x)) .or. &
+                size(x, 2) /= size(self%quantile_values, 2)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "quantile transformer JVP: shape or values are invalid")
+            return
+        end if
+        do j = 1, size(x, 2)
+            do i = 1, size(x, 1)
+                call quantile_slope(self%quantile_values(:, j), x(i, j), &
+                    slope, interior)
+                if (.not. interior) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "quantile transformer JVP: input is outside a smooth knot segment")
+                    return
+                end if
+                transformed_dot(i, j) = slope*x_dot(i, j)
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine quantile_transformer_transform_jvp
+
+    function quantile_transformer_quantiles(self) result(values)
+        class(quantile_transformer_t), intent(in) :: self
+        real(dp), allocatable :: values(:, :)
+
+        if (allocated(self%quantile_values)) then
+            values = self%quantile_values
+        else
+            allocate(values(0, 0))
+        end if
+    end function quantile_transformer_quantiles
+
+    integer function quantile_transformer_feature_count(self) result(count)
+        class(quantile_transformer_t), intent(in) :: self
+
+        count = 0
+        if (allocated(self%quantile_values)) count = size(self%quantile_values, 2)
+    end function quantile_transformer_feature_count
+
+    integer function quantile_transformer_quantile_count(self) result(count)
+        class(quantile_transformer_t), intent(in) :: self
+
+        count = 0
+        if (allocated(self%quantile_values)) count = size(self%quantile_values, 1)
+    end function quantile_transformer_quantile_count
+
+    logical function quantile_transformer_fitted(self) result(value)
+        class(quantile_transformer_t), intent(in) :: self
+
+        value = .false.
+        if (allocated(self%quantile_values)) then
+            value = size(self%quantile_values, 1) >= 2 .and. &
+                size(self%quantile_values, 2) >= 1
+        end if
+    end function quantile_transformer_fitted
+
+    logical function quantile_transformer_valid(self, x, transformed, status, context) &
+            result(value)
+        class(quantile_transformer_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: transformed(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        character(*), intent(in) :: context
+
+        transformed = 0.0_dp
+        value = .false.
+        if (.not. quantile_transformer_fitted(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, trim(context)//": model is not fitted")
+            return
+        end if
+        if (self%output_distribution /= QUANTILE_OUTPUT_UNIFORM) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                trim(context)//": only uniform output is implemented")
+            return
+        end if
+        if (.not. valid_matrix(x) .or. any(shape(transformed) /= shape(x)) .or. &
+                size(x, 2) /= size(self%quantile_values, 2)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, trim(context)//": shape or values are invalid")
+            return
+        end if
+        value = .true.
+        call status_set(status, FORTNUM_OK, "")
+    end function quantile_transformer_valid
+
+    pure real(dp) function quantile_map_value(grid, value) result(mapped)
+        real(dp), intent(in) :: grid(:), value
+        integer :: k, count
+        real(dp) :: fraction, span
+
+        count = size(grid)
+        if (value <= grid(1)) then
+            mapped = 0.0_dp
+            return
+        end if
+        if (value >= grid(count)) then
+            mapped = 1.0_dp
+            return
+        end if
+        do k = 1, count - 1
+            if (value <= grid(k + 1)) then
+                span = grid(k + 1) - grid(k)
+                if (span > 0.0_dp) then
+                    fraction = (value - grid(k))/span
+                    mapped = (real(k - 1, dp) + fraction)/real(count - 1, dp)
+                else
+                    mapped = real(k - 1, dp)/real(count - 1, dp)
+                end if
+                return
+            end if
+        end do
+        mapped = 1.0_dp
+    end function quantile_map_value
+
+    pure real(dp) function quantile_inverse_value(grid, value) result(mapped)
+        real(dp), intent(in) :: grid(:), value
+        integer :: k, count
+        real(dp) :: coordinate, fraction
+
+        count = size(grid)
+        coordinate = min(1.0_dp, max(0.0_dp, value))*real(count - 1, dp)
+        k = min(count - 1, max(1, int(floor(coordinate)) + 1))
+        fraction = coordinate - real(k - 1, dp)
+        mapped = (1.0_dp - fraction)*grid(k) + fraction*grid(k + 1)
+    end function quantile_inverse_value
+
+    pure subroutine quantile_slope(grid, value, slope, interior)
+        real(dp), intent(in) :: grid(:), value
+        real(dp), intent(out) :: slope
+        logical, intent(out) :: interior
+        integer :: k, count
+        real(dp) :: span
+
+        count = size(grid)
+        slope = 0.0_dp
+        interior = .false.
+        if (value <= grid(1) .or. value >= grid(count)) return
+        do k = 1, count - 1
+            if (value == grid(k) .or. value == grid(k + 1)) return
+            if (value > grid(k) .and. value < grid(k + 1)) then
+                span = grid(k + 1) - grid(k)
+                if (span <= 0.0_dp) return
+                slope = 1.0_dp/(real(count - 1, dp)*span)
+                interior = .true.
+                return
+            end if
+        end do
+    end subroutine quantile_slope
 
     logical function robust_scaler_valid(self, x, transformed, status, context) &
             result(value)
