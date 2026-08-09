@@ -226,7 +226,7 @@ repeated resident-batch evidence.
 | `mlp_adamw_full_hypergradient_objective_t` | Validation MSE after fixed full-batch AdamW trajectory | Packed `[log(learning_rate),log(l2),log(weight_decay),logit(beta1),logit(beta2)]` JVP | Exact trajectory value gradient and scalar VJP | Forward state sensitivities through moments, bias correction, and decoupled decay |
 | `mlp_adam_hypergradient_objective_t` | Validation MSE after fixed full-batch coupled-L2 Adam trajectory | Packed `[log(learning_rate),log(l2),logit(beta1),logit(beta2)]` JVP | Exact trajectory value gradient and scalar VJP | Forward state sensitivities through coupled loss, moments, and bias correction |
 | `mlp_rmsprop_hypergradient_objective_t` | Validation MSE after fixed full-batch RMSprop trajectory | Packed `[log(learning_rate),log(l2),decay,log(epsilon),momentum]` JVP | Exact trajectory value gradient and scalar VJP | Forward state sensitivities; inner MLP HVP |
-| `mlp_adagrad_hypergradient_objective_t` | Validation MSE after fixed full-batch Adagrad trajectory | Packed `[log(learning_rate),log(l2),log(epsilon)]` JVP | Exact trajectory value gradient and scalar VJP | Forward accumulated-square sensitivities; inner MLP HVP |
+| `mlp_adagrad_hypergradient_objective_t` | Validation MSE after fixed full-batch Adagrad trajectory | Packed `[log(learning_rate),log(l2),log(epsilon)]` JVP | Exact trajectory value gradient and scalar VJP | Exact affine one-layer outer HVP, nonlinear multi-layer outer HVP is a typed refusal, forward accumulated-square sensitivities and inner MLP HVP |
 | `mlp_adafactor_hypergradient_objective_t` | Validation MSE after fixed full-batch unfactored Adafactor trajectory | Packed `[log(learning_rate),log(l2),decay,log(epsilon),log(clip_threshold)]` JVP | Exact trajectory value gradient and scalar VJP | Forward second-moment, update-RMS clipping, and denominator sensitivities; active-set and discrete branches refuse |
 | `adafactor_factored_t` | Layout-aware matrix-factorized Adafactor with vector fallback | Parameter update | Dense second-moment inspection | Explicit row/column state for matrix blocks; CPU recurrence; formatted and in-memory schema-11 checkpoint migration; CUDA remains a typed refusal |
 | `mlp_schedule_hypergradient_objective_t` | Validation MSE after a typed scheduled full-batch trajectory | Packed `[log(base_rate),log(l2),logit(min_fraction),logit(decay_factor)]` JVP, or `[log(base_rate),log(l2),log(peak_fraction),log(final_fraction)]` for one-cycle | Exact schedule/trajectory value gradient and scalar VJP | Exact affine outer HVP for stateless schedules; nonlinear/plateau/CUDA boundaries are typed |
@@ -250,7 +250,7 @@ repeated resident-batch evidence.
 | `gp_derivative_regression_t` | Mean, variance, and LML | Prediction and LML parameter JVP | Prediction parameter VJP and analytic LML hyperparameter gradient | Analytic mixed-observation HVPs for RBF, Matérn 3/2/5/2, periodic, local-periodic, rational-quadratic, cosine, linear, constant, polynomial, and supported composites; typed refusals for leaves without second input/parameter products |
 | `second_derivative_gp_t` | Exact scalar 1-D RBF/Matérn-5/2 GP over mixed value/first/second-derivative rows, plus RBF third-derivative rows; latent joint covariance and packed likelihood state | Query-coordinate JVP; RBF likelihood JVP; selected-CPU device dispatch | Query-coordinate VJP; likelihood VJP; selected-CPU device dispatch | RBF order >3, Matérn-5/2 order >2, Matérn-5/2 fifth derivative at coincidence, Matérn parameter products, and CUDA prediction/covariance/product requests are typed refusals |
 | `gp_classification_t` | Latent, observed, and log-observed probabilities; fixed-state kernel parameter setter; implicit-mode kernel hyperparameter HVP | Input and fixed-state kernel-parameter JVP for probabilities and log probabilities | Input and fixed-state kernel-parameter VJP for probabilities and log probabilities; Laplace-mode kernel hyperparameter gradient | Implicit-mode hyperparameter HVP on CPU; typed CUDA refusal |
-| `gp_multiclass_classification_t` | Latent one-vs-rest margins and normalized observed probabilities | Input and packed fixed-state kernel-parameter JVPs for margins and probabilities | Input and packed fixed-state kernel-parameter VJPs for margins and probabilities; packed one-vs-rest Laplace-mode kernel hyperparameter gradient | No |
+| `gp_multiclass_classification_t` | Latent one-vs-rest margins, normalized observed probabilities, and stable log probabilities | Input and packed fixed-state kernel-parameter JVPs for margins, probabilities, and log probabilities | Input and packed fixed-state kernel-parameter VJPs for margins, probabilities, and log probabilities, plus the packed one-vs-rest Laplace-mode kernel hyperparameter gradient | No |
 | `gp_multilabel_classification_t` | Independent binary Laplace-GP probabilities and indicator labels | Input and packed per-label fixed-state kernel-parameter JVPs for latent/probability outputs | Input and packed per-label fixed-state kernel-parameter VJPs; concatenated Laplace-mode kernel hyperparameter gradient | No |
 | `multi_output_gp_t` | Correlated mean and LML; prior covariance; batched `(batch,query,output)` prediction | Packed kernel/log-noise/output-major W/independent posterior-mean and prior-covariance JVP; query-input and batch-query JVP | Fitted posterior-mean and prior-covariance parameter VJP; query-input and batch-query VJP | No |
 | Approximate GP types | Mean, variance, or ELBO as listed below | No | No | No |
@@ -1808,7 +1808,11 @@ cotangent. The
 same optional unique stage names, feature/parameter names, and one-based stage
 offsets are available; feature names refer to the final output block. Shape
 mismatches, duplicate names, empty chains, and unfitted transforms return
-status errors.
+status errors. `transform_device`, `jvp_device`, `vjp_device`, and `hvp_device`
+dispatch the exact host products for a selected CPU device and return
+`FORTNUM_NOT_IMPLEMENTED` for CUDA without changing output arrays.
+`device_supported` reports this fitted-CPU-only contract until a resident
+sequential executor is linked.
 
 `column_basis_pipeline_t` provides the column-wise variant. Construct it with
 `make_column_basis_pipeline(n_inputs,status)`, then append a basis map and a
@@ -3998,8 +4002,14 @@ the row weights are validated before any class state is allocated.
 and exposes `classes`, `class_count`, `feature_count`, `predict_proba`,
 `predict`, and `fitted`. `parameter_count()` and `parameters()` concatenate
 the read-only kernel metadata for each one-vs-rest model in sorted class order.
-`decision_function` returns the one-vs-rest latent posterior means in sorted
-class order, before probability-simplex normalization; its
+`predict_log_proba` returns the finite natural logarithm of the normalized
+simplex in the same sorted class order. `predict_log_proba_jvp` and
+`predict_log_proba_vjp` compose the normalization products with the exact
+`1 / max(p,tiny)` rule, and the corresponding parameter products cover packed
+kernel-log coordinates. `predict_log_proba_device` dispatches CPU and returns
+the typed CUDA refusal until the OVR states and normalization reduction are
+resident. `decision_function` returns the one-vs-rest latent posterior means in
+sorted class order, before probability-simplex normalization. Its
 `decision_function_jvp` and `decision_function_vjp` propagate query-feature
 tangents and cotangents through every binary GP. `predict_proba_vjp` applies
 the simplex normalization adjoint before accumulating binary GP input bars.

@@ -11,11 +11,12 @@ The cross-library acceptance table is maintained in
 
 The GitHub `v0.1.0` tag currently points to the earlier release-verification
 commit `a387cc5`; the trainer, calibration, variational-GP, transform, tree
-attribution, binary-GP log-probability, fixed-leaf-product, plateau-trainer,
-and CUDA VJP closure slices documented below are post-tag additions.
+attribution, binary and multiclass GP log-probability, sequential basis-device,
+fixed-leaf-product, plateau-trainer, affine Adagrad HVP, and CUDA VJP closure
+slices documented below are post-tag additions.
 The broad parity
 gate is still open, so this work does not move or recreate that tag.
-The checklist currently records 363 completed and 124 open items; open rows are
+The checklist currently records 365 completed and 124 open items. Open rows are
 retained until their implementation, independent oracle, device/refusal
 behavior, and benchmark evidence land together.
 
@@ -719,6 +720,23 @@ objective. `fortml-bench/results/robust_gp_poisson_products.csv` pins FortML
 zero likelihood error, and typed CUDA refusal code `3`. Kernel-hyperparameter
 through-refit, sparse/variational count inference, and resident CUDA remain
 open.
+
+Three additional CPU contracts now have independent release records. The
+sequential basis pipeline dispatches value, JVP, VJP, and HVP calls through a
+selected CPU device and returns a typed CUDA refusal without changing output
+arrays. `fortml-bench/results/basis_sequential_device.csv` records the mixed
+polynomial/Fourier oracle, with maximum derivative error `1.98e-11`. The
+resident sequential executor remains open. The multiclass one-vs-rest Laplace
+GP exposes normalized `predict_log_proba` values and input or packed-kernel
+JVP/VJP products. Its independent normalization and central-difference rows in
+`fortml-bench/results/gp_multiclass_log_proba.csv` report maximum derivative
+error `5.03e-11`. The resident OVR covariance and normalization path remains a
+typed CUDA refusal. The affine Adagrad trajectory adds an exact outer HVP for
+the one-layer MLP branch. `fortml-bench/results/adagrad_hypergradient_hvp.csv`
+reports HVP oracle error `4.54e-7`. Nonlinear multi-layer outer HVPs and
+resident Adagrad derivative state remain typed refusals. These rows are pinned
+by source commits `48c7ab4`, `72fb660`, and `7de8379` and the corresponding
+FortML-bench history.
 
 ### 2026-08-08 parity and provenance slice
 
@@ -2604,7 +2622,7 @@ The source inventory is dated 2026-08-09.
 | Training infrastructure | Partial | Model-specific gradients, exact MSE+L2 neural HVPs including the L2 mixed hyperparameter block, weighted multiclass MLP cross-entropy value/JVP/VJP/HVP products with bounded FortOpt L-BFGS-B, `mlp_training_objective_t` scalar JVP/VJP products (including the optional optimized L2 coordinate), named group-wise log-L2 objective/HVP products, differentiable Huber/quantile loss products, a joint basis-pipeline value/gradient/JVP/VJP/HVP objective, `fortopt_adam` and FortOpt SGD momentum/Nesterov integration, AdamW with decoupled decay, coupled-L2 Adam with exact fixed full-batch trajectory hypergradients, scheduled AdamW/RAdam and Adagrad trajectory products, Adagrad with an explicit accumulated-square state, RMSprop with centered/uncentered statistics and optional momentum, CPU AMSGrad with bias-corrected max-second-moment state and exact checkpoint/resume, CPU RAdam with validated rho-threshold rectification, exact checkpoint/resume, and exact fixed-trajectory value/JVP/VJP products, deterministic seeded batch cursors, contiguous microbatch accumulation with exact row-mass trajectory products, per-update callback and typed learning-rate schedules, norm clipping, sample-weighted gradient accumulation, validation/early stopping, resumable optimizer state, generic versioned portable trainer checkpoints, versioned portable MLP checkpoint files, fixed-trajectory full-batch SGD/Adam/AdamW/RMSprop/Adagrad/RAdam/AMSGrad and deterministic mini-batch SGD/coupled-L2 Adam hypergradients, unfactored Adafactor rate/accumulator/validation hypergradients including smooth relative-step and parameter-scaling branches, scheduled-Adagrad rate/accumulator/validation hypergradients with FortOpt L-BFGS-B, fixed-SGD optimizer-group derivatives through a fixed global clipping active set, explicit optimizer-group outer-HVP and clipping-boundary refusal contracts, typed precision refusal contracts, natural-gradient seams, and seeded variational draws exist. | One trainer owns batches, optimizer state, schedules, clipping, validation, early stopping, callbacks, and resumable state for every model with a completed trainer adapter; stochastic, mixed-precision, and device-resident optimizer hypergradients remain open. |
 | GP derivatives and hyperparameters | Partial | Exact GP likelihood and prediction products include parameter gradients and HVPs. Mixed value and first-derivative observations can be fitted and predicted; value-only HVPs use the analytic kernel-HVP/differentiated-solve path, while RBF/ARD-RBF/Matérn 3/2/Matérn 5/2/linear/constant/polynomial/periodic/spectral-mixture and their supported sum/product mixed-observation HVPs now use analytic covariance-block second products. The robust Poisson Laplace-GP lane adds normalized likelihood value/gradient/JVP/VJP/HVP products, fixed-mode posterior/query products, transactional latent setters, and a FortOpt objective with independent finite-difference and adjoint checks. Polynomial HVPs cover all four log kernel coordinates, including the degree-one limit; Matérn 3/2/5/2 HVPs cover both logarithmic kernel coordinates with finite coincident limits; periodic HVPs cover all three logarithmic kernel coordinates plus log noise with coincidence-safe fourth-input products; spectral-mixture HVPs carry exact four-jets through separable factors. These slices have independent likelihood finite-difference oracles. Correlated multi-output GPs now expose packed coregionalization/noise/kernel parameters plus posterior-mean query and parameter JVP/VJP products through a differentiated Cholesky solve, with independent finite-difference and adjoint oracles; independent query batches also have shape-checked means and input JVP/VJPs with explicit CUDA refusal. Binary and OVR Laplace classifiers now expose fixed-state kernel-parameter JVP/VJP products for latent and normalized observed predictions. Other mixed leaves return an explicit `FORTNUM_NOT_IMPLEMENTED` refusal rather than finite-differencing. Scalar likelihood VJPs include the packed noise block. Dense joint posterior covariance now also exposes exact parameter JVP/VJP products through the same solve, with independent finite-difference and adjoint oracles. | Exact, derivative, multi-output, sparse, and matrix-free GP families expose documented trainable parameters, scalar objectives, parameter gradients, and train-state adapters. |
 | Serialization and distributed execution | Partial | `fortml_mlp_checkpoint` provides a versioned compiler-independent formatted-text representation with schema magic/version, exact optimizer/iterator/history state, validated temporary loading, and malformed/truncated/extra-record refusals. Other model/pipeline files and distributed execution remain open. | Versioned model and trainer files round-trip across supported compilers, and MPI training or inference agrees with a one-rank oracle. |
-| Benchmark coverage | Partial | Correctness-gated model and GP applications feed release harnesses in `../fortml-bench`; current release lanes include Bernoulli/Multinomial/ComplementNB, integer one-hot encoding, weighted OLS (`WEIGHTED_OLS.md`), weighted ridge and elastic-net derivative products, weighted Huber value/gradient and FortOpt convergence (`HUBER_REGRESSION.md`), scalar and multi-output radius neighbors, seeded CART bagging, weighted random-forest regression (`RANDOM_FOREST_REGRESSION.md`), random-forest OOB classification and fixed-state permutation importance, binary and multiclass SAMME AdaBoost, CPU RAdam flat/MLP training with checkpoint replay, fixed full-batch RAdam and AMSGrad trajectory value/JVP/VJP/FortOpt products (`MLP_RADAM_HYPERGRADIENT.md`, `AMSGRAD_HYPERGRADIENT.md`), accumulated SGD momentum products (`sgd_momentum_hypergradient_accumulation.csv`), robust Poisson GP products (`robust_gp_poisson_products.csv`), metric-aware plateau scheduling and trainer diagnostics, binary Laplace-GP log-probability products, fixed-structure XGBoost/LightGBM leaf products, PCA-seeded linear MLP initialization, ordered-gradient categorical XGBoost partitions, OVR/OVO/multilabel/ordinal/RBF-SVM classification, multilabel precision/recall/F1/Jaccard/Hamming and ROC/PR-AUC metrics, temperature/sigmoid/isotonic probability calibration, weighted Laplace and variational GP classification, batched multi-output GP query products, typed column-pipeline device dispatch, AMSGrad recurrence/MLP training, the shared objective trainer and portable checkpoint, weighted binary and multiclass MLP objectives with bounded L-BFGS-B, optimizer-group trajectory hypergradients with fixed clipping-active-set products and explicit outer-HVP/boundary refusal rows, typed MLP precision capability rows, Lion hypergradients, transformed softmax log-L2 products, additive XGBoost contributions, pairwise ranking, and interaction constraints, bounded LightGBM leaf-wise boosting with validation early stopping, XGBoost warm-start continuation, MLP activation products, MLP SGD/Nesterov/Adam/AdamW, affine one-layer SGD momentum outer HVP products (`MLP_SGD_MOMENTUM_HYPERGRADIENT_HVP.md`), coupled-Adam and other fixed-trajectory hypergradients, typed schedules including one-cycle, fixed-trajectory and resident-state Adagrad, scheduled-Adagrad hypergradients, differentiable imputation, Chebyshev basis recurrence/JVP/VJP/HVP products, transactional pipeline input-schema validation and stable input-name routing, basis/pipeline, exact/approximate and correlated multi-output GP products including weighted OVR variational and packed Laplace multiclass prediction products, analytic GP likelihood products, derivative-GP spectral-mixture query and mixed-observation HVP products, polynomial mixed-observation GP HVPs, exact and weighted-histogram squared/logistic/Poisson boosting, monotonic-constraint query grids, general Hamiltonian MLP products, canonical symplectic-form residual products, generic grid/L-BFGS-B search, resident CUDA dense-affine value/JVP/VJP and MSE-update device-contract gates, and resident forest prediction. | Every completed parity package has a pinned external oracle, release timings, memory measurements, provenance, raw data, and a maintained report. |
+| Benchmark coverage | Partial | Correctness-gated model and GP applications feed release harnesses in `../fortml-bench`; current release lanes include Bernoulli/Multinomial/ComplementNB, integer one-hot encoding, weighted OLS (`WEIGHTED_OLS.md`), weighted ridge and elastic-net derivative products, weighted Huber value/gradient and FortOpt convergence (`HUBER_REGRESSION.md`), scalar and multi-output radius neighbors, seeded CART bagging, weighted random-forest regression (`RANDOM_FOREST_REGRESSION.md`), random-forest OOB classification and fixed-state permutation importance, binary and multiclass SAMME AdaBoost, CPU RAdam flat/MLP training with checkpoint replay, fixed full-batch RAdam and AMSGrad trajectory value/JVP/VJP/FortOpt products (`MLP_RADAM_HYPERGRADIENT.md`, `AMSGRAD_HYPERGRADIENT.md`), accumulated SGD momentum products (`sgd_momentum_hypergradient_accumulation.csv`), affine Adagrad trajectory HVP products (`ADAGRAD_HYPERGRADIENT_HVP.md`), robust Poisson GP products (`robust_gp_poisson_products.csv`), sequential basis device dispatch (`BASIS_SEQUENTIAL_DEVICE.md`), multiclass Laplace-GP log probabilities (`GP_MULTICLASS_LOG_PROBA.md`), metric-aware plateau scheduling and trainer diagnostics, binary Laplace-GP log-probability products, fixed-structure XGBoost/LightGBM leaf products, PCA-seeded linear MLP initialization, ordered-gradient categorical XGBoost partitions, OVR/OVO/multilabel/ordinal/RBF-SVM classification, multilabel precision/recall/F1/Jaccard/Hamming and ROC/PR-AUC metrics, temperature/sigmoid/isotonic probability calibration, weighted Laplace and variational GP classification, batched multi-output GP query products, typed column-pipeline device dispatch, AMSGrad recurrence/MLP training, the shared objective trainer and portable checkpoint, weighted binary and multiclass MLP objectives with bounded L-BFGS-B, optimizer-group trajectory hypergradients with fixed clipping-active-set products and explicit outer-HVP/boundary refusal rows, typed MLP precision capability rows, Lion hypergradients, transformed softmax log-L2 products, additive XGBoost contributions, pairwise ranking, and interaction constraints, bounded LightGBM leaf-wise boosting with validation early stopping, XGBoost warm-start continuation, MLP activation products, MLP SGD/Nesterov/Adam/AdamW, affine one-layer SGD momentum outer HVP products (`MLP_SGD_MOMENTUM_HYPERGRADIENT_HVP.md`), coupled-Adam and other fixed-trajectory hypergradients, typed schedules including one-cycle, fixed-trajectory and resident-state Adagrad, scheduled-Adagrad hypergradients, differentiable imputation, Chebyshev basis recurrence/JVP/VJP/HVP products, transactional pipeline input-schema validation and stable input-name routing, basis/pipeline, exact/approximate and correlated multi-output GP products including weighted OVR variational and packed Laplace multiclass prediction products, analytic GP likelihood products, derivative-GP spectral-mixture query and mixed-observation HVP products, polynomial mixed-observation GP HVPs, exact and weighted-histogram squared/logistic/Poisson boosting, monotonic-constraint query grids, general Hamiltonian MLP products, canonical symplectic-form residual products, generic grid/L-BFGS-B search, resident CUDA dense-affine value/JVP/VJP and MSE-update device-contract gates, and resident forest prediction. | Every completed parity package has a pinned external oracle, release timings, memory measurements, provenance, raw data, and a maintained report. |
 
 The ledger now also records contiguous CPU MLP optimizer groups with checkpoint
 metadata and fixed-SGD multiplier hypergradients, weighted Laplace-GP
@@ -2924,7 +2942,10 @@ return status errors.
 - [x] Provide `sequential_basis_pipeline_t` with explicit stage feature-count
   contracts, flattened parameters, chained JVP/VJP/HVP products, and
   independent finite-difference and adjoint tests. Column-wise HVPs are also
-  covered; general DAG composition remains open.
+  covered. Its selected-device transform/JVP/VJP/HVP methods dispatch the exact
+  CPU products and return a typed CUDA refusal without touching outputs. The
+  resident executor and general DAG composition remain open. The independent
+  device row is `fortml-bench/results/BASIS_SEQUENTIAL_DEVICE.md`.
 - [x] Add fitted `standard_scaler_t` and `minmax_scaler_t` transformers with
   explicit row-oriented fit/transform/inverse contracts, constant-column
   policies, and exact input JVPs. Fitted statistics are state rather than
@@ -3634,8 +3655,11 @@ trials remain visible in the result schema.
   over `[log(learning_rate), log(l2), log(epsilon)]`, including accumulated-
   square and epsilon-stabilized diagonal-step sensitivities, JVP/VJP products,
   independent finite-difference and adjoint tests, and a FortOpt L-BFGS-B
-  adapter. Mini-batch, schedules, clipping, and CUDA-resident Adagrad
-  hypergradients remain explicit refusals until their state derivatives land.
+  adapter. The affine one-layer branch also exposes an exact outer HVP and a
+  central-difference oracle; nonlinear multi-layer outer HVPs, mini-batch,
+  schedules, clipping, and CUDA-resident Adagrad hypergradients remain typed
+  refusals. The release row is
+  `fortml-bench/results/ADAGRAD_HYPERGRADIENT_HVP.md`.
 - [x] Add the exact fixed full-batch unfactored Adafactor trajectory
   hypergradient objective over `[log(learning_rate), log(l2), decay,
   log(epsilon), log(clip_threshold)]`. The analytic product differentiates the
@@ -4125,12 +4149,16 @@ state phases are reported separately.
   Laplace evidence gradient remains open.
 - [x] Add one-vs-rest multiclass GP classification as a deterministic wrapper
   over the binary Laplace contract, with sorted labels, latent margins,
-  normalized positive probabilities, and chained query-feature JVP/VJP
-  products. Add explicit `predict_proba_device`/`predict_device` dispatch and
-  `device_supported` capability metadata: CPU dispatch is exact and selected
-  CUDA contexts return `FORTNUM_NOT_IMPLEMENTED` until independent per-class
-  covariance/Laplace state is resident. Variational categorical likelihoods
-  remain open.
+  normalized positive probabilities, stable `predict_log_proba`, and chained
+  query-feature or packed-kernel JVP/VJP products for both probability forms.
+  Add explicit `predict_proba_device`/`predict_log_proba_device`/
+  `predict_device` dispatch and `device_supported` capability metadata: CPU
+  dispatch is exact and selected CUDA contexts return
+  `FORTNUM_NOT_IMPLEMENTED` until independent per-class covariance/Laplace
+  state and the normalization reduction are resident. The independent
+  `test_gp_multiclass_log_proba` and
+  `fortml-bench/results/GP_MULTICLASS_LOG_PROBA.md` rows cover the new surface.
+  Variational categorical likelihoods remain open.
 - [x] Add bounded FortOpt L-BFGS-B adapters for binary and shared-kernel
   one-vs-rest GP classification. Each trial refits the Laplace mode and uses
   the analytic envelope gradient; invalid bounds, failed mode solves, and
