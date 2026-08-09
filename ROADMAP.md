@@ -21,7 +21,7 @@ boosted-tree partial-dependence/ICE, learned basis fan-in, fixed-full-batch
 SGD clipping hypergradient, and fixed-shape Gamma-GP likelihood slices.
 The broad parity
 gate is still open, so this work does not move or recreate that tag.
-The checklist currently records 424 completed and 155 open items. Open rows are
+The checklist currently records 427 completed and 155 open items. Open rows are
 retained until their implementation, independent oracle, device/refusal
 behavior, and benchmark evidence land together.
 
@@ -299,6 +299,22 @@ counted as GPU parity or silently routed through the host.
   GPyTorch/GPflow/Flux/Lux/XGBoost/LightGBM tiers for compile, warmup,
   transfer, steady-state, throughput, memory, precision, initialization,
   convergence, and energy with clean provenance.
+
+Wave 11 promoted slices (the broad matrix above remains open):
+
+- [x] **Basis-linear HVP:** polynomial, cubic-spline, and Fourier readouts now
+  expose an exact mixed basis/readout HVP with an independent directional-VJP
+  oracle and a 13-row clean benchmark in
+  `fortml-bench/results/basis_linear_regression.csv`.
+- [x] **Poisson likelihood products:** weighted log-rate value, gradient, JVP,
+  VJP, HVP, and bounded FortOpt L-BFGS-B fitting are covered by a separate
+  NumPy/Fortran oracle and typed CUDA refusal in
+  `fortml-bench/results/wave11_derivative_products.csv`; the release probe
+  records resident CPU product throughput and fit diagnostics.
+- [x] **Affine optimizer-group outer HVP:** constant-schedule full-batch SGD
+  for affine MSE plus L2 propagates the exact second tangent through the
+  optimizer-group trajectory, with an independent recurrence oracle and
+  explicit refusals for nonlinear, Adam, schedules, clipping, and CUDA.
 
 ## 2026-08 parity expansion backlog
 
