@@ -16,15 +16,18 @@ H(q,p) = V(q) + T(p),       f(q,p) = ( dT/dp, -dV/dq ).
 
 The two scalar MLPs have a deterministic packed parameter vector. The public
 products are `energy`, `energy_gradient`, `vector_field`, `energy_jvp`,
-`energy_vjp`, `vector_field_jvp`, and an explicit velocity-Verlet (`leapfrog`)
-step. `initialize_general` selects one scalar MLP over the full `[q,p]` state;
+`energy_vjp`, `vector_field_jvp`, `vector_field_vjp`, and an explicit
+velocity-Verlet (`leapfrog`) step. `vector_field_vjp` contracts an arbitrary
+field cotangent against `(dH/dp,-dH/dq)` and returns exact parameter/state
+reverse products through the MLP HVP path. `initialize_general` selects one
+scalar MLP over the full `[q,p]` state;
 the same products then differentiate a nonseparable Hamiltonian without a
 finite-difference fallback. The explicit leapfrog map is refused with
 `FORTNUM_NOT_IMPLEMENTED` in general mode because it is a split integrator;
 an implicit symplectic method is a separate contract. Both modes refuse
 malformed layer shapes, non-finite states, and non-finite directions. The independent test
 [`test_hamiltonian_mlp.f90`](../test/test_hamiltonian_mlp.f90) checks the value
-products against central differences, the VJP dot-product identity, general
+products against central differences, the VJP dot-product identities, general
 state/parameter JVPs, and the separable finite-difference Jacobian's
 symplectic-form defect and reversibility.
 

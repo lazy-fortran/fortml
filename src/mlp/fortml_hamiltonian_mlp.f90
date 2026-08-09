@@ -33,6 +33,7 @@ module fortml_hamiltonian_mlp
         procedure, public :: energy_vjp => hamiltonian_mlp_energy_vjp
         procedure, public :: vector_field => hamiltonian_mlp_vector_field
         procedure, public :: vector_field_jvp => hamiltonian_mlp_vector_field_jvp
+        procedure, public :: vector_field_vjp => hamiltonian_mlp_vector_field_vjp
         procedure, public :: leapfrog => hamiltonian_mlp_leapfrog
         procedure, public :: coordinate_count => hamiltonian_mlp_coordinate_count
         procedure, public :: is_general => hamiltonian_mlp_is_general
@@ -423,6 +424,80 @@ contains
         dfield(:, 1:nq) = p_hvp
         dfield(:, nq + 1:2*nq) = -q_hvp
     end subroutine hamiltonian_mlp_vector_field_jvp
+
+    subroutine hamiltonian_mlp_vector_field_vjp(self, state, field_bar, &
+            parameter_bar, state_bar, status)
+        !! Reverse product for the canonical Hamiltonian vector field.
+        !!
+        !! For ``F = (H_p, -H_q)`` and a field cotangent ``lambda``, this
+        !! returns the gradient of ``sum(lambda*F)`` with respect to packed
+        !! parameters and the input state.  The implementation reuses the
+        !! MLP forward-over-reverse HVP with the canonical cotangent direction
+        !! ``(-lambda_p, lambda_q)``.  This is an exact CPU product; no
+        !! finite-difference fallback is used.
+        class(hamiltonian_mlp_t), intent(in) :: self
+        real(dp), intent(in) :: state(:, :), field_bar(:, :)
+        real(dp), intent(out) :: parameter_bar(:), state_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: direction(:, :), one(:, :), zero_theta(:)
+        real(dp), allocatable :: q(:, :), p(:, :), dq(:, :), dp_state(:, :)
+        real(dp), allocatable :: q_hvp(:, :), p_hvp(:, :)
+        real(dp), allocatable :: potential_hvp(:), kinetic_hvp(:)
+        integer :: n, nq, np, nk
+
+        n = size(state, 1)
+        nq = self%n_coordinates
+        if (.not. valid_state(self, state) .or. any(shape(field_bar) /= shape(state)) .or. &
+            any(.not. ieee_is_finite(field_bar)) .or. any(shape(state_bar) /= shape(state))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "Hamiltonian MLP vector_field_vjp: invalid state, cotangent, or output")
+            return
+        end if
+
+        allocate(direction(n, 2*nq), one(n, 1))
+        direction(:, 1:nq) = -field_bar(:, nq + 1:2*nq)
+        direction(:, nq + 1:2*nq) = field_bar(:, 1:nq)
+        one = 1.0_dp
+
+        if (self%general_mode) then
+            if (size(parameter_bar) /= self%general%parameter_count()) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "Hamiltonian MLP vector_field_vjp: parameter shape is invalid")
+                return
+            end if
+            allocate(zero_theta(self%general%parameter_count()))
+            zero_theta = 0.0_dp
+            call self%general%hvp(state, one, zero_theta, direction, parameter_bar, &
+                state_bar, status)
+            return
+        end if
+
+        np = self%potential%parameter_count()
+        nk = self%kinetic%parameter_count()
+        if (size(parameter_bar) /= np + nk) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "Hamiltonian MLP vector_field_vjp: parameter shape is invalid")
+            return
+        end if
+        call split_state(self, state, q, p)
+        allocate(dq(n, nq), dp_state(n, nq))
+        dq = direction(:, 1:nq)
+        dp_state = direction(:, nq + 1:2*nq)
+        allocate(zero_theta(np), potential_hvp(np), q_hvp(n, nq))
+        allocate(kinetic_hvp(nk), p_hvp(n, nq))
+        zero_theta = 0.0_dp
+        call self%potential%hvp(q, one, zero_theta, dq, potential_hvp, q_hvp, status)
+        if (.not. status_ok(status)) return
+        deallocate(zero_theta)
+        allocate(zero_theta(nk))
+        zero_theta = 0.0_dp
+        call self%kinetic%hvp(p, one, zero_theta, dp_state, kinetic_hvp, p_hvp, status)
+        if (.not. status_ok(status)) return
+        parameter_bar(1:np) = potential_hvp
+        parameter_bar(np + 1:np + nk) = kinetic_hvp
+        state_bar(:, 1:nq) = q_hvp
+        state_bar(:, nq + 1:2*nq) = p_hvp
+    end subroutine hamiltonian_mlp_vector_field_vjp
 
     subroutine hamiltonian_mlp_leapfrog(self, state, step, next_state, status)
         class(hamiltonian_mlp_t), intent(in) :: self

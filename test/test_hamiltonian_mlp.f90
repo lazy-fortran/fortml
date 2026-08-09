@@ -10,6 +10,7 @@ program test_hamiltonian_mlp
     failures = 0
     call test_energy_products(failures)
     call test_vector_field_products(failures)
+    call test_vector_field_vjp(failures)
     call test_general_products(failures)
     call test_symplectic_leapfrog(failures)
     call test_refusal(failures)
@@ -101,6 +102,101 @@ contains
             failures = failures + 1
         end if
     end subroutine test_vector_field_products
+
+    subroutine test_vector_field_vjp(failures)
+        integer, intent(inout) :: failures
+        type(hamiltonian_mlp_t) :: model
+        type(fortnum_status_t) :: status
+        real(dp) :: state(1, 2), field_bar(1, 2), state_bar(1, 2)
+        real(dp) :: parameter_bar(14), theta(14), theta_plus(14), theta_minus(14)
+        real(dp) :: state_plus(1, 2), state_minus(1, 2), field_plus(1, 2)
+        real(dp) :: field_minus(1, 2), field(1, 2), dfield(1, 2)
+        real(dp) :: parameter_fd(14), state_fd(1, 2), scalar_plus, scalar_minus
+        real(dp) :: dtheta(14), dstate(1, 2), lhs, rhs, h, error
+        integer :: i, j
+
+        call make_model(model, status)
+        theta = model%parameters()
+        state = reshape([0.29_dp, -0.34_dp], shape(state))
+        field_bar = reshape([0.61_dp, -0.37_dp], shape(field_bar))
+        call model%vector_field_vjp(state, field_bar, parameter_bar, state_bar, status)
+        h = 1.0e-6_dp
+        do i = 1, size(theta)
+            theta_plus = theta
+            theta_minus = theta
+            theta_plus(i) = theta_plus(i) + h
+            theta_minus(i) = theta_minus(i) - h
+            call model%set_parameters(theta_plus, status)
+            call model%vector_field(state, field_plus, status)
+            scalar_plus = sum(field_bar*field_plus)
+            call model%set_parameters(theta_minus, status)
+            call model%vector_field(state, field_minus, status)
+            scalar_minus = sum(field_bar*field_minus)
+            parameter_fd(i) = (scalar_plus - scalar_minus)/(2.0_dp*h)
+        end do
+        call model%set_parameters(theta, status)
+        do j = 1, 2
+            state_plus = state
+            state_minus = state
+            state_plus(1, j) = state_plus(1, j) + h
+            state_minus(1, j) = state_minus(1, j) - h
+            call model%vector_field(state_plus, field_plus, status)
+            scalar_plus = sum(field_bar*field_plus)
+            call model%vector_field(state_minus, field_minus, status)
+            scalar_minus = sum(field_bar*field_minus)
+            state_fd(1, j) = (scalar_plus - scalar_minus)/(2.0_dp*h)
+        end do
+        error = max(maxval(abs(parameter_bar - parameter_fd)), &
+            maxval(abs(state_bar - state_fd)))
+        if (.not. status_ok(status) .or. error > 2.0e-7_dp) then
+            write (error_unit, '(a,es12.4)') &
+                "FAIL [hamiltonian-field-vjp] finite difference=", error
+            failures = failures + 1
+        end if
+
+        dtheta = [(0.006_dp*real(i, dp), i=1, size(theta))]
+        dstate = reshape([-0.08_dp, 0.12_dp], shape(dstate))
+        call model%vector_field_jvp(state, dtheta, dstate, field, dfield, status)
+        lhs = sum(field_bar*dfield)
+        rhs = sum(parameter_bar*dtheta) + sum(state_bar*dstate)
+        if (.not. status_ok(status) .or. abs(lhs - rhs) > 3.0e-9_dp) then
+            write (error_unit, '(a,es12.4)') &
+                "FAIL [hamiltonian-field-vjp] adjoint identity=", abs(lhs-rhs)
+            failures = failures + 1
+        end if
+
+        call model%initialize_general(1, [2, 3, 1], status, initialization_seed=37)
+        if (.not. status_ok(status)) then
+            failures = failures + 1
+            return
+        end if
+        block
+            real(dp), allocatable :: general_theta(:), general_direction(:)
+            real(dp), allocatable :: general_parameter_bar(:), general_state_bar(:, :)
+            real(dp), allocatable :: general_field(:, :), general_dfield(:, :)
+            integer :: n_parameters
+
+            n_parameters = model%parameter_count()
+            allocate(general_theta(n_parameters), general_direction(n_parameters))
+            allocate(general_parameter_bar(n_parameters), general_state_bar(1, 2))
+            allocate(general_field(1, 2), general_dfield(1, 2))
+            general_theta = model%parameters()
+            general_direction = [(0.004_dp*real(i, dp), i=1, n_parameters)]
+            call model%vector_field_vjp(state, field_bar, general_parameter_bar, &
+                general_state_bar, status)
+            call model%vector_field_jvp(state, general_direction, dstate, &
+                general_field, general_dfield, status)
+            lhs = sum(field_bar*general_dfield)
+            rhs = sum(general_parameter_bar*general_direction) + &
+                sum(general_state_bar*dstate)
+            if (.not. status_ok(status) .or. abs(lhs - rhs) > 3.0e-9_dp) then
+                write (error_unit, '(a,es12.4)') &
+                    "FAIL [hamiltonian-general-field-vjp] adjoint identity=", &
+                    abs(lhs-rhs)
+                failures = failures + 1
+            end if
+        end block
+    end subroutine test_vector_field_vjp
 
     subroutine test_general_products(failures)
         integer, intent(inout) :: failures
