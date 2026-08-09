@@ -29,7 +29,9 @@ contains
         real(dp) :: x_train(5, 2), y_train(5, 1), x_query(3, 2)
         real(dp) :: mean(3, 1), variance(3), mean_ref(3, 1), variance_ref(3)
         real(dp) :: theta(5), gradient(5), fd_gradient(5), direction(5)
+        real(dp) :: hvp(5), fd_hvp(5), gradient_plus(5), gradient_minus(5)
         real(dp) :: value, value_dot, expected, h, plus, minus
+        real(dp) :: hvp_step, gradient_step, hvp_error
         real(dp) :: mean_dot(3, 1), variance_dot(3), x_direction(3, 2)
         real(dp) :: mean_plus(3, 1), mean_minus(3, 1)
         real(dp) :: variance_plus(3), variance_minus(3), query_error
@@ -109,6 +111,33 @@ contains
             write (error_unit, '(a,es12.4)') &
                 "FAIL [local-periodic derivative GP] likelihood JVP ", &
                 abs(value_dot - dot_product(gradient, direction))
+            failures = failures + 1
+        end if
+
+        call model%hyperparameter_hvp(direction, hvp, status)
+        hvp_step = 2.0e-4_dp
+        gradient_step = 3.0e-6_dp
+        do i = 1, size(theta)
+            plus = oracle_lml(theta + hvp_step*direction + &
+                gradient_step*unit_vector(size(theta), i), x_train, components, y_train, &
+                1.0e-10_dp)
+            minus = oracle_lml(theta + hvp_step*direction - &
+                gradient_step*unit_vector(size(theta), i), x_train, components, y_train, &
+                1.0e-10_dp)
+            gradient_plus(i) = (plus - minus)/(2.0_dp*gradient_step)
+            plus = oracle_lml(theta - hvp_step*direction + &
+                gradient_step*unit_vector(size(theta), i), x_train, components, y_train, &
+                1.0e-10_dp)
+            minus = oracle_lml(theta - hvp_step*direction - &
+                gradient_step*unit_vector(size(theta), i), x_train, components, y_train, &
+                1.0e-10_dp)
+            gradient_minus(i) = (plus - minus)/(2.0_dp*gradient_step)
+            fd_hvp(i) = (gradient_plus(i) - gradient_minus(i))/(2.0_dp*hvp_step)
+        end do
+        hvp_error = maxval(abs(hvp - fd_hvp))
+        if (.not. status_ok(status) .or. hvp_error > 5.0e-4_dp) then
+            write (error_unit, '(a,es12.4)') &
+                "FAIL [local-periodic derivative GP] mixed HVP oracle ", hvp_error
             failures = failures + 1
         end if
 

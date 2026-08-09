@@ -245,7 +245,7 @@ repeated resident-batch evidence.
 | `extra_trees_classifier_t` | Randomized-threshold ensemble probabilities and labels | Refused: split routing is discrete | Refused: split routing is discrete | No |
 | `bagging_classifier_t` | Seeded bootstrap or without-replacement CART probabilities and labels | Refused: split routing is discrete | Refused: split routing is discrete | No |
 | `gp_regression_t` | Mean, variance, LML | Prediction and LML parameters | Prediction and LML parameters | Mean and LML parameters |
-| `gp_derivative_regression_t` | Mean, variance, and LML | Prediction and LML parameter JVP | Prediction parameter VJP and analytic LML hyperparameter gradient | Analytic mixed-observation HVPs for RBF, Matérn 3/2/5/2, periodic, rational-quadratic, cosine, linear, constant, polynomial, and supported composites; typed refusals for leaves without second input/parameter products |
+| `gp_derivative_regression_t` | Mean, variance, and LML | Prediction and LML parameter JVP | Prediction parameter VJP and analytic LML hyperparameter gradient | Analytic mixed-observation HVPs for RBF, Matérn 3/2/5/2, periodic, local-periodic, rational-quadratic, cosine, linear, constant, polynomial, and supported composites; typed refusals for leaves without second input/parameter products |
 | `second_derivative_gp_t` | Exact scalar 1-D RBF/Matérn-5/2 GP over mixed value/first/second-derivative rows, plus RBF third-derivative rows; latent joint covariance and packed likelihood state | Query-coordinate JVP; RBF likelihood JVP; selected-CPU device dispatch | Query-coordinate VJP; likelihood VJP; selected-CPU device dispatch | RBF order >3, Matérn-5/2 order >2, Matérn-5/2 fifth derivative at coincidence, Matérn parameter products, and CUDA prediction/covariance/product requests are typed refusals |
 | `gp_classification_t` | Latent, observed, and log-observed probabilities; fixed-state kernel parameter setter; implicit-mode kernel hyperparameter HVP | Input and fixed-state kernel-parameter JVP for probabilities and log probabilities | Input and fixed-state kernel-parameter VJP for probabilities and log probabilities; Laplace-mode kernel hyperparameter gradient | Implicit-mode hyperparameter HVP on CPU; typed CUDA refusal |
 | `gp_multiclass_classification_t` | Latent one-vs-rest margins and normalized observed probabilities | Input and packed fixed-state kernel-parameter JVPs for margins and probabilities | Input and packed fixed-state kernel-parameter VJPs for margins and probabilities; packed one-vs-rest Laplace-mode kernel hyperparameter gradient | No |
@@ -4066,17 +4066,19 @@ product silently copies arrays to the host.
 Value-only covariances and their variance-parameter products remain defined at
 coincidence. The refusal applies only when an input derivative is requested.
 For mixed value/first-derivative observations, `hyperparameter_hvp` is analytic
-for RBF, Matérn 3/2/5/2, periodic, rational-quadratic, cosine, linear, constant,
-polynomial, spectral-mixture, and sums/products
+for RBF, Matérn 3/2/5/2, periodic, local-periodic, rational-quadratic, cosine,
+linear, constant, polynomial, spectral-mixture, and sums/products
 built solely from those leaves. The polynomial path differentiates all four
 logarithmic kernel coordinates in closed form, including the degree-one limit,
 and returns a typed domain error when its positive base is invalid.
-Periodic, rational-quadratic, cosine, and spectral-mixture value/first-derivative parameter gradients, query products,
+Periodic, local-periodic, rational-quadratic, cosine, and spectral-mixture value/first-derivative parameter gradients, query products,
 and mixed parameter HVPs are analytic on the CPU reference path. Its
 four-jet factor rule differentiates each packed log-weight/log-scale/signed-
 mean coordinate along an arbitrary parameter direction. The periodic path
 uses coincidence-safe radial fourth-input products for all three logarithmic
-kernel coordinates. The rational-quadratic and cosine paths carry exact radial
+kernel coordinates. The local-periodic path extends that radial jet with its
+squared-exponential envelope and covers all four logarithmic kernel coordinates.
+The rational-quadratic and cosine paths carry exact radial
 `F_s`/`F_ss` products and their parameter-direction products;
 `test_derivative_gp_products` checks their independent dense likelihood oracles.
 Other leaves return

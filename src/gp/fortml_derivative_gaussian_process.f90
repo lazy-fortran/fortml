@@ -1871,6 +1871,11 @@ contains
                 parameter, direction, covariance, covariance_dot, covariance_parameter, &
                 covariance_parameter_dot, status)
             return
+        case (KERNEL_LOCAL_PERIODIC)
+            call local_periodic_derivative_parameter_hvp(kernel, x1, component1, x2, component2, &
+                parameter, direction, covariance, covariance_dot, covariance_parameter, &
+                covariance_parameter_dot, status)
+            return
         case (KERNEL_RATIONAL_QUADRATIC)
             call rational_quadratic_derivative_parameter_hvp(kernel, x1, component1, x2, &
                 component2, parameter, direction, covariance, covariance_dot, &
@@ -2239,6 +2244,186 @@ contains
         end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine matern_radial_parameter_terms
+
+    subroutine local_periodic_derivative_parameter_hvp(kernel, x1, component1, x2, component2, &
+            parameter, direction, covariance, covariance_dot, covariance_parameter, &
+            covariance_parameter_dot, status)
+        !! Analytic mixed-observation parameter/HVP products for the
+        !! locally-periodic leaf.
+        !!
+        !! In squared-lag coordinates ``s=||x1-x2||**2`` the covariance is
+        !! ``F(s)=v*exp(-a*s-b*t(s))`` with
+        !! ``t(s)=sin(c*sqrt(s))**2``.  The radial jets ``t0`` through ``t4``
+        !! are evaluated once and then contracted with the log-parameter
+        !! derivatives of ``F``, ``F_s``, and ``F_ss``.  This gives value,
+        !! value/gradient, and gradient/gradient covariance blocks together
+        !! with their exact parameter and directional products.  The series at
+        !! coincidence removes all apparent powers of ``sqrt(s)`` and is the
+        !! same radial limit used by the kernel input-derivative path.
+        type(kernel_t), intent(in) :: kernel
+        real(dp), intent(in) :: x1(:), x2(:), direction(:)
+        integer, intent(in) :: component1, component2, parameter
+        real(dp), intent(out) :: covariance, covariance_dot, covariance_parameter
+        real(dp), intent(out) :: covariance_parameter_dot
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: variance, envelope_scale, periodic_scale, period, a, b, c
+        real(dp) :: s, r, z, t0, t1, t2, t3, t4, value
+        real(dp) :: l1, l2, ld0, ld1, ld2
+        real(dp) :: lp0, lp1, lp2, lpd0, lpd1, lpd2
+        real(dp) :: c0, c1, c2, cd0, cd1, cd2
+        real(dp) :: h0, h1, h2, hd0, hd1, hd2
+        real(dp) :: difference(size(x1)), delta_i, delta_j
+        real(dp) :: argument, sine_value, cosine_value
+        integer :: i, j
+
+        covariance = 0.0_dp
+        covariance_dot = 0.0_dp
+        covariance_parameter = 0.0_dp
+        covariance_parameter_dot = 0.0_dp
+        if (kernel%kind /= KERNEL_LOCAL_PERIODIC .or. kernel%parameter_count() /= 4 .or. &
+            size(x1) /= size(x2) .or. size(direction) /= 4 .or. parameter < 1 .or. &
+            parameter > 4 .or. component1 < 0 .or. component2 < 0 .or. &
+            component1 > size(x1) .or. component2 > size(x2) .or. &
+            any(.not. ieee_is_finite(x1)) .or. any(.not. ieee_is_finite(x2)) .or. &
+            any(.not. ieee_is_finite(direction))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "local-periodic derivative GP HVP: kernel layout or shape is invalid")
+            return
+        end if
+
+        difference = x1 - x2
+        s = dot_product(difference, difference)
+        r = sqrt(max(s, 0.0_dp))
+        variance = exp(kernel%log_parameters(1))
+        envelope_scale = exp(kernel%log_parameters(2))
+        periodic_scale = exp(kernel%log_parameters(3))
+        period = exp(kernel%log_parameters(4))
+        a = 0.5_dp/(envelope_scale*envelope_scale)
+        b = 2.0_dp/(periodic_scale*periodic_scale)
+        c = acos(-1.0_dp)/period
+
+        if (r <= 1.0e-8_dp) then
+            ! sin(c*r)**2 = c**2*s - c**4*s**2/3 + 2*c**6*s**3/45 - ...
+            t0 = c*c*s - c**4*s*s/3.0_dp + 2.0_dp*c**6*s**3/45.0_dp
+            t1 = c*c - 2.0_dp*c**4*s/3.0_dp + 2.0_dp*c**6*s*s/15.0_dp
+            t2 = -2.0_dp*c**4/3.0_dp + 4.0_dp*c**6*s/15.0_dp
+            t3 = 4.0_dp*c**6/15.0_dp
+            t4 = -8.0_dp*c**8/105.0_dp
+        else
+            z = c*r
+            argument = 2.0_dp*z
+            sine_value = sin(argument)
+            cosine_value = cos(argument)
+            t0 = sin(z)**2
+            t1 = c*sine_value/(2.0_dp*r)
+            t2 = c*(2.0_dp*z*cosine_value - sine_value)/(4.0_dp*r**3)
+            t3 = c*(3.0_dp*sine_value - 6.0_dp*z*cosine_value - &
+                4.0_dp*z*z*sine_value)/(8.0_dp*r**5)
+            t4 = c**8*(30.0_dp*z*cosine_value + &
+                (24.0_dp*z*z - 15.0_dp)*sine_value - 8.0_dp*z**3*cosine_value)/ &
+                (16.0_dp*z**7)
+        end if
+
+        value = variance*exp(-a*s - b*t0)
+        l1 = -a - b*t1
+        l2 = -b*t2
+        ld0 = direction(1) + 2.0_dp*a*s*direction(2) + 2.0_dp*b*t0*direction(3) + &
+            2.0_dp*b*s*t1*direction(4)
+        ld1 = 2.0_dp*a*direction(2) + 2.0_dp*b*t1*direction(3) + &
+            2.0_dp*b*(t1 + s*t2)*direction(4)
+        ld2 = 2.0_dp*b*t2*direction(3) + &
+            2.0_dp*b*(2.0_dp*t2 + s*t3)*direction(4)
+
+        lp0 = 0.0_dp
+        lp1 = 0.0_dp
+        lp2 = 0.0_dp
+        lpd0 = 0.0_dp
+        lpd1 = 0.0_dp
+        lpd2 = 0.0_dp
+        select case (parameter)
+        case (1)
+            lp0 = 1.0_dp
+        case (2)
+            lp0 = 2.0_dp*a*s
+            lp1 = 2.0_dp*a
+            lpd0 = -4.0_dp*a*s*direction(2)
+            lpd1 = -4.0_dp*a*direction(2)
+        case (3)
+            lp0 = 2.0_dp*b*t0
+            lp1 = 2.0_dp*b*t1
+            lp2 = 2.0_dp*b*t2
+            lpd0 = -4.0_dp*b*t0*direction(3) - 4.0_dp*b*s*t1*direction(4)
+            lpd1 = -4.0_dp*b*t1*direction(3) - &
+                4.0_dp*b*(t1 + s*t2)*direction(4)
+            lpd2 = -4.0_dp*b*t2*direction(3) - &
+                4.0_dp*b*(2.0_dp*t2 + s*t3)*direction(4)
+        case (4)
+            lp0 = 2.0_dp*b*s*t1
+            lp1 = 2.0_dp*b*(t1 + s*t2)
+            lp2 = 2.0_dp*b*(2.0_dp*t2 + s*t3)
+            lpd0 = -4.0_dp*b*s*t1*direction(3) - &
+                4.0_dp*b*s*(t1 + s*t2)*direction(4)
+            lpd1 = -4.0_dp*b*(t1 + s*t2)*direction(3) - &
+                4.0_dp*b*(t1 + 3.0_dp*s*t2 + s*s*t3)*direction(4)
+            lpd2 = -4.0_dp*b*(2.0_dp*t2 + s*t3)*direction(3) - &
+                4.0_dp*b*(4.0_dp*t2 + 5.0_dp*s*t3 + s*s*t4)*direction(4)
+        end select
+
+        c0 = value
+        c1 = value*l1
+        c2 = value*(l1*l1 + l2)
+        cd0 = value*ld0
+        cd1 = value*(ld0*l1 + ld1)
+        cd2 = value*(ld0*(l1*l1 + l2) + 2.0_dp*l1*ld1 + ld2)
+        h0 = value*lp0
+        h1 = value*(lp0*l1 + lp1)
+        h2 = value*(lp0*(l1*l1 + l2) + 2.0_dp*l1*lp1 + lp2)
+        hd0 = value*(ld0*lp0 + lpd0)
+        hd1 = value*(ld0*(lp0*l1 + lp1) + lpd0*l1 + lp0*ld1 + lpd1)
+        hd2 = value*(ld0*(lp0*(l1*l1 + l2) + 2.0_dp*l1*lp1 + lp2) + &
+            lpd0*(l1*l1 + l2) + lp0*(2.0_dp*l1*ld1 + ld2) + &
+            2.0_dp*(ld1*lp1 + l1*lpd1) + lpd2)
+
+        delta_i = 0.0_dp
+        delta_j = 0.0_dp
+        if (component1 == 0 .and. component2 == 0) then
+            covariance = c0
+            covariance_dot = cd0
+            covariance_parameter = h0
+            covariance_parameter_dot = hd0
+        else if (component1 > 0 .and. component2 == 0) then
+            delta_i = difference(component1)
+            covariance = 2.0_dp*c1*delta_i
+            covariance_dot = 2.0_dp*cd1*delta_i
+            covariance_parameter = 2.0_dp*h1*delta_i
+            covariance_parameter_dot = 2.0_dp*hd1*delta_i
+        else if (component1 == 0 .and. component2 > 0) then
+            delta_i = difference(component2)
+            covariance = -2.0_dp*c1*delta_i
+            covariance_dot = -2.0_dp*cd1*delta_i
+            covariance_parameter = -2.0_dp*h1*delta_i
+            covariance_parameter_dot = -2.0_dp*hd1*delta_i
+        else
+            delta_i = difference(component1)
+            delta_j = difference(component2)
+            covariance = -2.0_dp*c1*merge(1.0_dp, 0.0_dp, component1 == component2) - &
+                4.0_dp*c2*delta_i*delta_j
+            covariance_dot = -2.0_dp*cd1*merge(1.0_dp, 0.0_dp, component1 == component2) - &
+                4.0_dp*cd2*delta_i*delta_j
+            covariance_parameter = -2.0_dp*h1*merge(1.0_dp, 0.0_dp, component1 == component2) - &
+                4.0_dp*h2*delta_i*delta_j
+            covariance_parameter_dot = -2.0_dp*hd1*merge(1.0_dp, 0.0_dp, component1 == component2) - &
+                4.0_dp*hd2*delta_i*delta_j
+        end if
+        if (.not. ieee_is_finite(covariance) .or. .not. ieee_is_finite(covariance_dot) .or. &
+            .not. ieee_is_finite(covariance_parameter) .or. &
+            .not. ieee_is_finite(covariance_parameter_dot)) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "local-periodic derivative GP HVP: nonfinite product")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine local_periodic_derivative_parameter_hvp
 
     subroutine periodic_derivative_parameter_hvp(kernel, x1, component1, x2, component2, &
             parameter, direction, covariance, covariance_dot, covariance_parameter, &

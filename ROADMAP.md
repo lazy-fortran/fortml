@@ -1912,6 +1912,15 @@ when a lower-level primitive already exists.
   first-derivative query component, including coincident-point limits; the
   independent `test_derivative_gp_local_periodic` and benchmark lane compare
   posterior mean/variance products against directional finite differences.
+- [x] Extend local-periodic mixed-observation derivative-GP hyperparameter HVPs
+  through all four logarithmic kernel coordinates and log observation noise.
+  The exact radial `F`, `F_s`, and `F_ss` jet carries the squared-exponential
+  envelope and periodic factor, with coincidence-safe `sin(c*sqrt(s))**2`
+  series through the fourth radial input derivative. The existing independent
+  local-periodic behavior gate now central-differences a dense likelihood
+  gradient along an arbitrary packed direction; the release app and companion
+  `DERIVATIVE_GP_LOCAL_PERIODIC_HVP` benchmark record CPU timing and the typed
+  resident-CUDA refusal.
 - [x] Add an analytic change-point kernel that gates a left child and a right
   child by a smooth logistic transition. Value, input JVP, mixed Hessian,
   packed parameter JVP/VJP/HVP products, and exact-GP integration are covered

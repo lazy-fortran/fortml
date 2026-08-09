@@ -28,7 +28,7 @@ the requested pair is smooth and finite. A refusal is a typed
 | Periodic | Yes | Gradient/JVP/VJP and analytic mixed-observation HVP for all three logarithmic parameters | Yes | CUDA covariance/factorization remains `FORTNUM_NOT_IMPLEMENTED` |
 | Rational-quadratic | Yes | Gradient/JVP/VJP and analytic mixed-observation HVP over all three logarithmic kernel coordinates | Yes | CUDA covariance/factorization remains `FORTNUM_NOT_IMPLEMENTED` |
 | Cosine | Yes | Gradient/JVP/VJP; mixed HVP refusal | Yes | mixed HVP `FORTNUM_NOT_IMPLEMENTED` |
-| Local-periodic | Yes, including coincident radial limits | Gradient/JVP/VJP; mixed HVP refusal | Yes, including coincident query blocks | mixed HVP `FORTNUM_NOT_IMPLEMENTED`; CUDA covariance graph is not linked |
+| Local-periodic | Yes, including coincident radial limits | Gradient/JVP/VJP and analytic mixed-observation HVP over all four logarithmic parameters | Yes, including coincident query blocks | CUDA covariance graph is not linked |
 | Linear, constant | Yes | Yes; mixed-observation HVPs are analytic | Yes | none |
 | Polynomial | Yes when the positive polynomial base is finite | Gradient/JVP/VJP and analytic mixed HVP (all four logarithmic parameters) | Yes when the positive base is finite | `FORTNUM_DOMAIN_ERROR` for a nonpositive base |
 | Spectral mixture | Yes | Gradient/JVP/VJP and analytic mixed-observation HVP for packed log-weights, log-scales, and signed means | Yes | CPU reference only; CUDA mixed covariance/factorization remains `FORTNUM_NOT_IMPLEMENTED` |
@@ -43,8 +43,8 @@ four logarithmic polynomial parameters. `log_marginal_likelihood_vjp` and its
 packed kernel/noise pullback. For value-only observation lists,
 `hyperparameter_hvp` uses the analytic kernel parameter-HVP and differentiated
 Cholesky solve. For mixed value/first-derivative lists, the HVP is analytic for
-RBF, Matérn 3/2, Matérn 5/2, periodic, rational-quadratic, linear, constant, polynomial, and
-sums/products built entirely from those leaves;
+RBF, Matérn 3/2, Matérn 5/2, periodic, local-periodic, rational-quadratic,
+linear, constant, polynomial, and sums/products built entirely from those leaves;
 the implementation differentiates the dense covariance, Cholesky solve, and
 each parameter covariance block in one direction. Polynomial mixed HVPs now
 use a closed-form positive-base expression, including the degree-log tangent
@@ -60,7 +60,11 @@ path. A mixed HVP never silently central-differences the likelihood gradient.
 The periodic leaf carries the radial fourth-input term required by its
 period/period mixed product; `test_derivative_gp_periodic_hvp` checks all
 three packed kernel coordinates and the log-noise coordinate against an
-independent dense central-difference likelihood oracle.
+independent dense central-difference likelihood oracle. The local-periodic
+leaf extends the same radial jet with the squared-exponential envelope and
+checks all four packed kernel coordinates plus log noise in
+`test_derivative_gp_local_periodic`; its coincidence series is shared with
+the input-derivative path and never divides by a vanishing radius.
 The rational-quadratic leaf carries exact radial products through `F_s` and
 `F_ss` for all three logarithmic coordinates, including the alpha coordinate;
 `test_derivative_gp_products` checks its packed mixed HVP against an
