@@ -16,8 +16,9 @@ program test_xgboost_categorical_partition
     type(fortml_device_t) :: cpu, cuda
     real(dp) :: x(8, 1), y(8), prediction(8), restored_prediction(8)
     real(dp) :: tangent(8, 1), y_dot(8), output_bar(8), x_bar(8, 1)
+    real(dp), allocatable :: x_large(:, :), y_large(:)
     character(*), parameter :: path = "test_xgboost_categorical_partition.txt"
-    integer :: failures
+    integer :: failures, i
 
     failures = 0
     x(:, 1) = [0.0_dp, 0.0_dp, 1.0_dp, 1.0_dp, 2.0_dp, 2.0_dp, 3.0_dp, 3.0_dp]
@@ -92,6 +93,17 @@ program test_xgboost_categorical_partition
     call model%fit_regression(x, y, status, too_many)
     call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
         "partition cardinality refusal", failures)
+    allocate(x_large(26, 1), y_large(26))
+    do i = 1, 26
+        x_large(i, 1) = real((i - 1)/2, dp)
+        y_large(i) = real(mod(i, 2), dp)
+    end do
+    too_many = options
+    too_many%categorical_max_categories = 64
+    call model%fit_regression(x_large, y_large, status, too_many)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
+        "partition exhaustive-subset bound refusal", failures)
+    deallocate(x_large, y_large)
     invalid = options
     invalid%categorical_policy = "unknown"
     call model%fit_regression(x, y, status, invalid)
