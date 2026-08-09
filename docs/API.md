@@ -181,6 +181,7 @@ repeated resident-batch evidence.
 | --- | --- | --- | --- | --- |
 | `linear_regression_t` | `predict` | Free `linear_predict_jvp` | Free `linear_predict_vjp` | No |
 | `weighted_ols_regression_t` | Weighted `predict` | Packed-parameter and continuous-input JVP | Packed-parameter and continuous-input VJP | No |
+| `positive_linear_regression_t` | Weighted nonnegative-coefficient `predict` | Packed-parameter and continuous-input JVP | Packed-parameter and continuous-input VJP | No |
 | `ridge_regression_t` | Weighted `predict` | Packed-parameter and continuous-input JVP | Packed-parameter and continuous-input VJP | No |
 | `elastic_net_regression_t` | Weighted `predict` | Packed-parameter and continuous-input JVP | Packed-parameter and continuous-input VJP | No |
 | `linear_svr_regression_t` | Weighted epsilon-insensitive `predict` | Packed-parameter and continuous-input JVP | Packed-parameter and continuous-input VJP; objective value/gradient | No |
@@ -392,6 +393,37 @@ They hold the fitted solve, sample weights, and intercept policy fixed; there
 is no derivative through fitting. `device_supported(kind)` reports CPU only,
 and `predict_device` returns `FORTNUM_NOT_IMPLEMENTED` for CUDA rather than
 silently falling back to a host execution.
+
+### `fortml_positive_linear_regression`
+
+`positive_linear_regression_t%fit(x,y,status[,fit_intercept,
+nonnegative_intercept,sample_weight,max_iterations,tolerance])` fits a weighted
+multi-output least-squares model with nonnegative feature coefficients. The
+default intercept is unconstrained; set `nonnegative_intercept=.true.` to
+project the intercept as well. A fit without an intercept cannot request an
+intercept constraint. Inputs use `(n_samples,n_features)` row semantics and
+targets use `(n_samples,n_outputs)`; the vector overload accepts a
+one-dimensional target. Weights must be finite, nonnegative, and have positive
+mass. Fitting uses a deterministic projected-gradient iteration with a
+conservative Lipschitz step and commits the candidate only after convergence,
+so malformed or nonconvergent refits preserve the deployed model.
+
+`predict(x,y,status)` has vector and matrix forms. `coefficients()` returns a
+copy, `parameters()` flattens the coefficient matrix in Fortran column-major
+order, and `set_parameters(values,status)` validates finiteness and the active
+nonnegative constraint before committing. `parameter_count()`,
+`feature_count()`, `output_count()`, `fit_intercept()`,
+`nonnegative_intercept()`, `max_iterations()`, `tolerance()`, and `fitted()`
+expose metadata.
+
+`predict_jvp(x,theta_dot,x_dot,y,y_dot,status)` (also `jvp`) and
+`predict_vjp(x,y_bar,theta_bar,x_bar,status)` (also `vjp`) are exact products
+for a fixed fitted state with respect to packed coefficients and continuous
+inputs. Fit-time projection and active-set decisions are not differentiated;
+at a constrained zero, callers should use tangents that remain in the local
+smooth face. `device_supported(kind)` reports CPU only, and `predict_device`
+returns `FORTNUM_NOT_IMPLEMENTED` for CUDA until a resident nonnegative linear
+kernel is linked.
 
 ### `fortml_ridge_regression`
 
