@@ -40,6 +40,7 @@ program test_gp_multiclass_classification
     real(dp) :: h_parameter
     real(dp), allocatable :: kernel_parameters(:), model_parameters(:), gradient(:)
     real(dp), allocatable :: gradient_fd(:), theta_plus(:), theta_minus(:)
+    real(dp), allocatable :: gradient_plus(:), gradient_minus(:), parameter_hvp(:)
     real(dp), allocatable :: parameter_direction(:), parameter_bar(:)
     integer :: labels(9), binary_labels(9), predicted(9), query_predicted(6), classes(3)
     integer :: failures, k, class_index
@@ -169,6 +170,36 @@ program test_gp_multiclass_classification
         parameter_direction(k) = 0.035_dp*real(mod(k, 3) - 1, dp)
         if (parameter_direction(k) == 0.0_dp) parameter_direction(k) = -0.021_dp
     end do
+    allocate(gradient_plus(model%parameter_count()), gradient_minus(model%parameter_count()))
+    allocate(parameter_hvp(model%parameter_count()))
+    call model%hyperparameter_hvp(parameter_direction, parameter_hvp, status)
+    call check(status_ok(status), "multiclass hyperparameter HVP status", failures)
+    h_parameter = 2.0e-4_dp
+    do class_index = 1, model%class_count()
+        first_parameter = (class_index - 1)*size(kernel_parameters) + 1
+        last_parameter = first_parameter + size(kernel_parameters) - 1
+        theta_plus = kernel_parameters + h_parameter* &
+            parameter_direction(first_parameter:last_parameter)
+        theta_minus = kernel_parameters - h_parameter* &
+            parameter_direction(first_parameter:last_parameter)
+        kernel_plus = clone_kernel(kernel)
+        kernel_minus = clone_kernel(kernel)
+        call kernel_plus%set_parameters(theta_plus, status)
+        call kernel_minus%set_parameters(theta_minus, status)
+        call model_plus%fit(x, labels, kernel_plus, status, options, state_plus)
+        call check(status_ok(status) .and. state_plus%converged, &
+            "multiclass HVP positive refit", failures)
+        call model_minus%fit(x, labels, kernel_minus, status, options, state_minus)
+        call check(status_ok(status) .and. state_minus%converged, &
+            "multiclass HVP negative refit", failures)
+        call model_plus%hyperparameter_gradient(gradient_plus, status)
+        call model_minus%hyperparameter_gradient(gradient_minus, status)
+        call check(status_ok(status), "multiclass HVP gradient refit", failures)
+        call check(maxval(abs(parameter_hvp(first_parameter:last_parameter) - &
+            (gradient_plus(first_parameter:last_parameter) - &
+            gradient_minus(first_parameter:last_parameter))/(2.0_dp*h_parameter))) < &
+            3.0e-4_dp, "multiclass hyperparameter HVP finite difference", failures)
+    end do
     call model%decision_function_parameter_jvp(query, parameter_direction, margins, &
         margins_parameter_dot, status)
     call check(status_ok(status), "multiclass decision parameter JVP", failures)
@@ -250,6 +281,9 @@ program test_gp_multiclass_classification
         parameter_bar, status)
     call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
         "CUDA multiclass parameter VJP refusal", failures)
+    call model%hyperparameter_hvp_device(device, parameter_direction, parameter_hvp, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
+        "CUDA multiclass hyperparameter HVP refusal", failures)
 
     call repeat_model%fit(x, labels, kernel, status, options, repeat_state)
     call repeat_model%predict_proba(query, repeat_probabilities, status)

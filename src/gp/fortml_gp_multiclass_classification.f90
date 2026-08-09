@@ -80,6 +80,10 @@ module fortml_gp_multiclass_classification
         procedure, public :: parameters => gp_multiclass_classification_parameters
         procedure, public :: hyperparameter_gradient => &
             gp_multiclass_classification_hyperparameter_gradient
+        procedure, public :: hyperparameter_hvp => &
+            gp_multiclass_classification_hyperparameter_hvp
+        procedure, public :: hyperparameter_hvp_device => &
+            gp_multiclass_classification_hyperparameter_hvp_device
         procedure, public :: fitted => gp_multiclass_classification_fitted
         procedure, public :: device_supported => &
             gp_multiclass_classification_device_supported
@@ -101,6 +105,8 @@ module fortml_gp_multiclass_classification
     public :: gp_multiclass_classification_decision_function_parameter_vjp
     public :: gp_multiclass_classification_predict
     public :: gp_multiclass_classification_predict_device
+    public :: gp_multiclass_classification_hyperparameter_hvp
+    public :: gp_multiclass_classification_hyperparameter_hvp_device
 
 contains
 
@@ -840,6 +846,80 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine gp_multiclass_classification_hyperparameter_gradient
+
+    subroutine gp_multiclass_classification_hyperparameter_hvp(self, direction, &
+            parameter_hvp, status)
+        !! Directional HVP of the sum of the independent binary Laplace
+        !! envelope objectives.  Each class owns one contiguous kernel/noise
+        !! block, so the multiclass product is a transactional block dispatch
+        !! with no hidden cross-class coupling.
+        class(gp_multiclass_classification_t), intent(in) :: self
+        real(dp), intent(in) :: direction(:)
+        real(dp), intent(out) :: parameter_hvp(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: local_hvp(:)
+        integer :: i, first, last, local_count
+
+        parameter_hvp = 0.0_dp
+        if (.not. self%fitted()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP multiclass hyperparameter HVP: model is not fitted")
+            return
+        end if
+        if (size(direction) /= self%parameter_count() .or. &
+                size(parameter_hvp) /= self%parameter_count() .or. &
+                any(.not. ieee_is_finite(direction))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP multiclass hyperparameter HVP: parameter shape is invalid")
+            return
+        end if
+        first = 1
+        do i = 1, self%n_classes
+            local_count = self%models(i)%parameter_count()
+            last = first + local_count - 1
+            allocate(local_hvp(local_count))
+            call self%models(i)%hyperparameter_hvp(direction(first:last), &
+                local_hvp, status)
+            if (status%code /= FORTNUM_OK) return
+            parameter_hvp(first:last) = local_hvp
+            deallocate(local_hvp)
+            first = last + 1
+        end do
+        if (any(.not. ieee_is_finite(parameter_hvp))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "GP multiclass hyperparameter HVP: result is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_multiclass_classification_hyperparameter_hvp
+
+    subroutine gp_multiclass_classification_hyperparameter_hvp_device(self, device, &
+            direction, parameter_hvp, status)
+        !! Explicit device boundary; the binary Laplace HVP is CPU-only until
+        !! a resident multiclass factorization and derivative graph is linked.
+        class(gp_multiclass_classification_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: direction(:)
+        real(dp), intent(out) :: parameter_hvp(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        parameter_hvp = 0.0_dp
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP multiclass hyperparameter HVP device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%hyperparameter_hvp(direction, parameter_hvp, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "GP multiclass hyperparameter HVP device: no resident CUDA Laplace graph is linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP multiclass hyperparameter HVP device: device kind is invalid")
+        end select
+    end subroutine gp_multiclass_classification_hyperparameter_hvp_device
 
     logical function gp_multiclass_classification_fitted(self) result(fitted)
         class(gp_multiclass_classification_t), intent(in) :: self
