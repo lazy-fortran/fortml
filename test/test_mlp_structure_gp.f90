@@ -33,6 +33,7 @@ contains
         real(dp) :: actual(6, 1)
         real(dp), allocatable :: parameters_before(:), parameters_after(:)
         real(dp), allocatable :: coefficients(:, :), snapshot(:)
+        real(dp), allocatable :: cuda_prediction(:, :), cuda_variance(:)
         real(dp) :: lambda
         integer :: hidden_count
 
@@ -92,6 +93,17 @@ contains
         call initializer%apply_cuda(model, status)
         call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
             "CUDA structure refusal", failures)
+        allocate(cuda_prediction(6, 1), cuda_variance(6))
+        cuda_prediction = 77.0_dp
+        cuda_variance = 77.0_dp
+        call initializer%predict_cuda(model, x, cuda_prediction, status)
+        call check(status%code == FORTNUM_NOT_IMPLEMENTED .and. &
+            maxval(abs(cuda_prediction - 77.0_dp)) == 0.0_dp, &
+            "CUDA prediction refusal and no mutation", failures)
+        call initializer%predictive_variance_cuda(model, x, cuda_variance, status)
+        call check(status%code == FORTNUM_NOT_IMPLEMENTED .and. &
+            maxval(abs(cuda_variance - 77.0_dp)) == 0.0_dp, &
+            "CUDA variance refusal and no mutation", failures)
     end subroutine test_structure_contract
 
     subroutine solve_oracle(design, target, lambda, coefficients)

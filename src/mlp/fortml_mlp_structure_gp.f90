@@ -53,6 +53,9 @@ module fortml_mlp_structure_gp
             mlp_structure_gp_predictive_variance_jvp
         procedure, public :: apply_cuda => mlp_structure_gp_apply_cuda
         procedure, public :: predict_cuda => mlp_structure_gp_predict_cuda
+        procedure, public :: jvp_cuda => mlp_structure_gp_jvp_cuda
+        procedure, public :: predictive_variance_cuda => &
+            mlp_structure_gp_predictive_variance_cuda
         procedure, public :: fitted => mlp_structure_gp_fitted
         procedure, public :: metadata => mlp_structure_gp_metadata
         procedure, public :: regularization => mlp_structure_gp_regularization
@@ -229,12 +232,36 @@ contains
         class(mlp_structure_gp_initializer_t), intent(in) :: self
         class(mlp_t), intent(in) :: model
         real(dp), intent(in) :: x(:, :)
-        real(dp), allocatable, intent(out) :: y(:, :)
+        real(dp), allocatable, intent(inout) :: y(:, :)
         type(fortnum_status_t), intent(out) :: status
 
         call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
             "structure GP predict_cuda: resident CUDA GP/MLP state is unavailable")
     end subroutine mlp_structure_gp_predict_cuda
+
+    subroutine mlp_structure_gp_jvp_cuda(self, model, x, regularization_direction, &
+            y, dy, status)
+        class(mlp_structure_gp_initializer_t), intent(in) :: self
+        class(mlp_t), intent(in) :: model
+        real(dp), intent(in) :: x(:, :), regularization_direction
+        real(dp), allocatable, intent(inout) :: y(:, :), dy(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+            "structure GP jvp_cuda: resident CUDA products are unavailable")
+    end subroutine mlp_structure_gp_jvp_cuda
+
+    subroutine mlp_structure_gp_predictive_variance_cuda(self, model, x, variance, &
+            status)
+        class(mlp_structure_gp_initializer_t), intent(in) :: self
+        class(mlp_t), intent(in) :: model
+        real(dp), intent(in) :: x(:, :)
+        real(dp), allocatable, intent(inout) :: variance(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+            "structure GP predictive_variance_cuda: resident CUDA products are unavailable")
+    end subroutine mlp_structure_gp_predictive_variance_cuda
 
     logical function mlp_structure_gp_fitted(self) result(value)
         class(mlp_structure_gp_initializer_t), intent(in) :: self
