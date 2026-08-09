@@ -175,7 +175,8 @@ contains
 
         value = huge(1.0_dp)
         tangent = 0.0_dp
-        if (size(direction) /= size(parameters)) then
+        if (size(direction) /= size(parameters) .or. &
+                any(.not. ieee_is_finite(direction))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "robust Poisson objective JVP: direction shape is invalid")
             return
