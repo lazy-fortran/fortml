@@ -16,7 +16,7 @@ fixed-leaf-product, plateau-trainer, affine Adagrad HVP, and CUDA VJP closure
 slices documented below are post-tag additions.
 The broad parity
 gate is still open, so this work does not move or recreate that tag.
-The checklist currently records 383 completed and 150 open items. Open rows are
+The checklist currently records 385 completed and 150 open items. Open rows are
 retained until their implementation, independent oracle, device/refusal
 behavior, and benchmark evidence land together.
 
@@ -137,6 +137,15 @@ it is checked off.
   kernels, support-vector metadata, probability calibration, shrinking/cache
   policy, class weights, multiclass coupling, and fixed-support derivative
   refusals at active-set boundaries.
+- [x] Add the bounded polynomial-kernel binary SVM slice:
+  `polynomial_svm_classifier_t` owns a transactional weighted squared-hinge
+  FortOpt fit over the finite training basis, sorted arbitrary integer labels,
+  degree/gamma/coef0 metadata, packed fixed-state parameters, analytic score
+  and sigmoid-probability JVP/VJP products, and explicit CPU/CUDA dispatch.
+  `test_polynomial_svm_classifier` supplies independent score, finite
+  difference, adjoint, malformed-input, and device-refusal oracles; the
+  remaining sigmoid/precomputed kernels, SVR, calibration, shrinking/cache,
+  multiclass coupling, and resident CUDA batching stay open.
 - [ ] Add a common calibration wrapper for sigmoid, temperature, isotonic, and
   Platt policies with leakage-safe cross-validation, weighted OOF state,
   calibration curves, and calibration-aware parameter products.

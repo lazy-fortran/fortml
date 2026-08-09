@@ -803,6 +803,31 @@ are linked. `device_supported(CPU)` is true for a fitted model; all CUDA score,
 label, probability, and derivative requests refuse explicitly with no host
 fallback.
 
+### `fortml_polynomial_svm_classifier`
+
+`polynomial_svm_classifier_t%fit(x,labels,status[,c,gamma,degree,coef0,
+max_iterations,tolerance,sample_weight])` fits a weighted binary
+polynomial-kernel SVM on the finite training set. The kernel is
+`(gamma*dot(x,z)+coef0)**degree`; `degree` is a positive integer, `gamma` and
+`coef0` are finite with `gamma > 0` and `coef0 >= 0`, and labels may be any two
+distinct integer values. FortOpt L-BFGS-B minimizes the weighted
+squared-hinge RKHS objective. Fit is transactional: invalid options or a
+failed solve leave an existing model untouched.
+
+`decision_function`, `predict`, and `predict_proba` use sorted class metadata;
+probabilities are the explicitly uncalibrated sigmoid of the signed score.
+`coefficients`, `intercept`, `gamma`, `coef0`, `degree`, `c_parameter`,
+`support_vector_count`, and the sample/feature/iteration accessors expose the
+fitted state. Packed `parameters()` are ordered as
+`[coefficients,intercept,log(gamma),coef0]`; `set_parameters` updates this
+fixed-state map transactionally. Analytic score and probability JVP/VJP
+products cover coefficients, intercept, log-gamma, coef0, and query inputs.
+Fit-state, active-set, and hard-label derivatives remain intentionally
+outside the fixed-state contract. CPU device dispatch is complete; score,
+prediction, probability, JVP, and VJP CUDA requests return typed
+`FORTNUM_NOT_IMPLEMENTED` until a resident polynomial kernel is linked, with
+no hidden host fallback. See [`POLYNOMIAL_SVM.md`](POLYNOMIAL_SVM.md).
+
 ### `fortml_rbf_svm_multiclass`
 
 `rbf_svm_multiclass_t%fit(x,labels,status[,c,gamma,max_iterations,tolerance,
