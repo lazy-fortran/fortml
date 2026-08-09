@@ -146,6 +146,26 @@ API may therefore make state ownership, parameter paths, derivative products,
 device placement, and persistence explicit rather than preserving an older
 ambiguous signature. Compatibility shims are not a completion criterion.
 
+### Next implementation wave acceptance gate
+
+The requested parity work is executed in independent vertical slices. A slice
+is promotable only when its state, products, device result, and benchmark land
+together.
+
+| Slice | Required variants | Promotion evidence |
+| --- | --- | --- |
+| Classification | Binary, multinomial, OVR, OVO, multilabel, chains, ordinal, Naive Bayes, LDA/QDA, SVM, neighbors, trees, forests, boosting, calibrated heads, and GP/neural heads | Arbitrary sorted labels, class and sample weights, probability normalization, score and decision APIs, partial-fit or warm-start replay, malformed-input rollback, fixed-topology refusal, and a matched reference fixture |
+| Gaussian processes | Every shipped kernel, likelihood, observation type, exact/Laplace/variational/multitask path, and derivative order | Value, input and parameter JVP/VJP, HVP symmetry, derivative-observation registry, solve-state or fixed-state boundary, FortOpt callback, persistence, and GPyTorch/GPflow fixture |
+| Neural training | Dense and structured module trees, losses, optimizers, schedules, validation, HPO, AMP, checkpointing, and physics modules | Interrupted replay, parameter-path checksums, weighted reductions, optimizer and schedule products, FortOpt L-BFGS-B convergence, mixed-precision overflow behavior, and PyTorch/JAX trajectory comparison |
+| Basis and pipelines | Polynomial, spline, Fourier, radial, Chebyshev, GP/NNGP/NTK, PCA, autoencoder, preprocessing, column graphs, residuals, and DAG composition | Manual composition equivalence, fold-local fitting, schema and clone round trips, named offsets, transform products, leakage guards, and device transfer accounting |
+| XGBoost and LightGBM | Exact, histogram, quantile, categorical, ranking, survival, DART/GOSS/EFB, constraints, explanations, validation, warm starts, and persistence | Split and leaf replay, group metrics, staged continuation, topology refusal, matched external options, resident histogram or an explicit typed boundary, and throughput/memory rows |
+| Devices and performance | CPU, OpenACC, CUDA, FortSym fixed algebra, FortAD products, and resident optimizer state | No hidden host fallback, explicit transfers and workspace sizes, deterministic reductions, compiler and architecture provenance, correctness oracle, and separate compile, warmup, transfer, steady-state, and convergence measurements |
+
+The wave may replace incomplete interfaces because this is a pre-1.0 clean
+break. It must update all in-tree callers, examples, schemas, and benchmark
+fixtures in the same commit. A broad feature claim never promotes from a
+narrow happy-path test.
+
 ## 2026-08 parity expansion backlog
 
 This backlog makes the requested scikit-learn/PyTorch/JAX/GPyTorch/XGBoost/
