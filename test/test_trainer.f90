@@ -285,6 +285,38 @@ program test_trainer
         baseline_state%validation_history_length) - &
         validation_state%validation_history(:validation_state%validation_history_length))) < 1.0e-14_dp, &
         "validation checkpoint continuation preserves diagnostics", failures)
+
+    ! A validation score can be a maximization metric (for example accuracy
+    ! or R2), with the same patience and restore-best transaction.  The known
+    ! sequence peaks at step 1 and then triggers the two-step patience bound.
+    options = trainer_options_t()
+    options%optimizer = FORTML_TRAIN_SGD
+    options%learning_rate = 0.1_dp
+    options%max_steps = 8
+    options%tolerance = 0.0_dp
+    options%step_tolerance = 0.0_dp
+    options%objective_tolerance = 0.0_dp
+    options%validation_patience = 2
+    options%validation_higher_is_better = .true.
+    options%validation_restore_best = .true.
+    options%validation_callback => validation_curve_higher
+    call trainer%initialize(objective, [0.0_dp, 1.0_dp], status, options)
+    call check(status_ok(status), "maximization validation initialization", failures)
+    call trainer%fit(status)
+    validation_state = trainer%state_copy()
+    call check(status_ok(status) .and. validation_state%stopped_by_validation .and. &
+        validation_state%steps == 3 .and. validation_state%validation_best_step == 1 .and. &
+        validation_state%validation_bad_steps == 2 .and. &
+        abs(validation_state%best_validation_value - 0.6_dp) < 1.0e-14_dp, &
+        "maximization validation tracks the best score and patience", failures)
+    call validation_reference%initialize(objective, [0.0_dp, 1.0_dp], status, &
+        options_without_validation())
+    call validation_reference%step(status)
+    validation_best_parameters = validation_reference%parameters()
+    call check(status_ok(status) .and. maxval(abs(trainer%parameters() - &
+        validation_best_parameters)) < 1.0e-14_dp, &
+        "maximization validation restores the independent best parameters", failures)
+
     call baseline%initialize(objective, [0.0_dp, 1.0_dp], status, &
         options_without_validation())
     validation_before_load = baseline%parameters()
@@ -337,6 +369,29 @@ contains
         end select
         call status_set(status, FORTNUM_OK, "")
     end subroutine validation_curve
+
+    subroutine validation_curve_higher(step, parameters, validation_value, status)
+        integer, intent(in) :: step
+        real(dp), intent(in) :: parameters(:)
+        real(dp), intent(out) :: validation_value
+        type(fortnum_status_t), intent(out) :: status
+
+        if (size(parameters) /= 2) then
+            call status_set(status, 1, "higher validation curve: parameter shape")
+            return
+        end if
+        select case (step)
+        case (0)
+            validation_value = 0.4_dp
+        case (1)
+            validation_value = 0.6_dp
+        case (2)
+            validation_value = 0.55_dp
+        case default
+            validation_value = 0.5_dp
+        end select
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine validation_curve_higher
 
     subroutine quadratic_objective(x, value, gradient, status)
         real(dp), intent(in) :: x(:)

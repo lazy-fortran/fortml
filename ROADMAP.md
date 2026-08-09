@@ -965,8 +965,10 @@ trainer records validation history, best value and step, consecutive
 non-improvement count, and a copy of the best packed parameter vector.
 `validation_min_delta`, `validation_patience`, and
 `validation_restore_best` provide deterministic early stopping and
-transactional best-state restoration. The schema-4 text checkpoint persists
-the complete validation state and refuses a missing or unexpected callback
+transactional best-state restoration. `validation_higher_is_better` supports
+score metrics without duplicating the state machine. The schema-6 text
+checkpoint persists the complete validation state and metric direction and
+refuses a missing or unexpected callback
 because procedure pointers cannot be serialized. The independent quadratic
 oracle covers known-answer patience transitions, restoration, split
 continuation, and callback-presence refusal. The generic callback remains
@@ -2338,8 +2340,8 @@ when a lower-level primitive already exists.
   `FORTNUM_DOMAIN_ERROR` and never finite-difference. Fixed global-norm
   clipping now follows the production trainer and propagates derivatives on a
   fixed active set; the clipping boundary is a typed refusal. General
-  stochastic-loader, clipping-coordinate, validation-policy, migration, and
-  resident-device products remain open.
+  stochastic-loader, clipping-coordinate, validation-policy beyond scalar
+  callback direction, migration, and resident-device products remain open.
 - [x] Add a weighted validation-measure contract to the fixed full-batch SGD
   momentum/Nesterov trajectory objective. `validation_weight(:)` is copied and
   validated transactionally (finite, non-negative, positive support), and the
@@ -3912,8 +3914,9 @@ trials remain visible in the result schema.
   validation state. Event typing and serialized/distributed checkpoint
   coordination remain open.
 - [x] Extend the model-agnostic trainer with a finite validation callback,
-  minimum-improvement threshold, patience stop, best-parameter restoration,
-  validation diagnostics, and schema-4 checkpoint persistence. The independent
+  minimum-improvement threshold, explicit minimize/maximize direction, patience
+  stop, best-parameter restoration, validation diagnostics, and schema-6
+  checkpoint persistence. The independent
   quadratic oracle covers the callback sequence, split continuation, and
   transactional callback-presence refusal. Validation callbacks remain
   process-local and host-owned.

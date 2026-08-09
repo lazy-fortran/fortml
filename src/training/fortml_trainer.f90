@@ -37,7 +37,7 @@ module fortml_trainer
     integer, parameter, public :: FORTML_TRAIN_LION = 8
     character(*), parameter, public :: FORTML_TRAINER_CHECKPOINT_MAGIC = &
         "FORTML_TRAINER_CHECKPOINT_TEXT"
-    integer, parameter, public :: FORTML_TRAINER_CHECKPOINT_SCHEMA_VERSION = 5
+    integer, parameter, public :: FORTML_TRAINER_CHECKPOINT_SCHEMA_VERSION = 6
 
     abstract interface
         subroutine trainer_step_callback_proc(step, value, gradient_norm, stop, status)
@@ -88,6 +88,7 @@ module fortml_trainer
         real(dp), allocatable :: lower(:), upper(:)
         integer :: validation_patience = 0
         real(dp) :: validation_min_delta = 0.0_dp
+        logical :: validation_higher_is_better = .false.
         logical :: validation_restore_best = .false.
         type(lbfgsb_options_t) :: lbfgsb
         procedure(trainer_step_callback_proc), pointer, nopass :: callback => null()
@@ -599,6 +600,8 @@ contains
             self%options%validation_patience, ios)
         if (ios == 0) call write_r(unit, "validation_min_delta", &
             self%options%validation_min_delta, ios)
+        if (ios == 0) call write_l(unit, "validation_higher_is_better", &
+            self%options%validation_higher_is_better, ios)
         if (ios == 0) call write_l(unit, "validation_restore_best", &
             self%options%validation_restore_best, ios)
         if (ios == 0) call write_l(unit, "validation_callback_present", &
@@ -776,6 +779,8 @@ contains
             options%validation_patience, ios)
         if (ios == 0) call read_r(unit, "validation_min_delta", &
             options%validation_min_delta, ios)
+        if (ios == 0) call read_l(unit, "validation_higher_is_better", &
+            options%validation_higher_is_better, ios)
         if (ios == 0) call read_l(unit, "validation_restore_best", &
             options%validation_restore_best, ios)
         if (ios == 0) call read_l(unit, "validation_callback_present", &
@@ -1313,7 +1318,10 @@ contains
             self%state%validation_history(index) = value
         end if
 
-        if (value < self%state%best_validation_value - self%options%validation_min_delta) then
+        if ((self%options%validation_higher_is_better .and. &
+            value > self%state%best_validation_value + self%options%validation_min_delta) .or. &
+            (.not. self%options%validation_higher_is_better .and. &
+            value < self%state%best_validation_value - self%options%validation_min_delta)) then
             self%state%best_validation_value = value
             self%state%validation_best_step = self%state%steps
             self%state%validation_bad_steps = 0

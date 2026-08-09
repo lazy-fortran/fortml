@@ -7,14 +7,17 @@ current packed parameter vector and returns one finite scalar. The trainer
 records the metric history, best value, best step, number of consecutive
 non-improving steps, and the parameter vector at the best step.
 
-`trainer_options_t%validation_min_delta` controls the smallest decrease that
-counts as an improvement. A positive `validation_patience` stops training
-after that many consecutive non-improving evaluations. With
+`trainer_options_t%validation_min_delta` controls the smallest improvement
+that counts. By default the callback is a loss and lower values are better;
+set `trainer_options_t%validation_higher_is_better` for scores such as
+accuracy or R2, where larger values are better. A positive
+`validation_patience` stops training after that many consecutive
+non-improving evaluations. With
 `validation_restore_best`, the packed parameters are restored transactionally
 to the best validation point before the step reports the stop. A patience of
 zero records diagnostics without early stopping.
 
-Validation state is part of the schema-4 formatted trainer checkpoint. The
+Validation state is part of the schema-6 formatted trainer checkpoint. The
 checkpoint stores options, metric history, best parameters, counters, and
 stop flags. Callback procedures are process-local and are never serialized.
 Loading a checkpoint that contains validation state therefore requires the
