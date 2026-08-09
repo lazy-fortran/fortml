@@ -32,6 +32,7 @@ module fortml_gp_variational_multiclass_classification
         integer, allocatable :: class_label(:)
         integer :: n_classes = 0
         integer :: n_features = 0
+        integer :: likelihood = GP_VARIATIONAL_LOGISTIC
         logical :: is_initialized = .false.
     contains
         procedure, public :: initialize => gvmc_initialize
@@ -44,12 +45,25 @@ module fortml_gp_variational_multiclass_classification
         procedure, public :: elbo_jvp => gvmc_elbo_jvp
         procedure, public :: predict_latent => gvmc_predict_latent
         procedure, public :: predict_proba => gvmc_predict_proba
+        procedure, public :: predict_log_proba => gvmc_predict_log_proba
         procedure, public :: predict_proba_parameter_jvp => &
             gvmc_predict_proba_parameter_jvp
         procedure, public :: predict_proba_parameter_vjp => &
             gvmc_predict_proba_parameter_vjp
         procedure, public :: predict_proba_parameter_vjp_device => &
             gvmc_predict_proba_parameter_vjp_device
+        procedure, public :: predict_log_proba_parameter_jvp => &
+            gvmc_predict_log_proba_parameter_jvp
+        procedure, public :: predict_log_proba_parameter_vjp => &
+            gvmc_predict_log_proba_parameter_vjp
+        procedure, public :: predict_log_proba_parameter_vjp_device => &
+            gvmc_predict_log_proba_parameter_vjp_device
+        procedure, public :: predict_log_proba_input_jvp => &
+            gvmc_predict_log_proba_input_jvp
+        procedure, public :: predict_log_proba_input_vjp => &
+            gvmc_predict_log_proba_input_vjp
+        procedure, public :: predict_log_proba_input_vjp_device => &
+            gvmc_predict_log_proba_input_vjp_device
         procedure, public :: predict_latent_kernel_parameter_jvp => &
             gvmc_predict_latent_kernel_parameter_jvp
         procedure, public :: predict_proba_kernel_parameter_jvp => &
@@ -63,6 +77,7 @@ module fortml_gp_variational_multiclass_classification
         procedure, public :: predict => gvmc_predict
         procedure, public :: elbo_device => gvmc_elbo_device
         procedure, public :: predict_proba_device => gvmc_predict_proba_device
+        procedure, public :: predict_log_proba_device => gvmc_predict_log_proba_device
         procedure, public :: classes => gvmc_classes
         procedure, public :: class_count => gvmc_class_count
         procedure, public :: feature_count => gvmc_feature_count
@@ -125,6 +140,7 @@ contains
         end if
         self%n_classes = size(sorted_classes)
         self%n_features = kernel%input_dim
+        self%likelihood = requested_likelihood
         allocate(self%class_label(self%n_classes), self%models(self%n_classes))
         self%class_label = sorted_classes
         do i = 1, self%n_classes
@@ -409,6 +425,235 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine gvmc_predict_proba
+
+    !> Predict normalized one-vs-rest log probabilities.
+    !!
+    !! The positive Bernoulli links are evaluated in log space and normalized
+    !! with a row-wise log-sum-exp.  This keeps the public result finite for
+    !! confidently negative logistic/probit latents where forming a positive
+    !! probability first would underflow.  Columns retain `classes()` order.
+    subroutine gvmc_predict_log_proba(self, x, log_probabilities, status)
+        class(gp_variational_multiclass_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: log_probabilities(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: raw(:, :), mean(:), variance(:)
+        real(dp) :: log_value, mean_bar, variance_bar, normalizer
+        integer :: i, j
+
+        if (.not. log_probability_valid(self, x, log_probabilities, status)) return
+        allocate(raw(size(x, 1), self%n_classes), mean(size(x, 1)), &
+            variance(size(x, 1)))
+        do i = 1, self%n_classes
+            call self%models(i)%predict_latent(x, mean, variance, status)
+            if (status%code /= FORTNUM_OK) return
+            do j = 1, size(x, 1)
+                call variational_log_probability(self%likelihood, mean(j), variance(j), &
+                    log_value, mean_bar, variance_bar, status)
+                if (status%code /= FORTNUM_OK) return
+                raw(j, i) = log_value
+            end do
+        end do
+        do j = 1, size(x, 1)
+            call logsumexp(raw(j, :), normalizer, status)
+            if (status%code /= FORTNUM_OK) return
+            log_probabilities(j, :) = raw(j, :) - normalizer
+        end do
+        if (any(.not. ieee_is_finite(log_probabilities))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP multiclass log probability: nonfinite result")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gvmc_predict_log_proba
+
+    !> Forward product of normalized log probabilities with respect to the
+    !! packed per-class variational state.  Inputs and kernel parameters are
+    !! held fixed.
+    subroutine gvmc_predict_log_proba_parameter_jvp(self, x, direction, &
+            log_probabilities, log_probabilities_dot, status)
+        class(gp_variational_multiclass_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), direction(:)
+        real(dp), intent(out) :: log_probabilities(:, :), log_probabilities_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: raw(:, :), raw_dot(:, :), mean(:), mean_dot(:), &
+            variance(:), variance_dot(:)
+        real(dp) :: log_value, mean_bar, variance_bar
+        integer :: i, j, first, last, local_count
+
+        if (.not. log_probability_valid(self, x, log_probabilities, status)) return
+        if (any(shape(log_probabilities_dot) /= shape(log_probabilities)) .or. &
+            size(direction) /= self%parameter_count() .or. &
+            any(.not. ieee_is_finite(direction))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP multiclass log probability JVP: shape is invalid")
+            return
+        end if
+        allocate(raw(size(x, 1), self%n_classes), raw_dot(size(x, 1), self%n_classes), &
+            mean(size(x, 1)), mean_dot(size(x, 1)), variance(size(x, 1)), &
+            variance_dot(size(x, 1)))
+        first = 1
+        do i = 1, self%n_classes
+            local_count = self%models(i)%parameter_count()
+            last = first + local_count - 1
+            call self%models(i)%predict_latent_parameter_jvp(x, direction(first:last), &
+                mean, mean_dot, variance, variance_dot, status)
+            if (status%code /= FORTNUM_OK) return
+            do j = 1, size(x, 1)
+                call variational_log_probability(self%likelihood, mean(j), variance(j), &
+                    log_value, mean_bar, variance_bar, status)
+                if (status%code /= FORTNUM_OK) return
+                raw(j, i) = log_value
+                raw_dot(j, i) = mean_bar*mean_dot(j) + variance_bar*variance_dot(j)
+            end do
+            first = last + 1
+        end do
+        call normalize_log_jvp(raw, raw_dot, log_probabilities, log_probabilities_dot, status)
+    end subroutine gvmc_predict_log_proba_parameter_jvp
+
+    !> Reverse product of normalized log probabilities with respect to the
+    !! packed per-class variational state.
+    subroutine gvmc_predict_log_proba_parameter_vjp(self, x, log_probabilities_bar, &
+            parameter_bar, status)
+        class(gp_variational_multiclass_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), log_probabilities_bar(:, :)
+        real(dp), intent(out) :: parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: log_probabilities(:, :), raw_bar(:, :), mean(:), variance(:)
+        real(dp), allocatable :: mean_bar(:), variance_bar(:), local_parameter_bar(:)
+        real(dp) :: log_value, dmean, dvariance, cotangent
+        integer :: i, j, first, last, local_count
+
+        parameter_bar = 0.0_dp
+        if (.not. log_probability_cotangent_valid(self, x, log_probabilities_bar, &
+            parameter_bar, status)) return
+        allocate(log_probabilities(size(x, 1), self%n_classes), &
+            raw_bar(size(x, 1), self%n_classes), mean(size(x, 1)), variance(size(x, 1)), &
+            mean_bar(size(x, 1)), variance_bar(size(x, 1)))
+        call self%predict_log_proba(x, log_probabilities, status)
+        if (status%code /= FORTNUM_OK) return
+        do j = 1, size(x, 1)
+            cotangent = sum(log_probabilities_bar(j, :))
+            raw_bar(j, :) = log_probabilities_bar(j, :) - &
+                exp(log_probabilities(j, :))*cotangent
+        end do
+        first = 1
+        do i = 1, self%n_classes
+            local_count = self%models(i)%parameter_count()
+            last = first + local_count - 1
+            call self%models(i)%predict_latent(x, mean, variance, status)
+            if (status%code /= FORTNUM_OK) return
+            do j = 1, size(x, 1)
+                call variational_log_probability(self%likelihood, mean(j), variance(j), &
+                    log_value, dmean, dvariance, status)
+                if (status%code /= FORTNUM_OK) return
+                mean_bar(j) = raw_bar(j, i)*dmean
+                variance_bar(j) = raw_bar(j, i)*dvariance
+            end do
+            allocate(local_parameter_bar(local_count))
+            call self%models(i)%predict_latent_parameter_vjp(x, mean_bar, variance_bar, &
+                local_parameter_bar, status)
+            if (status%code /= FORTNUM_OK) return
+            parameter_bar(first:last) = local_parameter_bar
+            deallocate(local_parameter_bar)
+            first = last + 1
+        end do
+        if (any(.not. ieee_is_finite(parameter_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP multiclass log probability VJP: nonfinite result")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gvmc_predict_log_proba_parameter_vjp
+
+    !> Forward product of normalized log probabilities with respect to query
+    !! coordinates.  The variational state and kernel hyperparameters remain
+    !! fixed.
+    subroutine gvmc_predict_log_proba_input_jvp(self, x, x_dot, log_probabilities, &
+            log_probabilities_dot, status)
+        class(gp_variational_multiclass_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), x_dot(:, :)
+        real(dp), intent(out) :: log_probabilities(:, :), log_probabilities_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: raw(:, :), raw_dot(:, :), mean(:), mean_dot(:), &
+            variance(:), variance_dot(:)
+        real(dp) :: log_value, dmean, dvariance
+        integer :: i, j
+
+        if (.not. log_probability_valid(self, x, log_probabilities, status)) return
+        if (any(shape(x_dot) /= shape(x)) .or. &
+            any(shape(log_probabilities_dot) /= shape(log_probabilities)) .or. &
+            any(.not. ieee_is_finite(x_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP multiclass log probability input JVP: shape is invalid")
+            return
+        end if
+        allocate(raw(size(x, 1), self%n_classes), raw_dot(size(x, 1), self%n_classes), &
+            mean(size(x, 1)), mean_dot(size(x, 1)), variance(size(x, 1)), &
+            variance_dot(size(x, 1)))
+        do i = 1, self%n_classes
+            call self%models(i)%predict_latent_input_jvp(x, x_dot, mean, mean_dot, &
+                variance, variance_dot, status)
+            if (status%code /= FORTNUM_OK) return
+            do j = 1, size(x, 1)
+                call variational_log_probability(self%likelihood, mean(j), variance(j), &
+                    log_value, dmean, dvariance, status)
+                if (status%code /= FORTNUM_OK) return
+                raw(j, i) = log_value
+                raw_dot(j, i) = dmean*mean_dot(j) + dvariance*variance_dot(j)
+            end do
+        end do
+        call normalize_log_jvp(raw, raw_dot, log_probabilities, log_probabilities_dot, status)
+    end subroutine gvmc_predict_log_proba_input_jvp
+
+    !> Reverse product of normalized log probabilities with respect to query
+    !! coordinates.
+    subroutine gvmc_predict_log_proba_input_vjp(self, x, log_probabilities_bar, x_bar, status)
+        class(gp_variational_multiclass_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), log_probabilities_bar(:, :)
+        real(dp), intent(out) :: x_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: log_probabilities(:, :), raw_bar(:, :), mean(:), variance(:)
+        real(dp), allocatable :: mean_bar(:), variance_bar(:), local_x_bar(:, :)
+        real(dp) :: log_value, dmean, dvariance, cotangent
+        integer :: i, j
+
+        x_bar = 0.0_dp
+        if (.not. log_probability_input_cotangent_valid(self, x, &
+            log_probabilities_bar, x_bar, status)) return
+        allocate(log_probabilities(size(x, 1), self%n_classes), &
+            raw_bar(size(x, 1), self%n_classes), mean(size(x, 1)), variance(size(x, 1)), &
+            mean_bar(size(x, 1)), variance_bar(size(x, 1)), &
+            local_x_bar(size(x, 1), self%n_features))
+        call self%predict_log_proba(x, log_probabilities, status)
+        if (status%code /= FORTNUM_OK) return
+        do j = 1, size(x, 1)
+            cotangent = sum(log_probabilities_bar(j, :))
+            raw_bar(j, :) = log_probabilities_bar(j, :) - &
+                exp(log_probabilities(j, :))*cotangent
+        end do
+        do i = 1, self%n_classes
+            call self%models(i)%predict_latent(x, mean, variance, status)
+            if (status%code /= FORTNUM_OK) return
+            do j = 1, size(x, 1)
+                call variational_log_probability(self%likelihood, mean(j), variance(j), &
+                    log_value, dmean, dvariance, status)
+                if (status%code /= FORTNUM_OK) return
+                mean_bar(j) = raw_bar(j, i)*dmean
+                variance_bar(j) = raw_bar(j, i)*dvariance
+            end do
+            call self%models(i)%predict_latent_input_vjp(x, mean_bar, variance_bar, &
+                local_x_bar, status)
+            if (status%code /= FORTNUM_OK) return
+            x_bar = x_bar + local_x_bar
+        end do
+        if (any(.not. ieee_is_finite(x_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP multiclass log probability input VJP: nonfinite result")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gvmc_predict_log_proba_input_vjp
 
     subroutine gvmc_predict_proba_parameter_jvp(self, x, direction, probabilities, &
             probabilities_dot, status)
@@ -824,6 +1069,89 @@ contains
         end select
     end subroutine gvmc_predict_proba_device
 
+    !> Explicit CPU/CUDA capability boundary for stable log-probability
+    !! prediction.  CUDA refuses until the OVR inducing solves and log-sum-exp
+    !! reduction are resident; no hidden host fallback is permitted.
+    subroutine gvmc_predict_log_proba_device(self, device, x, log_probabilities, status)
+        class(gp_variational_multiclass_classification_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: log_probabilities(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP multiclass log probability device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_log_proba(x, log_probabilities, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "variational GP multiclass log probability device: resident CUDA graph is not linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP multiclass log probability device: device kind is invalid")
+        end select
+    end subroutine gvmc_predict_log_proba_device
+
+    !> Device boundary for the packed-state log-probability reverse product.
+    subroutine gvmc_predict_log_proba_parameter_vjp_device(self, device, x, &
+            log_probabilities_bar, parameter_bar, status)
+        class(gp_variational_multiclass_classification_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :), log_probabilities_bar(:, :)
+        real(dp), intent(out) :: parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        parameter_bar = 0.0_dp
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP multiclass log probability VJP device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_log_proba_parameter_vjp(x, log_probabilities_bar, &
+                parameter_bar, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "variational GP multiclass log probability VJP device: resident CUDA graph is not linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP multiclass log probability VJP device: device kind is invalid")
+        end select
+    end subroutine gvmc_predict_log_proba_parameter_vjp_device
+
+    !> Device boundary for the fixed-state input reverse product of stable
+    !! log probabilities.
+    subroutine gvmc_predict_log_proba_input_vjp_device(self, device, x, &
+            log_probabilities_bar, x_bar, status)
+        class(gp_variational_multiclass_classification_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :), log_probabilities_bar(:, :)
+        real(dp), intent(out) :: x_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        x_bar = 0.0_dp
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP multiclass log probability input VJP device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_log_proba_input_vjp(x, log_probabilities_bar, x_bar, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "variational GP multiclass log probability input VJP device: resident CUDA graph is not linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP multiclass log probability input VJP device: device kind is invalid")
+        end select
+    end subroutine gvmc_predict_log_proba_input_vjp_device
+
     function gvmc_classes(self) result(classes)
         class(gp_variational_multiclass_classification_t), intent(in) :: self
         integer, allocatable :: classes(:)
@@ -1021,6 +1349,219 @@ contains
         end if
         call status_set(status, FORTNUM_OK, "")
     end function multiclass_kernel_probability_vjp_valid
+
+    logical function log_probability_valid(self, x, log_probabilities, status) result(valid)
+        class(gp_variational_multiclass_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), log_probabilities(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        valid = prediction_input_valid(self, x, status)
+        if (.not. valid) return
+        if (any(shape(log_probabilities) /= [size(x, 1), self%n_classes])) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP multiclass log probability: output shape is invalid")
+            valid = .false.
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end function log_probability_valid
+
+    logical function log_probability_cotangent_valid(self, x, log_probabilities_bar, &
+            parameter_bar, status) result(valid)
+        class(gp_variational_multiclass_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), log_probabilities_bar(:, :), parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        valid = log_probability_valid(self, x, log_probabilities_bar, status)
+        if (.not. valid) return
+        if (size(parameter_bar) /= self%parameter_count() .or. &
+            any(.not. ieee_is_finite(log_probabilities_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP multiclass log probability VJP: cotangent shape is invalid")
+            valid = .false.
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end function log_probability_cotangent_valid
+
+    logical function log_probability_input_cotangent_valid(self, x, &
+            log_probabilities_bar, x_bar, status) result(valid)
+        class(gp_variational_multiclass_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), log_probabilities_bar(:, :), x_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        valid = log_probability_valid(self, x, log_probabilities_bar, status)
+        if (.not. valid) return
+        if (any(shape(x_bar) /= shape(x)) .or. &
+            any(.not. ieee_is_finite(log_probabilities_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP multiclass log probability input VJP: shape is invalid")
+            valid = .false.
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end function log_probability_input_cotangent_valid
+
+    !> Stable positive-link log probability and its latent mean/variance
+    !! derivatives.  The variance is the posterior marginal variance and the
+    !! returned derivatives are of the *log* positive-class probability.
+    subroutine variational_log_probability(likelihood, mean, variance, log_value, &
+            mean_derivative, variance_derivative, status)
+        integer, intent(in) :: likelihood
+        real(dp), intent(in) :: mean, variance
+        real(dp), intent(out) :: log_value, mean_derivative, variance_derivative
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: scale, z, log_cdf, dz_mean, dz_variance, dz_log_link
+
+        log_value = 0.0_dp
+        mean_derivative = 0.0_dp
+        variance_derivative = 0.0_dp
+        if (.not. ieee_is_finite(mean) .or. .not. ieee_is_finite(variance) .or. &
+            variance < 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP multiclass log probability: latent marginal is invalid")
+            return
+        end if
+        if (likelihood == GP_VARIATIONAL_PROBIT) then
+            scale = sqrt(1.0_dp + variance)
+            z = mean/scale
+            call standard_normal_log_cdf(z, log_cdf, dz_log_link, status)
+            if (status%code /= FORTNUM_OK) return
+            log_value = log_cdf
+            dz_mean = 1.0_dp/scale
+            dz_variance = -mean/(2.0_dp*scale**3)
+        else if (likelihood == GP_VARIATIONAL_LOGISTIC) then
+            scale = sqrt(1.0_dp + 3.1415926535897932384626433832795_dp*variance/8.0_dp)
+            z = mean/scale
+            if (z >= 0.0_dp) then
+                log_value = -log(1.0_dp + exp(-z))
+                dz_log_link = exp(-z)/(1.0_dp + exp(-z))
+            else
+                log_value = z - log(1.0_dp + exp(z))
+                dz_log_link = 1.0_dp/(1.0_dp + exp(z))
+            end if
+            dz_mean = 1.0_dp/scale
+            dz_variance = -mean*3.1415926535897932384626433832795_dp/(16.0_dp*scale**3)
+        else
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP multiclass log probability: likelihood is invalid")
+            return
+        end if
+        mean_derivative = dz_log_link*dz_mean
+        variance_derivative = dz_log_link*dz_variance
+        if (.not. ieee_is_finite(log_value) .or. &
+            .not. ieee_is_finite(mean_derivative) .or. &
+            .not. ieee_is_finite(variance_derivative)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP multiclass log probability: nonfinite link result")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine variational_log_probability
+
+    !> Stable log Phi(z) and inverse Mills ratio Phi'(z)/Phi(z).
+    subroutine standard_normal_log_cdf(z, log_cdf, derivative, status)
+        real(dp), intent(in) :: z
+        real(dp), intent(out) :: log_cdf, derivative
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), parameter :: SQRT_TWO_LOCAL = 1.4142135623730950488016887242097_dp
+        real(dp), parameter :: LOG_SQRT_TWO_PI = 0.91893853320467274178032973640562_dp
+        real(dp) :: probability, log_density, inverse, correction
+
+        log_cdf = 0.0_dp
+        derivative = 0.0_dp
+        if (.not. ieee_is_finite(z)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP multiclass log probability: standardized latent is invalid")
+            return
+        end if
+        if (z >= -5.0_dp) then
+            probability = 0.5_dp*erfc(-z/SQRT_TWO_LOCAL)
+            if (probability <= 0.0_dp .or. .not. ieee_is_finite(probability)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "variational GP multiclass log probability: normal CDF underflow")
+                return
+            end if
+            log_cdf = log(probability)
+            log_density = -0.5_dp*z*z - LOG_SQRT_TWO_PI
+            derivative = exp(log_density - log_cdf)
+        else
+            inverse = -1.0_dp/z
+            correction = 1.0_dp - inverse**2 + 3.0_dp*inverse**4 - &
+                15.0_dp*inverse**6 + 105.0_dp*inverse**8
+            if (correction <= 0.0_dp .or. abs(z) > sqrt(huge(1.0_dp))) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "variational GP multiclass log probability: normal CDF range is invalid")
+                return
+            end if
+            log_density = -0.5_dp*z*z - LOG_SQRT_TWO_PI
+            log_cdf = log_density - log(-z) + log(correction)
+            derivative = exp(log_density - log_cdf)
+        end if
+        if (.not. ieee_is_finite(log_cdf) .or. .not. ieee_is_finite(derivative) .or. &
+            derivative < 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP multiclass log probability: normal link is nonfinite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine standard_normal_log_cdf
+
+    subroutine logsumexp(values, result, status)
+        real(dp), intent(in) :: values(:)
+        real(dp), intent(out) :: result
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: maximum, total
+
+        result = 0.0_dp
+        if (size(values) < 1 .or. any(.not. ieee_is_finite(values))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP multiclass log probability: log-sum-exp input is invalid")
+            return
+        end if
+        maximum = maxval(values)
+        total = sum(exp(values - maximum))
+        if (.not. ieee_is_finite(total) .or. total <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP multiclass log probability: log-sum-exp reduction failed")
+            return
+        end if
+        result = maximum + log(total)
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine logsumexp
+
+    subroutine normalize_log_jvp(raw, raw_dot, log_probabilities, log_probabilities_dot, status)
+        real(dp), intent(in) :: raw(:, :), raw_dot(:, :)
+        real(dp), intent(out) :: log_probabilities(:, :), log_probabilities_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: weights(:)
+        real(dp) :: normalizer, expectation
+        integer :: i, j
+
+        if (any(shape(raw_dot) /= shape(raw)) .or. any(shape(log_probabilities) /= shape(raw)) &
+            .or. any(shape(log_probabilities_dot) /= shape(raw)) .or. &
+            any(.not. ieee_is_finite(raw)) .or. any(.not. ieee_is_finite(raw_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP multiclass log probability JVP: internal shape is invalid")
+            return
+        end if
+        allocate(weights(size(raw, 2)))
+        do j = 1, size(raw, 1)
+            call logsumexp(raw(j, :), normalizer, status)
+            if (status%code /= FORTNUM_OK) return
+            log_probabilities(j, :) = raw(j, :) - normalizer
+            weights = exp(log_probabilities(j, :))
+            expectation = dot_product(weights, raw_dot(j, :))
+            log_probabilities_dot(j, :) = raw_dot(j, :) - expectation
+        end do
+        if (any(.not. ieee_is_finite(log_probabilities)) .or. &
+            any(.not. ieee_is_finite(log_probabilities_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "variational GP multiclass log probability JVP: nonfinite result")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine normalize_log_jvp
 
     subroutine encode_labels(labels, positive, encoded, status)
         integer, intent(in) :: labels(:), positive
