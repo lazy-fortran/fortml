@@ -2,9 +2,10 @@ module fortml_discriminant_analysis
     !! Weighted linear and quadratic discriminant analysis classifiers.
     !!
     !! Samples are rows and features are columns.  Both estimators accept
-    !! arbitrary integer labels (stored in sorted order), sample weights, and
-    !! optional class priors.  LDA uses one pooled covariance; QDA uses one
-    !! covariance per class.  Covariances are regularized with a convex
+    !! arbitrary integer labels (stored in sorted order), sample and positive
+    !! per-class weights, and optional class priors.  LDA uses one pooled
+    !! covariance; QDA uses one covariance per class.  Covariances are
+    !! regularized with a convex
     !! diagonal ridge controlled by ``reg_param`` and are factorized by the
     !! FortNum Cholesky implementation.
     !!
@@ -126,38 +127,44 @@ module fortml_discriminant_analysis
 
 contains
 
-    subroutine lda_fit(self, x, labels, status, reg_param, priors, sample_weight)
+    subroutine lda_fit(self, x, labels, status, reg_param, priors, sample_weight, &
+            class_weight)
         class(lda_classifier_t), intent(out) :: self
         real(dp), intent(in) :: x(:, :)
         integer, intent(in) :: labels(:)
         type(fortnum_status_t), intent(out) :: status
-        real(dp), intent(in), optional :: reg_param, priors(:), sample_weight(:)
+        real(dp), intent(in), optional :: reg_param, priors(:), sample_weight(:), &
+            class_weight(:)
 
         call discriminant_fit(self%state, x, labels, status, .false., reg_param, &
-            priors, sample_weight)
+            priors, sample_weight, class_weight)
     end subroutine lda_fit
 
-    subroutine qda_fit(self, x, labels, status, reg_param, priors, sample_weight)
+    subroutine qda_fit(self, x, labels, status, reg_param, priors, sample_weight, &
+            class_weight)
         class(qda_classifier_t), intent(out) :: self
         real(dp), intent(in) :: x(:, :)
         integer, intent(in) :: labels(:)
         type(fortnum_status_t), intent(out) :: status
-        real(dp), intent(in), optional :: reg_param, priors(:), sample_weight(:)
+        real(dp), intent(in), optional :: reg_param, priors(:), sample_weight(:), &
+            class_weight(:)
 
         call discriminant_fit(self%state, x, labels, status, .true., reg_param, &
-            priors, sample_weight)
+            priors, sample_weight, class_weight)
     end subroutine qda_fit
 
     subroutine discriminant_fit(state, x, labels, status, qda, reg_param, priors, &
-            sample_weight)
+            sample_weight, class_weight)
         type(discriminant_state_t), intent(out) :: state
         real(dp), intent(in) :: x(:, :)
         integer, intent(in) :: labels(:)
         type(fortnum_status_t), intent(out) :: status
         logical, intent(in) :: qda
-        real(dp), intent(in), optional :: reg_param, priors(:), sample_weight(:)
+        real(dp), intent(in), optional :: reg_param, priors(:), sample_weight(:), &
+            class_weight(:)
         integer, allocatable :: classes(:), class_index_values(:)
         real(dp), allocatable :: weights(:)
+        real(dp), allocatable :: class_factors(:)
         real(dp) :: requested_reg, total_weight, prior_sum, centered_i, centered_j
         integer :: n_samples, n_features, n_classes, i, j, c, k
 
@@ -189,6 +196,19 @@ contains
                 "discriminant fit: at least two classes are required")
             return
         end if
+        allocate(class_factors(n_classes))
+        class_factors = 1.0_dp
+        if (present(class_weight)) then
+            if (size(class_weight) /= n_classes .or. &
+                any(.not. ieee_is_finite(class_weight)) .or. &
+                any(class_weight <= 0.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "discriminant fit: class weights must be finite and positive "// &
+                    "in sorted class order")
+                return
+            end if
+            class_factors = class_weight
+        end if
         allocate(weights(n_samples), class_index_values(n_samples))
         weights = 1.0_dp
         if (present(sample_weight)) then
@@ -201,15 +221,16 @@ contains
             end if
             weights = sample_weight
         end if
+        do i = 1, n_samples
+            class_index_values(i) = class_index(classes, labels(i))
+            weights(i) = weights(i)*class_factors(class_index_values(i))
+        end do
         total_weight = sum(weights)
         if (.not. ieee_is_finite(total_weight) .or. total_weight <= 0.0_dp) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
-                "discriminant fit: sample weights need positive total mass")
+                "discriminant fit: effective weights need positive total mass")
             return
         end if
-        do i = 1, n_samples
-            class_index_values(i) = class_index(classes, labels(i))
-        end do
 
         allocate(state%mean(n_features, n_classes), state%prior(n_classes), &
             state%weighted_count(n_classes), state%class_label(n_classes))
