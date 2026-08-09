@@ -200,6 +200,15 @@ it is checked off.
   views, weighted reductions, accumulation, clipping, validation, early
   stopping, callbacks, RNG state, optimizer groups, schedules, mixed precision,
   activation checkpointing, truncated BPTT, and resumable checkpoints.
+- [x] Add the bounded generic `trainer_t%partial_fit` warm-start contract:
+  callers can split a declared total update budget across deterministic chunks
+  and checkpoints without resetting optimizer moments, EMA, schedules,
+  validation counters, or histories. Over-budget and malformed requests are
+  transactional; `partial_fit_device` executes CPU updates and returns a
+  typed CUDA refusal until resident objective and optimizer state exist. The
+  independent quadratic replay and checkpoint oracle is
+  `test_trainer_partial_fit`; the companion benchmark records CPU replay and
+  the explicit CUDA boundary.
 - [ ] Make every supported optimizer expose exact trajectory products through
   learning rate, decay, momentum, betas, schedules, batch cursor, clipping,
   validation, and early-stopping coordinates, with FortOpt L-BFGS-B using the

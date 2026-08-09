@@ -22,6 +22,7 @@ module fortml_trainer
     use fortopt_lbfgsb, only: lbfgsb_t, lbfgsb_options_t, lbfgsb_result_t
     use fortml_adafactor, only: adafactor_t
     use fortml_lion, only: lion_t
+    use fortml_device, only: FORTML_DEVICE_CPU, FORTML_DEVICE_CUDA
     use fortml_mlp_schedules, only: mlp_learning_rate_schedule_t, &
         MLP_SCHEDULE_PLATEAU
     implicit none
@@ -144,6 +145,8 @@ module fortml_trainer
         procedure, public :: initialize => trainer_initialize
         procedure, public :: step => trainer_step
         procedure, public :: fit => trainer_fit
+        procedure, public :: partial_fit => trainer_partial_fit
+        procedure, public :: partial_fit_device => trainer_partial_fit_device
         procedure, public :: parameters => trainer_parameters
         procedure, public :: state_copy => trainer_state_copy
         procedure, public :: clone => trainer_clone
@@ -473,6 +476,79 @@ contains
         end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine trainer_fit
+
+    subroutine trainer_partial_fit(self, steps, status)
+        !! Advance a streaming trainer by at most `steps` updates.
+        !!
+        !! `max_steps` is the total update budget selected at initialization;
+        !! callers may split that budget across batches, processes, or
+        !! checkpoint boundaries without resetting optimizer moments, EMA,
+        !! schedules, validation state, or history.  Unlike `fit`, exhausting
+        !! exactly the requested chunk is success even when convergence has
+        !! not yet been reached.  A request beyond the declared budget is
+        !! rejected transactionally before any update is attempted.
+        class(trainer_t), intent(inout) :: self
+        integer, intent(in) :: steps
+        type(fortnum_status_t), intent(out) :: status
+        integer :: i, remaining
+
+        if (.not. self%ready .or. .not. self%state%initialized) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "trainer partial_fit: state is not initialized")
+            return
+        end if
+        if (self%options%optimizer == FORTML_TRAIN_LBFGSB) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "trainer partial_fit: L-BFGS-B is a fit-level optimizer")
+            return
+        end if
+        if (steps < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "trainer partial_fit: update count must be positive")
+            return
+        end if
+        remaining = self%options%max_steps - self%state%steps
+        if (remaining < 1 .or. steps > remaining) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "trainer partial_fit: update count exceeds the declared budget")
+            return
+        end if
+
+        ! A fresh chunk is an explicit warm start.  Keep validation counters
+        ! and histories, but clear terminal flags set by the preceding chunk.
+        self%state%converged = .false.
+        self%state%stopped_by_callback = .false.
+        self%state%stopped_by_validation = .false.
+        do i = 1, steps
+            call self%step(status)
+            if (status%code /= FORTNUM_OK) return
+            if (self%state%converged .or. self%state%stopped_by_callback .or. &
+                self%state%stopped_by_validation) exit
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine trainer_partial_fit
+
+    subroutine trainer_partial_fit_device(self, device_kind, steps, status)
+        !! Device-dispatch boundary for the streaming contract.
+        !!
+        !! The generic trainer owns a host objective and therefore has no
+        !! resident CUDA state to update.  CPU dispatch is exact; CUDA is a
+        !! typed refusal instead of an implicit host fallback.
+        class(trainer_t), intent(inout) :: self
+        integer, intent(in) :: device_kind, steps
+        type(fortnum_status_t), intent(out) :: status
+
+        select case (device_kind)
+        case (FORTML_DEVICE_CPU)
+            call self%partial_fit(steps, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "trainer partial_fit device: resident CUDA trainer is not implemented")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "trainer partial_fit device: device kind is invalid")
+        end select
+    end subroutine trainer_partial_fit_device
 
     function trainer_parameters(self) result(parameters)
         class(trainer_t), intent(in) :: self
