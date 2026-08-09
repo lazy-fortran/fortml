@@ -407,7 +407,7 @@ prediction checks, provenance, and typed CUDA refusals. These slices do not
 claim SAMME.R, tree-search backends, or resident radius/boosting kernels.
 
 The same release slice now records CPU RAdam flat-state and MLP training with
-format-10/text-schema-10 checkpoint replay, an independent NumPy recurrence, and
+format-10/text-schema-11 checkpoint replay, an independent NumPy recurrence, and
 a typed CUDA-unavailable row in `fortml-bench/results/RADAM.md`. Ordered-gradient
 integer categorical XGBoost partitions are covered by
 `fortml-bench/results/XGBOOST_CATEGORICAL.md`; the fixture checks the bounded
@@ -1699,7 +1699,7 @@ when a lower-level primitive already exists.
   minimizing and maximizing metrics, and returns the next state without a
   hidden cursor. Base-rate and factor derivatives are exact on each active
   branch, while metric, best-value, min-delta, and integer decision products
-  are documented zeros. Formatted checkpoint schema 10 validates and round-trips
+  are documented zeros. Formatted checkpoint schema 11 validates and round-trips
   the plateau fields. `mlp_train` now owns this state at epoch boundaries,
   selects validation loss when present (training loss otherwise), and reproduces
   the schedule through split checkpoint/resume. Independent transition,
