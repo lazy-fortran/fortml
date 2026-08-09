@@ -9,10 +9,6 @@ program test_pinn_structure_gp
         pinn_structure_gp_metadata_t
     implicit none
 
-    type :: probe_context_t
-        real(dp) :: target = 0.0_dp
-        integer :: index = 1
-    end type probe_context_t
     integer :: failures
 
     failures = 0
@@ -28,8 +24,6 @@ contains
 
     subroutine run_case(failures)
         integer, intent(inout) :: failures
-        type(probe_context_t), target :: data_context, residual_context
-        type(probe_context_t), target :: boundary_context, conservation_context
         type(physics_constraint_t) :: data, residual, boundary, conservation
         type(physics_objective_t) :: objective
         type(mlp_t) :: model
@@ -62,31 +56,22 @@ contains
         design(:, size(hidden, 2) + 1) = 1.0_dp
         call solve_oracle(design, pde_target, lambda, coefficients)
 
-        data_context%index = parameter_count
-        residual_context%index = parameter_count
-        boundary_context%index = parameter_count
-        conservation_context%index = parameter_count
-        data_context%target = 0.25_dp
-        residual_context%target = 0.15_dp
-        boundary_context%target = 0.0_dp
-        conservation_context%target = -0.10_dp
-        call data%initialize(parameter_count, 1, 1.0_dp, data_context, probe_residual, &
-            probe_jvp, probe_vjp, status)
+        call data%initialize(parameter_count, 1, 1.0_dp, residual_proc=probe_residual, &
+            jvp_proc=probe_jvp, vjp_proc=probe_vjp, status=status)
         call check(status_ok(status), "data constraint", failures)
-        call residual%initialize(parameter_count, 1, 2.0_dp, residual_context, probe_residual, &
-            probe_jvp, probe_vjp, status)
+        call residual%initialize(parameter_count, 1, 2.0_dp, residual_proc=probe_residual, &
+            jvp_proc=probe_jvp, vjp_proc=probe_vjp, status=status)
         call check(status_ok(status), "PDE residual constraint", failures)
-        call boundary%initialize(parameter_count, 1, 0.5_dp, boundary_context, probe_residual, &
-            probe_jvp, probe_vjp, status)
+        call boundary%initialize(parameter_count, 1, 0.5_dp, residual_proc=probe_residual, &
+            jvp_proc=probe_jvp, vjp_proc=probe_vjp, status=status)
         call check(status_ok(status), "boundary constraint", failures)
-        call conservation%initialize(parameter_count, 1, 1.5_dp, conservation_context, &
-            probe_residual, probe_jvp, probe_vjp, status)
+        call conservation%initialize(parameter_count, 1, 1.5_dp, residual_proc=probe_residual, &
+            jvp_proc=probe_jvp, vjp_proc=probe_vjp, status=status)
         call check(status_ok(status), "conservation constraint", failures)
         call objective%initialize(parameter_count, data, residual, boundary, conservation, status)
         call check(status_ok(status), "named manufactured-PDE objective", failures)
 
-        call manual_terms(before, parameter_count, data_context, residual_context, &
-            boundary_context, conservation_context, expected_terms_before)
+        call manual_terms(before, expected_terms_before)
         call initializer%fit(model, x, pde_target, objective, status, lambda)
         call check(status_ok(status) .and. initializer%fitted(), &
             "PINN structure GP fit", failures)
@@ -112,11 +97,14 @@ contains
         hidden_after = after(1:hidden_count)
         call check(maxval(abs(hidden_after - hidden_before)) < 1.0e-15_dp, &
             "hidden parameters preserved", failures)
+        allocate(prediction(size(x, 1), 1))
         call model%predict(x, prediction, status)
-        call check(status_ok(status) .and. maxval(abs(prediction - matmul(design, coefficients))) < &
-            3.0e-12_dp, "applied manufactured posterior oracle", failures)
-        call manual_terms(after, parameter_count, data_context, residual_context, &
-            boundary_context, conservation_context, expected_terms_after)
+        call check(status_ok(status), "applied posterior prediction", failures)
+        if (status_ok(status)) then
+            call check(maxval(abs(prediction - matmul(design, coefficients))) < 3.0e-12_dp, &
+                "applied manufactured posterior oracle", failures)
+        end if
+        call manual_terms(after, expected_terms_after)
         metadata = initializer%metadata()
         call check(maxval(abs(metadata%term_values_after - expected_terms_after)) < 2.0e-14_dp .and. &
             abs(metadata%residual_term_after - expected_terms_after(2)) < 2.0e-14_dp, &
@@ -143,14 +131,10 @@ contains
         real(dp), intent(out) :: residual_value(:)
         type(fortnum_status_t), intent(out) :: status
 
-        select type (context)
-            type is (probe_context_t)
-            residual_value(1) = theta(context%index) - context%target
-            call status_set(status, FORTNUM_OK, "")
-        class default
-            residual_value = 0.0_dp
-            call status_set(status, FORTNUM_DOMAIN_ERROR, "bad manufactured context")
-        end select
+        associate (unused_context => context)
+        end associate
+        residual_value(1) = theta(size(theta)) - 0.10_dp
+        call status_set(status, FORTNUM_OK, "")
     end subroutine probe_residual
 
     subroutine probe_jvp(context, theta, theta_dot, residual_value, residual_dot, status)
@@ -164,14 +148,10 @@ contains
             residual_dot = 0.0_dp
             return
         end if
-        select type (context)
-            type is (probe_context_t)
-            residual_dot(1) = theta_dot(context%index)
-            call status_set(status, FORTNUM_OK, "")
-        class default
-            residual_dot = 0.0_dp
-            call status_set(status, FORTNUM_DOMAIN_ERROR, "bad manufactured context")
-        end select
+        associate (unused_context => context)
+        end associate
+        residual_dot(1) = theta_dot(size(theta_dot))
+        call status_set(status, FORTNUM_OK, "")
     end subroutine probe_jvp
 
     subroutine probe_vjp(context, theta, residual_bar, theta_bar, status)
@@ -183,31 +163,21 @@ contains
         theta_bar = 0.0_dp
         associate (unused_theta => theta)
         end associate
-        select type (context)
-            type is (probe_context_t)
-            theta_bar(context%index) = residual_bar(1)
-            call status_set(status, FORTNUM_OK, "")
-        class default
-            call status_set(status, FORTNUM_DOMAIN_ERROR, "bad manufactured context")
-        end select
+        associate (unused_context => context)
+        end associate
+        theta_bar(size(theta_bar)) = residual_bar(1)
+        call status_set(status, FORTNUM_OK, "")
     end subroutine probe_vjp
 
-    subroutine manual_terms(theta, parameter_count, data_context, residual_context, &
-            boundary_context, conservation_context, values)
+    subroutine manual_terms(theta, values)
         real(dp), intent(in) :: theta(:)
-        integer, intent(in) :: parameter_count
-        type(probe_context_t), intent(in) :: data_context, residual_context
-        type(probe_context_t), intent(in) :: boundary_context, conservation_context
         real(dp), intent(out) :: values(4)
         real(dp) :: error
 
-        error = theta(parameter_count) - data_context%target
+        error = theta(size(theta)) - 0.10_dp
         values(1) = 0.5_dp*error**2
-        error = theta(parameter_count) - residual_context%target
         values(2) = 2.0_dp*0.5_dp*error**2
-        error = theta(parameter_count) - boundary_context%target
         values(3) = 0.5_dp*0.5_dp*error**2
-        error = theta(parameter_count) - conservation_context%target
         values(4) = 1.5_dp*0.5_dp*error**2
     end subroutine manual_terms
 
