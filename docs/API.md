@@ -259,7 +259,7 @@ CUDA gate.
 | `mlp_schedule_hypergradient_objective_t` | Validation MSE after a typed scheduled full-batch trajectory | Packed `[log(base_rate),log(l2),logit(min_fraction),logit(decay_factor)]` JVP, or `[log(base_rate),log(l2),log(peak_fraction),log(final_fraction)]` for one-cycle | Exact schedule/trajectory value gradient and scalar VJP | Exact affine outer HVP for stateless schedules; nonlinear/plateau/CUDA boundaries are typed |
 | `mlp_radam_schedule_hypergradient_objective_t` | Validation MSE after a typed scheduled full-batch RAdam trajectory | Packed base-rate/L2/beta/epsilon/schedule JVP | Exact trajectory value gradient and scalar VJP | Moment, bias-correction, rectification, and schedule sensitivities; outer HVP/CUDA refusal |
 | `mlp_minibatch_hypergradient_objective_t` | Validation MSE after a fixed seeded mini-batch SGD trajectory | Packed `[log(learning_rate),log(l2)]` JVP | Exact batch-cursor trajectory value gradient and scalar VJP | Per-batch MLP HVP; outer hyper-HVP is a typed refusal |
-| `mlp_minibatch_adam_hypergradient_objective_t` | Validation MSE after a fixed seeded mini-batch coupled-L2 Adam trajectory | Packed `[log(learning_rate),log(l2)]` JVP | Exact batch-cursor trajectory value gradient and scalar VJP | Forward parameter/moment/bias-correction sensitivities; outer hyper-HVP is a typed refusal |
+| `mlp_minibatch_adam_hypergradient_objective_t` | Validation MSE after a fixed seeded mini-batch coupled-L2 Adam trajectory | Packed learning-rate/L2/beta1/beta2/epsilon JVP | Exact five-coordinate trajectory value gradient and scalar VJP | Forward batch-cursor, moment, bias-correction, and denominator sensitivities with a typed outer hyper-HVP refusal |
 | `trainer_t` | Any `fortopt_objective::objective_t` with explicit full-batch training state | Optimizer updates are stateful; the objective supplies exact products | The same objective value/gradient callback is used for every update | L-BFGS-B consumes the objective gradient; no hidden HVP or finite-difference fallback |
 | `bnn_t` | `elbo` | ELBO | ELBO | ELBO |
 | `vae_t` | `elbo`, `reconstruct` | No | ELBO gradient | No |
@@ -3049,18 +3049,20 @@ callback, optimizer convergence, and the CUDA boundary. See
 `mlp_minibatch_adam_hypergradient_objective_t` differentiates a fixed seeded
 mini-batch Adam trajectory with the coupled-L2 convention used by the regular
 MLP Adam optimizer. `mlp_minibatch_adam_hypergradient_options_t` fixes epochs,
-batch size, shuffle seed, beta1, beta2, and epsilon. The packed outer vector is
-`[log(learning_rate), log(l2)]`; each evaluation replays the private cursor and
-computes validation MSE after the final update. Forward products propagate
-parameter, first/second moment, bias-correction, and stabilized-denominator
-sensitivities analytically through every batch. `value_gradient`, `jvp`, and
-scalar `vjp` are available, and `mlp_optimize_minibatch_adam_hyperparameters`
-routes the same callback to bounded FortOpt L-BFGS-B. The outer `hvp` requires
-third network derivatives and returns `FORTNUM_NOT_IMPLEMENTED`; CUDA
-trajectory requests return the same typed refusal until Adam state is resident.
-The independent `test_mlp_minibatch_adam_hypergradient` fixture checks central
-differences, directional and scalar adjoints, FortOpt convergence, and the
-CUDA boundary. See
+batch size, and shuffle seed. The packed outer vector is
+`[log(learning_rate), log(l2), logit(beta1), logit(beta2), log(epsilon)]`.
+Each evaluation replays the private cursor and computes validation MSE after
+the final update. Forward products propagate parameter, moment,
+bias-correction, and denominator sensitivities through every batch.
+`value_gradient`, `jvp`, and scalar `vjp` are available.
+`mlp_optimize_minibatch_adam_hyperparameters` routes the same callback to
+bounded FortOpt L-BFGS-B with coordinate-specific bounds. A zero
+bias-corrected second moment, the outer `hvp`, and CUDA trajectory requests
+return typed refusals. The independent
+`test_mlp_minibatch_adam_hypergradient` fixture replays the affine trajectory,
+checks a nonlinear trajectory by central differences, verifies directional
+and scalar adjoints, exercises FortOpt convergence, and checks the CUDA
+boundary. See
 [`docs/MLP_MINIBATCH_ADAM_HYPERGRADIENT.md`](MLP_MINIBATCH_ADAM_HYPERGRADIENT.md).
 
 ### `fortml_mlp_classifier`

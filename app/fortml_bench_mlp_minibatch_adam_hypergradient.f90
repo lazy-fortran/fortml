@@ -4,17 +4,20 @@ program fortml_bench_mlp_minibatch_adam_hypergradient
     use fortml_mlp, only: mlp_t
     use fortml_mlp_minibatch_adam_hypergradient, only: &
         mlp_minibatch_adam_hypergradient_objective_t, &
-        mlp_minibatch_adam_hypergradient_options_t
+        mlp_minibatch_adam_hypergradient_options_t, &
+        MLP_MINIBATCH_ADAM_HYPERPARAMETER_COUNT
     use fortnum_status, only: fortnum_status_t, status_ok
     implicit none
 
     integer, parameter :: n_train = 7, n_validation = 3, repetitions = 16
     real(dp) :: train_x(n_train, 1), train_target(n_train, 1)
     real(dp) :: validation_x(n_validation, 1), validation_target(n_validation, 1)
-    real(dp) :: parameters(2), direction(2), gradient(2)
+    real(dp) :: parameters(MLP_MINIBATCH_ADAM_HYPERPARAMETER_COUNT)
+    real(dp) :: direction(MLP_MINIBATCH_ADAM_HYPERPARAMETER_COUNT)
+    real(dp) :: gradient(MLP_MINIBATCH_ADAM_HYPERPARAMETER_COUNT)
     real(dp) :: value, tangent, elapsed
     integer(int64) :: clock_start, clock_end, clock_rate
-    integer :: oracle_unit, environment_status, repetition
+    integer :: oracle_unit, environment_status, repetition, parameter_index
     character(len=1024) :: oracle_path
     type(mlp_t), target :: model
     type(mlp_minibatch_adam_hypergradient_objective_t) :: objective
@@ -40,16 +43,19 @@ program fortml_bench_mlp_minibatch_adam_hypergradient
     options%upper_log_l2 = 0.0_dp
 
     call model%initialize([1, 1], status, initialization_seed=29)
-    if (.not. status_ok(status)) error stop "mini-batch Adam benchmark initialization failed"
+    if (.not. status_ok(status)) &
+        error stop "mini-batch Adam benchmark initialization failed"
     call model%set_parameters([0.21_dp, -0.06_dp], status)
-    if (.not. status_ok(status)) error stop "mini-batch Adam benchmark parameter setup failed"
+    if (.not. status_ok(status)) &
+        error stop "mini-batch Adam benchmark parameter setup failed"
     call objective%initialize(model, train_x, train_target, validation_x, &
         validation_target, options, status)
     if (.not. status_ok(status)) error stop "mini-batch Adam benchmark setup failed"
     parameters = objective%parameters()
     call objective%value_gradient(parameters, value, gradient, status)
-    if (.not. status_ok(status)) error stop "mini-batch Adam hypergradient product failed"
-    direction = [0.27_dp, -0.19_dp]
+    if (.not. status_ok(status)) &
+        error stop "mini-batch Adam hypergradient product failed"
+    direction = [0.27_dp, -0.19_dp, 0.13_dp, -0.11_dp, 0.07_dp]
     call objective%jvp(parameters, direction, value, tangent, status)
     if (.not. status_ok(status)) error stop "mini-batch Adam hypergradient JVP failed"
 
@@ -57,11 +63,14 @@ program fortml_bench_mlp_minibatch_adam_hypergradient
     call get_environment_variable("FORTML_BENCH_MINIBATCH_ADAM_ORACLE", oracle_path, &
         status=environment_status)
     if (environment_status == 0 .and. len_trim(oracle_path) > 0) then
-        open (newunit=oracle_unit, file=trim(oracle_path), status="replace", action="write")
+        open (newunit=oracle_unit, file=trim(oracle_path), status="replace", &
+            action="write")
         write (oracle_unit, '(a)') "quantity,index,value"
         write (oracle_unit, '(a,es26.17e3)') "value,1,", value
-        write (oracle_unit, '(a,es26.17e3)') "gradient,1,", gradient(1)
-        write (oracle_unit, '(a,es26.17e3)') "gradient,2,", gradient(2)
+        do parameter_index = 1, MLP_MINIBATCH_ADAM_HYPERPARAMETER_COUNT
+            write (oracle_unit, '(a,i0,a,es26.17e3)') &
+                "gradient,", parameter_index, ",", gradient(parameter_index)
+        end do
         write (oracle_unit, '(a,es26.17e3)') "jvp,1,", tangent
         close (oracle_unit)
     end if
@@ -70,7 +79,8 @@ program fortml_bench_mlp_minibatch_adam_hypergradient
     call system_clock(clock_start, clock_rate)
     do repetition = 1, repetitions
         call objective%value_gradient(parameters, value, gradient, status)
-        if (.not. status_ok(status)) error stop "mini-batch Adam hypergradient timing failed"
+        if (.not. status_ok(status)) &
+            error stop "mini-batch Adam hypergradient timing failed"
     end do
     call system_clock(clock_end)
     elapsed = real(clock_end-clock_start, dp)/real(clock_rate, dp) &

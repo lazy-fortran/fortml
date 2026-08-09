@@ -1,6 +1,7 @@
 program test_mlp_minibatch_adam_hypergradient
     !! Independent finite-difference and adjoint checks for the deterministic
     !! mini-batch Adam trajectory hypergradient and FortOpt boundary.
+    use, intrinsic :: iso_fortran_env, only: int64
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_NOT_IMPLEMENTED
     use fortml_device, only: FORTML_DEVICE_CUDA
@@ -12,7 +13,9 @@ program test_mlp_minibatch_adam_hypergradient
         mlp_minibatch_adam_hypergradient_metadata_t, &
         mlp_optimize_minibatch_adam_hyperparameters, &
         MLP_MINIBATCH_ADAM_HYPERPARAMETER_COUNT, &
-        MLP_MINIBATCH_ADAM_LOG_LEARNING_RATE, MLP_MINIBATCH_ADAM_LOG_L2
+        MLP_MINIBATCH_ADAM_LOG_LEARNING_RATE, MLP_MINIBATCH_ADAM_LOG_L2, &
+        MLP_MINIBATCH_ADAM_LOGIT_BETA1, MLP_MINIBATCH_ADAM_LOGIT_BETA2, &
+        MLP_MINIBATCH_ADAM_LOG_EPSILON
     implicit none
 
     type(mlp_t), target :: model
@@ -60,6 +63,13 @@ program test_mlp_minibatch_adam_hypergradient
     metadata = objective%metadata()
     call check(metadata%epochs == 3 .and. metadata%batch_size == 3 .and. &
         metadata%steps == 9 .and. metadata%shuffle, "batch metadata", failures)
+    call check(metadata%parameter_count == 5 .and. &
+        metadata%log_learning_rate_index == MLP_MINIBATCH_ADAM_LOG_LEARNING_RATE .and. &
+        metadata%log_l2_index == MLP_MINIBATCH_ADAM_LOG_L2 .and. &
+        metadata%logit_beta1_index == MLP_MINIBATCH_ADAM_LOGIT_BETA1 .and. &
+        metadata%logit_beta2_index == MLP_MINIBATCH_ADAM_LOGIT_BETA2 .and. &
+        metadata%log_epsilon_index == MLP_MINIBATCH_ADAM_LOG_EPSILON, &
+        "five-coordinate metadata", failures)
 
     parameters = objective%parameters()
     call objective%value_gradient(parameters, value, gradient, status)
@@ -67,25 +77,21 @@ program test_mlp_minibatch_adam_hypergradient
     h = 2.0e-6_dp
     do i = 1, MLP_MINIBATCH_ADAM_HYPERPARAMETER_COUNT
         parameters(i) = parameters(i) + h
-        call objective%value_gradient(parameters, value_plus, vjp_gradient, status)
-        call check(status_ok(status), "plus finite-difference evaluation", failures)
+        value_plus = independent_linear_trajectory(parameters)
         parameters(i) = parameters(i) - 2.0_dp*h
-        call objective%value_gradient(parameters, value_minus, vjp_gradient, status)
-        call check(status_ok(status), "minus finite-difference evaluation", failures)
+        value_minus = independent_linear_trajectory(parameters)
         parameters(i) = parameters(i) + h
         call check(abs(gradient(i) - (value_plus-value_minus)/(2.0_dp*h)) < &
-            8.0e-6_dp, "mini-batch Adam hypergradient central difference", failures)
+            8.0e-6_dp, "independent mini-batch Adam hypergradient", failures)
     end do
 
-    direction = [0.27_dp, -0.19_dp]
+    direction = [0.27_dp, -0.19_dp, 0.13_dp, -0.11_dp, 0.07_dp]
     call objective%jvp(parameters, direction, value, tangent, status)
     call check(status_ok(status), "forward mini-batch Adam JVP", failures)
-    call objective%value_gradient(parameters + h*direction, value_plus, &
-        vjp_gradient, status)
-    call objective%value_gradient(parameters - h*direction, value_minus, &
-        vjp_gradient, status)
+    value_plus = independent_linear_trajectory(parameters+h*direction)
+    value_minus = independent_linear_trajectory(parameters-h*direction)
     call check(abs(tangent - (value_plus-value_minus)/(2.0_dp*h)) < 1.0e-5_dp, &
-        "mini-batch Adam JVP central difference", failures)
+        "independent mini-batch Adam JVP", failures)
 
     call objective%vjp(parameters, 1.7_dp, vjp_gradient, status)
     call check(status_ok(status), "reverse mini-batch Adam VJP", failures)
@@ -116,9 +122,11 @@ program test_mlp_minibatch_adam_hypergradient
     call check(status_ok(status), "nonlinear mini-batch Adam products", failures)
     do i = 1, MLP_MINIBATCH_ADAM_HYPERPARAMETER_COUNT
         parameters(i) = parameters(i) + h
-        call nonlinear_objective%value_gradient(parameters, value_plus, vjp_gradient, status)
+        call nonlinear_objective%value_gradient(parameters, value_plus, &
+            vjp_gradient, status)
         parameters(i) = parameters(i) - 2.0_dp*h
-        call nonlinear_objective%value_gradient(parameters, value_minus, vjp_gradient, status)
+        call nonlinear_objective%value_gradient(parameters, value_minus, &
+            vjp_gradient, status)
         parameters(i) = parameters(i) + h
         call check(abs(gradient(i) - (value_plus-value_minus)/(2.0_dp*h)) < &
             2.0e-5_dp, "nonlinear mini-batch Adam central difference", failures)
@@ -132,9 +140,13 @@ program test_mlp_minibatch_adam_hypergradient
     options%gradient_tolerance = 1.0e-3_dp
     call mlp_optimize_minibatch_adam_hyperparameters(model, train_x, train_target, &
         validation_x, validation_target, options, result, status)
-    call check(status_ok(status), "FortOpt mini-batch Adam hyperparameter solve", failures)
+    call check(status_ok(status), &
+        "FortOpt mini-batch Adam hyperparameter solve", failures)
     call check(result%converged .and. result%learning_rate > 0.0_dp .and. &
-        result%l2 > 0.0_dp, "FortOpt mini-batch Adam result", failures)
+        result%l2 > 0.0_dp .and. result%beta1 > 0.0_dp .and. &
+        result%beta1 < 1.0_dp .and. result%beta2 > 0.0_dp .and. &
+        result%beta2 < 1.0_dp .and. result%epsilon > 0.0_dp, &
+        "FortOpt five-coordinate mini-batch Adam result", failures)
 
     bad_options = options
     bad_options%device_kind = FORTML_DEVICE_CUDA
@@ -144,9 +156,83 @@ program test_mlp_minibatch_adam_hypergradient
         "CUDA mini-batch Adam hypergradient refusal", failures)
 
     if (failures > 0) error stop 1
-    write (*, '(a)') "PASS MLP mini-batch Adam hypergradient independent behavioral oracles"
+    write (*, '(a)') &
+        "PASS MLP mini-batch Adam hypergradient independent behavioral oracles"
 
 contains
+
+    real(dp) function independent_linear_trajectory(packed) result(loss)
+        real(dp), intent(in) :: packed(MLP_MINIBATCH_ADAM_HYPERPARAMETER_COUNT)
+        real(dp) :: theta(2), first(2), second(2), batch_gradient(2)
+        real(dp) :: learning_rate, l2, beta1, beta2, epsilon, residual
+        integer :: order(7), indices(3), epoch, step, batch_start, batch_length
+        integer :: i, j, temporary
+        integer(int64) :: state
+
+        learning_rate = exp(packed(MLP_MINIBATCH_ADAM_LOG_LEARNING_RATE))
+        l2 = exp(packed(MLP_MINIBATCH_ADAM_LOG_L2))
+        beta1 = sigmoid(packed(MLP_MINIBATCH_ADAM_LOGIT_BETA1))
+        beta2 = sigmoid(packed(MLP_MINIBATCH_ADAM_LOGIT_BETA2))
+        epsilon = exp(packed(MLP_MINIBATCH_ADAM_LOG_EPSILON))
+        theta = [0.21_dp, -0.06_dp]
+        first = 0.0_dp
+        second = 0.0_dp
+        state = 43_int64
+        step = 0
+        do epoch = 1, 3
+            order = [(i, i=1, 7)]
+            do i = 7, 2, -1
+                state = modulo(48271_int64*state, 2147483647_int64)
+                j = 1+int(modulo(state, int(i, int64)))
+                temporary = order(i)
+                order(i) = order(j)
+                order(j) = temporary
+            end do
+            do batch_start = 1, 7, 3
+                batch_length = min(3, 8-batch_start)
+                indices(1:batch_length) = &
+                    order(batch_start:batch_start+batch_length-1)
+                batch_gradient = independent_batch_gradient(theta, &
+                    indices(1:batch_length), l2)
+                step = step+1
+                first = beta1*first+(1.0_dp-beta1)*batch_gradient
+                second = beta2*second+(1.0_dp-beta2)*batch_gradient*batch_gradient
+                theta = theta-learning_rate*(first/(1.0_dp-beta1**step))/ &
+                    (sqrt(second/(1.0_dp-beta2**step))+epsilon)
+            end do
+        end do
+        loss = 0.0_dp
+        do i = 1, size(validation_x, 1)
+            residual = validation_x(i, 1)*theta(1)+theta(2)-validation_target(i, 1)
+            loss = loss+0.5_dp*residual*residual/real(size(validation_x, 1), dp)
+        end do
+    end function independent_linear_trajectory
+
+    function independent_batch_gradient(theta, indices, l2) result(gradient)
+        real(dp), intent(in) :: theta(2), l2
+        integer, intent(in) :: indices(:)
+        real(dp) :: gradient(2), residual
+        integer :: i, source
+
+        gradient = l2*theta
+        do i = 1, size(indices)
+            source = indices(i)
+            residual = train_x(source, 1)*theta(1)+theta(2)-train_target(source, 1)
+            gradient(1) = gradient(1)+ &
+                residual*train_x(source, 1)/real(size(indices), dp)
+            gradient(2) = gradient(2)+residual/real(size(indices), dp)
+        end do
+    end function independent_batch_gradient
+
+    pure real(dp) function sigmoid(logit) result(probability)
+        real(dp), intent(in) :: logit
+
+        if (logit >= 0.0_dp) then
+            probability = 1.0_dp/(1.0_dp+exp(-logit))
+        else
+            probability = exp(logit)/(1.0_dp+exp(logit))
+        end if
+    end function sigmoid
 
     subroutine check(condition, description, failures)
         logical, intent(in) :: condition

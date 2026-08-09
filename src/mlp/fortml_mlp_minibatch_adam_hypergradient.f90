@@ -4,8 +4,8 @@ module fortml_mlp_minibatch_adam_hypergradient
     !! The inner trajectory uses coupled L2 (the regularized loss gradient is
     !! fed into both Adam moment states) and a private, deterministic batch
     !! cursor.  The packed outer coordinates are
-    !! `[log(learning_rate), log(l2)]`; beta1, beta2, and epsilon are fixed
-    !! configuration values.  Forward tangents through parameters, moments,
+    !! `[log(learning_rate), log(l2), logit(beta1), logit(beta2),
+    !!   log(epsilon)]`.  Forward tangents through parameters, moments,
     !! bias correction, and the stabilized denominator provide analytic
     !! value/gradient and JVP products.  FortOpt consumes that same callback.
     !! A CUDA request is a typed refusal: no host fallback is hidden behind a
@@ -25,14 +25,20 @@ module fortml_mlp_minibatch_adam_hypergradient
     implicit none
     private
 
-    integer, parameter, public :: MLP_MINIBATCH_ADAM_HYPERPARAMETER_COUNT = 2
+    integer, parameter, public :: MLP_MINIBATCH_ADAM_HYPERPARAMETER_COUNT = 5
     integer, parameter, public :: MLP_MINIBATCH_ADAM_LOG_LEARNING_RATE = 1
     integer, parameter, public :: MLP_MINIBATCH_ADAM_LOG_L2 = 2
+    integer, parameter, public :: MLP_MINIBATCH_ADAM_LOGIT_BETA1 = 3
+    integer, parameter, public :: MLP_MINIBATCH_ADAM_LOGIT_BETA2 = 4
+    integer, parameter, public :: MLP_MINIBATCH_ADAM_LOG_EPSILON = 5
 
     type, public :: mlp_minibatch_adam_hypergradient_metadata_t
         integer :: parameter_count = MLP_MINIBATCH_ADAM_HYPERPARAMETER_COUNT
         integer :: log_learning_rate_index = MLP_MINIBATCH_ADAM_LOG_LEARNING_RATE
         integer :: log_l2_index = MLP_MINIBATCH_ADAM_LOG_L2
+        integer :: logit_beta1_index = MLP_MINIBATCH_ADAM_LOGIT_BETA1
+        integer :: logit_beta2_index = MLP_MINIBATCH_ADAM_LOGIT_BETA2
+        integer :: log_epsilon_index = MLP_MINIBATCH_ADAM_LOG_EPSILON
         integer :: epochs = 0
         integer :: batch_size = 0
         integer :: steps = 0
@@ -55,6 +61,12 @@ module fortml_mlp_minibatch_adam_hypergradient
         real(dp) :: upper_log_learning_rate = 2.0_dp
         real(dp) :: lower_log_l2 = -20.0_dp
         real(dp) :: upper_log_l2 = 2.0_dp
+        real(dp) :: lower_logit_beta1 = -12.0_dp
+        real(dp) :: upper_logit_beta1 = 12.0_dp
+        real(dp) :: lower_logit_beta2 = -12.0_dp
+        real(dp) :: upper_logit_beta2 = 12.0_dp
+        real(dp) :: lower_log_epsilon = -30.0_dp
+        real(dp) :: upper_log_epsilon = 2.0_dp
         integer :: optimizer = MLP_OPTIMIZER_ADAM
         integer :: device_kind = FORTML_DEVICE_CPU
         integer :: memory = 8
@@ -73,8 +85,14 @@ module fortml_mlp_minibatch_adam_hypergradient
         real(dp) :: gradient_norm = huge(1.0_dp)
         real(dp) :: log_learning_rate = 0.0_dp
         real(dp) :: log_l2 = 0.0_dp
+        real(dp) :: logit_beta1 = 0.0_dp
+        real(dp) :: logit_beta2 = 0.0_dp
+        real(dp) :: log_epsilon = 0.0_dp
         real(dp) :: learning_rate = 0.0_dp
         real(dp) :: l2 = 0.0_dp
+        real(dp) :: beta1 = 0.0_dp
+        real(dp) :: beta2 = 0.0_dp
+        real(dp) :: epsilon = 0.0_dp
     end type mlp_minibatch_adam_hypergradient_result_t
 
     type, public :: mlp_minibatch_adam_hypergradient_objective_t
@@ -88,9 +106,9 @@ module fortml_mlp_minibatch_adam_hypergradient
         type(mlp_minibatch_adam_hypergradient_metadata_t) :: layout
         real(dp) :: initial_log_learning_rate = 0.0_dp
         real(dp) :: initial_log_l2 = 0.0_dp
-        real(dp) :: beta1 = 0.9_dp
-        real(dp) :: beta2 = 0.999_dp
-        real(dp) :: epsilon = 1.0e-8_dp
+        real(dp) :: initial_logit_beta1 = 0.0_dp
+        real(dp) :: initial_logit_beta2 = 0.0_dp
+        real(dp) :: initial_log_epsilon = 0.0_dp
         logical :: initialized = .false.
     contains
         procedure, public :: initialize => minibatch_adam_initialize
@@ -190,9 +208,9 @@ contains
         end do
         self%initial_log_learning_rate = log(options%learning_rate)
         self%initial_log_l2 = log(options%l2)
-        self%beta1 = options%beta1
-        self%beta2 = options%beta2
-        self%epsilon = options%epsilon
+        self%initial_logit_beta1 = probability_logit(options%beta1)
+        self%initial_logit_beta2 = probability_logit(options%beta2)
+        self%initial_log_epsilon = log(options%epsilon)
         self%initialized = .true.
         call status_set(status, FORTNUM_OK, "")
     end subroutine minibatch_adam_initialize
@@ -216,7 +234,9 @@ contains
         real(dp), allocatable :: parameters(:)
 
         allocate(parameters(MLP_MINIBATCH_ADAM_HYPERPARAMETER_COUNT))
-        parameters = [self%initial_log_learning_rate, self%initial_log_l2]
+        parameters = [self%initial_log_learning_rate, self%initial_log_l2, &
+            self%initial_logit_beta1, self%initial_logit_beta2, &
+            self%initial_log_epsilon]
     end function minibatch_adam_parameters
 
     logical function minibatch_adam_is_initialized(self) result(yes)
@@ -381,8 +401,12 @@ contains
             validation_target, options, status)
         if (.not. status_ok(status)) return
         parameters = adapter%parameters()
-        lower = [options%lower_log_learning_rate, options%lower_log_l2]
-        upper = [options%upper_log_learning_rate, options%upper_log_l2]
+        lower = [options%lower_log_learning_rate, options%lower_log_l2, &
+            options%lower_logit_beta1, options%lower_logit_beta2, &
+            options%lower_log_epsilon]
+        upper = [options%upper_log_learning_rate, options%upper_log_l2, &
+            options%upper_logit_beta1, options%upper_logit_beta2, &
+            options%upper_log_epsilon]
         call adapter%fortopt(objective, status)
         if (.not. status_ok(status)) return
         optimizer_options%memory = options%memory
@@ -402,8 +426,14 @@ contains
         result%gradient_norm = sqrt(sum(gradient*gradient))
         result%log_learning_rate = parameters(MLP_MINIBATCH_ADAM_LOG_LEARNING_RATE)
         result%log_l2 = parameters(MLP_MINIBATCH_ADAM_LOG_L2)
+        result%logit_beta1 = parameters(MLP_MINIBATCH_ADAM_LOGIT_BETA1)
+        result%logit_beta2 = parameters(MLP_MINIBATCH_ADAM_LOGIT_BETA2)
+        result%log_epsilon = parameters(MLP_MINIBATCH_ADAM_LOG_EPSILON)
         result%learning_rate = exp(result%log_learning_rate)
         result%l2 = exp(result%log_l2)
+        result%beta1 = probability_from_logit(result%logit_beta1)
+        result%beta2 = probability_from_logit(result%logit_beta2)
+        result%epsilon = exp(result%log_epsilon)
         if (.not. result%converged) then
             call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
                 "MLP mini-batch Adam hyperparameter optimization: iteration limit reached")
@@ -418,20 +448,24 @@ contains
         real(dp), intent(out) :: value, gradient(:)
         type(fortnum_status_t), intent(out) :: status
         real(dp), allocatable :: theta(:), theta_dot(:, :)
-        real(dp), allocatable :: first(:), second(:), first_dot(:, :), second_dot(:, :)
+        real(dp), allocatable :: first(:), second(:)
+        real(dp), allocatable :: first_previous(:), second_previous(:)
+        real(dp), allocatable :: first_dot(:, :), second_dot(:, :)
         real(dp), allocatable :: raw_gradient(:), gradient_dot(:), hvp(:)
         real(dp), allocatable :: validation_gradient(:)
         real(dp), allocatable :: x_batch(:, :), target_batch(:, :)
         real(dp), allocatable :: first_hat(:), second_hat(:), denominator(:), update(:)
-        real(dp), allocatable :: first_hat_dot(:), second_hat_dot(:), denominator_dot(:), update_dot(:)
-        real(dp) :: learning_rate, l2, learning_rate_dot, l2_dot
-        real(dp) :: train_value, l2_gradient, scalar_hvp, c1, c2
-        real(dp) :: sqrt_second
-        integer :: n_parameters, step, p, i
+        real(dp), allocatable :: first_hat_dot(:), second_hat_dot(:)
+        real(dp), allocatable :: denominator_dot(:), update_dot(:)
+        real(dp) :: learning_rate, l2, beta1, beta2, epsilon
+        real(dp) :: learning_rate_dot, l2_dot, beta1_dot, beta2_dot, epsilon_dot
+        real(dp) :: train_value, l2_gradient, scalar_hvp, c1, c2, c1_dot, c2_dot
+        integer :: n_parameters, step, p
 
         value = huge(1.0_dp)
         gradient = 0.0_dp
-        if (.not. unpack_parameters(parameters, learning_rate, l2)) then
+        if (.not. unpack_parameters(parameters, learning_rate, l2, beta1, beta2, &
+            epsilon)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "MLP mini-batch Adam hypergradient: packed parameters are invalid")
             return
@@ -439,7 +473,9 @@ contains
         n_parameters = size(self%initial_parameters)
         allocate(theta, source=self%initial_parameters)
         allocate(theta_dot(n_parameters, MLP_MINIBATCH_ADAM_HYPERPARAMETER_COUNT))
-        allocate(first(n_parameters), second(n_parameters), first_dot(n_parameters, &
+        allocate(first(n_parameters), second(n_parameters), &
+            first_previous(n_parameters), second_previous(n_parameters), &
+            first_dot(n_parameters, &
             MLP_MINIBATCH_ADAM_HYPERPARAMETER_COUNT), second_dot(n_parameters, &
             MLP_MINIBATCH_ADAM_HYPERPARAMETER_COUNT))
         allocate(raw_gradient(n_parameters), gradient_dot(n_parameters), hvp(n_parameters))
@@ -458,47 +494,66 @@ contains
             call make_batch(self, step, x_batch, target_batch)
             call mlp_loss_value_gradient(self%model, x_batch, target_batch, l2, &
                 train_value, raw_gradient, l2_gradient, status)
-            deallocate(x_batch, target_batch)
             if (.not. status_ok(status)) return
+            first_previous = first
+            second_previous = second
             do p = 1, MLP_MINIBATCH_ADAM_HYPERPARAMETER_COUNT
                 l2_dot = 0.0_dp
+                beta1_dot = 0.0_dp
+                beta2_dot = 0.0_dp
                 if (p == MLP_MINIBATCH_ADAM_LOG_L2) l2_dot = l2
-                call make_batch(self, step, x_batch, target_batch)
+                if (p == MLP_MINIBATCH_ADAM_LOGIT_BETA1) &
+                    beta1_dot = beta1*(1.0_dp-beta1)
+                if (p == MLP_MINIBATCH_ADAM_LOGIT_BETA2) &
+                    beta2_dot = beta2*(1.0_dp-beta2)
                 call mlp_loss_hvp(self%model, x_batch, target_batch, l2, theta_dot(:, p), &
                     l2_dot, hvp, scalar_hvp, status)
-                deallocate(x_batch, target_batch)
                 if (.not. status_ok(status)) return
                 gradient_dot = hvp
-                first_dot(:, p) = self%beta1*first_dot(:, p) + &
-                    (1.0_dp-self%beta1)*gradient_dot
-                second_dot(:, p) = self%beta2*second_dot(:, p) + &
-                    (1.0_dp-self%beta2)*2.0_dp*raw_gradient*gradient_dot
+                first_dot(:, p) = beta1*first_dot(:, p) + &
+                    (1.0_dp-beta1)*gradient_dot + &
+                    beta1_dot*(first_previous-raw_gradient)
+                second_dot(:, p) = beta2*second_dot(:, p) + &
+                    (1.0_dp-beta2)*2.0_dp*raw_gradient*gradient_dot + &
+                    beta2_dot*(second_previous-raw_gradient*raw_gradient)
             end do
-            first = self%beta1*first + (1.0_dp-self%beta1)*raw_gradient
-            second = self%beta2*second + (1.0_dp-self%beta2)*raw_gradient*raw_gradient
-            c1 = 1.0_dp-self%beta1**step
-            c2 = 1.0_dp-self%beta2**step
+            deallocate(x_batch, target_batch)
+            first = beta1*first_previous + (1.0_dp-beta1)*raw_gradient
+            second = beta2*second_previous + (1.0_dp-beta2)*raw_gradient*raw_gradient
+            c1 = 1.0_dp-beta1**step
+            c2 = 1.0_dp-beta2**step
             first_hat = first/c1
             second_hat = second/c2
+            if (any(second_hat <= 0.0_dp)) then
+                call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                    "MLP mini-batch Adam hypergradient: zero second-moment square root")
+                return
+            end if
+            denominator = sqrt(second_hat)+epsilon
+            update = first_hat/denominator
             do p = 1, MLP_MINIBATCH_ADAM_HYPERPARAMETER_COUNT
-                first_hat_dot = first_dot(:, p)/c1
-                second_hat_dot = second_dot(:, p)/c2
-                denominator_dot = 0.0_dp
-                do i = 1, size(theta)
-                    sqrt_second = sqrt(max(second_hat(i), 0.0_dp))
-                    denominator(i) = sqrt_second + self%epsilon
-                    if (sqrt_second > 0.0_dp) denominator_dot(i) = &
-                        second_hat_dot(i)/(2.0_dp*sqrt_second)
-                end do
-                update = first_hat/denominator
+                beta1_dot = 0.0_dp
+                beta2_dot = 0.0_dp
+                epsilon_dot = 0.0_dp
+                if (p == MLP_MINIBATCH_ADAM_LOGIT_BETA1) &
+                    beta1_dot = beta1*(1.0_dp-beta1)
+                if (p == MLP_MINIBATCH_ADAM_LOGIT_BETA2) &
+                    beta2_dot = beta2*(1.0_dp-beta2)
+                if (p == MLP_MINIBATCH_ADAM_LOG_EPSILON) epsilon_dot = epsilon
+                c1_dot = -real(step, dp)*beta1**(step-1)*beta1_dot
+                c2_dot = -real(step, dp)*beta2**(step-1)*beta2_dot
+                first_hat_dot = first_dot(:, p)/c1-first*c1_dot/(c1*c1)
+                second_hat_dot = second_dot(:, p)/c2-second*c2_dot/(c2*c2)
+                denominator_dot = second_hat_dot/(2.0_dp*sqrt(second_hat)) + &
+                    epsilon_dot
                 update_dot = first_hat_dot/denominator - &
                     first_hat*denominator_dot/(denominator*denominator)
                 learning_rate_dot = 0.0_dp
-                if (p == MLP_MINIBATCH_ADAM_LOG_LEARNING_RATE) learning_rate_dot = learning_rate
+                if (p == MLP_MINIBATCH_ADAM_LOG_LEARNING_RATE) &
+                    learning_rate_dot = learning_rate
                 theta_dot(:, p) = theta_dot(:, p) - learning_rate_dot*update - &
                     learning_rate*update_dot
             end do
-            update = first_hat/denominator
             theta = theta - learning_rate*update
             if (any(.not. ieee_is_finite(theta)) .or. any(.not. ieee_is_finite(theta_dot))) then
                 call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -540,19 +595,29 @@ contains
         end do
     end subroutine make_batch
 
-    logical function unpack_parameters(parameters, learning_rate, l2) result(valid)
+    logical function unpack_parameters(parameters, learning_rate, l2, beta1, beta2, &
+            epsilon) result(valid)
         real(dp), intent(in) :: parameters(:)
-        real(dp), intent(out) :: learning_rate, l2
+        real(dp), intent(out) :: learning_rate, l2, beta1, beta2, epsilon
 
         learning_rate = 0.0_dp
         l2 = 0.0_dp
+        beta1 = 0.0_dp
+        beta2 = 0.0_dp
+        epsilon = 0.0_dp
         valid = size(parameters) == MLP_MINIBATCH_ADAM_HYPERPARAMETER_COUNT .and. &
             all(ieee_is_finite(parameters))
         if (.not. valid) return
         learning_rate = exp(parameters(MLP_MINIBATCH_ADAM_LOG_LEARNING_RATE))
         l2 = exp(parameters(MLP_MINIBATCH_ADAM_LOG_L2))
+        beta1 = probability_from_logit(parameters(MLP_MINIBATCH_ADAM_LOGIT_BETA1))
+        beta2 = probability_from_logit(parameters(MLP_MINIBATCH_ADAM_LOGIT_BETA2))
+        epsilon = exp(parameters(MLP_MINIBATCH_ADAM_LOG_EPSILON))
         valid = ieee_is_finite(learning_rate) .and. ieee_is_finite(l2) .and. &
-            learning_rate > 0.0_dp .and. l2 > 0.0_dp
+            ieee_is_finite(beta1) .and. ieee_is_finite(beta2) .and. &
+            ieee_is_finite(epsilon) .and. learning_rate > 0.0_dp .and. &
+            l2 > 0.0_dp .and. beta1 > 0.0_dp .and. beta1 < 1.0_dp .and. &
+            beta2 > 0.0_dp .and. beta2 < 1.0_dp .and. epsilon > 0.0_dp
     end function unpack_parameters
 
     logical function valid_parameter_vector(parameters, gradient) result(valid)
@@ -565,7 +630,7 @@ contains
 
     logical function valid_options(options) result(valid)
         type(mlp_minibatch_adam_hypergradient_options_t), intent(in) :: options
-        real(dp) :: log_rate, log_l2
+        real(dp) :: log_rate, log_l2, logit_beta1, logit_beta2, log_epsilon
 
         valid = .false.
         if (options%epochs < 1 .or. options%batch_size < 0 .or. options%shuffle_seed <= 0) return
@@ -578,13 +643,33 @@ contains
             options%beta2 <= 0.0_dp .or. options%beta2 >= 1.0_dp .or. options%epsilon <= 0.0_dp) return
         log_rate = log(options%learning_rate)
         log_l2 = log(options%l2)
+        logit_beta1 = probability_logit(options%beta1)
+        logit_beta2 = probability_logit(options%beta2)
+        log_epsilon = log(options%epsilon)
         if (.not. ieee_is_finite(options%lower_log_learning_rate) .or. &
             .not. ieee_is_finite(options%upper_log_learning_rate) .or. &
-            .not. ieee_is_finite(options%lower_log_l2) .or. .not. ieee_is_finite(options%upper_log_l2)) return
+            .not. ieee_is_finite(options%lower_log_l2) .or. &
+            .not. ieee_is_finite(options%upper_log_l2) .or. &
+            .not. ieee_is_finite(options%lower_logit_beta1) .or. &
+            .not. ieee_is_finite(options%upper_logit_beta1) .or. &
+            .not. ieee_is_finite(options%lower_logit_beta2) .or. &
+            .not. ieee_is_finite(options%upper_logit_beta2) .or. &
+            .not. ieee_is_finite(options%lower_log_epsilon) .or. &
+            .not. ieee_is_finite(options%upper_log_epsilon)) return
         if (options%lower_log_learning_rate > options%upper_log_learning_rate .or. &
-            options%lower_log_l2 > options%upper_log_l2 .or. log_rate < options%lower_log_learning_rate .or. &
-            log_rate > options%upper_log_learning_rate .or. log_l2 < options%lower_log_l2 .or. &
-            log_l2 > options%upper_log_l2) return
+            options%lower_log_l2 > options%upper_log_l2 .or. &
+            options%lower_logit_beta1 > options%upper_logit_beta1 .or. &
+            options%lower_logit_beta2 > options%upper_logit_beta2 .or. &
+            options%lower_log_epsilon > options%upper_log_epsilon) return
+        if (log_rate < options%lower_log_learning_rate .or. &
+            log_rate > options%upper_log_learning_rate .or. &
+            log_l2 < options%lower_log_l2 .or. log_l2 > options%upper_log_l2 .or. &
+            logit_beta1 < options%lower_logit_beta1 .or. &
+            logit_beta1 > options%upper_logit_beta1 .or. &
+            logit_beta2 < options%lower_logit_beta2 .or. &
+            logit_beta2 > options%upper_logit_beta2 .or. &
+            log_epsilon < options%lower_log_epsilon .or. &
+            log_epsilon > options%upper_log_epsilon) return
         valid = options%memory >= 1 .and. options%max_iterations >= 1 .and. &
             options%max_line_search >= 1 .and. ieee_is_finite(options%gradient_tolerance) .and. &
             ieee_is_finite(options%step_tolerance) .and. ieee_is_finite(options%objective_tolerance) .and. &
@@ -604,6 +689,22 @@ contains
             size(target, 2) /= model%layer_sizes(size(model%layer_sizes))) return
         valid = all(ieee_is_finite(x)) .and. all(ieee_is_finite(target))
     end function valid_data
+
+    pure real(dp) function probability_logit(probability) result(logit)
+        real(dp), intent(in) :: probability
+
+        logit = log(probability/(1.0_dp-probability))
+    end function probability_logit
+
+    pure real(dp) function probability_from_logit(logit) result(probability)
+        real(dp), intent(in) :: logit
+
+        if (logit >= 0.0_dp) then
+            probability = 1.0_dp/(1.0_dp+exp(-logit))
+        else
+            probability = exp(logit)/(1.0_dp+exp(logit))
+        end if
+    end function probability_from_logit
 
     subroutine shuffle_order(order, state)
         integer, intent(inout) :: order(:)
