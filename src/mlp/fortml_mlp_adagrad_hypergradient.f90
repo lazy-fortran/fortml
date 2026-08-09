@@ -10,7 +10,7 @@ module fortml_mlp_adagrad_hypergradient
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
         FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED, FORTNUM_CONVERGENCE_ERROR
     use fortml_device, only: FORTML_DEVICE_CPU
-    use fortml_mlp, only: mlp_t
+    use fortml_mlp, only: mlp_t, MLP_LINEAR
     use fortml_mlp_training, only: mlp_loss_value_gradient, mlp_loss_hvp, &
         MLP_OPTIMIZER_ADAGRAD
     use fortopt_objective, only: objective_t
@@ -69,6 +69,11 @@ module fortml_mlp_adagrad_hypergradient
 
     type, public :: mlp_adagrad_hypergradient_objective_t
         !! Exact value/gradient/JVP/VJP products through Adagrad state.
+        !! For a one-layer affine MLP, `hvp` additionally returns an exact
+        !! outer Hessian-vector product.  The affine restriction is
+        !! deliberate: a nonlinear trajectory requires a third derivative of
+        !! the network loss, which is reported as a typed refusal rather than
+        !! silently approximated with finite differences.
         private
         type(mlp_t), pointer :: model => null()
         real(dp), allocatable :: train_x(:, :), train_target(:, :)
@@ -87,6 +92,7 @@ module fortml_mlp_adagrad_hypergradient
         procedure, public :: value_gradient => mlp_adagrad_hypergradient_value_gradient
         procedure, public :: jvp => mlp_adagrad_hypergradient_jvp
         procedure, public :: vjp => mlp_adagrad_hypergradient_vjp
+        procedure, public :: hvp => mlp_adagrad_hypergradient_hvp
         procedure, public :: fortopt => mlp_adagrad_hypergradient_fortopt
         procedure, public :: is_initialized => mlp_adagrad_hypergradient_is_initialized
     end type mlp_adagrad_hypergradient_objective_t
@@ -244,6 +250,180 @@ contains
         gradient = output_bar*gradient
         call status_set(status, FORTNUM_OK, "")
     end subroutine mlp_adagrad_hypergradient_vjp
+
+    subroutine mlp_adagrad_hypergradient_hvp(self, parameters, direction, product, &
+            status)
+        !! Exact outer Hessian-vector product on the one-layer affine branch.
+        !!
+        !! The recurrence propagates mixed second sensitivities of the
+        !! Adagrad state.  Because an affine network has a parameter-
+        !! independent MSE Hessian, no third-order network product is needed.
+        !! Nonlinear models return `FORTNUM_NOT_IMPLEMENTED` explicitly.
+        class(mlp_adagrad_hypergradient_objective_t), intent(inout) :: self
+        real(dp), intent(in) :: parameters(:), direction(:)
+        real(dp), intent(out) :: product(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: learning_rate, l2, epsilon
+        real(dp) :: learning_rate_dot, l2_dot, epsilon_dot
+        real(dp) :: learning_rate_direction, l2_direction
+        real(dp) :: train_value, l2_gradient, scalar_hvp
+        real(dp) :: validation_value, validation_l2_gradient
+        real(dp), allocatable :: denominator_direction(:), step_direction(:)
+        real(dp), allocatable :: theta(:), theta_dot(:, :), theta_dd(:, :)
+        real(dp), allocatable :: accumulator(:), accumulator_dot(:, :), accumulator_dd(:, :)
+        real(dp), allocatable :: raw_gradient(:), gradient_dot(:, :), gradient_dd(:, :)
+        real(dp), allocatable :: hvp(:), denominator(:), denominator_dot(:, :), denominator_dd(:, :)
+        real(dp), allocatable :: step(:), step_dot(:, :), step_dd(:, :)
+        real(dp), allocatable :: validation_gradient(:), validation_hvp(:), theta_dot_direction(:)
+        integer :: n_parameters, step_index, parameter_index
+
+        product = 0.0_dp
+        if (.not. self%is_initialized()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP Adagrad hypergradient HVP: objective is not initialized")
+            return
+        end if
+        if (size(product) /= MLP_ADAGRAD_HYPERPARAMETER_COUNT .or. &
+            size(direction) /= MLP_ADAGRAD_HYPERPARAMETER_COUNT .or. &
+            any(.not. ieee_is_finite(direction)) .or. &
+            .not. finite_parameters(parameters, learning_rate, l2, epsilon)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP Adagrad hypergradient HVP: packed shape or values are invalid")
+            return
+        end if
+        if (size(self%model%layer) /= 1 .or. self%model%output_activation /= MLP_LINEAR) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "MLP Adagrad hypergradient HVP: nonlinear network needs third derivatives")
+            return
+        end if
+
+        n_parameters = size(self%initial_parameters)
+        allocate(theta, source=self%initial_parameters)
+        allocate(theta_dot(n_parameters, MLP_ADAGRAD_HYPERPARAMETER_COUNT))
+        allocate(theta_dd(n_parameters, MLP_ADAGRAD_HYPERPARAMETER_COUNT))
+        allocate(accumulator(n_parameters), accumulator_dot(n_parameters, &
+            MLP_ADAGRAD_HYPERPARAMETER_COUNT), accumulator_dd(n_parameters, &
+            MLP_ADAGRAD_HYPERPARAMETER_COUNT))
+        allocate(raw_gradient(n_parameters), gradient_dot(n_parameters, &
+            MLP_ADAGRAD_HYPERPARAMETER_COUNT), gradient_dd(n_parameters, &
+            MLP_ADAGRAD_HYPERPARAMETER_COUNT), hvp(n_parameters))
+        allocate(denominator(n_parameters), denominator_dot(n_parameters, &
+            MLP_ADAGRAD_HYPERPARAMETER_COUNT), denominator_dd(n_parameters, &
+            MLP_ADAGRAD_HYPERPARAMETER_COUNT))
+        allocate(step(n_parameters), step_dot(n_parameters, &
+            MLP_ADAGRAD_HYPERPARAMETER_COUNT), step_dd(n_parameters, &
+            MLP_ADAGRAD_HYPERPARAMETER_COUNT))
+        allocate(theta_dot_direction(n_parameters))
+        allocate(denominator_direction(n_parameters), step_direction(n_parameters))
+        theta_dot = 0.0_dp
+        theta_dd = 0.0_dp
+        accumulator = 0.0_dp
+        accumulator_dot = 0.0_dp
+        accumulator_dd = 0.0_dp
+        learning_rate_direction = learning_rate*direction(MLP_ADAGRAD_LOG_LEARNING_RATE)
+        l2_direction = l2*direction(MLP_ADAGRAD_LOG_L2)
+
+        do step_index = 1, self%layout%inner_steps
+            call self%model%set_parameters(theta, status)
+            if (status%code /= FORTNUM_OK) return
+            call mlp_loss_value_gradient(self%model, self%train_x, self%train_target, &
+                l2, train_value, raw_gradient, l2_gradient, status)
+            if (status%code /= FORTNUM_OK) return
+            theta_dot_direction = matmul(theta_dot, direction)
+            do parameter_index = 1, MLP_ADAGRAD_HYPERPARAMETER_COUNT
+                l2_dot = 0.0_dp
+                if (parameter_index == MLP_ADAGRAD_LOG_L2) l2_dot = l2
+                call mlp_loss_hvp(self%model, self%train_x, self%train_target, l2, &
+                    theta_dot(:, parameter_index), l2_dot, hvp, scalar_hvp, status)
+                if (status%code /= FORTNUM_OK) return
+                gradient_dot(:, parameter_index) = hvp
+                call mlp_loss_hvp(self%model, self%train_x, self%train_target, l2, &
+                    theta_dd(:, parameter_index), 0.0_dp, hvp, scalar_hvp, status)
+                if (status%code /= FORTNUM_OK) return
+                gradient_dd(:, parameter_index) = hvp + l2_direction*theta_dot(:, parameter_index) + &
+                    l2_dot*theta_dot_direction + merge(l2_direction, 0.0_dp, &
+                    parameter_index == MLP_ADAGRAD_LOG_L2)*theta
+            end do
+            accumulator = accumulator + raw_gradient*raw_gradient
+            do parameter_index = 1, MLP_ADAGRAD_HYPERPARAMETER_COUNT
+                accumulator_dot(:, parameter_index) = accumulator_dot(:, parameter_index) + &
+                    2.0_dp*raw_gradient*gradient_dot(:, parameter_index)
+                accumulator_dd(:, parameter_index) = accumulator_dd(:, parameter_index) + &
+                    2.0_dp*gradient_dot(:, parameter_index)*matmul(gradient_dot, direction) + &
+                    2.0_dp*raw_gradient*gradient_dd(:, parameter_index)
+            end do
+            denominator = sqrt(accumulator) + epsilon
+            do parameter_index = 1, MLP_ADAGRAD_HYPERPARAMETER_COUNT
+                where (accumulator > 0.0_dp)
+                    denominator_dot(:, parameter_index) = accumulator_dot(:, parameter_index) / &
+                        (2.0_dp*sqrt(accumulator))
+                    denominator_dd(:, parameter_index) = accumulator_dd(:, parameter_index) / &
+                        (2.0_dp*sqrt(accumulator)) - accumulator_dot(:, parameter_index) * &
+                        matmul(accumulator_dot, direction) / (4.0_dp*accumulator**1.5_dp)
+                elsewhere
+                    denominator_dot(:, parameter_index) = 0.0_dp
+                    denominator_dd(:, parameter_index) = 0.0_dp
+                end where
+                epsilon_dot = 0.0_dp
+                if (parameter_index == MLP_ADAGRAD_LOG_EPSILON) epsilon_dot = epsilon
+                denominator_dot(:, parameter_index) = denominator_dot(:, parameter_index) + epsilon_dot
+                denominator_dd(:, parameter_index) = denominator_dd(:, parameter_index) + &
+                    merge(epsilon*direction(MLP_ADAGRAD_LOG_EPSILON), 0.0_dp, &
+                    parameter_index == MLP_ADAGRAD_LOG_EPSILON)
+            end do
+            denominator_direction = matmul(denominator_dot, direction)
+            step = raw_gradient/denominator
+            do parameter_index = 1, MLP_ADAGRAD_HYPERPARAMETER_COUNT
+                step_dot(:, parameter_index) = (gradient_dot(:, parameter_index)*denominator - &
+                    raw_gradient*denominator_dot(:, parameter_index))/(denominator*denominator)
+            end do
+            step_direction = matmul(step_dot, direction)
+            do parameter_index = 1, MLP_ADAGRAD_HYPERPARAMETER_COUNT
+                step_dd(:, parameter_index) = (gradient_dd(:, parameter_index)*denominator + &
+                    gradient_dot(:, parameter_index)*denominator_direction - &
+                    matmul(gradient_dot, direction)*denominator_dot(:, parameter_index) - &
+                    raw_gradient*denominator_dd(:, parameter_index))/(denominator*denominator) - &
+                    2.0_dp*(gradient_dot(:, parameter_index)*denominator - &
+                    raw_gradient*denominator_dot(:, parameter_index))*denominator_direction/(denominator**3)
+                learning_rate_dot = 0.0_dp
+                if (parameter_index == MLP_ADAGRAD_LOG_LEARNING_RATE) learning_rate_dot = learning_rate
+                theta_dd(:, parameter_index) = theta_dd(:, parameter_index) - &
+                    (merge(learning_rate*direction(MLP_ADAGRAD_LOG_LEARNING_RATE), 0.0_dp, &
+                    parameter_index == MLP_ADAGRAD_LOG_LEARNING_RATE))*step - &
+                    learning_rate_dot*step_direction - learning_rate_direction*step_dot(:, parameter_index) - &
+                    learning_rate*step_dd(:, parameter_index)
+                theta_dot(:, parameter_index) = theta_dot(:, parameter_index) - &
+                    learning_rate_dot*step - learning_rate*step_dot(:, parameter_index)
+            end do
+            theta = theta-learning_rate*step
+            if (any(.not. ieee_is_finite(theta)) .or. any(.not. ieee_is_finite(theta_dot)) .or. &
+                any(.not. ieee_is_finite(theta_dd)) .or. any(.not. ieee_is_finite(accumulator))) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP Adagrad hypergradient HVP: trajectory is not finite")
+                return
+            end if
+        end do
+
+        call self%model%set_parameters(theta, status)
+        if (status%code /= FORTNUM_OK) return
+        allocate(validation_gradient(n_parameters), validation_hvp(n_parameters))
+        call mlp_loss_value_gradient(self%model, self%validation_x, self%validation_target, &
+            0.0_dp, validation_value, validation_gradient, validation_l2_gradient, status)
+        if (status%code /= FORTNUM_OK) return
+        call mlp_loss_hvp(self%model, self%validation_x, self%validation_target, 0.0_dp, &
+            matmul(theta_dot, direction), 0.0_dp, validation_hvp, scalar_hvp, status)
+        if (status%code /= FORTNUM_OK) return
+        do parameter_index = 1, MLP_ADAGRAD_HYPERPARAMETER_COUNT
+            product(parameter_index) = dot_product(validation_gradient, theta_dd(:, parameter_index)) + &
+                dot_product(theta_dot(:, parameter_index), validation_hvp)
+        end do
+        if (any(.not. ieee_is_finite(product))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP Adagrad hypergradient HVP: product is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine mlp_adagrad_hypergradient_hvp
 
     subroutine mlp_adagrad_hypergradient_fortopt(self, objective, status)
         class(mlp_adagrad_hypergradient_objective_t), target, intent(inout) :: self

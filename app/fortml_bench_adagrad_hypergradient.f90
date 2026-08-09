@@ -1,7 +1,7 @@
 program fortml_bench_adagrad_hypergradient
     !! Release workload for the fixed full-batch Adagrad hypergradient.
     use, intrinsic :: iso_fortran_env, only: dp => real64, int64
-    use fortml_mlp, only: mlp_t
+    use fortml_mlp, only: mlp_t, MLP_LINEAR
     use fortml_mlp_adagrad_hypergradient, only: &
         mlp_adagrad_hypergradient_objective_t, &
         mlp_adagrad_hypergradient_options_t
@@ -12,13 +12,13 @@ program fortml_bench_adagrad_hypergradient
     integer, parameter :: steps = 4
     real(dp) :: train_x(n_train, 1), train_target(n_train, 1)
     real(dp) :: validation_x(n_validation, 1), validation_target(n_validation, 1)
-    real(dp) :: parameters(3), direction(3), gradient(3)
+    real(dp) :: parameters(3), base_parameters(3), direction(3), gradient(3), hvp_product(3)
     real(dp) :: value, tangent, elapsed
     integer(int64) :: clock_start, clock_end, clock_rate
     integer :: oracle_unit, environment_status, repetition
     character(len=1024) :: oracle_path
-    type(mlp_t), target :: model
-    type(mlp_adagrad_hypergradient_objective_t) :: objective
+    type(mlp_t), target :: model, affine_model
+    type(mlp_adagrad_hypergradient_objective_t) :: objective, affine_objective
     type(mlp_adagrad_hypergradient_options_t) :: options
     type(fortnum_status_t) :: status
 
@@ -45,11 +45,24 @@ program fortml_bench_adagrad_hypergradient
         validation_target, options, status)
     if (.not. status_ok(status)) error stop "Adagrad hypergradient benchmark setup failed"
     parameters = objective%parameters()
+    base_parameters = parameters
     call objective%value_gradient(parameters, value, gradient, status)
     if (.not. status_ok(status)) error stop "Adagrad hypergradient product failed"
     direction = [0.31_dp, -0.27_dp, 0.19_dp]
     call objective%jvp(parameters, direction, value, tangent, status)
     if (.not. status_ok(status)) error stop "Adagrad hypergradient JVP failed"
+
+    call affine_model%initialize([1, 1], status, hidden_activation=MLP_LINEAR, &
+        output_activation=MLP_LINEAR, initialization_seed=23)
+    if (.not. status_ok(status)) error stop "Adagrad affine benchmark initialization failed"
+    call affine_model%set_parameters([0.15_dp, -0.1_dp], status)
+    if (.not. status_ok(status)) error stop "Adagrad affine benchmark parameter setup failed"
+    call affine_objective%initialize(affine_model, train_x, train_target, validation_x, &
+        validation_target, options, status)
+    if (.not. status_ok(status)) error stop "Adagrad affine benchmark setup failed"
+    parameters = affine_objective%parameters()
+    call affine_objective%hvp(parameters, direction, hvp_product, status)
+    if (.not. status_ok(status)) error stop "Adagrad affine hypergradient HVP failed"
 
     oracle_unit = -1
     call get_environment_variable("FORTML_BENCH_ADAGRAD_HYPERGRADIENT_ORACLE", &
@@ -63,19 +76,32 @@ program fortml_bench_adagrad_hypergradient
         write (oracle_unit, '(a,es26.17e3)') "gradient,2,", gradient(2)
         write (oracle_unit, '(a,es26.17e3)') "gradient,3,", gradient(3)
         write (oracle_unit, '(a,es26.17e3)') "jvp,1,", tangent
+        write (oracle_unit, '(a,es26.17e3)') "hvp,1,", hvp_product(1)
+        write (oracle_unit, '(a,es26.17e3)') "hvp,2,", hvp_product(2)
+        write (oracle_unit, '(a,es26.17e3)') "hvp,3,", hvp_product(3)
         close (oracle_unit)
     end if
     if (oracle_only_requested()) stop
 
     call system_clock(clock_start, clock_rate)
     do repetition = 1, repetitions
-        call objective%value_gradient(parameters, value, gradient, status)
+        call objective%value_gradient(base_parameters, value, gradient, status)
         if (.not. status_ok(status)) error stop "Adagrad hypergradient timing failed"
     end do
     call system_clock(clock_end)
     elapsed = real(clock_end-clock_start, dp)/real(clock_rate, dp) &
         /real(repetitions, dp)
     write (*, '(a,es24.16)') "adagrad_hypergradient_value_gradient,", elapsed
+
+    call system_clock(clock_start)
+    do repetition = 1, repetitions
+        call affine_objective%hvp(parameters, direction, hvp_product, status)
+        if (.not. status_ok(status)) error stop "Adagrad hypergradient HVP timing failed"
+    end do
+    call system_clock(clock_end)
+    elapsed = real(clock_end-clock_start, dp)/real(clock_rate, dp) &
+        /real(repetitions, dp)
+    write (*, '(a,es24.16)') "adagrad_hypergradient_hvp,", elapsed
 
 contains
 
