@@ -218,6 +218,10 @@ module fortml_mlp_hypergradient
         integer :: momentum_index = MLP_RMSPROP_MOMENTUM
         integer :: inner_steps = 0
         logical :: centered = .false.
+        logical :: weighted_training = .false.
+        logical :: weighted_validation = .false.
+        real(dp) :: training_weight_mass = 0.0_dp
+        real(dp) :: validation_weight_mass = 0.0_dp
     end type mlp_rmsprop_hypergradient_metadata_t
 
     type, public :: mlp_rmsprop_hypergradient_options_t
@@ -357,6 +361,7 @@ module fortml_mlp_hypergradient
         type(mlp_t), pointer :: model => null()
         real(dp), allocatable :: train_x(:, :), train_target(:, :)
         real(dp), allocatable :: validation_x(:, :), validation_target(:, :)
+        real(dp), allocatable :: train_weight(:), validation_weight(:)
         real(dp), allocatable :: initial_parameters(:)
         type(mlp_rmsprop_hypergradient_metadata_t) :: layout
         real(dp) :: initial_log_learning_rate = 0.0_dp
@@ -648,13 +653,15 @@ contains
     end subroutine mlp_optimize_hyperparameters
 
     subroutine mlp_rmsprop_hypergradient_initialize(self, model, train_x, &
-            train_target, validation_x, validation_target, options, status)
+            train_target, validation_x, validation_target, options, status, &
+            train_weight, validation_weight)
         class(mlp_rmsprop_hypergradient_objective_t), intent(out) :: self
         type(mlp_t), target, intent(inout) :: model
         real(dp), intent(in) :: train_x(:, :), train_target(:, :)
         real(dp), intent(in) :: validation_x(:, :), validation_target(:, :)
         type(mlp_rmsprop_hypergradient_options_t), intent(in) :: options
         type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: train_weight(:), validation_weight(:)
         !! Default-initialized instances, standing in for empty
         !! structure constructors: nvfortran rejects `T()` outright,
         !! and a declared local carries the same default init.
@@ -683,15 +690,42 @@ contains
                 "MLP RMSprop hypergradient: model or validation data is invalid")
             return
         end if
+        if (present(train_weight)) then
+            if (.not. valid_hypergradient_weight(train_weight, size(train_x, 1))) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP RMSprop hypergradient: training weights are invalid")
+                return
+            end if
+        end if
+        if (present(validation_weight)) then
+            if (.not. valid_hypergradient_weight(validation_weight, &
+                size(validation_x, 1))) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP RMSprop hypergradient: validation weights are invalid")
+                return
+            end if
+        end if
 
         self%model => model
         allocate(self%train_x, source=train_x)
         allocate(self%train_target, source=train_target)
         allocate(self%validation_x, source=validation_x)
         allocate(self%validation_target, source=validation_target)
+        if (present(train_weight)) allocate(self%train_weight, source=train_weight)
+        if (present(validation_weight)) then
+            allocate(self%validation_weight, source=validation_weight)
+        end if
         allocate(self%initial_parameters, source=model%parameters())
         self%layout%inner_steps = options%steps
         self%layout%centered = options%centered
+        self%layout%weighted_training = present(train_weight)
+        self%layout%weighted_validation = present(validation_weight)
+        self%layout%training_weight_mass = real(size(train_x, 1), dp)
+        if (present(train_weight)) self%layout%training_weight_mass = sum(train_weight)
+        self%layout%validation_weight_mass = real(size(validation_x, 1), dp)
+        if (present(validation_weight)) then
+            self%layout%validation_weight_mass = sum(validation_weight)
+        end if
         self%initial_log_learning_rate = log(options%learning_rate)
         self%initial_log_l2 = log(options%l2)
         self%initial_decay = options%rmsprop_decay
@@ -928,22 +962,22 @@ contains
         do step = 1, self%layout%inner_steps
             call self%model%set_parameters(theta, status)
             if (status%code /= FORTNUM_OK) return
-            call mlp_loss_value_gradient(self%model, self%train_x, self%train_target, &
-                l2, train_value, raw_gradient, l2_gradient, status)
+            call rmsprop_training_value_gradient(self, l2, train_value, &
+                raw_gradient, l2_gradient, status)
             if (status%code /= FORTNUM_OK) return
             theta_direction = matmul(theta_dot, direction)
             gradient_direction = 0.0_dp
             do parameter_index = 1, MLP_RMSPROP_HYPERPARAMETER_COUNT
                 l2_dot = 0.0_dp
                 if (parameter_index == MLP_RMSPROP_LOG_L2) l2_dot = l2
-                call mlp_loss_hvp(self%model, self%train_x, self%train_target, l2, &
-                    theta_dot(:, parameter_index), l2_dot, hvp, scalar_hvp, status)
+                call rmsprop_training_hvp(self, l2, theta_dot(:, parameter_index), &
+                    l2_dot, hvp, scalar_hvp, status)
                 if (status%code /= FORTNUM_OK) return
                 gradient_dot(:, parameter_index) = hvp
                 gradient_direction = gradient_direction + &
                     direction(parameter_index)*gradient_dot(:, parameter_index)
-                call mlp_loss_hvp(self%model, self%train_x, self%train_target, l2, &
-                    theta_dd(:, parameter_index), 0.0_dp, hvp, scalar_hvp, status)
+                call rmsprop_training_hvp(self, l2, theta_dd(:, parameter_index), &
+                    0.0_dp, hvp, scalar_hvp, status)
                 if (status%code /= FORTNUM_OK) return
                 l2_second = 0.0_dp
                 if (parameter_index == MLP_RMSPROP_LOG_L2) l2_second = l2_direction
@@ -1110,11 +1144,11 @@ contains
         call self%model%set_parameters(theta, status)
         if (status%code /= FORTNUM_OK) return
         allocate(validation_gradient(n_parameters), validation_hvp(n_parameters))
-        call mlp_loss_value_gradient(self%model, self%validation_x, self%validation_target, &
-            0.0_dp, validation_value, validation_gradient, validation_l2_gradient, status)
+        call rmsprop_validation_value_gradient(self, validation_value, &
+            validation_gradient, validation_l2_gradient, status)
         if (status%code /= FORTNUM_OK) return
-        call mlp_loss_hvp(self%model, self%validation_x, self%validation_target, 0.0_dp, &
-            theta_direction, 0.0_dp, validation_hvp, scalar_hvp, status)
+        call rmsprop_validation_hvp(self, theta_direction, validation_hvp, &
+            scalar_hvp, status)
         if (status%code /= FORTNUM_OK) return
         do parameter_index = 1, MLP_RMSPROP_HYPERPARAMETER_COUNT
             product(parameter_index) = dot_product(validation_gradient, theta_dd(:, parameter_index)) + &
@@ -1159,7 +1193,8 @@ contains
     end subroutine mlp_rmsprop_hypergradient_context_callback
 
     subroutine mlp_optimize_rmsprop_hyperparameters(model, train_x, train_target, &
-            validation_x, validation_target, options, result, status)
+            validation_x, validation_target, options, result, status, train_weight, &
+            validation_weight)
         !! Optimize RMSprop trajectory hyperparameters with L-BFGS-B.
         type(mlp_t), target, intent(inout) :: model
         real(dp), intent(in) :: train_x(:, :), train_target(:, :)
@@ -1167,6 +1202,7 @@ contains
         type(mlp_rmsprop_hypergradient_options_t), intent(in) :: options
         type(mlp_rmsprop_hypergradient_result_t), intent(out) :: result
         type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: train_weight(:), validation_weight(:)
         type(mlp_rmsprop_hypergradient_objective_t), target :: adapter
         type(objective_t) :: objective
         type(lbfgsb_t) :: optimizer
@@ -1194,7 +1230,7 @@ contains
             return
         end if
         call adapter%initialize(model, train_x, train_target, validation_x, &
-            validation_target, options, status)
+            validation_target, options, status, train_weight, validation_weight)
         if (status%code /= FORTNUM_OK) return
         parameters = adapter%parameters()
         lower = [options%lower_log_learning_rate, options%lower_log_l2, &
@@ -2144,6 +2180,72 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine adamw_forward
 
+    subroutine rmsprop_training_value_gradient(self, l2, value, gradient, &
+            l2_gradient, status)
+        class(mlp_rmsprop_hypergradient_objective_t), intent(in) :: self
+        real(dp), intent(in) :: l2
+        real(dp), intent(out) :: value, gradient(:), l2_gradient
+        type(fortnum_status_t), intent(out) :: status
+
+        if (allocated(self%train_weight)) then
+            call mlp_loss_value_gradient(self%model, self%train_x, &
+                self%train_target, l2, value, gradient, l2_gradient, status, &
+                sample_weight=self%train_weight)
+        else
+            call mlp_loss_value_gradient(self%model, self%train_x, &
+                self%train_target, l2, value, gradient, l2_gradient, status)
+        end if
+    end subroutine rmsprop_training_value_gradient
+
+    subroutine rmsprop_training_hvp(self, l2, direction, l2_direction, &
+            product, l2_product, status)
+        class(mlp_rmsprop_hypergradient_objective_t), intent(in) :: self
+        real(dp), intent(in) :: l2, direction(:), l2_direction
+        real(dp), intent(out) :: product(:), l2_product
+        type(fortnum_status_t), intent(out) :: status
+
+        if (allocated(self%train_weight)) then
+            call mlp_loss_hvp(self%model, self%train_x, self%train_target, l2, &
+                direction, l2_direction, product, l2_product, status, &
+                sample_weight=self%train_weight)
+        else
+            call mlp_loss_hvp(self%model, self%train_x, self%train_target, l2, &
+                direction, l2_direction, product, l2_product, status)
+        end if
+    end subroutine rmsprop_training_hvp
+
+    subroutine rmsprop_validation_value_gradient(self, value, gradient, &
+            l2_gradient, status)
+        class(mlp_rmsprop_hypergradient_objective_t), intent(in) :: self
+        real(dp), intent(out) :: value, gradient(:), l2_gradient
+        type(fortnum_status_t), intent(out) :: status
+
+        if (allocated(self%validation_weight)) then
+            call mlp_loss_value_gradient(self%model, self%validation_x, &
+                self%validation_target, 0.0_dp, value, gradient, l2_gradient, &
+                status, sample_weight=self%validation_weight)
+        else
+            call mlp_loss_value_gradient(self%model, self%validation_x, &
+                self%validation_target, 0.0_dp, value, gradient, l2_gradient, status)
+        end if
+    end subroutine rmsprop_validation_value_gradient
+
+    subroutine rmsprop_validation_hvp(self, direction, product, l2_product, status)
+        class(mlp_rmsprop_hypergradient_objective_t), intent(in) :: self
+        real(dp), intent(in) :: direction(:)
+        real(dp), intent(out) :: product(:), l2_product
+        type(fortnum_status_t), intent(out) :: status
+
+        if (allocated(self%validation_weight)) then
+            call mlp_loss_hvp(self%model, self%validation_x, self%validation_target, &
+                0.0_dp, direction, 0.0_dp, product, l2_product, status, &
+                sample_weight=self%validation_weight)
+        else
+            call mlp_loss_hvp(self%model, self%validation_x, self%validation_target, &
+                0.0_dp, direction, 0.0_dp, product, l2_product, status)
+        end if
+    end subroutine rmsprop_validation_hvp
+
     subroutine rmsprop_forward(self, parameters, direction, value, tangent, gradient, &
             status)
         !! Propagate exact forward sensitivities through full-batch RMSprop.
@@ -2208,8 +2310,8 @@ contains
         do step = 1, self%layout%inner_steps
             call self%model%set_parameters(theta, status)
             if (status%code /= FORTNUM_OK) return
-            call mlp_loss_value_gradient(self%model, self%train_x, self%train_target, &
-                l2, train_value, raw_gradient, l2_gradient, status)
+            call rmsprop_training_value_gradient(self, l2, train_value, &
+                raw_gradient, l2_gradient, status)
             if (status%code /= FORTNUM_OK) return
             square_previous = square_average
             gradient_average_previous = gradient_average
@@ -2218,8 +2320,8 @@ contains
             do parameter_index = 1, MLP_RMSPROP_HYPERPARAMETER_COUNT
                 l2_dot = 0.0_dp
                 if (parameter_index == MLP_RMSPROP_LOG_L2) l2_dot = l2
-                call mlp_loss_hvp(self%model, self%train_x, self%train_target, l2, &
-                    theta_dot(:, parameter_index), l2_dot, hvp, scalar_hvp, status)
+                call rmsprop_training_hvp(self, l2, theta_dot(:, parameter_index), &
+                    l2_dot, hvp, scalar_hvp, status)
                 if (status%code /= FORTNUM_OK) return
                 gradient_dot(:, parameter_index) = hvp
                 decay_dot = 0.0_dp
@@ -2306,8 +2408,7 @@ contains
         call self%model%set_parameters(theta, status)
         if (status%code /= FORTNUM_OK) return
         allocate(validation_gradient(n_parameters))
-        call mlp_loss_value_gradient(self%model, self%validation_x, &
-            self%validation_target, 0.0_dp, value, validation_gradient, &
+        call rmsprop_validation_value_gradient(self, value, validation_gradient, &
             l2_gradient, status)
         if (status%code /= FORTNUM_OK) return
         do parameter_index = 1, MLP_RMSPROP_HYPERPARAMETER_COUNT
@@ -2695,6 +2796,21 @@ contains
             options%step_tolerance >= 0.0_dp .and. &
             options%objective_tolerance >= 0.0_dp
     end function valid_options
+
+    logical function valid_hypergradient_weight(weight, n_samples) result(valid)
+        real(dp), intent(in) :: weight(:)
+        integer, intent(in) :: n_samples
+
+        valid = size(weight) == n_samples
+        if (.not. valid) return
+        valid = all(ieee_is_finite(weight))
+        if (.not. valid) return
+        valid = all(weight >= 0.0_dp)
+        if (.not. valid) return
+        valid = ieee_is_finite(sum(weight))
+        if (.not. valid) return
+        valid = sum(weight) > 0.0_dp
+    end function valid_hypergradient_weight
 
     logical function valid_data(model, x, target) result(valid)
         class(mlp_t), intent(in) :: model
