@@ -79,3 +79,20 @@ sums each head's cotangent into that same packed vector.  Their device variants
 refusal.  This is the prediction-side counterpart to the shared fixed-state
 FortOpt objective and is useful for differentiable outer HPO without silently
 expanding the common vector into independent label parameters.
+
+## Independent label hyperparameter optimization
+
+`parameter_count()` and `parameters()` expose one contiguous kernel-log block
+per label. `fixed_state_independent_value_gradient(values,value,gradient,
+status)` evaluates the negative sum of the per-label fixed-state mode
+posteriors with those blocks held independently. Candidate factors are built
+for every label before the model commits, and the gradient is the exact
+concatenation of each binary prior-envelope gradient.
+
+`gp_multilabel_training_objective_t%initialize_independent` selects this packed
+layout for `value_gradient`, `jvp`, `vjp`, and `fortopt`. The convenience
+`optimize_independent_lbfgsb(model,options,result,status)` runs bounded FortOpt
+L-BFGS-B over all label blocks in one objective. The mode and likelihood
+curvatures remain fixed by this outer objective. A fresh `fit` recomputes the
+Laplace states when a full refit is required. The independent objective is
+CPU-only and uses the same typed CUDA refusal as the shared objective.

@@ -251,7 +251,7 @@ repeated resident-batch evidence.
 | `second_derivative_gp_t` | Exact scalar 1-D RBF/Matérn-5/2 GP over mixed value/first/second-derivative rows, plus RBF third-derivative rows; latent joint covariance and packed likelihood state | Query-coordinate JVP; RBF likelihood JVP; selected-CPU device dispatch | Query-coordinate VJP; likelihood VJP; selected-CPU device dispatch | RBF order >3, Matérn-5/2 order >2, Matérn-5/2 fifth derivative at coincidence, Matérn parameter products, and CUDA prediction/covariance/product requests are typed refusals |
 | `gp_classification_t` | Latent, observed, and log-observed probabilities; fixed-state kernel parameter setter; implicit-mode kernel hyperparameter HVP | Input and fixed-state kernel-parameter JVP for probabilities and log probabilities | Input and fixed-state kernel-parameter VJP for probabilities and log probabilities; Laplace-mode kernel hyperparameter gradient | Implicit-mode hyperparameter HVP on CPU; typed CUDA refusal |
 | `gp_multiclass_classification_t` | Latent one-vs-rest margins, normalized observed probabilities, and stable log probabilities | Input and packed fixed-state kernel-parameter JVPs for margins, probabilities, and log probabilities | Input and packed fixed-state kernel-parameter VJPs for margins, probabilities, and log probabilities, plus the packed one-vs-rest Laplace-mode kernel hyperparameter gradient | No |
-| `gp_multilabel_classification_t` | Independent binary Laplace-GP probabilities, finite `predict_log_proba`, and indicator labels | Input, packed per-label, and packed shared-kernel fixed-state JVPs for latent/probability/log-probability outputs | Input, packed per-label, and packed shared-kernel fixed-state VJPs; concatenated Laplace-mode kernel hyperparameter gradient; typed CUDA refusal preserves output buffers | No |
+| `gp_multilabel_classification_t` | Independent binary Laplace-GP probabilities, finite `predict_log_proba`, indicator labels, and shared or per-label fixed-state FortOpt HPO | Input, packed per-label, and packed shared-kernel fixed-state JVPs for latent/probability/log-probability outputs; independent objective JVP | Input, packed per-label, and packed shared-kernel fixed-state VJPs; concatenated Laplace-mode kernel hyperparameter gradient; independent objective VJP; typed CUDA refusal preserves output buffers | No |
 | `multi_output_gp_t` | Correlated mean and LML; prior covariance; batched `(batch,query,output)` prediction | Packed kernel/log-noise/output-major W/independent posterior-mean and prior-covariance JVP; query-input and batch-query JVP | Fitted posterior-mean and prior-covariance parameter VJP; query-input and batch-query VJP | No |
 | Approximate GP types | Mean, variance, or ELBO as listed below | No | No | No |
 
@@ -4129,6 +4129,16 @@ FortOpt L-BFGS-B over the shared kernel-log coordinates using
 `gp_multilabel_lbfgsb_result_t`. This path is a fixed-state CPU
 hyperparameter slice; it does not silently refit a mode or stage work for
 CUDA, and unsupported device requests remain typed refusals.
+
+`fixed_state_independent_value_gradient(values,value,gradient,status)` uses
+the concatenated `parameters()` layout, with one kernel-log block per label.
+`gp_multilabel_training_objective_t%initialize_independent` selects that
+layout for the value, gradient, JVP, VJP, and FortOpt callbacks. The
+`optimize_independent_lbfgsb` binding applies bounded FortOpt L-BFGS-B to all
+label blocks. Candidate factors are committed transactionally, the fitted
+Laplace modes and likelihood curvatures stay fixed, and CUDA requests retain
+the typed refusal contract. `test_gp_multilabel_independent_optimizer` is the
+finite-difference and adjoint oracle.
 
 ### `fortml_gp_classification_training`
 
