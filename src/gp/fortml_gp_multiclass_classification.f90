@@ -44,16 +44,28 @@ module fortml_gp_multiclass_classification
         procedure, public :: fit => gp_multiclass_classification_fit
         procedure, public :: predict_proba => &
             gp_multiclass_classification_predict_proba
+        procedure, public :: predict_log_proba => &
+            gp_multiclass_classification_predict_log_proba
+        procedure, public :: predict_log_proba_device => &
+            gp_multiclass_classification_predict_log_proba_device
         procedure, public :: predict_proba_device => &
             gp_multiclass_classification_predict_proba_device
         procedure, public :: predict_proba_jvp => &
             gp_multiclass_classification_predict_proba_jvp
         procedure, public :: predict_proba_vjp => &
             gp_multiclass_classification_predict_proba_vjp
+        procedure, public :: predict_log_proba_jvp => &
+            gp_multiclass_classification_predict_log_proba_jvp
+        procedure, public :: predict_log_proba_vjp => &
+            gp_multiclass_classification_predict_log_proba_vjp
         procedure, public :: predict_proba_parameter_jvp => &
             gp_multiclass_classification_predict_proba_parameter_jvp
         procedure, public :: predict_proba_parameter_vjp => &
             gp_multiclass_classification_predict_proba_parameter_vjp
+        procedure, public :: predict_log_proba_parameter_jvp => &
+            gp_multiclass_classification_predict_log_proba_parameter_jvp
+        procedure, public :: predict_log_proba_parameter_vjp => &
+            gp_multiclass_classification_predict_log_proba_parameter_vjp
         procedure, public :: predict_proba_parameter_jvp_device => &
             gp_multiclass_classification_predict_proba_parameter_jvp_device
         procedure, public :: predict_proba_parameter_vjp_device => &
@@ -91,11 +103,17 @@ module fortml_gp_multiclass_classification
 
     public :: gp_multiclass_classification_fit
     public :: gp_multiclass_classification_predict_proba
+    public :: gp_multiclass_classification_predict_log_proba
+    public :: gp_multiclass_classification_predict_log_proba_device
     public :: gp_multiclass_classification_predict_proba_device
     public :: gp_multiclass_classification_predict_proba_jvp
     public :: gp_multiclass_classification_predict_proba_vjp
+    public :: gp_multiclass_classification_predict_log_proba_jvp
+    public :: gp_multiclass_classification_predict_log_proba_vjp
     public :: gp_multiclass_classification_predict_proba_parameter_jvp
     public :: gp_multiclass_classification_predict_proba_parameter_vjp
+    public :: gp_multiclass_classification_predict_log_proba_parameter_jvp
+    public :: gp_multiclass_classification_predict_log_proba_parameter_vjp
     public :: gp_multiclass_classification_predict_proba_parameter_jvp_device
     public :: gp_multiclass_classification_predict_proba_parameter_vjp_device
     public :: gp_multiclass_classification_decision_function
@@ -264,6 +282,218 @@ contains
                 "GP multiclass device prediction: device kind is invalid")
         end select
     end subroutine gp_multiclass_classification_predict_proba_device
+
+    !> Return the natural logarithm of the normalized one-vs-rest
+    !! probabilities.  The class columns retain ``classes()`` order and the
+    !! finite floor mirrors the binary Laplace-GP contract at floating-point
+    !! tails.
+    subroutine gp_multiclass_classification_predict_log_proba(self, x, &
+            log_probabilities, status)
+        class(gp_multiclass_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: log_probabilities(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: probabilities(:, :)
+
+        if (.not. prediction_shapes(self, x, log_probabilities, status)) return
+        allocate(probabilities(size(x, 1), self%n_classes))
+        call self%predict_proba(x, probabilities, status)
+        if (status%code /= FORTNUM_OK) return
+        log_probabilities = log(max(probabilities, tiny(1.0_dp)))
+        if (any(.not. ieee_is_finite(log_probabilities))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "GP multiclass log probability: result is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_multiclass_classification_predict_log_proba
+
+    !> Device-dispatched multiclass log-probability prediction.  CUDA remains
+    !! a typed refusal until all OVR Laplace states and the normalization graph
+    !! are resident; CPU dispatch is the exact reference path.
+    subroutine gp_multiclass_classification_predict_log_proba_device(self, device, x, &
+            log_probabilities, status)
+        class(gp_multiclass_classification_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: log_probabilities(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP multiclass log probability device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_log_proba(x, log_probabilities, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "GP multiclass log probability device: no resident CUDA Laplace graph is linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP multiclass log probability device: device kind is invalid")
+        end select
+    end subroutine gp_multiclass_classification_predict_log_proba_device
+
+    !> Forward query-input product of multiclass log probabilities.
+    subroutine gp_multiclass_classification_predict_log_proba_jvp(self, x, x_dot, &
+            log_probabilities, log_probabilities_dot, status)
+        class(gp_multiclass_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), x_dot(:, :)
+        real(dp), intent(out) :: log_probabilities(:, :), log_probabilities_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: probabilities(:, :), probabilities_dot(:, :)
+        integer :: i, j
+
+        if (.not. prediction_shapes(self, x, log_probabilities, status)) return
+        if (any(shape(x_dot) /= shape(x)) .or. any(.not. ieee_is_finite(x_dot)) .or. &
+            any(shape(log_probabilities_dot) /= shape(log_probabilities))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP multiclass log probability JVP: input or output shape is invalid")
+            return
+        end if
+        allocate(probabilities(size(x, 1), self%n_classes), &
+            probabilities_dot(size(x, 1), self%n_classes))
+        call self%predict_proba_jvp(x, x_dot, probabilities, probabilities_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        do j = 1, self%n_classes
+            do i = 1, size(x, 1)
+                log_probabilities(i, j) = log(max(probabilities(i, j), tiny(1.0_dp)))
+                if (probabilities(i, j) > tiny(1.0_dp)) then
+                    log_probabilities_dot(i, j) = probabilities_dot(i, j) / &
+                        probabilities(i, j)
+                else
+                    log_probabilities_dot(i, j) = 0.0_dp
+                end if
+            end do
+        end do
+        if (any(.not. ieee_is_finite(log_probabilities)) .or. &
+            any(.not. ieee_is_finite(log_probabilities_dot))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "GP multiclass log probability JVP: result is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_multiclass_classification_predict_log_proba_jvp
+
+    !> Reverse query-input product of multiclass log probabilities.
+    subroutine gp_multiclass_classification_predict_log_proba_vjp(self, x, &
+            log_probabilities_bar, x_bar, status)
+        class(gp_multiclass_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), log_probabilities_bar(:, :)
+        real(dp), intent(out) :: x_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: probabilities(:, :), probability_bar(:, :)
+        integer :: i, j
+
+        x_bar = 0.0_dp
+        if (.not. prediction_shapes(self, x, log_probabilities_bar, status)) return
+        if (any(shape(x_bar) /= shape(x)) .or. &
+            any(.not. ieee_is_finite(log_probabilities_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP multiclass log probability VJP: input or cotangent is invalid")
+            return
+        end if
+        allocate(probabilities(size(x, 1), self%n_classes), &
+            probability_bar(size(x, 1), self%n_classes))
+        call self%predict_proba(x, probabilities, status)
+        if (status%code /= FORTNUM_OK) return
+        do j = 1, self%n_classes
+            do i = 1, size(x, 1)
+                probability_bar(i, j) = log_probabilities_bar(i, j) / &
+                    max(probabilities(i, j), tiny(1.0_dp))
+            end do
+        end do
+        if (any(.not. ieee_is_finite(probability_bar))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "GP multiclass log probability VJP: cotangent is not finite")
+            return
+        end if
+        call self%predict_proba_vjp(x, probability_bar, x_bar, status)
+    end subroutine gp_multiclass_classification_predict_log_proba_vjp
+
+    !> Forward fixed-state kernel-parameter product of multiclass log
+    !! probabilities.  The packed per-class direction uses the same layout as
+    !! ``predict_proba_parameter_jvp``.
+    subroutine gp_multiclass_classification_predict_log_proba_parameter_jvp(self, x, &
+            direction, log_probabilities, log_probabilities_dot, status)
+        class(gp_multiclass_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), direction(:)
+        real(dp), intent(out) :: log_probabilities(:, :), log_probabilities_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: probabilities(:, :), probabilities_dot(:, :)
+        integer :: i, j
+
+        if (.not. prediction_shapes(self, x, log_probabilities, status)) return
+        if (size(direction) /= self%parameter_count() .or. &
+            any(.not. ieee_is_finite(direction)) .or. &
+            any(shape(log_probabilities_dot) /= shape(log_probabilities))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP multiclass log probability parameter JVP: direction or output shape is invalid")
+            return
+        end if
+        allocate(probabilities(size(x, 1), self%n_classes), &
+            probabilities_dot(size(x, 1), self%n_classes))
+        call self%predict_proba_parameter_jvp(x, direction, probabilities, &
+            probabilities_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        do j = 1, self%n_classes
+            do i = 1, size(x, 1)
+                log_probabilities(i, j) = log(max(probabilities(i, j), tiny(1.0_dp)))
+                if (probabilities(i, j) > tiny(1.0_dp)) then
+                    log_probabilities_dot(i, j) = probabilities_dot(i, j) / &
+                        probabilities(i, j)
+                else
+                    log_probabilities_dot(i, j) = 0.0_dp
+                end if
+            end do
+        end do
+        if (any(.not. ieee_is_finite(log_probabilities)) .or. &
+            any(.not. ieee_is_finite(log_probabilities_dot))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "GP multiclass log probability parameter JVP: result is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_multiclass_classification_predict_log_proba_parameter_jvp
+
+    !> Reverse fixed-state kernel-parameter product of multiclass log
+    !! probabilities.
+    subroutine gp_multiclass_classification_predict_log_proba_parameter_vjp(self, x, &
+            log_probabilities_bar, parameter_bar, status)
+        class(gp_multiclass_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), log_probabilities_bar(:, :)
+        real(dp), intent(out) :: parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: probabilities(:, :), probability_bar(:, :)
+        integer :: i, j
+
+        parameter_bar = 0.0_dp
+        if (.not. prediction_shapes(self, x, log_probabilities_bar, status)) return
+        if (size(parameter_bar) /= self%parameter_count() .or. &
+            any(.not. ieee_is_finite(log_probabilities_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP multiclass log probability parameter VJP: input or cotangent is invalid")
+            return
+        end if
+        allocate(probabilities(size(x, 1), self%n_classes), &
+            probability_bar(size(x, 1), self%n_classes))
+        call self%predict_proba(x, probabilities, status)
+        if (status%code /= FORTNUM_OK) return
+        do j = 1, self%n_classes
+            do i = 1, size(x, 1)
+                probability_bar(i, j) = log_probabilities_bar(i, j) / &
+                    max(probabilities(i, j), tiny(1.0_dp))
+            end do
+        end do
+        if (any(.not. ieee_is_finite(probability_bar))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "GP multiclass log probability parameter VJP: cotangent is not finite")
+            return
+        end if
+        call self%predict_proba_parameter_vjp(x, probability_bar, parameter_bar, status)
+    end subroutine gp_multiclass_classification_predict_log_proba_parameter_vjp
 
     subroutine gp_multiclass_classification_predict_proba_jvp( &
             self, x, x_dot, probabilities, probabilities_dot, status)
@@ -867,8 +1097,8 @@ contains
             return
         end if
         if (size(direction) /= self%parameter_count() .or. &
-                size(parameter_hvp) /= self%parameter_count() .or. &
-                any(.not. ieee_is_finite(direction))) then
+            size(parameter_hvp) /= self%parameter_count() .or. &
+            any(.not. ieee_is_finite(direction))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "GP multiclass hyperparameter HVP: parameter shape is invalid")
             return
@@ -1028,8 +1258,8 @@ contains
             return
         end if
         if (size(sample_weight) /= n_samples .or. &
-                any(.not. ieee_is_finite(sample_weight)) .or. &
-                any(sample_weight < 0.0_dp)) then
+            any(.not. ieee_is_finite(sample_weight)) .or. &
+            any(sample_weight < 0.0_dp)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "GP multiclass classification fit: sample weights are invalid")
             return
