@@ -91,6 +91,33 @@ fallback. Each promoted row adds CPU correctness, device/refusal behavior,
 state replay, and matched scikit-learn, PyTorch, JAX, GPyTorch, GPflow,
 XGBoost, or LightGBM benchmark evidence where applicable.
 
+## Production parity acceptance matrix
+
+The clean-break API treats parity as a set of explicit contracts. A family is
+complete only when every row has a public state object, a deterministic fit and
+predict path, a persistence representation, the declared derivative products,
+an optimizer or training adapter when the reference library trains the model,
+and a benchmark with an independent oracle. A family can remain CPU-complete
+while its GPU row is open. The GPU row is promoted only after resident memory,
+workspace, transfer, and refusal behavior are measured.
+
+| Surface | Required production contract | Evidence required for promotion |
+| --- | --- | --- |
+| Classification | Binary, multinomial, OVR, OVO, multilabel, classifier chains, ordinal, Naive Bayes, LDA/QDA, SVM, neighbors, trees, forests, bagging, AdaBoost, histogram boosting, XGBoost, LightGBM, calibrated heads, Laplace/variational GP heads, and neural heads share sorted labels, weights, decisions, probabilities, scores, persistence, and typed device capability. | Independent reference values, label and tie fixtures, weighted and malformed-input tests, input and parameter products where smooth, fixed-topology boundary refusals, and matched scikit-learn or tree-library rows. |
+| Gaussian processes | Every supported kernel and likelihood records observation type, smoothness order, parameter layout, solve policy, fixed-state boundary, and device plan. Function values, input derivatives, linear operators, Hessians, and vector fields use the same observation registry. | Dense or matrix-free reference values, directional JVPs, adjoint VJPs, HVP symmetry, likelihood and kernel hyperparameter products, FortOpt convergence, state rollback, and GPyTorch or GPflow fixtures. |
+| Neural modules | Module trees own parameters, buffers, aliases, train/eval state, masks, frozen and tied blocks, named paths, shape checks, and deterministic flattening. Dense, convolutional, recurrent, attention, graph, autoencoder, VAE, BNN, HNN, LNN, SympNet, PINN, and physics-consistent modules use one product interface. | Forward and reverse products at module and composed-tree level, parameter-path routing, serialization, checkpoint replay, activation and loss boundary fixtures, and PyTorch or JAX loss-curve and update comparisons. |
+| Training and HPO | A single trainer owns loaders, weights, accumulation, clipping, schedules, validation, early stopping, callbacks, RNG, optimizer groups, mixed precision, checkpoints, and device state. FortOpt L-BFGS-B consumes the exact objective value, gradient, JVP, VJP, and HVP callbacks used by training. | Interrupted-versus-uninterrupted replay, deterministic batch streams, optimizer state checksums, projected-bound diagnostics, multistart best-state retention, finite-difference and adjoint checks, and matched optimizer trajectories. |
+| Basis and pipelines | Polynomial, spline, Fourier, radial, Chebyshev, random-feature, GP, NNGP, NTK, PCA, autoencoder, imputation, encoding, scaling, conditional, residual, fan-out, fan-in, and DAG nodes preserve names, offsets, sparse layouts, fit state, leakage guards, and products. | Manual composition equivalence, fold-local statistics, schema and persistence round trips, parameter routing, transform JVP/VJP/HVP products, and transfer-inclusive device rows. |
+| Boosted trees | Exact and histogram growth, missing defaults, categorical policies, monotonic and interaction constraints, ranking, DART, GOSS, EFB, staged predictions, contributions, SHAP-compatible values, validation stopping, warm starts, slicing, serialization, and fixed-topology products share one tree-state contract. | Independent split and leaf-walk references, boundary refusals, validation history, continuation replay, schema round trips, XGBoost and LightGBM matched options, and resident histogram measurements. |
+| Devices and scale | CPU, OpenACC, and CUDA capability is recorded per operation. Resident state includes parameters, batches, workspaces, accumulators, derivative buffers, and transfer counters. FortSym-generated no-autodiff CUDA is allowed when its proof and oracle are retained. | Device value and product oracles, output-preserving typed refusals, transfer and memory accounting, deterministic reductions, compiler and architecture provenance, and a result schema that separates compile, warmup, transfer, and steady-state time. |
+
+The implementation order is deliberate. First close shared state, parameter
+registries, losses, and derivative contracts. Then add model-specific trainers
+and FortOpt adapters. Then lower the same operators to resident devices. A
+benchmark row never promotes an implementation that bypasses the shared
+objective or hides a host fallback. The open checklist below is the source of
+truth for which rows have reached each stage.
+
 The current parity wave closes the following bounded contracts: chronological
 expanding/rolling validation with scorer and clone/reset metadata,
 multiclass focal-softmax value/JVP/VJP/HVP products wired through MLP and
