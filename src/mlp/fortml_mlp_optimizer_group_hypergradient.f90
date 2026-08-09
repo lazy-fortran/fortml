@@ -24,7 +24,8 @@ module fortml_mlp_optimizer_group_hypergradient
     use fortml_device, only: FORTML_DEVICE_CPU, FORTML_DEVICE_CUDA
     use fortml_mlp, only: mlp_t
     use fortml_mlp_schedules, only: mlp_learning_rate_schedule_t, &
-        MLP_SCHEDULE_CONSTANT, MLP_SCHEDULE_PLATEAU, MLP_SCHEDULE_ONE_CYCLE
+        MLP_SCHEDULE_CONSTANT, MLP_SCHEDULE_COSINE_DECAY, MLP_SCHEDULE_WARMUP_COSINE, &
+        MLP_SCHEDULE_EXPONENTIAL_DECAY, MLP_SCHEDULE_PLATEAU, MLP_SCHEDULE_ONE_CYCLE
     use fortml_mlp_training, only: mlp_loss_value_gradient, mlp_loss_hvp, &
         mlp_optimizer_group_t, MLP_OPTIMIZER_SGD
     use fortopt_objective, only: objective_t
@@ -787,12 +788,14 @@ contains
                 log(options%schedule%peak_rate_fraction) <= options%upper_logit_min_fraction .and. &
                 log(options%schedule%final_rate_fraction) >= options%lower_logit_decay_factor .and. &
                 log(options%schedule%final_rate_fraction) <= options%upper_logit_decay_factor
-        else if (options%schedule%kind /= MLP_SCHEDULE_CONSTANT) then
+        else if (options%schedule%kind == MLP_SCHEDULE_COSINE_DECAY .or. &
+            options%schedule%kind == MLP_SCHEDULE_WARMUP_COSINE) then
             valid = logit(interior_probability(options%schedule%min_rate_fraction)) >= &
                 options%lower_logit_min_fraction .and. &
                 logit(interior_probability(options%schedule%min_rate_fraction)) <= &
-                options%upper_logit_min_fraction .and. &
-                logit(interior_probability(options%schedule%decay_factor)) >= &
+                options%upper_logit_min_fraction
+        else if (options%schedule%kind == MLP_SCHEDULE_EXPONENTIAL_DECAY) then
+            valid = logit(interior_probability(options%schedule%decay_factor)) >= &
                 options%lower_logit_decay_factor .and. &
                 logit(interior_probability(options%schedule%decay_factor)) <= &
                 options%upper_logit_decay_factor
