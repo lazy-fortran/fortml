@@ -38,6 +38,40 @@ also closes finite-feature GP posterior variance/regularization JVP products
 and named PINN per-term gradient/HVP diagnostics. The broad parity gate remains
 open for the explicit rows below.
 
+## Next production parity wave
+
+The next waves preserve the shared registry/objective/device/state contract and
+prioritize the user-visible parity gaps in this order:
+
+1. **Classification completion:** finish the common estimator adapter for
+   binary, multiclass OVR/OVO, multilabel, classifier-chain, ordinal, calibrated,
+   Naive-Bayes, discriminant, SVM, neighbor, forest, bagging, AdaBoost,
+   histogram, XGBoost, LightGBM, and GP classifiers. Every adapter must expose
+   sorted-label metadata, weights, probabilities/decisions, persistence,
+   fixed-state products, and an explicit nonsmooth boundary.
+2. **GP breadth:** complete derivative observations for every smooth kernel,
+   operator layouts, multitask and likelihood state, variational/natural-gradient
+   products, deep/physics-aware compositions, and implicit hyperproducts through
+   Laplace/variational optima. GPyTorch/GPflow-style inducing and scalable
+   workflows remain CPU-first until resident CUDA factorization and transfer
+   counters are verified.
+3. **Neural training:** finish the module tree (convolution, normalization,
+   dropout, attention, transformer, graph, LSTM/GRU, neural operators), loader
+   and accumulation state, optimizer groups, mixed precision/master weights,
+   checkpoint migration, and exact optimizer/schedule/validation hypergradients
+   consumed by FortOpt L-BFGS-B. PINN/HNN/symplectic and physics-consistent
+   networks share the same products and manufactured-physics benchmarks.
+4. **Boosting and composition:** extend the fixed-topology XGBoost/LightGBM
+   objective into histogram growth, GOSS/DART, ranking, categorical/missing
+   routing, monotone/interaction constraints, staged predictions, contributions,
+   warm starts, and resident GPU histograms. Complete basis/pipeline DAGs with
+   polynomial, spline, Fourier, radial, GP, PCA, autoencoder, NNGP, and NTK
+   initializers that preserve names, offsets, leakage guards, and derivatives.
+5. **Performance closure:** for each completed row, run matched NumPy and
+   scikit-learn/PyTorch/JAX/GPyTorch/XGBoost/LightGBM workloads where applicable,
+   then add resident CUDA/OpenACC timing, memory, transfer, precision, and
+   refusal evidence. No benchmark or release claim closes a row by CPU fallback.
+
 ## Production-parity execution contract
 
 The remaining work is executed as one clean-break architecture rather than as
