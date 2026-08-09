@@ -223,7 +223,8 @@ contains
 
         if (.not. validate_regression_data(self, x, y, sample_weight, status)) return
         n = size(x, 1)
-        allocate(order(n), weights(n))
+        allocate(order(n), weights(n), gradient(self%n_features_value, self%n_outputs_value), &
+            gradient_intercept(self%n_outputs_value))
         order = [(i, i=1, n)]
         if (self%options_value%shuffle) call shuffle_order(order, self%shuffle_state)
         weights = 1.0_dp
@@ -237,8 +238,6 @@ contains
                 batch_start = batch_end + 1
                 cycle
             end if
-            allocate(gradient(self%n_features_value, self%n_outputs_value), &
-                gradient_intercept(self%n_outputs_value))
             gradient = 0.0_dp
             gradient_intercept = 0.0_dp
             do index = batch_start, batch_end
@@ -275,9 +274,9 @@ contains
                 self%average_coefficient = self%average_coefficient + self%coefficient
                 self%average_intercept = self%average_intercept + self%intercept
             end if
-            deallocate(gradient, gradient_intercept)
             batch_start = batch_end + 1
         end do
+        deallocate(order, weights, gradient, gradient_intercept)
         call status_set(status, FORTNUM_OK, "")
     end subroutine regression_epoch
 
