@@ -28,6 +28,7 @@ module fortml_multi_output_gp
     type, public :: multi_output_gp_t
         type(kernel_t) :: kernel
         real(dp), allocatable :: inputs(:, :)
+        real(dp), allocatable :: targets(:, :)
         real(dp), allocatable :: coregionalization(:, :)
         real(dp), allocatable :: weights(:, :)
         real(dp), allocatable :: independent(:)
@@ -44,6 +45,20 @@ module fortml_multi_output_gp
         procedure, public :: predict_batch => multi_output_predict_batch
         procedure, public :: parameter_count => multi_output_parameter_count
         procedure, public :: parameters => multi_output_parameters
+        procedure, public :: set_parameters => multi_output_set_parameters
+        procedure, public :: hyperparameter_gradient => multi_output_hyperparameter_gradient
+        procedure, public :: hyperparameter_hvp => multi_output_hyperparameter_hvp
+        procedure, public :: log_marginal_likelihood_jvp => &
+            multi_output_log_marginal_likelihood_jvp
+        procedure, public :: log_marginal_likelihood_vjp => &
+            multi_output_log_marginal_likelihood_vjp
+        procedure, public :: hyperparameter_gradient_device => &
+            multi_output_hyperparameter_gradient_device
+        procedure, public :: hyperparameter_hvp_device => &
+            multi_output_hyperparameter_hvp_device
+        procedure, public :: sample_count => multi_output_sample_count
+        procedure, public :: feature_count => multi_output_feature_count
+        procedure, public :: output_count => multi_output_output_count
         procedure, public :: predict_input_jvp => multi_output_predict_input_jvp
         procedure, public :: predict_input_vjp => multi_output_predict_input_vjp
         procedure, public :: predict_batch_input_jvp => &
@@ -461,6 +476,8 @@ contains
 
         if (allocated(self%inputs)) deallocate(self%inputs)
         allocate(self%inputs, source=inputs)
+        if (allocated(self%targets)) deallocate(self%targets)
+        allocate(self%targets, source=targets)
         self%n_samples = n
         allocate(joint(n*p, n*p), stacked(n*p))
         call multi_output_joint_covariance(self, inputs, joint, status)
@@ -642,6 +659,348 @@ contains
         end do
         if (self%n_outputs > 0) parameters(index:) = self%independent
     end function multi_output_parameters
+
+    subroutine multi_output_set_parameters(self, parameters, status)
+        !! Set the packed kernel/noise/coregionalization coordinates and
+        !! transactionally refactor the fitted joint state.  A failed
+        !! candidate (including an indefinite covariance) leaves both the
+        !! parameters and the Cholesky factorization unchanged.
+        class(multi_output_gp_t), intent(inout) :: self
+        real(dp), intent(in) :: parameters(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: old_parameters(:)
+        integer :: old_code
+        character(len=120) :: old_message
+
+        if (.not. self%fitted) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multi-output GP set_parameters: model is not fitted")
+            return
+        end if
+        if (size(parameters) /= self%parameter_count() .or. &
+            any(.not. ieee_is_finite(parameters))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multi-output GP set_parameters: parameter shape or value is invalid")
+            return
+        end if
+
+        allocate(old_parameters, source=self%parameters())
+        call multi_output_apply_parameters(self, parameters, status)
+        if (status%code == FORTNUM_OK) then
+            call multi_output_refactor(self, status)
+        end if
+        if (status%code == FORTNUM_OK) return
+
+        ! Preserve the candidate error while restoring the complete old state.
+        old_code = status%code
+        old_message = status%msg
+        call multi_output_apply_parameters(self, old_parameters, status)
+        call multi_output_refactor(self, status)
+        if (status%code /= FORTNUM_OK) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "multi-output GP set_parameters: rollback refactorization failed")
+        else
+            call status_set(status, old_code, old_message)
+        end if
+    end subroutine multi_output_set_parameters
+
+    subroutine multi_output_log_marginal_likelihood_jvp(self, direction, value_dot, status)
+        class(multi_output_gp_t), intent(in) :: self
+        real(dp), intent(in) :: direction(:)
+        real(dp), intent(out) :: value_dot
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: gradient(:)
+
+        value_dot = 0.0_dp
+        if (size(direction) /= self%parameter_count() .or. &
+            any(.not. ieee_is_finite(direction))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multi-output GP likelihood JVP: direction shape is invalid")
+            return
+        end if
+        allocate(gradient(size(direction)))
+        call self%hyperparameter_gradient(gradient, status)
+        if (status%code /= FORTNUM_OK) return
+        value_dot = dot_product(gradient, direction)
+        if (.not. ieee_is_finite(value_dot)) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "multi-output GP likelihood JVP: nonfinite product")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine multi_output_log_marginal_likelihood_jvp
+
+    subroutine multi_output_log_marginal_likelihood_vjp(self, value_bar, parameter_bar, status)
+        class(multi_output_gp_t), intent(in) :: self
+        real(dp), intent(in) :: value_bar
+        real(dp), intent(out) :: parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: gradient(:)
+
+        parameter_bar = 0.0_dp
+        if (.not. ieee_is_finite(value_bar) .or. &
+            size(parameter_bar) /= self%parameter_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multi-output GP likelihood VJP: cotangent or output shape is invalid")
+            return
+        end if
+        allocate(gradient(size(parameter_bar)))
+        call self%hyperparameter_gradient(gradient, status)
+        if (status%code /= FORTNUM_OK) return
+        parameter_bar = value_bar*gradient
+        if (any(.not. ieee_is_finite(parameter_bar))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "multi-output GP likelihood VJP: nonfinite product")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine multi_output_log_marginal_likelihood_vjp
+
+    subroutine multi_output_hyperparameter_gradient(self, gradient, status)
+        !! Exact gradient of the ICM log marginal likelihood.
+        class(multi_output_gp_t), intent(in) :: self
+        real(dp), intent(out) :: gradient(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: kernel_matrix(:, :), inverse(:, :), matrix_bar(:, :)
+        real(dp), allocatable :: kernel_bar(:, :), coreg_bar(:, :), local(:)
+        integer :: total, n, p, kc, rank, i, j, a, b, out_i, out_j, index
+
+        gradient = 0.0_dp
+        if (.not. self%fitted .or. .not. allocated(self%targets)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multi-output GP hyperparameter gradient: model is not fitted")
+            return
+        end if
+        if (size(gradient) /= self%parameter_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multi-output GP hyperparameter gradient: output shape is invalid")
+            return
+        end if
+        n = self%n_samples
+        p = self%n_outputs
+        total = n*p
+        kc = self%kernel%parameter_count()
+        rank = size(self%weights, 2)
+        allocate(kernel_matrix(n, n), inverse(total, total), matrix_bar(total, total))
+        allocate(kernel_bar(n, n), coreg_bar(p, p))
+        call self%kernel%matrix(self%inputs, self%inputs, kernel_matrix, status)
+        if (status%code /= FORTNUM_OK) return
+        inverse = 0.0_dp
+        do i = 1, total
+            inverse(i, i) = 1.0_dp
+        end do
+        call self%factorization%solve(inverse, status)
+        if (status%code /= FORTNUM_OK) return
+        matrix_bar = 0.5_dp*(multi_output_outer(self%alpha) - inverse)
+        call multi_output_contractions(self, kernel_matrix, matrix_bar, kernel_bar, coreg_bar)
+        if (kc > 0) then
+            allocate(local(kc))
+            call self%kernel%parameter_vjp(self%inputs, self%inputs, kernel_bar, local, status)
+            if (status%code /= FORTNUM_OK) return
+            gradient(:kc) = local
+        end if
+        gradient(kc + 1) = self%noise_variance*multi_output_trace(matrix_bar)
+        index = kc + 2
+        do a = 1, p
+            do j = 1, rank
+                gradient(index) = sum((coreg_bar(a, :) + coreg_bar(:, a))*self%weights(:, j))
+                index = index + 1
+            end do
+        end do
+        do a = 1, p
+            gradient(index) = coreg_bar(a, a)
+            index = index + 1
+        end do
+        if (any(.not. ieee_is_finite(gradient))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "multi-output GP hyperparameter gradient: nonfinite product")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine multi_output_hyperparameter_gradient
+
+    subroutine multi_output_hyperparameter_hvp(self, direction, parameter_hvp, status)
+        !! Exact Hessian-vector product for all packed ICM coordinates.  The
+        !! kernel supplies its generated parameter/mixed products; kernels
+        !! without those products return FORTNUM_NOT_IMPLEMENTED explicitly.
+        class(multi_output_gp_t), intent(in) :: self
+        real(dp), intent(in) :: direction(:)
+        real(dp), intent(out) :: parameter_hvp(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: k_matrix(:, :), k_dot(:, :), inverse(:, :), inverse_dot(:, :)
+        real(dp), allocatable :: covariance_dot(:, :), alpha_dot(:), matrix_bar(:, :)
+        real(dp), allocatable :: matrix_bar_dot(:, :), kernel_bar(:, :), kernel_bar_dot(:, :)
+        real(dp), allocatable :: coreg_bar(:, :), coreg_bar_dot(:, :), local(:), local_dot(:), local_vjp(:)
+        real(dp), allocatable :: b_dot(:, :), weights_dot(:, :)
+        real(dp) :: noise_dot, trace_bar, trace_bar_dot
+        integer :: n, p, total, kc, rank, i, j, a, b, out_i, out_j, index
+
+        parameter_hvp = 0.0_dp
+        if (.not. self%fitted .or. .not. allocated(self%targets)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multi-output GP hyperparameter HVP: model is not fitted")
+            return
+        end if
+        if (size(direction) /= self%parameter_count() .or. &
+            size(parameter_hvp) /= self%parameter_count() .or. &
+            any(.not. ieee_is_finite(direction))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multi-output GP hyperparameter HVP: parameter shape is invalid")
+            return
+        end if
+        n = self%n_samples
+        p = self%n_outputs
+        total = n*p
+        kc = self%kernel%parameter_count()
+        rank = size(self%weights, 2)
+        allocate(k_matrix(n, n), k_dot(n, n), inverse(total, total), inverse_dot(total, total))
+        allocate(covariance_dot(total, total), alpha_dot(total), matrix_bar(total, total))
+        allocate(matrix_bar_dot(total, total), kernel_bar(n, n), kernel_bar_dot(n, n))
+        allocate(coreg_bar(p, p), coreg_bar_dot(p, p), b_dot(p, p), weights_dot(p, rank))
+        call self%kernel%matrix(self%inputs, self%inputs, k_matrix, status)
+        if (status%code /= FORTNUM_OK) return
+        k_dot = 0.0_dp
+        if (kc > 0) then
+            call self%kernel%matrix_jvp(self%inputs, self%inputs, direction(:kc), &
+                k_matrix, k_dot, status)
+            if (status%code /= FORTNUM_OK) return
+        end if
+        call multi_output_coreg_direction(self, direction(kc + 2:), b_dot)
+        noise_dot = self%noise_variance*direction(kc + 1)
+        covariance_dot = 0.0_dp
+        do b = 1, p
+            do a = 1, p
+                do j = 1, n
+                    do i = 1, n
+                        out_i = (a - 1)*n + i
+                        out_j = (b - 1)*n + j
+                        covariance_dot(out_i, out_j) = b_dot(a, b)*k_matrix(i, j) + &
+                            self%coregionalization(a, b)*k_dot(i, j)
+                    end do
+                end do
+            end do
+        end do
+        do i = 1, total
+            covariance_dot(i, i) = covariance_dot(i, i) + noise_dot
+        end do
+        alpha_dot = -matmul(covariance_dot, self%alpha)
+        call self%factorization%solve(alpha_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        inverse = 0.0_dp
+        do i = 1, total
+            inverse(i, i) = 1.0_dp
+        end do
+        call self%factorization%solve(inverse, status)
+        if (status%code /= FORTNUM_OK) return
+        inverse_dot = -matmul(inverse, matmul(covariance_dot, inverse))
+        matrix_bar = 0.5_dp*(multi_output_outer(self%alpha) - inverse)
+        matrix_bar_dot = 0.5_dp*(multi_output_outer_cross(self%alpha, alpha_dot) - inverse_dot)
+        call multi_output_contractions(self, k_matrix, matrix_bar, kernel_bar, coreg_bar)
+        call multi_output_contractions_dot(self, k_matrix, k_dot, b_dot, matrix_bar, &
+            matrix_bar_dot, kernel_bar_dot, coreg_bar_dot)
+        if (kc > 0) then
+            allocate(local(kc), local_dot(kc), local_vjp(kc))
+            call self%kernel%parameter_hvp(self%inputs, self%inputs, kernel_bar, direction(:kc), &
+                local, local_dot, status)
+            if (status%code /= FORTNUM_OK) return
+            call self%kernel%parameter_vjp(self%inputs, self%inputs, kernel_bar_dot, local_vjp, status)
+            if (status%code /= FORTNUM_OK) return
+            parameter_hvp(:kc) = local_dot + local_vjp
+        end if
+        trace_bar = multi_output_trace(matrix_bar)
+        trace_bar_dot = multi_output_trace(matrix_bar_dot)
+        parameter_hvp(kc + 1) = self%noise_variance*(direction(kc + 1)*trace_bar + trace_bar_dot)
+        do a = 1, p
+            do j = 1, rank
+                weights_dot(a, j) = direction(kc + 1 + (a - 1)*rank + j)
+            end do
+        end do
+        index = kc + 2
+        do a = 1, p
+            do j = 1, rank
+                parameter_hvp(index) = sum((coreg_bar_dot(a, :) + coreg_bar_dot(:, a))* &
+                    self%weights(:, j)) + sum((coreg_bar(a, :) + coreg_bar(:, a))*weights_dot(:, j))
+                index = index + 1
+            end do
+        end do
+        do a = 1, p
+            parameter_hvp(index) = coreg_bar_dot(a, a)
+            index = index + 1
+        end do
+        if (any(.not. ieee_is_finite(parameter_hvp))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "multi-output GP hyperparameter HVP: nonfinite product")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine multi_output_hyperparameter_hvp
+
+    subroutine multi_output_hyperparameter_gradient_device(self, device, gradient, status)
+        class(multi_output_gp_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(out) :: gradient(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        gradient = 0.0_dp
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multi-output GP hyperparameter gradient: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%hyperparameter_gradient(gradient, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "multi-output GP hyperparameter gradient: CUDA residency is not implemented")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multi-output GP hyperparameter gradient: device kind is invalid")
+        end select
+    end subroutine multi_output_hyperparameter_gradient_device
+
+    subroutine multi_output_hyperparameter_hvp_device(self, device, direction, parameter_hvp, status)
+        class(multi_output_gp_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: direction(:)
+        real(dp), intent(out) :: parameter_hvp(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        parameter_hvp = 0.0_dp
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multi-output GP hyperparameter HVP: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%hyperparameter_hvp(direction, parameter_hvp, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "multi-output GP hyperparameter HVP: CUDA residency is not implemented")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multi-output GP hyperparameter HVP: device kind is invalid")
+        end select
+    end subroutine multi_output_hyperparameter_hvp_device
+
+    integer function multi_output_sample_count(self) result(count)
+        class(multi_output_gp_t), intent(in) :: self
+
+        count = self%n_samples
+    end function multi_output_sample_count
+
+    integer function multi_output_feature_count(self) result(count)
+        class(multi_output_gp_t), intent(in) :: self
+
+        count = self%kernel%input_dim
+    end function multi_output_feature_count
+
+    integer function multi_output_output_count(self) result(count)
+        class(multi_output_gp_t), intent(in) :: self
+
+        count = self%n_outputs
+    end function multi_output_output_count
 
     subroutine multi_output_predict_input_jvp(self, query, direction, mean, mean_dot, status)
         !! Query-input JVP of the fitted posterior mean.
@@ -1236,6 +1595,202 @@ contains
                 "multi-output GP covariance parameter VJP: device kind is invalid")
         end select
     end subroutine multi_output_joint_covariance_parameter_vjp_device
+
+    subroutine multi_output_apply_parameters(self, parameters, status)
+        class(multi_output_gp_t), intent(inout) :: self
+        real(dp), intent(in) :: parameters(:)
+        type(fortnum_status_t), intent(out) :: status
+        integer :: kc, p, rank, a, j, index
+        real(dp) :: noise_variance
+
+        kc = self%kernel%parameter_count()
+        p = self%n_outputs
+        rank = size(self%weights, 2)
+        if (size(parameters) /= kc + 1 + p*rank + p) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multi-output GP parameter update: packed shape is invalid")
+            return
+        end if
+        noise_variance = exp(parameters(kc + 1))
+        if (.not. ieee_is_finite(noise_variance) .or. noise_variance <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multi-output GP parameter update: noise variance is invalid")
+            return
+        end if
+        if (kc > 0) then
+            call self%kernel%set_parameters(parameters(:kc), status)
+            if (status%code /= FORTNUM_OK) return
+        end if
+        self%noise_variance = noise_variance
+        index = kc + 2
+        do a = 1, p
+            do j = 1, rank
+                self%weights(a, j) = parameters(index)
+                index = index + 1
+            end do
+        end do
+        do a = 1, p
+            self%independent(a) = parameters(index)
+            index = index + 1
+        end do
+        if (any(self%independent < 0.0_dp)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multi-output GP parameter update: independent variances are negative")
+            return
+        end if
+        call multi_output_update_coregionalization(self)
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine multi_output_apply_parameters
+
+    subroutine multi_output_update_coregionalization(self)
+        class(multi_output_gp_t), intent(inout) :: self
+        integer :: a, b, j
+
+        self%coregionalization = 0.0_dp
+        do b = 1, self%n_outputs
+            do a = 1, self%n_outputs
+                do j = 1, size(self%weights, 2)
+                    self%coregionalization(a, b) = self%coregionalization(a, b) + &
+                        self%weights(a, j)*self%weights(b, j)
+                end do
+            end do
+            self%coregionalization(b, b) = self%coregionalization(b, b) + self%independent(b)
+        end do
+    end subroutine multi_output_update_coregionalization
+
+    subroutine multi_output_refactor(self, status)
+        class(multi_output_gp_t), intent(inout) :: self
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: joint(:, :), stacked(:)
+        integer :: n, p, i, j
+
+        self%fitted = .false.
+        if (.not. allocated(self%inputs) .or. .not. allocated(self%targets)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multi-output GP refactor: training state is not available")
+            return
+        end if
+        n = self%n_samples
+        p = self%n_outputs
+        if (size(self%inputs, 1) /= n .or. size(self%targets, 1) /= n .or. &
+            size(self%targets, 2) /= p) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multi-output GP refactor: training shape is invalid")
+            return
+        end if
+        allocate(joint(n*p, n*p), stacked(n*p))
+        call self%joint_covariance(self%inputs, joint, status)
+        if (status%code /= FORTNUM_OK) return
+        do i = 1, n*p
+            joint(i, i) = joint(i, i) + self%noise_variance
+        end do
+        do j = 1, p
+            do i = 1, n
+                stacked((j - 1)*n + i) = self%targets(i, j)
+            end do
+        end do
+        call self%factorization%factorize(joint, status)
+        if (status%code /= FORTNUM_OK) return
+        if (allocated(self%alpha)) deallocate(self%alpha)
+        allocate(self%alpha, source=stacked)
+        call self%factorization%solve(self%alpha, status)
+        if (status%code /= FORTNUM_OK) return
+        self%fitted = .true.
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine multi_output_refactor
+
+    function multi_output_outer(vector) result(matrix)
+        real(dp), intent(in) :: vector(:)
+        real(dp), allocatable :: matrix(:, :)
+        integer :: i, j
+
+        allocate(matrix(size(vector), size(vector)))
+        do j = 1, size(vector)
+            do i = 1, size(vector)
+                matrix(i, j) = vector(i)*vector(j)
+            end do
+        end do
+    end function multi_output_outer
+
+    function multi_output_outer_cross(left, right) result(matrix)
+        real(dp), intent(in) :: left(:), right(:)
+        real(dp), allocatable :: matrix(:, :)
+        integer :: i, j
+
+        allocate(matrix(size(left), size(left)))
+        do j = 1, size(left)
+            do i = 1, size(left)
+                matrix(i, j) = left(i)*right(j) + right(i)*left(j)
+            end do
+        end do
+    end function multi_output_outer_cross
+
+    real(dp) function multi_output_trace(matrix) result(value)
+        real(dp), intent(in) :: matrix(:, :)
+        integer :: i
+
+        value = 0.0_dp
+        do i = 1, min(size(matrix, 1), size(matrix, 2))
+            value = value + matrix(i, i)
+        end do
+    end function multi_output_trace
+
+    subroutine multi_output_contractions(self, kernel_matrix, matrix_bar, kernel_bar, coreg_bar)
+        class(multi_output_gp_t), intent(in) :: self
+        real(dp), intent(in) :: kernel_matrix(:, :), matrix_bar(:, :)
+        real(dp), intent(out) :: kernel_bar(:, :), coreg_bar(:, :)
+        integer :: n, p, a, b, i, j, out_i, out_j
+
+        n = self%n_samples
+        p = self%n_outputs
+        kernel_bar = 0.0_dp
+        coreg_bar = 0.0_dp
+        do b = 1, p
+            do a = 1, p
+                do j = 1, n
+                    do i = 1, n
+                        out_i = (a - 1)*n + i
+                        out_j = (b - 1)*n + j
+                        kernel_bar(i, j) = kernel_bar(i, j) + &
+                            self%coregionalization(a, b)*matrix_bar(out_i, out_j)
+                        coreg_bar(a, b) = coreg_bar(a, b) + &
+                            matrix_bar(out_i, out_j)*kernel_matrix(i, j)
+                    end do
+                end do
+            end do
+        end do
+    end subroutine multi_output_contractions
+
+    subroutine multi_output_contractions_dot(self, kernel_matrix, kernel_matrix_dot, b_dot, &
+            matrix_bar, matrix_bar_dot, kernel_bar_dot, coreg_bar_dot)
+        class(multi_output_gp_t), intent(in) :: self
+        real(dp), intent(in) :: kernel_matrix(:, :), kernel_matrix_dot(:, :)
+        real(dp), intent(in) :: b_dot(:, :)
+        real(dp), intent(in) :: matrix_bar(:, :), matrix_bar_dot(:, :)
+        real(dp), intent(out) :: kernel_bar_dot(:, :), coreg_bar_dot(:, :)
+        integer :: n, p, a, b, i, j, out_i, out_j
+
+        n = self%n_samples
+        p = self%n_outputs
+        kernel_bar_dot = 0.0_dp
+        coreg_bar_dot = 0.0_dp
+        do b = 1, p
+            do a = 1, p
+                do j = 1, n
+                    do i = 1, n
+                        out_i = (a - 1)*n + i
+                        out_j = (b - 1)*n + j
+                        kernel_bar_dot(i, j) = kernel_bar_dot(i, j) + &
+                            self%coregionalization(a, b)*matrix_bar_dot(out_i, out_j) + &
+                            b_dot(a, b)*matrix_bar(out_i, out_j)
+                        coreg_bar_dot(a, b) = coreg_bar_dot(a, b) + &
+                            matrix_bar_dot(out_i, out_j)*kernel_matrix(i, j) + &
+                            matrix_bar(out_i, out_j)*kernel_matrix_dot(i, j)
+                    end do
+                end do
+            end do
+        end do
+    end subroutine multi_output_contractions_dot
 
     subroutine multi_output_lml(self, targets, value, status)
         class(multi_output_gp_t), intent(inout) :: self
