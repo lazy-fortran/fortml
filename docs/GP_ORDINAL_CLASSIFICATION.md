@@ -58,5 +58,5 @@ hyperparameters, natural gradients, and resident CUDA solves remain separate
 roadmap work. CPU is the reference path; all CUDA prediction, reverse, and
 evidence products return `FORTNUM_NOT_IMPLEMENTED` rather than silently
 staging through the host. The original prediction oracle is
-`test_gp_ordinal_classification`; the evidence gradient/HVP and optimizer
+`test_gp_ordinal_classification`. The evidence gradient/HVP and optimizer
 oracle is `test_gp_ordinal_classification_hyperparameters`.
