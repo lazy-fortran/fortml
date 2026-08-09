@@ -18,7 +18,7 @@ program test_random_forest_regressor
         targets_bar(4, n_outputs), x_bar(4, n_features), importances(n_features), &
         cuda_predictions(4, n_outputs), weights(n_samples)
     logical, allocatable :: inclusion(:, :)
-    type(random_forest_regressor_t) :: model, repeat_model
+    type(random_forest_regressor_t) :: model, repeat_model, weighted_model
     type(fortml_device_t) :: cuda
     type(fortnum_status_t) :: status
     integer :: i, failures
@@ -45,6 +45,17 @@ program test_random_forest_regressor
         model%depth() == 3 .and. model%min_leaf() == 1 .and. &
         model%random_seed() == 5489 .and. model%schema_version() == &
         RANDOM_FOREST_REGRESSION_MODEL_SCHEMA_VERSION, "fit metadata", failures)
+
+    ! The first Park--Miller bootstrap for seed 5489 is
+    ! [1,6,7,1,1,2,6,6].  A depth-zero weighted tree therefore has the
+    ! independently computable target mean 1/2.
+    call weighted_model%fit(x, targets, status, n_trees=1, max_depth=0, &
+        sample_weight=weights, seed=5489)
+    call weighted_model%predict(query(1:1, :), predictions(1:1, :), status)
+    call check(status_ok(status) .and. &
+        abs(predictions(1, 1) - 0.5_real64) < 2.0e-14_real64 .and. &
+        abs(predictions(1, 2) - 1.5_real64) < &
+        2.0e-14_real64, "weighted bootstrap leaf oracle", failures)
 
     call model%predict(query, predictions, status)
     call check(status_ok(status) .and. all(predictions(:, 2) == &
