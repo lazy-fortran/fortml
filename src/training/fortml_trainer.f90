@@ -12,7 +12,7 @@ module fortml_trainer
     use, intrinsic :: iso_fortran_env, only: iostat_end
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
-        FORTNUM_DOMAIN_ERROR, FORTNUM_CONVERGENCE_ERROR
+        FORTNUM_DOMAIN_ERROR, FORTNUM_CONVERGENCE_ERROR, FORTNUM_NOT_IMPLEMENTED
     use fortopt_objective, only: objective_t
     use fortopt_adam, only: adam_t
     use fortopt_adamw, only: adamw_t
@@ -22,6 +22,8 @@ module fortml_trainer
     use fortopt_lbfgsb, only: lbfgsb_t, lbfgsb_options_t, lbfgsb_result_t
     use fortml_adafactor, only: adafactor_t
     use fortml_lion, only: lion_t
+    use fortml_mlp_schedules, only: mlp_learning_rate_schedule_t, &
+        MLP_SCHEDULE_PLATEAU
     implicit none
     private
 
@@ -35,7 +37,7 @@ module fortml_trainer
     integer, parameter, public :: FORTML_TRAIN_LION = 8
     character(*), parameter, public :: FORTML_TRAINER_CHECKPOINT_MAGIC = &
         "FORTML_TRAINER_CHECKPOINT_TEXT"
-    integer, parameter, public :: FORTML_TRAINER_CHECKPOINT_SCHEMA_VERSION = 4
+    integer, parameter, public :: FORTML_TRAINER_CHECKPOINT_SCHEMA_VERSION = 5
 
     abstract interface
         subroutine trainer_step_callback_proc(step, value, gradient_norm, stop, status)
@@ -59,6 +61,11 @@ module fortml_trainer
         integer :: optimizer = FORTML_TRAIN_ADAM
         integer :: max_steps = 1000
         real(dp) :: learning_rate = 1.0e-3_dp
+        !! Optional stateless schedule evaluated at every streaming update.
+        !! The base `learning_rate` remains the first-class hyperparameter;
+        !! the schedule only supplies a positive multiplicative trajectory.
+        logical :: use_learning_rate_schedule = .false.
+        type(mlp_learning_rate_schedule_t) :: learning_rate_schedule
         real(dp) :: beta1 = 0.9_dp
         real(dp) :: beta2 = 0.999_dp
         real(dp) :: epsilon = 1.0e-8_dp
@@ -104,6 +111,7 @@ module fortml_trainer
         real(dp) :: best_value = huge(1.0_dp)
         real(dp) :: gradient_norm = huge(1.0_dp)
         real(dp) :: last_step_norm = huge(1.0_dp)
+        real(dp) :: last_learning_rate = 0.0_dp
         real(dp) :: validation_value = huge(1.0_dp)
         real(dp) :: best_validation_value = huge(1.0_dp)
         real(dp), allocatable :: parameters(:)
@@ -112,6 +120,7 @@ module fortml_trainer
         real(dp), allocatable :: gradient_norm_history(:)
         real(dp), allocatable :: validation_history(:)
         real(dp), allocatable :: validation_best_parameters(:)
+        real(dp), allocatable :: learning_rate_history(:)
     contains
         procedure, public :: clear => trainer_state_clear
     end type trainer_state_t
@@ -192,13 +201,17 @@ contains
             self%state%value_history(settings%max_steps + 1), &
             self%state%gradient_norm_history(settings%max_steps + 1), &
             self%state%validation_history(settings%max_steps + 1), &
-            self%state%validation_best_parameters(n))
+            self%state%validation_best_parameters(n), &
+            self%state%learning_rate_history(settings%max_steps + 1))
         self%state%parameters = initial
         self%state%ema_parameters = initial
         self%state%value_history = huge(1.0_dp)
         self%state%gradient_norm_history = huge(1.0_dp)
         self%state%validation_history = huge(1.0_dp)
         self%state%validation_best_parameters = initial
+        self%state%learning_rate_history = 0.0_dp
+        self%state%last_learning_rate = settings%learning_rate
+        self%state%learning_rate_history(1) = settings%learning_rate
 
         allocate(initial_gradient(n))
         call objective%value_gradient(initial, initial_value, initial_gradient, status)
@@ -273,6 +286,7 @@ contains
 
         real(dp), allocatable :: gradient(:), before(:)
         real(dp) :: value, norm, scale, step_norm, new_value
+        real(dp) :: learning_rate, previous_learning_rate
         logical :: stop, validation_stop
 
         if (.not. self%ready .or. .not. self%state%initialized) then
@@ -315,6 +329,15 @@ contains
             self%state%clipped_steps = self%state%clipped_steps + 1
         end if
 
+        previous_learning_rate = self%state%last_learning_rate
+        learning_rate = self%options%learning_rate
+        if (self%options%use_learning_rate_schedule) then
+            call self%options%learning_rate_schedule%rate(self%state%steps + 1, &
+                self%options%learning_rate, learning_rate, status)
+            if (status%code /= FORTNUM_OK) return
+        end if
+        call set_optimizer_learning_rate(self, learning_rate)
+
         select case (self%options%optimizer)
         case (FORTML_TRAIN_SGD)
             call self%sgd%step(self%state%parameters, gradient, status)
@@ -337,6 +360,7 @@ contains
         end select
         if (status%code /= FORTNUM_OK) then
             self%state%parameters = before
+            call set_optimizer_learning_rate(self, previous_learning_rate)
             return
         end if
 
@@ -354,6 +378,8 @@ contains
             self%state%parameters - before, self%state%parameters - before)))
         self%state%last_step_norm = step_norm
         self%state%steps = self%state%steps + 1
+        self%state%last_learning_rate = learning_rate
+        self%state%learning_rate_history(self%state%steps + 1) = learning_rate
         self%state%gradient_norm = norm
         if (self%options%ema_decay > 0.0_dp) then
             self%state%ema_parameters = self%options%ema_decay* &
@@ -526,6 +552,30 @@ contains
         if (ios == 0) call write_i(unit, "optimizer", self%options%optimizer, ios)
         if (ios == 0) call write_i(unit, "max_steps", self%options%max_steps, ios)
         if (ios == 0) call write_r(unit, "learning_rate", self%options%learning_rate, ios)
+        if (ios == 0) call write_l(unit, "use_learning_rate_schedule", &
+            self%options%use_learning_rate_schedule, ios)
+        if (ios == 0) call write_i(unit, "schedule_kind", &
+            self%options%learning_rate_schedule%kind, ios)
+        if (ios == 0) call write_i(unit, "schedule_warmup_updates", &
+            self%options%learning_rate_schedule%warmup_updates, ios)
+        if (ios == 0) call write_i(unit, "schedule_total_updates", &
+            self%options%learning_rate_schedule%total_updates, ios)
+        if (ios == 0) call write_r(unit, "schedule_min_rate_fraction", &
+            self%options%learning_rate_schedule%min_rate_fraction, ios)
+        if (ios == 0) call write_r(unit, "schedule_decay_factor", &
+            self%options%learning_rate_schedule%decay_factor, ios)
+        if (ios == 0) call write_r(unit, "schedule_peak_rate_fraction", &
+            self%options%learning_rate_schedule%peak_rate_fraction, ios)
+        if (ios == 0) call write_r(unit, "schedule_final_rate_fraction", &
+            self%options%learning_rate_schedule%final_rate_fraction, ios)
+        if (ios == 0) call write_i(unit, "schedule_metric_mode", &
+            self%options%learning_rate_schedule%metric_mode, ios)
+        if (ios == 0) call write_i(unit, "schedule_patience_updates", &
+            self%options%learning_rate_schedule%patience_updates, ios)
+        if (ios == 0) call write_r(unit, "schedule_min_delta", &
+            self%options%learning_rate_schedule%min_delta, ios)
+        if (ios == 0) call write_r(unit, "schedule_plateau_factor", &
+            self%options%learning_rate_schedule%plateau_factor, ios)
         if (ios == 0) call write_r(unit, "beta1", self%options%beta1, ios)
         if (ios == 0) call write_r(unit, "beta2", self%options%beta2, ios)
         if (ios == 0) call write_r(unit, "epsilon", self%options%epsilon, ios)
@@ -587,6 +637,8 @@ contains
         if (ios == 0) call write_r(unit, "best_value", self%state%best_value, ios)
         if (ios == 0) call write_r(unit, "gradient_norm", self%state%gradient_norm, ios)
         if (ios == 0) call write_r(unit, "last_step_norm", self%state%last_step_norm, ios)
+        if (ios == 0) call write_r(unit, "last_learning_rate", &
+            self%state%last_learning_rate, ios)
         if (ios == 0) call write_r(unit, "validation_value", &
             self%state%validation_value, ios)
         if (ios == 0) call write_r(unit, "best_validation_value", &
@@ -601,6 +653,8 @@ contains
             self%state%validation_history(:self%state%validation_history_length), ios)
         if (ios == 0) call write_r_array(unit, "validation_best_parameters", &
             self%state%validation_best_parameters, ios)
+        if (ios == 0) call write_r_array(unit, "learning_rate_history", &
+            self%state%learning_rate_history(:self%state%history_length), ios)
 
         if (ios == 0) then
             select case (self%options%optimizer)
@@ -675,6 +729,30 @@ contains
         call read_i(unit, "optimizer", options%optimizer, ios)
         if (ios == 0) call read_i(unit, "max_steps", options%max_steps, ios)
         if (ios == 0) call read_r(unit, "learning_rate", options%learning_rate, ios)
+        if (ios == 0) call read_l(unit, "use_learning_rate_schedule", &
+            options%use_learning_rate_schedule, ios)
+        if (ios == 0) call read_i(unit, "schedule_kind", &
+            options%learning_rate_schedule%kind, ios)
+        if (ios == 0) call read_i(unit, "schedule_warmup_updates", &
+            options%learning_rate_schedule%warmup_updates, ios)
+        if (ios == 0) call read_i(unit, "schedule_total_updates", &
+            options%learning_rate_schedule%total_updates, ios)
+        if (ios == 0) call read_r(unit, "schedule_min_rate_fraction", &
+            options%learning_rate_schedule%min_rate_fraction, ios)
+        if (ios == 0) call read_r(unit, "schedule_decay_factor", &
+            options%learning_rate_schedule%decay_factor, ios)
+        if (ios == 0) call read_r(unit, "schedule_peak_rate_fraction", &
+            options%learning_rate_schedule%peak_rate_fraction, ios)
+        if (ios == 0) call read_r(unit, "schedule_final_rate_fraction", &
+            options%learning_rate_schedule%final_rate_fraction, ios)
+        if (ios == 0) call read_i(unit, "schedule_metric_mode", &
+            options%learning_rate_schedule%metric_mode, ios)
+        if (ios == 0) call read_i(unit, "schedule_patience_updates", &
+            options%learning_rate_schedule%patience_updates, ios)
+        if (ios == 0) call read_r(unit, "schedule_min_delta", &
+            options%learning_rate_schedule%min_delta, ios)
+        if (ios == 0) call read_r(unit, "schedule_plateau_factor", &
+            options%learning_rate_schedule%plateau_factor, ios)
         if (ios == 0) call read_r(unit, "beta1", options%beta1, ios)
         if (ios == 0) call read_r(unit, "beta2", options%beta2, ios)
         if (ios == 0) call read_r(unit, "epsilon", options%epsilon, ios)
@@ -741,6 +819,8 @@ contains
         if (ios == 0) call read_r(unit, "best_value", state%best_value, ios)
         if (ios == 0) call read_r(unit, "gradient_norm", state%gradient_norm, ios)
         if (ios == 0) call read_r(unit, "last_step_norm", state%last_step_norm, ios)
+        if (ios == 0) call read_r(unit, "last_learning_rate", &
+            state%last_learning_rate, ios)
         if (ios == 0) call read_r(unit, "validation_value", state%validation_value, ios)
         if (ios == 0) call read_r(unit, "best_validation_value", &
             state%best_validation_value, ios)
@@ -778,6 +858,14 @@ contains
         end if
         if (ios == 0) call read_r_array(unit, "validation_best_parameters_count", &
             "validation_best_parameters_item", n, state%validation_best_parameters, ios)
+        if (ios == 0) call read_r_array(unit, "learning_rate_history_count", &
+            "learning_rate_history_item", history_length, vector, ios)
+        if (ios == 0) then
+            allocate(state%learning_rate_history(options%max_steps + 1))
+            state%learning_rate_history = 0.0_dp
+            state%learning_rate_history(:history_length) = vector
+            deallocate(vector)
+        end if
         if (ios /= 0) goto 900
         select case (options%optimizer)
         case (FORTML_TRAIN_SGD)
@@ -839,6 +927,7 @@ contains
         if (status%code /= FORTNUM_OK) return
         self%options = options
         self%state = state
+        call set_optimizer_learning_rate(self, self%state%last_learning_rate)
         self%ready = .true.
         call status_set(status, FORTNUM_OK, "")
         return
@@ -874,7 +963,8 @@ contains
             .not. allocated(self%state%value_history) .or. &
             .not. allocated(self%state%gradient_norm_history) .or. &
             .not. allocated(self%state%validation_history) .or. &
-            .not. allocated(self%state%validation_best_parameters)) then
+            .not. allocated(self%state%validation_best_parameters) .or. &
+            .not. allocated(self%state%learning_rate_history)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "trainer checkpoint save: state is malformed or non-finite")
             return
@@ -892,6 +982,7 @@ contains
             size(self%state%value_history) /= self%options%max_steps + 1 .or. &
             size(self%state%gradient_norm_history) /= self%options%max_steps + 1 .or. &
             size(self%state%validation_history) /= self%options%max_steps + 1 .or. &
+            size(self%state%learning_rate_history) /= self%options%max_steps + 1 .or. &
             size(self%state%validation_best_parameters) /= n .or. &
             self%state%validation_history_length > size(self%state%validation_history) .or. &
             self%state%validation_best_step > self%state%steps) then
@@ -903,7 +994,8 @@ contains
             any(.not. ieee_is_finite(self%state%ema_parameters)) .or. &
             any(.not. ieee_is_finite(self%state%value_history(:h))) .or. &
             any(.not. ieee_is_finite(self%state%gradient_norm_history(:h))) .or. &
-            any(.not. ieee_is_finite(self%state%validation_best_parameters))) then
+            any(.not. ieee_is_finite(self%state%validation_best_parameters)) .or. &
+            any(.not. ieee_is_finite(self%state%learning_rate_history(:h)))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "trainer checkpoint save: state contains non-finite values")
             return
@@ -921,6 +1013,7 @@ contains
             .not. ieee_is_finite(self%state%best_value) .or. &
             .not. ieee_is_finite(self%state%gradient_norm) .or. &
             .not. ieee_is_finite(self%state%last_step_norm) .or. &
+            .not. ieee_is_finite(self%state%last_learning_rate) .or. &
             .not. ieee_is_finite(self%state%validation_value) .or. &
             .not. ieee_is_finite(self%state%best_validation_value)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -1109,6 +1202,30 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine restore_optimizer
 
+    subroutine set_optimizer_learning_rate(self, learning_rate)
+        !! Update only the scalar step scale; moments and counters remain
+        !! owned by the optimizer and are never reinitialized by a schedule.
+        class(trainer_t), intent(inout) :: self
+        real(dp), intent(in) :: learning_rate
+
+        select case (self%options%optimizer)
+        case (FORTML_TRAIN_SGD)
+            self%sgd%learning_rate = learning_rate
+        case (FORTML_TRAIN_ADAM)
+            self%adam%learning_rate = learning_rate
+        case (FORTML_TRAIN_ADAMW)
+            self%adamw%learning_rate = learning_rate
+        case (FORTML_TRAIN_ADAGRAD)
+            self%adagrad%learning_rate = learning_rate
+        case (FORTML_TRAIN_RMSPROP)
+            self%rmsprop%learning_rate = learning_rate
+        case (FORTML_TRAIN_ADAFACTOR)
+            self%adafactor%learning_rate = learning_rate
+        case (FORTML_TRAIN_LION)
+            self%lion%learning_rate = learning_rate
+        end select
+    end subroutine set_optimizer_learning_rate
+
     subroutine trainer_state_clear(self)
         class(trainer_state_t), intent(inout) :: self
         self%n_parameters = 0
@@ -1127,6 +1244,7 @@ contains
         self%best_value = huge(1.0_dp)
         self%gradient_norm = huge(1.0_dp)
         self%last_step_norm = huge(1.0_dp)
+        self%last_learning_rate = 0.0_dp
         self%validation_value = huge(1.0_dp)
         self%best_validation_value = huge(1.0_dp)
         if (allocated(self%parameters)) deallocate(self%parameters)
@@ -1135,6 +1253,7 @@ contains
         if (allocated(self%gradient_norm_history)) deallocate(self%gradient_norm_history)
         if (allocated(self%validation_history)) deallocate(self%validation_history)
         if (allocated(self%validation_best_parameters)) deallocate(self%validation_best_parameters)
+        if (allocated(self%learning_rate_history)) deallocate(self%learning_rate_history)
     end subroutine trainer_state_clear
 
     subroutine record_history(self, value, gradient_norm)
@@ -1278,6 +1397,23 @@ contains
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "trainer: validation patience requires a validation callback")
             return
+        end if
+        if (options%use_learning_rate_schedule) then
+            if (.not. options%learning_rate_schedule%valid()) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "trainer: learning-rate schedule is invalid")
+                return
+            end if
+            if (options%learning_rate_schedule%kind == MLP_SCHEDULE_PLATEAU) then
+                call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                    "trainer: metric-aware plateau schedule requires a validation-aware adapter")
+                return
+            end if
+            if (options%optimizer == FORTML_TRAIN_LBFGSB) then
+                call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                    "trainer: learning-rate schedules are for streaming optimizers")
+                return
+            end if
         end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine validate_options
