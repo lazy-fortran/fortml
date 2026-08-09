@@ -15,6 +15,7 @@ program test_lightgbm_ranking
     call test_weighted_pair_oracle(failures)
     call test_group_isolation(failures)
     call test_two_item_fit(failures)
+    call test_validation_contract(failures)
     call test_refusals(failures)
     if (failures /= 0) then
         write (error_unit, '(i0,a)') failures, " LightGBM ranking test(s) failed"
@@ -111,6 +112,39 @@ contains
             maxval(abs(restored_prediction-prediction)) < 1.0e-14_real64, &
             "ranking persistence prediction replay", failures)
     end subroutine test_two_item_fit
+
+    subroutine test_validation_contract(failures)
+        integer, intent(inout) :: failures
+        type(lightgbm_t) :: model
+        type(lightgbm_options_t) :: options
+        type(fortnum_status_t) :: status
+        real(real64) :: x(2,1), target(2), prediction(2)
+        integer :: group(2), malformed_group(2)
+
+        x(:,1) = [0.0_real64, 1.0_real64]
+        target = [0.0_real64, 1.0_real64]
+        group = [19, 19]
+        malformed_group = [19, 20]
+        options = lightgbm_options_t()
+        options%n_estimators = 1
+        options%num_leaves = 2
+        options%min_data_in_leaf = 1
+        options%l2 = 0.0_real64
+        options%early_stopping_rounds = 1
+        call model%fit_ranking(x, target, group, status, options, &
+            validation_x=x, validation_relevance=target, validation_group=group)
+        call check(status%code == FORTNUM_OK .and. model%best_iteration() == 1 .and. &
+            model%best_validation_loss() < huge(1.0_real64), &
+            "ranking validation and best-round accounting", failures)
+        call model%predict(x, prediction, status)
+        call check(status%code == FORTNUM_OK .and. prediction(2) > prediction(1), &
+            "validated ranking prediction", failures)
+        call model%fit_ranking(x, target, group, status, options, &
+            validation_x=x, validation_relevance=target, &
+            validation_group=malformed_group)
+        call check(status%code == FORTNUM_DOMAIN_ERROR, &
+            "malformed validation group refusal", failures)
+    end subroutine test_validation_contract
 
     subroutine test_refusals(failures)
         integer, intent(inout) :: failures
