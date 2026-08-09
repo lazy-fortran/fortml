@@ -18,7 +18,7 @@ resident CUDA dense trainer, and variational multiclass-GP log-probability
 slices are also post-tag additions.
 The broad parity
 gate is still open, so this work does not move or recreate that tag.
-The checklist currently records 399 completed and 150 open items. Open rows are
+The checklist currently records 402 completed and 150 open items. Open rows are
 retained until their implementation, independent oracle, device/refusal
 behavior, and benchmark evidence land together.
 
@@ -5003,6 +5003,24 @@ peak memory, and batch-size scaling with the same correctness gate as training.
   survive transactional child fits and are checked against an independent
   two-leaf Newton-stump oracle in
   [`results/XGBOOST_MULTIOUTPUT_VALIDATION_METADATA.md`](../fortml-bench/results/XGBOOST_MULTIOUTPUT_VALIDATION_METADATA.md).
+- [x] Extend the deterministic mini-batch coupled-L2 Adam trajectory
+  hypergradient from two to five FortOpt coordinates:
+  `[log_lr, log_l2, logit_beta1, logit_beta2, log_epsilon]`. Exact moment,
+  bias-correction, denominator, JVP/VJP, and bounded L-BFGS-B products are
+  checked by an independent affine replay and nonlinear finite differences in
+  [`results/MLP_MINIBATCH_ADAM_HYPERGRADIENT.md`](../fortml-bench/results/MLP_MINIBATCH_ADAM_HYPERGRADIENT.md).
+- [x] Add fixed-latent ordinal-GP cut-point calibration. Strictly increasing
+  thresholds use a location-plus-log-gap transform, weighted ordered-probit or
+  logistic likelihoods, transactional FortOpt L-BFGS-B updates, threshold
+  prediction JVP/VJP products, and a typed CUDA refusal. The independent
+  convergence, finite-difference, HVP, rollback, and device lane is recorded
+  in [`results/GP_ORDINAL_CUTPOINTS.md`](../fortml-bench/results/GP_ORDINAL_CUTPOINTS.md).
+- [x] Add weighted XGBoost/LightGBM partial-dependence and ICE evaluation for
+  transformed predictions and raw margins. The implementation validates
+  response shape and feature grids transactionally, uses overflow-stable
+  weight scaling, and returns a typed CUDA refusal; hand-computed and NumPy
+  oracles are pinned in
+  [`results/BOOSTED_PARTIAL_DEPENDENCE.md`](../fortml-bench/results/BOOSTED_PARTIAL_DEPENDENCE.md).
 - [ ] Define one versioned result schema for correctness, train time, predict
   time, peak host and device memory, compiler, flags, dependency revisions,
   hardware, seed, warmup, repetitions, and refusal reason.
