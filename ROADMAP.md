@@ -246,7 +246,7 @@ open; see [`docs/CONTRASTIVE_LOSS.md`](docs/CONTRASTIVE_LOSS.md).
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
 The checked-in GNU compiler log is the fresh 2026-08-09 run against FortML code
-revision `4bc2e93` (including chronological validation metadata, multiclass
+revision `8c3051c` (including chronological validation metadata, multiclass
 focal-softmax products, RBF order-three derivative observations, implicit
 binary GP-classification HVPs, contrastive loss products, stable XGBoost
 classifier log probabilities, multiclass XGBoost validation/early stopping,
@@ -303,8 +303,8 @@ compiler coverage remains an
 explicit older-build result.
 
 The checked-in evidence is maintained on the clean FortML-bench revision
-`dd9c55b`; each CSV records the exact clean benchmark revision used to produce
-its rows,
+`6aae2bc`; each CSV records the exact clean benchmark revision used to produce
+its rows (older CSVs retain their historical provenance),
 the trainer-checkpoint, unfactored-Adafactor, binary-objective,
 multiclass-calibration, variational-multiclass-GP, PINN/physics-objective,
 physics HVP, grouped K-fold, spectral-mixture, XGBoost-ranking,
