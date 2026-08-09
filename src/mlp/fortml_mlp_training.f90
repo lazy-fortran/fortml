@@ -76,6 +76,9 @@ module fortml_mlp_training
     contains
         procedure, public :: initialize => loss_scale_initialize
         procedure, public :: observe => loss_scale_observe
+        procedure, public :: scale_gradient => loss_scale_scale_gradient
+        procedure, public :: unscale_gradient => loss_scale_unscale_gradient
+        procedure, public :: scaled_gradient_finite => loss_scale_scaled_gradient_finite
         procedure, public :: valid => loss_scale_valid
         procedure, public :: compatible => loss_scale_compatible
     end type mlp_loss_scale_state_t
@@ -534,6 +537,80 @@ contains
         end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine loss_scale_observe
+
+    subroutine loss_scale_scale_gradient(self, gradient, scaled_gradient, status)
+        !! Apply the current loss scale without hiding overflow from callers.
+        !!
+        !! This is deliberately a separate product from `observe`: a scaled
+        !! vector may contain IEEE infinities even when the input vector is
+        !! finite.  Callers should use `scaled_gradient_finite` before
+        !! unscaling and committing an optimizer update.
+        class(mlp_loss_scale_state_t), intent(in) :: self
+        real(dp), intent(in) :: gradient(:)
+        real(dp), intent(out) :: scaled_gradient(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        scaled_gradient = 0.0_dp
+        if (.not. self%valid()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP loss scale: cannot scale with invalid state")
+            return
+        end if
+        if (size(scaled_gradient) /= size(gradient)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP loss scale: scaled-gradient shape mismatch")
+            return
+        end if
+        ! Do not reject a non-finite input here: preserving it in the output
+        ! lets the caller route both source-gradient and scale-induced
+        ! overflows through the same `scaled_gradient_finite` branch.
+        scaled_gradient = gradient
+        if (self%enabled) scaled_gradient = self%scale*gradient
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine loss_scale_scale_gradient
+
+    subroutine loss_scale_unscale_gradient(self, scaled_gradient, gradient, status)
+        !! Undo the current loss scale after a finite scaled computation.
+        class(mlp_loss_scale_state_t), intent(in) :: self
+        real(dp), intent(in) :: scaled_gradient(:)
+        real(dp), intent(out) :: gradient(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        gradient = 0.0_dp
+        if (.not. self%valid()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP loss scale: cannot unscale with invalid state")
+            return
+        end if
+        if (size(gradient) /= size(scaled_gradient)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP loss scale: gradient shape mismatch")
+            return
+        end if
+        if (.not. self%scaled_gradient_finite(scaled_gradient)) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "MLP loss scale: refusing to unscale a non-finite gradient")
+            return
+        end if
+        gradient = scaled_gradient
+        if (self%enabled) gradient = scaled_gradient/self%scale
+        if (any(.not. ieee_is_finite(gradient))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "MLP loss scale: unscaled gradient is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine loss_scale_unscale_gradient
+
+    logical function loss_scale_scaled_gradient_finite(self, scaled_gradient) result(finite)
+        !! Return whether a scaled gradient is safe to commit.
+        class(mlp_loss_scale_state_t), intent(in) :: self
+        real(dp), intent(in) :: scaled_gradient(:)
+
+        finite = self%valid()
+        if (.not. finite) return
+        finite = all(ieee_is_finite(scaled_gradient))
+    end function loss_scale_scaled_gradient_finite
 
     logical function loss_scale_valid(self) result(valid)
         class(mlp_loss_scale_state_t), intent(in) :: self
@@ -1651,6 +1728,7 @@ contains
         type(mlp_batch_iterator_t) :: iterator
         type(radam_t) :: radam_optimizer
         real(dp), allocatable :: theta(:), theta_before(:), best_theta(:), gradient(:)
+        real(dp), allocatable :: scaled_gradient(:)
         real(dp), allocatable :: accumulated_gradient(:)
         real(dp), allocatable :: ema_parameters(:)
         real(dp), allocatable :: lion_momentum(:)
@@ -1896,6 +1974,7 @@ contains
         result%has_ema = config%ema_decay > 0.0_dp
         if (result%has_ema) allocate(result%ema_parameters, source=ema_parameters)
         allocate(gradient(n_parameters))
+        if (loss_scaler%enabled) allocate(scaled_gradient(n_parameters))
         if (allocated(config%optimizer_groups)) allocate(theta_before(n_parameters))
         allocate(accumulated_gradient(n_parameters))
         history_length = config%max_epochs
@@ -2230,7 +2309,12 @@ contains
                         theta = model%parameters()
                         gradient = gradient + config%l2*theta
                         if (loss_scaler%enabled) then
-                            if (any(.not. ieee_is_finite(loss_scaler%scale*gradient))) then
+                            call loss_scaler%scale_gradient(gradient, scaled_gradient, status)
+                            if (status%code /= FORTNUM_OK) then
+                                if (present(state)) state = result
+                                return
+                            end if
+                            if (.not. loss_scaler%scaled_gradient_finite(scaled_gradient)) then
                                 call loss_scaler%observe(.false., .false., status)
                                 if (status%code /= FORTNUM_OK) then
                                     if (present(state)) state = result
@@ -2242,6 +2326,11 @@ contains
                                 accumulated_weight_mass = 0.0_dp
                                 microbatch_count = 0
                                 cycle
+                            end if
+                            call loss_scaler%unscale_gradient(scaled_gradient, gradient, status)
+                            if (status%code /= FORTNUM_OK) then
+                                if (present(state)) state = result
+                                return
                             end if
                         end if
                         raw_gradient_norm = sqrt(sum(gradient*gradient))

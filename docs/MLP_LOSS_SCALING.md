@@ -21,10 +21,30 @@ increments `overflow_count` and `skipped_updates`, and multiplies the scale by
 `backoff_factor`, bounded by `minimum_scale`.  All transitions are validated
 for finite values and configured bounds.
 
+The state also owns the explicit gradient products used by a trainer:
+
+```fortran
+call options%loss_scale%scale_gradient(gradient, scaled_gradient, status)
+if (options%loss_scale%scaled_gradient_finite(scaled_gradient)) then
+    call options%loss_scale%unscale_gradient(scaled_gradient, gradient, status)
+    ! Commit the optimizer update only after the status is successful.
+else
+    call options%loss_scale%observe(.false., .false., status)
+    ! Skip the update and retry with the backed-off scale.
+end if
+```
+
+`scale_gradient` and `unscale_gradient` are shape-checked, allocation-free
+products.  `scaled_gradient_finite` catches both a non-finite source gradient
+and overflow introduced by multiplication by the scale.  The FP64 reference
+trainer now executes this scale/check/unscale sequence before every optimizer
+commit, so finite trajectories are exactly invariant to enabling loss scaling
+while overflow updates are transactionally skipped.
+
 The FP64 trainer may enable the state as a CPU recurrence/reference lane.  It
-checks the scaled gradient for IEEE overflow and skips the optimizer update on
-an overflow; with the default disabled state, existing FP64 trajectories are
-bit-for-bit unchanged.  FP32, FP16, and BF16 training still return
+checks the scaled gradient for IEEE overflow, unscales it, and skips the
+optimizer update on an overflow; with the default disabled state, existing
+FP64 trajectories are bit-for-bit unchanged.  FP32, FP16, and BF16 training still return
 `FORTNUM_NOT_IMPLEMENTED`: master weights, resident lower-precision kernels,
 and device loss-scaling reductions are not claimed until independently gated.
 No CUDA path is inferred from the option.

@@ -1,7 +1,8 @@
 program test_mlp_loss_scaling
     !! Independent recurrence and checkpoint oracle for MLP loss scaling.
     use fortnum_kinds, only: dp
-    use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_NOT_IMPLEMENTED
+    use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_NOT_IMPLEMENTED, &
+        FORTNUM_CONVERGENCE_ERROR, FORTNUM_DOMAIN_ERROR
     use fortml_mlp, only: mlp_t, MLP_LINEAR
     use fortml_mlp_training, only: mlp_loss_scale_state_t, mlp_training_options_t, &
         mlp_training_state_t, mlp_training_checkpoint_t, mlp_train, &
@@ -13,6 +14,7 @@ program test_mlp_loss_scaling
 
     failures = 0
     call test_recurrence(failures)
+    call test_gradient_products(failures)
     call test_checkpoint_round_trip(failures)
     call test_lower_precision_refusal(failures)
     if (failures > 0) then
@@ -50,6 +52,45 @@ contains
         call check(status_ok(status) .and. scaler%scale == 4.0_dp .and. &
             scaler%good_steps == 0, "non-update does not grow scale", failures)
     end subroutine test_recurrence
+
+    subroutine test_gradient_products(failures)
+        integer, intent(inout) :: failures
+        type(mlp_loss_scale_state_t) :: scaler, disabled
+        type(fortnum_status_t) :: status
+        real(dp) :: gradient(2), scaled(2), recovered(2), overflowing(2)
+
+        gradient = [1.25_dp, -2.5_dp]
+        call scaler%initialize(status, enabled=.true., initial_scale=8.0_dp, &
+            minimum_scale=1.0_dp, maximum_scale=64.0_dp)
+        call scaler%scale_gradient(gradient, scaled, status)
+        call check(status_ok(status) .and. scaled(1) == 10.0_dp .and. &
+            scaled(2) == -20.0_dp .and. scaler%scaled_gradient_finite(scaled), &
+            "finite gradient is scaled without loss", failures)
+        call scaler%unscale_gradient(scaled, recovered, status)
+        call check(status_ok(status) .and. maxval(abs(recovered - gradient)) == 0.0_dp, &
+            "finite scaled gradient round-trips exactly", failures)
+
+        overflowing = [huge(1.0_dp), 0.0_dp]
+        call scaler%scale_gradient(overflowing, scaled, status)
+        call check(status_ok(status) .and. .not. scaler%scaled_gradient_finite(scaled), &
+            "scaled overflow is observable before update", failures)
+        call scaler%unscale_gradient(scaled, recovered, status)
+        call check(status%code == FORTNUM_CONVERGENCE_ERROR .and. &
+            maxval(abs(recovered)) == 0.0_dp, &
+            "non-finite scaled gradient cannot be committed", failures)
+
+        call disabled%initialize(status, enabled=.false.)
+        call disabled%scale_gradient(gradient, scaled, status)
+        call check(status_ok(status) .and. maxval(abs(scaled - gradient)) == 0.0_dp, &
+            "disabled loss scaling is an identity product", failures)
+        call disabled%unscale_gradient(scaled, recovered, status)
+        call check(status_ok(status) .and. maxval(abs(recovered - gradient)) == 0.0_dp, &
+            "disabled loss scaling unscale is an identity product", failures)
+
+        call scaler%scale_gradient(gradient, recovered(1:1), status)
+        call check(status%code == FORTNUM_DOMAIN_ERROR, &
+            "scaled-gradient shape mismatch is typed", failures)
+    end subroutine test_gradient_products
 
     subroutine test_checkpoint_round_trip(failures)
         integer, intent(inout) :: failures

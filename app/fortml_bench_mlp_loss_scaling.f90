@@ -14,6 +14,8 @@ program fortml_bench_mlp_loss_scaling
     type(mlp_training_state_t) :: state
     type(fortnum_status_t) :: status
     real(dp) :: x(3, 1), target(3, 1), before(2), elapsed, started
+    real(dp) :: gradient(2), scaled_gradient(2), recovered_gradient(2)
+    real(dp) :: overflowing_gradient(2)
     integer :: i
 
     call cpu_time(started)
@@ -31,6 +33,21 @@ program fortml_bench_mlp_loss_scaling
     if (.not. status_ok(status)) error stop "loss-scale overflow update failed"
     write (*, '(a,",",es24.16,",",i0,",",i0)') "recurrence_overflow", &
         scaler%scale, scaler%overflow_count, scaler%skipped_updates
+    gradient = [1.25_dp, -2.5_dp]
+    call scaler%scale_gradient(gradient, scaled_gradient, status)
+    if (.not. status_ok(status)) error stop "loss-scale gradient scaling failed"
+    call scaler%unscale_gradient(scaled_gradient, recovered_gradient, status)
+    if (.not. status_ok(status)) error stop "loss-scale gradient unscaling failed"
+    write (*, '(a,",",es24.16,",",i0)') "gradient_products", &
+        maxval(abs(recovered_gradient - gradient)), &
+        merge(1, 0, scaler%scaled_gradient_finite(scaled_gradient))
+    overflowing_gradient = [huge(1.0_dp), 0.0_dp]
+    call scaler%scale_gradient(overflowing_gradient, scaled_gradient, status)
+    write (*, '(a,",",i0,",",i0)') "gradient_overflow", &
+        merge(1, 0, .not. scaler%scaled_gradient_finite(scaled_gradient)), &
+        scaler%overflow_count
+    call scaler%unscale_gradient(scaled_gradient, recovered_gradient, status)
+    write (*, '(a,",",i0)') "gradient_overflow_commit", status%code
     call scaler%initialize(status, enabled=.true., initial_scale=8.0_dp, &
         growth_factor=2.0_dp, backoff_factor=0.5_dp, growth_interval=2, &
         minimum_scale=1.0_dp, maximum_scale=32.0_dp)

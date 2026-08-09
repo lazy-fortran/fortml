@@ -2636,7 +2636,10 @@ overflow backoff. `observe(finite_gradient,update_applied,status)` is public
 for custom trainers and increments the same good-step, overflow, and skipped
 update counters used by `mlp_train`. The FP64 reference path checks scaled
 gradients and skips an overflowing update; disabled scaling leaves the existing
-trajectory unchanged. FP32/FP16/BF16 and CUDA resident training return a typed
+trajectory unchanged. `scale_gradient`, `unscale_gradient`, and
+`scaled_gradient_finite` expose the allocation-free scale/check/unscale
+products so custom trainers can use the same transactional update contract.
+FP32/FP16/BF16 and CUDA resident training return a typed
 `FORTNUM_NOT_IMPLEMENTED` until master-weight and resident lower-precision
 kernels are independently gated. Loss-scale policy and dynamic counters are
 validated and persisted in formatted checkpoint schema 11.
