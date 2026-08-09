@@ -4469,8 +4469,22 @@ model. `fit` exposes convergence, iteration, mode, curvature, and stationary
 `predict_response` returns a positive Poisson rate or Student-t response
 summary. `test_robust_gp` independently checks Poisson stationarity/rates,
 Student-t outlier resistance, and typed input/convergence refusals. Exact
-non-Gaussian evidence, derivative products, approximate scalable inference,
+kernel-hyperparameter-through-refit evidence, approximate scalable inference,
 and resident CUDA remain open; see [`docs/GP_ROBUST.md`](GP_ROBUST.md).
+
+The Poisson path additionally exports `robust_poisson_log_likelihood_value`,
+`_gradient`, `_jvp`, `_vjp`, and `_hvp` with the normalising
+`log_gamma(y+1)` term. A fitted model exposes `latent_parameter_count`,
+`latent_parameters`, and transactional `set_latent_parameters`, plus
+fixed-state `log_posterior`, `log_posterior_gradient`, `log_posterior_jvp`,
+`log_posterior_vjp`, and `log_posterior_hvp`. Query latent/response
+`predict_*_jvp` and `predict_*_vjp` hold the fitted Laplace state fixed. The
+companion `fortml_robust_gp_training` module provides
+`robust_gp_poisson_objective_t` and `robust_gp_poisson_optimize`, a bounded
+FortOpt L-BFGS-B path over the latent log-rate vector with exact products and
+typed CUDA refusal. `test_robust_gp_poisson_products` independently checks the
+formula, posterior and query products, transactional updates, optimizer, and
+device boundary.
 
 ### `fortml_sparse_prior_gp`
 

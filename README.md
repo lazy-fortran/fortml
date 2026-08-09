@@ -104,6 +104,13 @@ Both CPU contracts have independent tests and explicit typed CUDA boundaries;
 native ordinal likelihood optimization and resident Student-t inference remain
 roadmap work.
 
+The Poisson robust-GP slice also exposes the normalized count likelihood and
+exact value/gradient/JVP/VJP/HVP products, fixed-state latent posterior and
+query products, and a transactional FortOpt L-BFGS-B objective over log-rate
+latents. CUDA requests are explicit `FORTNUM_NOT_IMPLEMENTED` refusals until
+the Laplace factorization is resident; see [`docs/GP_ROBUST.md`](docs/GP_ROBUST.md)
+and the independent `fortml-bench` release lane.
+
 The exact-GP kernel catalog also includes the gated change-point kernel. Its
 input, mixed, and packed parameter products are covered by an independent
 NumPy lane, while static-operator and resident CUDA requests return typed
