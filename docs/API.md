@@ -1946,6 +1946,12 @@ first-order products. `term_values(theta, values, status)` returns the four
 normalized weighted slot contributions in that order; inactive slots are zero,
 and their sum equals `value(theta)`. This is the stable residual/conservation
 balancing diagnostic. `as_objective` adapts the value/gradient path to FortOpt.
+`term_gradients(theta, gradients, status)` and
+`term_hvps(theta, theta_dot, hvps, status)` expose packed per-slot parameter
+products as `(n_parameters,4)` columns in the same order. Their column sums
+equal the aggregate gradient/HVP; inactive slots are zero. `term_hvps` keeps
+the typed `FORTNUM_NOT_IMPLEMENTED` refusal when an active callback does not
+provide an exact reverse-over-forward product.
 Callbacks own coordinate/time layouts, units, derivative implementation, and
 device residency;
 there is no hidden finite-difference or host/GPU fallback. See
@@ -1957,7 +1963,9 @@ there is no hidden finite-difference or host/GPU fallback. See
 `pinn_training_adapter_t` is the bounded training facade over an initialized
 `physics_objective_t`. `initialize(objective,status[,device_kind])` retains the
 callback-owned objective and exposes `value`, `gradient`, `value_gradient`,
-`jvp`, `vjp`, `hvp`, and the four-slot `term_values` diagnostic. `hvp` is exact
+`jvp`, `vjp`, `hvp`, and the four-slot `term_values` diagnostic. It also forwards
+`term_gradients` and `term_hvps`, keeping each named residual's parameter
+products independently addressable for balancing and diagnostics. `hvp` is exact
 when every active constraint supplies the optional
 `physics_residual_hvp_proc`; otherwise it preserves the typed refusal. The
 `fit_lbfgsb(parameters,lower,upper,options,result,status)` method runs the

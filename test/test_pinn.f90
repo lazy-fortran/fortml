@@ -31,6 +31,7 @@ program test_pinn
     type(fortnum_status_t) :: status
     real(dp) :: theta(1), direction(1), gradient(1), gradient_plus(1)
     real(dp) :: gradient_minus(1), hessian_direction(1), term_values(4)
+    real(dp) :: term_gradients(1,4), term_hvps(1,4)
     real(dp) :: value, value_plus, value_minus, value_dot, h, scalar
     real(dp) :: fit_parameters(1), lower(1), upper(1)
     integer :: failures
@@ -75,6 +76,12 @@ program test_pinn
     call check(status_ok(status) .and. abs(sum(term_values) - &
         expected_affine_value(theta(1))) < 2.0e-14_dp, &
         "named PINN term values", failures)
+    call pinn%term_gradients(theta, term_gradients, status)
+    call check(status_ok(status) .and. &
+        maxval(abs(term_gradients(1,:) - [1.0_dp, 2.0_dp, 0.5_dp, 1.5_dp] * &
+            (theta(1) - 1.0_dp))) < 2.0e-14_dp .and. &
+        abs(sum(term_gradients(1,:)) - expected_affine_gradient(theta(1))) < &
+        2.0e-14_dp, "named PINN term gradients", failures)
     call pinn%value_gradient(theta, value, gradient, status)
     call check(status_ok(status), "PINN value and gradient", failures)
     call check(abs(value - expected_affine_value(theta(1))) < 2.0e-14_dp .and. &
@@ -93,6 +100,9 @@ program test_pinn
     call pinn%hvp(theta, direction, hessian_direction, status)
     call check(status%code == FORTNUM_NOT_IMPLEMENTED .and. &
         abs(hessian_direction(1)) == 0.0_dp, "typed affine HVP refusal", failures)
+    call pinn%term_hvps(theta, direction, term_hvps, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED .and. &
+        maxval(abs(term_hvps)) == 0.0_dp, "typed per-term HVP refusal", failures)
 
     fit_parameters = [0.0_dp]
     lower = [-2.0_dp]
@@ -124,6 +134,14 @@ program test_pinn
     direction = [-0.23_dp]
     call quadratic_pinn%gradient(theta, gradient, status)
     call quadratic_pinn%hvp(theta, direction, hessian_direction, status)
+    call quadratic_pinn%term_gradients(theta, term_gradients, status)
+    call check(status_ok(status) .and. abs(term_gradients(1,2) - gradient(1)) < &
+        2.0e-14_dp .and. maxval(abs(term_gradients(1,[1,3,4]))) == 0.0_dp, &
+        "named nonlinear PINN gradient", failures)
+    call quadratic_pinn%term_hvps(theta, direction, term_hvps, status)
+    call check(status_ok(status) .and. abs(term_hvps(1,2) - hessian_direction(1)) < &
+        2.0e-14_dp .and. maxval(abs(term_hvps(1,[1,3,4]))) == 0.0_dp, &
+        "named nonlinear PINN HVP", failures)
     theta = theta + h*direction
     call quadratic_pinn%gradient(theta, gradient_plus, status)
     theta = theta - 2.0_dp*h*direction

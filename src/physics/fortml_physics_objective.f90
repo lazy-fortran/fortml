@@ -121,6 +121,8 @@ module fortml_physics_objective
         procedure, public :: initialized => physics_objective_initialized
         procedure, public :: parameter_count => physics_objective_parameter_count
         procedure, public :: term_values => physics_objective_term_values
+        procedure, public :: term_gradients => physics_objective_term_gradients
+        procedure, public :: term_hvps => physics_objective_term_hvps
         procedure, public :: value => physics_objective_value
         procedure, public :: gradient => physics_objective_gradient
         procedure, public :: value_gradient => physics_objective_value_gradient
@@ -485,6 +487,76 @@ contains
         call constraint_value_or_zero(self%conservation, theta, values(4), status)
     end subroutine physics_objective_term_values
 
+    subroutine physics_objective_term_gradients(self, theta, gradients, status)
+        !! Return one gradient column for each named objective term.
+        !!
+        !! Columns are ordered ``[data, residual, boundary, conservation]``;
+        !! inactive terms are zero.  Unlike the aggregate gradient this
+        !! diagnostic keeps residual-balancing contributions separately
+        !! observable without exposing the objective's private slots.
+        class(physics_objective_t), intent(in) :: self
+        real(dp), intent(in) :: theta(:)
+        real(dp), intent(out) :: gradients(:,:)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. self%initialized()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "physics objective: object is not initialized")
+            return
+        end if
+        if (size(theta) /= self%n_parameters .or. &
+            any(.not. ieee_is_finite(theta)) .or. &
+            size(gradients, 1) /= self%n_parameters .or. &
+            size(gradients, 2) /= 4) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "physics objective: gradient diagnostic shape is invalid")
+            return
+        end if
+        gradients = 0.0_dp
+        call term_gradient_or_zero(self%data, theta, gradients(:, 1), status)
+        if (status%code /= FORTNUM_OK) return
+        call term_gradient_or_zero(self%residual, theta, gradients(:, 2), status)
+        if (status%code /= FORTNUM_OK) return
+        call term_gradient_or_zero(self%boundary, theta, gradients(:, 3), status)
+        if (status%code /= FORTNUM_OK) return
+        call term_gradient_or_zero(self%conservation, theta, gradients(:, 4), status)
+    end subroutine physics_objective_term_gradients
+
+    subroutine physics_objective_term_hvps(self, theta, theta_dot, hvps, status)
+        !! Return one exact HVP column for each named objective term.
+        !!
+        !! The aggregate HVP has the same column sum.  If an active term has
+        !! no reverse-over-forward callback the call returns that term's typed
+        !! ``FORTNUM_NOT_IMPLEMENTED`` refusal and leaves all output zero.
+        class(physics_objective_t), intent(in) :: self
+        real(dp), intent(in) :: theta(:), theta_dot(:)
+        real(dp), intent(out) :: hvps(:,:)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. self%initialized()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "physics objective: object is not initialized")
+            return
+        end if
+        if (size(theta) /= self%n_parameters .or. &
+            size(theta_dot) /= self%n_parameters .or. &
+            any(.not. ieee_is_finite(theta)) .or. &
+            any(.not. ieee_is_finite(theta_dot)) .or. &
+            size(hvps, 1) /= self%n_parameters .or. size(hvps, 2) /= 4) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "physics objective: HVP diagnostic shape is invalid")
+            return
+        end if
+        hvps = 0.0_dp
+        call term_hvp_or_zero(self%data, theta, theta_dot, hvps(:, 1), status)
+        if (status%code /= FORTNUM_OK) return
+        call term_hvp_or_zero(self%residual, theta, theta_dot, hvps(:, 2), status)
+        if (status%code /= FORTNUM_OK) return
+        call term_hvp_or_zero(self%boundary, theta, theta_dot, hvps(:, 3), status)
+        if (status%code /= FORTNUM_OK) return
+        call term_hvp_or_zero(self%conservation, theta, theta_dot, hvps(:, 4), status)
+    end subroutine physics_objective_term_hvps
+
     subroutine physics_objective_value_gradient(self, theta, value, gradient, status)
         class(physics_objective_t), intent(in) :: self
         real(dp), intent(in) :: theta(:)
@@ -761,6 +833,34 @@ contains
         end if
         call term%value(theta, value, status)
     end subroutine constraint_value_or_zero
+
+    subroutine term_gradient_or_zero(term, theta, gradient, status)
+        type(physics_constraint_t), intent(in) :: term
+        real(dp), intent(in) :: theta(:)
+        real(dp), intent(out) :: gradient(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        gradient = 0.0_dp
+        if (.not. term%initialized()) then
+            call status_set(status, FORTNUM_OK, "")
+            return
+        end if
+        call term%gradient(theta, gradient, status)
+    end subroutine term_gradient_or_zero
+
+    subroutine term_hvp_or_zero(term, theta, theta_dot, hvp, status)
+        type(physics_constraint_t), intent(in) :: term
+        real(dp), intent(in) :: theta(:), theta_dot(:)
+        real(dp), intent(out) :: hvp(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        hvp = 0.0_dp
+        if (.not. term%initialized()) then
+            call status_set(status, FORTNUM_OK, "")
+            return
+        end if
+        call term%hvp(theta, theta_dot, hvp, status)
+    end subroutine term_hvp_or_zero
 
     subroutine accumulate_jvp(term, theta, theta_dot, value, value_dot, &
             term_value, term_dot, status)

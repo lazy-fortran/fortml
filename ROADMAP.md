@@ -4208,6 +4208,11 @@ results as an external literature claim.
   FortOpt L-BFGS-B fitting, and returns a typed CUDA refusal without a host
   fallback. `test_pinn` is an independent manufactured-solution gate covering
   all products, a nonlinear HVP, fitting, and shape/device boundaries.
+- [x] Keep named PINN products independently addressable. `term_gradients` and
+  `term_hvps` expose `(n_parameters,4)` matrices in the stable
+  `[data,residual,boundary,conservation]` order; their column sums equal the
+  aggregate products and inactive terms are zero. The release app and
+  independent nonlinear oracle are recorded in the PINN term-products lane.
 - [x] Add a reusable canonical symplectic-form term over map Jacobians.
   `fortml_symplectic` forms `D = A^T Omega A - Omega` for canonical `[q,p]`
   coordinates, exposes packed residual value/JVP/VJP and normalized weighted

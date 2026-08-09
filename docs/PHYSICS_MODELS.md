@@ -61,6 +61,11 @@ does not form a Jacobian or Hessian and has no finite-difference fallback.
 Providers without the optional callback retain a typed
 `FORTNUM_NOT_IMPLEMENTED` HVP refusal. The independent affine and nonlinear
 oracles are in [`test_physics_objective.f90`](../test/test_physics_objective.f90).
+The objective also exposes `term_gradients` and `term_hvps` as
+`(n_parameters,4)` matrices in the same named-term order. Their column sums
+are the aggregate products, so residual balancing can inspect each term
+without reconstructing callback state; an unavailable active HVP remains a
+typed refusal.
 Coordinate/time metadata, collocation samplers, and PINN/GP adapters remain
 future work. The CPU `fortml_symplectic` utility now supplies the canonical
 map term. For a map Jacobian `A` in `[q,p]` coordinates it forms
@@ -78,7 +83,8 @@ responsible for its callback and device residency.
 `fortml_pinn` adds `pinn_training_adapter_t` as the training-facing facade for
 that composition. `initialize(objective,status[,device_kind])` accepts an
 initialized `physics_objective_t` and forwards `value`, `gradient`,
-`value_gradient`, `jvp`, `vjp`, `hvp`, and `term_values` without copying model
+`value_gradient`, `jvp`, `vjp`, `hvp`, `term_values`, `term_gradients`, and
+`term_hvps` without copying model
 or collocation state out of callback-owned contexts. `fit_lbfgsb` adapts the
 same objective to FortOpt's bounded L-BFGS-B implementation; the caller owns
 the packed parameter vector and bounds. The manufactured-solution

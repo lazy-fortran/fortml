@@ -364,5 +364,8 @@ derivative/device/HPO row schema is in
 [docs/DERIVATIVE_CAPABILITY_MATRIX.md](docs/DERIVATIVE_CAPABILITY_MATRIX.md).
 The classification-specific acceptance matrix is in
 [docs/CLASSIFICATION_MATRIX.md](docs/CLASSIFICATION_MATRIX.md).
+PINN residual balancing can inspect exact named-term parameter gradients and
+HVPs through `term_gradients` and `term_hvps`; columns use the stable
+`[data,residual,boundary,conservation]` order and inactive terms are zero.
 The package is
 distributed under the [MIT license](LICENSE).

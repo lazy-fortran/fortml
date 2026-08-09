@@ -31,6 +31,8 @@ module fortml_pinn
         procedure, public :: device_supported => pinn_device_supported
         procedure, public :: select_device => pinn_select_device
         procedure, public :: term_values => pinn_term_values
+        procedure, public :: term_gradients => pinn_term_gradients
+        procedure, public :: term_hvps => pinn_term_hvps
         procedure, public :: value => pinn_value
         procedure, public :: gradient => pinn_gradient
         procedure, public :: value_gradient => pinn_value_gradient
@@ -139,6 +141,26 @@ contains
         if (.not. ready_or_error(self, status)) return
         call self%objective%term_values(theta, values, status)
     end subroutine pinn_term_values
+
+    subroutine pinn_term_gradients(self, theta, gradients, status)
+        class(pinn_training_adapter_t), intent(in) :: self
+        real(dp), intent(in) :: theta(:)
+        real(dp), intent(out) :: gradients(:,:)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. ready_or_error(self, status)) return
+        call self%objective%term_gradients(theta, gradients, status)
+    end subroutine pinn_term_gradients
+
+    subroutine pinn_term_hvps(self, theta, theta_dot, hvps, status)
+        class(pinn_training_adapter_t), intent(in) :: self
+        real(dp), intent(in) :: theta(:), theta_dot(:)
+        real(dp), intent(out) :: hvps(:,:)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. ready_or_error(self, status)) return
+        call self%objective%term_hvps(theta, theta_dot, hvps, status)
+    end subroutine pinn_term_hvps
 
     subroutine pinn_value(self, theta, value, status)
         class(pinn_training_adapter_t), intent(in) :: self
