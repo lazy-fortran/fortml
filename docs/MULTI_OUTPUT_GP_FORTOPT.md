@@ -18,11 +18,11 @@ call multi_output_gp_optimize_hyperparameters(model, options, result, status)
 ```
 
 The packed coordinates are `[kernel parameters, log noise variance, W,
-independent variances]`.  Bounds are typed by block: kernel and noise
+independent variances]`.  Bounds are typed by block.  Kernel and noise
 coordinates are log parameters, latent-output weights are unconstrained, and
 independent variances have a non-negative lower bound.  `starts`, `seed`, and
-`include_current` provide deterministic multistart selection; only finite
-converged runs compete for retention, and the best state is restored at the
+`include_current` provide deterministic multistart selection.  Only finite
+converged runs compete for retention.  The best state is restored at the
 end.
 
 The adapter uses the same likelihood gradient and Hessian-vector products as
@@ -32,7 +32,7 @@ JVP/VJP/HVP composition around the retained state.
 
 Exact ICM factorization and the optimizer are CPU reference implementations.
 Passing a selected CUDA device returns `FORTNUM_NOT_IMPLEMENTED` before any
-state mutation; there is no hidden host fallback.  A resident CUDA path still
+state mutation.  There is no hidden host fallback.  A resident CUDA path still
 requires device covariance assembly, factorization, reductions, and their
 derivative kernels.
 
