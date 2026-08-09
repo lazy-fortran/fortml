@@ -8,11 +8,11 @@ are intentionally small, deterministic, and serializable:
 | --- | --- |
 | `fit_calls` | Number of successful `trainer_t%fit` calls since initialization or checkpoint load. |
 | `optimizer_iterations` | Accepted streaming updates, or FortOpt L-BFGS-B convergence iterations, from the latest fit. |
-| `line_search_evaluations` | FortOpt L-BFGS-B trial evaluations from the latest bounded fit; zero for streaming optimizers. |
-| `curvature_updates` | Accepted L-BFGS-B `(s,y)` history updates from the latest bounded fit; zero for streaming optimizers. |
+| `line_search_evaluations` | FortOpt L-BFGS-B trial evaluations from the latest bounded fit. It is zero for streaming optimizers. |
+| `curvature_updates` | Accepted L-BFGS-B `(s,y)` history updates from the latest bounded fit. It is zero for streaming optimizers. |
 
 The fields are diagnostics, not a second optimizer state. `partial_fit` does
-not increment `fit_calls`; its moments, schedules, and histories remain the
+not increment `fit_calls`. Its moments, schedules, and histories remain the
 resumable state. A failed `fit` leaves the previous diagnostic snapshot in
 place. The bounded L-BFGS-B path still has no resumable quasi-Newton history,
 so `save_checkpoint` returns a typed domain error for that optimizer.
