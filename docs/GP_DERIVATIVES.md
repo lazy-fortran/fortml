@@ -9,7 +9,7 @@ packed log-kernel and log-noise parameters.  `predict_input_jvp` and
 third input derivative of each covariance block. `predict_input_hvp` is the
 value-query second-order companion: for one query point and direction it
 returns Hessian-vector products of the posterior mean and variance. It uses
-exact third-input covariance contractions and the quadratic-form solve;
+exact third-input covariance contractions and the quadratic-form solve.
 derivative-component queries are refused because they would require fourth
 input derivatives.
 
@@ -49,13 +49,13 @@ bilinear covariance from the kernel value, input gradients, and mixed Hessian.
 
 `predict` and `joint_covariance` preserve query-operator order. The
 `predict_operator_jvp`/`predict_operator_vjp` pair differentiates posterior
-mean and variance with respect to the query coefficient matrix; the
+mean and variance with respect to the query coefficient matrix. The
 independent adjoint identity is checked by `test_gp_linear_operator`. Operator
 names are metadata and are retained by the fitted state. Kernel/noise
 hyperparameter products remain on `gp_derivative_regression_t` until the
 operator covariance receives the corresponding generated parameter jets.
 CUDA prediction, covariance, and coefficient products are explicit typed
-`FORTNUM_NOT_IMPLEMENTED` refusals until a resident operator graph is linked;
+`FORTNUM_NOT_IMPLEMENTED` refusals until a resident operator graph is linked.
 there is no host fallback.
 
 The exact derivative-GP likelihood value, parameter gradient, JVP, and scalar
@@ -66,7 +66,7 @@ packed kernel/noise pullback. For value-only observation lists,
 `hyperparameter_hvp` uses the analytic kernel parameter-HVP and differentiated
 Cholesky solve. For mixed value/first-derivative lists, the HVP is analytic for
 RBF, Matérn 3/2, Matérn 5/2, periodic, local-periodic, rational-quadratic,
-linear, constant, polynomial, and sums/products built entirely from those leaves;
+linear, constant, polynomial, and sums/products built entirely from those leaves.
 the implementation differentiates the dense covariance, Cholesky solve, and
 each parameter covariance block in one direction. Polynomial mixed HVPs now
 use a closed-form positive-base expression, including the degree-log tangent
@@ -75,20 +75,20 @@ likelihood oracle. Cosine, user-formula, and other leaves return
 `FORTNUM_NOT_IMPLEMENTED` for a mixed HVP until their required second
 input/parameter products have generated kernels and independent oracles. The
 Matérn 3/2 and 5/2 leaves use exact radial polynomial products plus the
-FortSym-generated value/HVP kernels; coincident derivative blocks use their
+FortSym-generated value/HVP kernels. Coincident derivative blocks use their
 finite analytic limits. The spectral-mixture leaf now carries an exact four-jet through each
 separable factor and provides the same mixed HVP contract on the CPU reference
 path. A mixed HVP never silently central-differences the likelihood gradient.
 The periodic leaf carries the radial fourth-input term required by its
-period/period mixed product; `test_derivative_gp_periodic_hvp` checks all
+period/period mixed product. `test_derivative_gp_periodic_hvp` checks all
 three packed kernel coordinates and the log-noise coordinate against an
 independent dense central-difference likelihood oracle. The local-periodic
 leaf extends the same radial jet with the squared-exponential envelope and
 checks all four packed kernel coordinates plus log noise in
-`test_derivative_gp_local_periodic`; its coincidence series is shared with
+`test_derivative_gp_local_periodic`. Its coincidence series is shared with
 the input-derivative path and never divides by a vanishing radius.
 The rational-quadratic leaf carries exact radial products through `F_s` and
-`F_ss` for all three logarithmic coordinates, including the alpha coordinate;
+`F_ss` for all three logarithmic coordinates, including the alpha coordinate.
 `test_derivative_gp_products` checks its packed mixed HVP against an
 independent dense central-difference likelihood oracle. Its query-input
 third-derivative path is covered by the generic query-product gate. The
@@ -98,7 +98,7 @@ The general derivative-GP type still stops at value/first-derivative
 components. A bounded companion, `second_derivative_gp_t`, covers mixed
 value/first/second-derivative observations for scalar one-dimensional RBF and
 Matérn-5/2 kernels, and RBF third-derivative observations. RBF covariance
-blocks reach order six and query JVP/VJP products reach order seven; the
+blocks reach order six and query JVP/VJP products reach order seven. The
 Matérn-5/2 path remains at order four/order five. Both kernels expose
 transactional packed likelihood state and analytic likelihood
 gradient/HVP products, including the Matérn-5/2 order-four parameter jet.
@@ -120,7 +120,7 @@ and Cholesky solve in one direction. The VJP propagates a symmetric cotangent
 through those same blocks and satisfies the independent adjoint identity in
 `test_derivative_gp_products`. These products are CPU-only and return the
 ordinary covariance-block refusal for kernels that cannot form the requested
-derivative observation; there is no finite-difference fallback. CUDA remains
+derivative observation. There is no finite-difference fallback. CUDA remains
 an explicit `FORTNUM_NOT_IMPLEMENTED` boundary until the resident covariance
 and factorization graph is linked.
 `joint_covariance_jvp_device` and `joint_covariance_vjp_device` make the
@@ -159,5 +159,5 @@ mixed-observation likelihood HVPs and their typed CUDA prediction refusal.
 The spectral-mixture derivative-GP gate independently assembles its dense
 two-dimensional value/first-derivative covariance blocks and checks packed
 parameter gradients, posterior covariance, query JVP/VJP, and the mixed HVP
-against a central-difference likelihood oracle. The HVP is CPU-only; CUDA
+against a central-difference likelihood oracle. The HVP is CPU-only. CUDA
 requests remain a typed refusal before touching output buffers.
