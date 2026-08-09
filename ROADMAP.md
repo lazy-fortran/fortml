@@ -316,6 +316,54 @@ Wave 11 promoted slices (the broad matrix above remains open):
   optimizer-group trajectory, with an independent recurrence oracle and
   explicit refusals for nonlinear, Adam, schedules, clipping, and CUDA.
 
+### Wave 12 parity matrix
+
+The next implementation wave expands the acceptance contract to the complete
+model and training surface. The status of every row is determined by source,
+an independent behavioral oracle, a persistence or replay check, a derivative
+result, a device result, and a benchmark row. A name in this matrix is an
+implementation target. It is not evidence that the target is complete.
+
+| Family | Required variants and operations | Evidence still required |
+| --- | --- | --- |
+| Classification state | Logistic and softmax heads, OVR and OVO wrappers, multilabel and classifier chains, Bernoulli/Multinomial/Complement/Categorical/Gaussian Naive Bayes, LDA/QDA, linear/kernel/one-class SVM, k-nearest neighbors, decision trees, random and extra trees, bagging, AdaBoost, histogram boosting, calibrated heads, and arbitrary-label score/probability APIs | Shared fit/partial-fit/warm-start/clone/persist state, sample/class weights, score and decision APIs, probability normalization, malformed-batch rollback, sorted labels, smooth products, fixed-topology refusals, scikit-learn fixtures, and CPU/GPU rows |
+| GP classification | Laplace logistic/probit, variational Bernoulli, categorical and ordinal likelihoods, independent multilabel heads, multiclass coupling, calibrated GP probabilities, and neural last-layer GP heads | Value, parameter and input products, implicit-mode derivatives, cut-point and likelihood HPO, FortOpt bounds and rollback, arbitrary labels, GPyTorch/GPflow fixtures, dense and resident-device plans |
+| GP regression and operators | Gaussian, Student-t, Gamma, Poisson, heteroskedastic, robust, multi-output/ICM, derivative observations, linear operators, vector fields, physics and Hamiltonian observations | Kernel and likelihood registries, batched and multitask state, exact, CG, lazy, Laplace, SVGP, SKI, local and deep methods, derivative-through-fit products, serialization, FortOpt convergence, and resident factorization/solve accounting |
+| Kernels | ARD/RBF, Matérn 1/2/3/2/5/2, periodic, locally periodic, cosine, polynomial, linear, constant, white noise, rational quadratic, spectral mixture, change point, sums/products, user kernels, graph kernels, neural/NTK kernels, symplectic kernels, and operator-valued kernels | Generated value/gradient/Hessian code, observation smoothness registry, mixed-input and hyperparameter JVP/VJP/HVP identities, coincidence and boundary fixtures, FortSym provenance, and CPU/OpenACC/CUDA capability rows |
+| Neural modules | Dense, residual, convolution/pooling, normalization, embeddings, RNN/GRU/LSTM, attention/transformer, graph, neural operator, autoencoder/VAE/BNN, HNN/LNN/SympNet, PINN, and physics-consistent modules | Named module and buffer trees, aliases and tied/frozen parameters, train/eval state, shape inference, deterministic flattening, forward/reverse/higher products, serialization, rematerialization, mixed precision, distributed state, and resident CUDA execution |
+| Neural training | SGD/Nesterov, Adam/AdamW, RMSprop, Adagrad, AMSGrad, RAdam, Adafactor, Lion, schedules, accumulation, clipping, EMA, validation, early stopping, callbacks, checkpoint/resume, RNG replay, and optimizer groups | Interrupted replay, weighted reductions, microbatch equivalence, exact value/gradient/JVP/VJP/HVP through each smooth hyperparameter, FortOpt L-BFGS-B bounds and active sets, multistart best-state retention, overflow handling, and PyTorch/JAX trajectory fixtures |
+| Bases and pipelines | Polynomial interactions, splines, Fourier and random Fourier, radial and Chebyshev, PCA, autoencoder, imputation, encoding, scaling, kernel and neural maps, sequential, residual, conditional, fan-out/fan-in, and DAG composition | Named feature and parameter paths, sparse layouts, fit-state ownership, fold-local statistics, leakage guards, clone and persistence, transform products, schema migration, cross-validation routing, and transfer-aware device rows |
+| Trees and boosting | Exact, histogram, and quantile growth, missing defaults, categorical optimal partitioning, ranking, survival/AFT, DART, GOSS, EFB, monotonic and interaction constraints, staged predictions, SHAP/contributions, callbacks, early stopping, warm starts, distributed state, and fixed-topology products | Independent split/leaf/group references, continuation replay, explanation identities, option parity, topology refusals, resident histogram/sketch/prediction plans, workspace and transfer counters, and matched XGBoost/LightGBM workloads |
+| Performance and deployment | CPU, OpenACC, CUDA, FortSym-generated fixed algebra, FortAD products, mixed precision, resident state, compilation caches, serialization manifests, and model cards | Separate compile, warmup, transfer, steady-state, memory, precision, initialization, convergence, and energy rows with clean revisions across NumPy, scikit-learn, PyTorch, JAX, GPyTorch, GPflow, Flux, Lux, XGBoost, and LightGBM |
+
+#### Derivative and HPO closure contract
+
+Every differentiable public object owns one product interface. The interface
+returns value, gradient, JVP, VJP, and HVP products over data, model
+parameters, basis parameters, kernel and likelihood parameters, initialization
+parameters, optimizer groups, schedules, validation reductions, and FortOpt
+state. A product is promoted only when a finite-difference, directional, or
+adjoint oracle covers the same packed coordinates. Nonsmooth splits, discrete
+labels, stochastic draws, active-set changes, and unsupported resident paths
+carry explicit typed boundaries with no mutation on refusal.
+
+FortOpt L-BFGS-B is the reference HPO path. Each adapter must expose bounds,
+projected-gradient diagnostics, line-search status, rollback on failed trial,
+multistart selection, and the best committed state. Training and HPO use the
+same objective callbacks, so a benchmark cannot certify a separate numerical
+path. GPU adapters must keep parameters, batches, workspaces, optimizer state,
+and derivative buffers resident between calls or report transfer counters and
+the typed unavailable result.
+
+#### Benchmark closure contract
+
+Each promoted row has an independent NumPy or reference-library fixture, a
+Fortran behavioral gate, a reproducible command, clean source and benchmark
+revisions, compiler and precision metadata, and a schema-valid CSV row. The
+comparison tiers separate correctness from performance. A CPU correctness row
+does not promote a GPU row. A typed GPU refusal is useful evidence for the
+capability matrix, but it is not GPU parity.
+
 ## 2026-08 parity expansion backlog
 
 This backlog makes the requested scikit-learn/PyTorch/JAX/GPyTorch/XGBoost/
