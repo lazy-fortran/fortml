@@ -380,7 +380,7 @@ compiler coverage remains an
 explicit older-build result.
 
 The checked-in evidence is maintained on the clean FortML-bench revision
-`7c27bb5`; each CSV records the exact clean benchmark revision used to produce
+`0cd94c4`; each CSV records the exact clean benchmark revision used to produce
 its rows (older CSVs retain their historical provenance),
 the trainer-checkpoint, unfactored-Adafactor, binary-objective,
 multiclass-calibration, variational-multiclass-GP, PINN/physics-objective,
