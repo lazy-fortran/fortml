@@ -67,6 +67,21 @@ int fortml_cuda_dense_plan_train_mse(
     void *opaque_plan, const double *query_x, const double *target, int n_query,
     double learning_rate, double *loss);
 
+/* Upload a batch for repeated no-autodiff updates.  The query and target
+ * arrays remain resident until the next upload or plan destruction. */
+int fortml_cuda_dense_plan_upload_batch(void *opaque_plan,
+                                        const double *query_x,
+                                        const double *target, int n_query);
+
+/* Run one resident-batch MSE update.  Gradients and both Adam moments are
+ * device-resident.  optimizer_kind is 1=SGD, 2=Adam, 3=AdamW.  SGD ignores
+ * beta1, beta2, epsilon, and weight_decay; Adam ignores weight_decay; AdamW
+ * applies decoupled weight decay to all parameters.  Only the scalar loss is
+ * copied back to the host. */
+int fortml_cuda_dense_plan_train_resident_mse(
+    void *opaque_plan, double learning_rate, double beta1, double beta2,
+    double epsilon, double weight_decay, int optimizer_kind, double *loss);
+
 /* Copy the resident parameters to the host.  This is an explicit snapshot,
  * not an implicit host fallback for prediction or training. */
 int fortml_cuda_dense_plan_get_parameters(void *opaque_plan, double *weights,

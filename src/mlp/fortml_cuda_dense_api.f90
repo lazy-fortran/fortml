@@ -18,6 +18,9 @@ module fortml_cuda_dense_api
 
     public :: fortml_cuda_dense_available
     public :: cuda_dense_plan_t
+    integer, parameter, public :: CUDA_DENSE_OPT_SGD = 1
+    integer, parameter, public :: CUDA_DENSE_OPT_ADAM = 2
+    integer, parameter, public :: CUDA_DENSE_OPT_ADAMW = 3
 
     interface
         function fortml_cuda_dense_available() bind(C, &
@@ -76,6 +79,27 @@ module fortml_cuda_dense_api
             integer(c_int) :: value
         end function fortml_cuda_dense_plan_train_mse
 
+        function fortml_cuda_dense_plan_upload_batch( &
+                handle, query_x, target, n_query) bind(C, &
+                name="fortml_cuda_dense_plan_upload_batch") result(value)
+            import :: c_int, c_ptr
+            type(c_ptr), value :: handle, query_x, target
+            integer(c_int), value :: n_query
+            integer(c_int) :: value
+        end function fortml_cuda_dense_plan_upload_batch
+
+        function fortml_cuda_dense_plan_train_resident_mse( &
+                handle, learning_rate, beta1, beta2, epsilon, weight_decay, &
+                optimizer_kind, loss) bind(C, &
+                name="fortml_cuda_dense_plan_train_resident_mse") result(value)
+            import :: c_double, c_int, c_ptr
+            type(c_ptr), value :: handle, loss
+            real(c_double), value :: learning_rate, beta1, beta2, epsilon
+            real(c_double), value :: weight_decay
+            integer(c_int), value :: optimizer_kind
+            integer(c_int) :: value
+        end function fortml_cuda_dense_plan_train_resident_mse
+
         function fortml_cuda_dense_plan_get_parameters( &
                 handle, weights, bias) bind(C, &
                 name="fortml_cuda_dense_plan_get_parameters") result(value)
@@ -116,6 +140,8 @@ module fortml_cuda_dense_api
         procedure, public :: jvp => cuda_dense_plan_jvp
         procedure, public :: vjp => cuda_dense_plan_vjp
         procedure, public :: train_mse => cuda_dense_plan_train_mse
+        procedure, public :: upload_batch => cuda_dense_plan_upload_batch
+        procedure, public :: train_resident_mse => cuda_dense_plan_train_resident_mse
         procedure, public :: parameters => cuda_dense_plan_parameters
         procedure, public :: transfer_stats => cuda_dense_plan_transfer_stats
         procedure, public :: destroy => cuda_dense_plan_destroy
@@ -367,6 +393,76 @@ contains
         end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine cuda_dense_plan_train_mse
+
+    subroutine cuda_dense_plan_upload_batch(self, query_x, target, status)
+        !! Upload one batch once; subsequent resident updates reuse it.
+        class(cuda_dense_plan_t), intent(in) :: self
+        real(dp), intent(in), target, contiguous :: query_x(:, :), target(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        integer(c_int) :: code
+
+        if (.not. c_associated(self%handle)) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "CUDA dense wrapper: plan is not fitted")
+            return
+        end if
+        if (size(query_x, 2) /= self%n_inputs .or. &
+            size(target, 1) /= size(query_x, 1) .or. &
+            size(target, 2) /= self%n_outputs .or. size(query_x, 1) < 1 .or. &
+            any(.not. ieee_is_finite(query_x)) .or. &
+            any(.not. ieee_is_finite(target))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "CUDA dense wrapper: resident batch shape or values are invalid")
+            return
+        end if
+        code = fortml_cuda_dense_plan_upload_batch(self%handle, c_loc(query_x), &
+            c_loc(target), int(size(query_x, 1), c_int))
+        if (code /= 0_c_int) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "CUDA dense wrapper: resident batch upload failed")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine cuda_dense_plan_upload_batch
+
+    subroutine cuda_dense_plan_train_resident_mse(self, learning_rate, beta1, &
+            beta2, epsilon, weight_decay, optimizer_kind, loss, status)
+        !! Update resident parameters, gradients, moments, and uploaded batch.
+        class(cuda_dense_plan_t), intent(in) :: self
+        real(dp), intent(in) :: learning_rate, beta1, beta2, epsilon, weight_decay
+        integer, intent(in) :: optimizer_kind
+        real(dp), intent(out), target :: loss
+        type(fortnum_status_t), intent(out) :: status
+        integer(c_int) :: code
+
+        if (.not. c_associated(self%handle)) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "CUDA dense wrapper: plan is not fitted")
+            return
+        end if
+        if (.not. ieee_is_finite(learning_rate) .or. learning_rate <= 0.0_dp .or. &
+            .not. ieee_is_finite(beta1) .or. beta1 < 0.0_dp .or. beta1 >= 1.0_dp .or. &
+            .not. ieee_is_finite(beta2) .or. beta2 < 0.0_dp .or. beta2 >= 1.0_dp .or. &
+            .not. ieee_is_finite(epsilon) .or. epsilon <= 0.0_dp .or. &
+            .not. ieee_is_finite(weight_decay) .or. weight_decay < 0.0_dp .or. &
+            (optimizer_kind /= CUDA_DENSE_OPT_SGD .and. &
+                optimizer_kind /= CUDA_DENSE_OPT_ADAM .and. &
+                optimizer_kind /= CUDA_DENSE_OPT_ADAMW)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "CUDA dense wrapper: resident optimizer options are invalid")
+            return
+        end if
+        code = fortml_cuda_dense_plan_train_resident_mse(self%handle, &
+            real(learning_rate, c_double), real(beta1, c_double), &
+            real(beta2, c_double), real(epsilon, c_double), &
+            real(weight_decay, c_double), int(optimizer_kind, c_int), c_loc(loss))
+        if (code /= 0_c_int) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "CUDA dense wrapper: resident optimizer update failed")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine cuda_dense_plan_train_resident_mse
 
     subroutine cuda_dense_plan_parameters(self, weights, bias, status)
         class(cuda_dense_plan_t), intent(in) :: self

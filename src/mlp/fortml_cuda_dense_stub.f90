@@ -65,6 +65,28 @@ function fortml_cuda_dense_plan_train_mse(handle, query_x, target, n_query, &
     value = 1_c_int
 end function fortml_cuda_dense_plan_train_mse
 
+function fortml_cuda_dense_plan_upload_batch(handle, query_x, target, n_query) &
+        bind(C, name="fortml_cuda_dense_plan_upload_batch") result(value)
+    use, intrinsic :: iso_c_binding, only: c_int, c_ptr
+    implicit none
+    type(c_ptr), value :: handle, query_x, target
+    integer(c_int), value :: n_query
+    integer(c_int) :: value
+    value = 1_c_int
+end function fortml_cuda_dense_plan_upload_batch
+
+function fortml_cuda_dense_plan_train_resident_mse(handle, learning_rate, &
+        beta1, beta2, epsilon, weight_decay, optimizer_kind, loss) bind(C, &
+        name="fortml_cuda_dense_plan_train_resident_mse") result(value)
+    use, intrinsic :: iso_c_binding, only: c_double, c_int, c_ptr
+    implicit none
+    type(c_ptr), value :: handle, loss
+    real(c_double), value :: learning_rate, beta1, beta2, epsilon, weight_decay
+    integer(c_int), value :: optimizer_kind
+    integer(c_int) :: value
+    value = 1_c_int
+end function fortml_cuda_dense_plan_train_resident_mse
+
 function fortml_cuda_dense_plan_get_parameters(handle, weights, bias) bind(C, &
         name="fortml_cuda_dense_plan_get_parameters") result(value)
     use, intrinsic :: iso_c_binding, only: c_double, c_int, c_ptr

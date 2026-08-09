@@ -22,6 +22,19 @@ constexpr int kActivationLeakyRelu = 8;
 struct DensePlan {
   double *weights = nullptr;
   double *bias = nullptr;
+  // Optional resident training state.  It is allocated only after an
+  // explicit upload_batch call so the inference-only ABI remains unchanged.
+  double *batch_query = nullptr;
+  double *batch_target = nullptr;
+  double *weight_gradient = nullptr;
+  double *bias_gradient = nullptr;
+  double *weight_moment1 = nullptr;
+  double *bias_moment1 = nullptr;
+  double *weight_moment2 = nullptr;
+  double *bias_moment2 = nullptr;
+  double *batch_loss = nullptr;
+  int batch_n_query = 0;
+  std::uint64_t optimizer_step = 0;
   int n_inputs = 0;
   int n_outputs = 0;
   int activation = kActivationLinear;
@@ -235,6 +248,84 @@ __global__ void dense_train_mse_update_kernel(
     plan.bias[flat] -= learning_rate * bias_gradient[flat];
 }
 
+__global__ void dense_train_resident_weight_gradient_kernel(
+    const DensePlan plan, double inv_count) {
+  const int flat = blockIdx.x * blockDim.x + threadIdx.x;
+  const int count = plan.n_outputs * plan.n_inputs;
+  if (flat >= count) return;
+  const int output = flat / plan.n_inputs;
+  const int input = flat - output * plan.n_inputs;
+  double gradient = 0.0;
+  for (int query = 0; query < plan.batch_n_query; ++query) {
+    double value = plan.bias[output];
+    for (int feature = 0; feature < plan.n_inputs; ++feature)
+      value += plan.weights[output * plan.n_inputs + feature] *
+          plan.batch_query[feature * plan.batch_n_query + query];
+    const double residual = activate(value, plan.activation) -
+        plan.batch_target[output * plan.batch_n_query + query];
+    gradient += residual * activation_derivative(value, plan.activation) *
+        plan.batch_query[input * plan.batch_n_query + query];
+  }
+  plan.weight_gradient[flat] = gradient * inv_count;
+}
+
+__global__ void dense_train_resident_bias_gradient_loss_kernel(
+    const DensePlan plan, double inv_count) {
+  const int output = blockIdx.x * blockDim.x + threadIdx.x;
+  if (output >= plan.n_outputs) return;
+  double gradient = 0.0;
+  double loss_value = 0.0;
+  for (int query = 0; query < plan.batch_n_query; ++query) {
+    double value = plan.bias[output];
+    for (int input = 0; input < plan.n_inputs; ++input)
+      value += plan.weights[output * plan.n_inputs + input] *
+          plan.batch_query[input * plan.batch_n_query + query];
+    const double residual = activate(value, plan.activation) -
+        plan.batch_target[output * plan.batch_n_query + query];
+    gradient += residual * activation_derivative(value, plan.activation);
+    loss_value += 0.5 * residual * residual;
+  }
+  plan.bias_gradient[output] = gradient * inv_count;
+  plan.batch_loss[output] = loss_value * inv_count;
+}
+
+__device__ inline double adam_bias_correction(double beta, std::uint64_t step) {
+  // exp(log(beta)*step) avoids a host-side power and remains stable for long
+  // trajectories; beta==0 is a valid first-moment choice.
+  if (beta == 0.0) return 1.0;
+  return 1.0 - exp(log(beta) * static_cast<double>(step));
+}
+
+__global__ void dense_train_resident_update_kernel(
+    DensePlan plan, int count, double learning_rate, double beta1, double beta2,
+    double epsilon, double weight_decay, int optimizer_kind,
+    std::uint64_t step) {
+  const int flat = blockIdx.x * blockDim.x + threadIdx.x;
+  if (flat >= count) return;
+  const bool is_bias = flat >= plan.n_inputs * plan.n_outputs;
+  const int state_index = is_bias ? flat - plan.n_inputs * plan.n_outputs : flat;
+  double *parameter = is_bias ? plan.bias : plan.weights;
+  double *gradient = is_bias ? plan.bias_gradient : plan.weight_gradient;
+  double *moment1 = is_bias ? plan.bias_moment1 : plan.weight_moment1;
+  double *moment2 = is_bias ? plan.bias_moment2 : plan.weight_moment2;
+  double value = parameter[state_index];
+  const double grad = gradient[state_index];
+  if (optimizer_kind == 1) {
+    value -= learning_rate * grad;
+  } else {
+    const double m = beta1 * moment1[state_index] + (1.0 - beta1) * grad;
+    const double v = beta2 * moment2[state_index] + (1.0 - beta2) * grad * grad;
+    moment1[state_index] = m;
+    moment2[state_index] = v;
+    const double m_hat = m / adam_bias_correction(beta1, step);
+    const double v_hat = v / adam_bias_correction(beta2, step);
+    if (optimizer_kind == 3)
+      value *= 1.0 - learning_rate * weight_decay;
+    value -= learning_rate * m_hat / (sqrt(v_hat) + epsilon);
+  }
+  parameter[state_index] = value;
+}
+
 bool finite_array(const double *values, std::size_t count) {
   for (std::size_t i = 0; i < count; ++i)
     if (!std::isfinite(values[i])) return false;
@@ -246,9 +337,34 @@ bool valid_activation(int activation) {
       activation <= kActivationLeakyRelu;
 }
 
+void release_training_state(DensePlan *plan) {
+  if (plan == nullptr) return;
+  cudaFree(plan->batch_query);
+  cudaFree(plan->batch_target);
+  cudaFree(plan->weight_gradient);
+  cudaFree(plan->bias_gradient);
+  cudaFree(plan->weight_moment1);
+  cudaFree(plan->bias_moment1);
+  cudaFree(plan->weight_moment2);
+  cudaFree(plan->bias_moment2);
+  cudaFree(plan->batch_loss);
+  plan->batch_query = nullptr;
+  plan->batch_target = nullptr;
+  plan->weight_gradient = nullptr;
+  plan->bias_gradient = nullptr;
+  plan->weight_moment1 = nullptr;
+  plan->bias_moment1 = nullptr;
+  plan->weight_moment2 = nullptr;
+  plan->bias_moment2 = nullptr;
+  plan->batch_loss = nullptr;
+  plan->batch_n_query = 0;
+  plan->optimizer_step = 0;
+}
+
 void destroy_plan(DensePlan *plan) {
   if (plan == nullptr) return;
   cudaSetDevice(plan->device_index);
+  release_training_state(plan);
   cudaFree(plan->weights);
   cudaFree(plan->bias);
   delete plan;
@@ -619,6 +735,145 @@ extern "C" int fortml_cuda_dense_plan_train_mse(
   return static_cast<int>(error);
 }
 
+extern "C" int fortml_cuda_dense_plan_upload_batch(
+    void *opaque_plan, const double *query_x, const double *target,
+    int n_query) {
+  DensePlan *plan = static_cast<DensePlan *>(opaque_plan);
+  if (plan == nullptr || query_x == nullptr || target == nullptr ||
+      n_query < 1 ||
+      !finite_array(query_x, static_cast<std::size_t>(plan->n_inputs) * n_query) ||
+      !finite_array(target, static_cast<std::size_t>(plan->n_outputs) * n_query))
+    return static_cast<int>(cudaErrorInvalidValue);
+
+  cudaError_t error = cudaSetDevice(plan->device_index);
+  if (error != cudaSuccess) return static_cast<int>(error);
+  const std::size_t weight_count =
+      static_cast<std::size_t>(plan->n_inputs) * plan->n_outputs;
+  const std::size_t query_count =
+      static_cast<std::size_t>(plan->n_inputs) * n_query;
+  const std::size_t target_count =
+      static_cast<std::size_t>(plan->n_outputs) * n_query;
+
+  // Allocate the gradient/moment arena once.  It stays resident across batch
+  // uploads and optimizer steps; moments are initialized exactly once.
+  const bool fresh_state = plan->weight_gradient == nullptr;
+  if (fresh_state) {
+    error = cudaMalloc(&plan->weight_gradient, sizeof(double) * weight_count);
+    if (error == cudaSuccess)
+      error = cudaMalloc(&plan->bias_gradient, sizeof(double) * plan->n_outputs);
+    if (error == cudaSuccess)
+      error = cudaMalloc(&plan->weight_moment1, sizeof(double) * weight_count);
+    if (error == cudaSuccess)
+      error = cudaMalloc(&plan->bias_moment1, sizeof(double) * plan->n_outputs);
+    if (error == cudaSuccess)
+      error = cudaMalloc(&plan->weight_moment2, sizeof(double) * weight_count);
+    if (error == cudaSuccess)
+      error = cudaMalloc(&plan->bias_moment2, sizeof(double) * plan->n_outputs);
+    if (error == cudaSuccess)
+      error = cudaMalloc(&plan->batch_loss, sizeof(double) * plan->n_outputs);
+    if (error == cudaSuccess)
+      error = cudaMemset(plan->weight_moment1, 0, sizeof(double) * weight_count);
+    if (error == cudaSuccess)
+      error = cudaMemset(plan->bias_moment1, 0, sizeof(double) * plan->n_outputs);
+    if (error == cudaSuccess)
+      error = cudaMemset(plan->weight_moment2, 0, sizeof(double) * weight_count);
+    if (error == cudaSuccess)
+      error = cudaMemset(plan->bias_moment2, 0, sizeof(double) * plan->n_outputs);
+    if (error != cudaSuccess) {
+      release_training_state(plan);
+      return static_cast<int>(error);
+    }
+  }
+
+  // Allocate a replacement batch before dropping the previous one so a
+  // failed resize leaves the current resident state usable.
+  double *new_query = nullptr;
+  double *new_target = nullptr;
+  error = cudaMalloc(&new_query, sizeof(double) * query_count);
+  if (error == cudaSuccess)
+    error = cudaMalloc(&new_target, sizeof(double) * target_count);
+  if (error == cudaSuccess)
+    error = cudaMemcpy(new_query, query_x, sizeof(double) * query_count,
+                       cudaMemcpyHostToDevice);
+  if (error == cudaSuccess)
+    error = cudaMemcpy(new_target, target, sizeof(double) * target_count,
+                       cudaMemcpyHostToDevice);
+  if (error != cudaSuccess) {
+    cudaFree(new_query);
+    cudaFree(new_target);
+    if (fresh_state) release_training_state(plan);
+    return static_cast<int>(error);
+  }
+  cudaFree(plan->batch_query);
+  cudaFree(plan->batch_target);
+  plan->batch_query = new_query;
+  plan->batch_target = new_target;
+  plan->batch_n_query = n_query;
+  add_host_to_device(plan, sizeof(double) * (query_count + target_count));
+  return 0;
+}
+
+extern "C" int fortml_cuda_dense_plan_train_resident_mse(
+    void *opaque_plan, double learning_rate, double beta1, double beta2,
+    double epsilon, double weight_decay, int optimizer_kind, double *loss) {
+  DensePlan *plan = static_cast<DensePlan *>(opaque_plan);
+  if (plan == nullptr || loss == nullptr || plan->batch_n_query < 1 ||
+      plan->batch_query == nullptr || plan->batch_target == nullptr ||
+      plan->weight_gradient == nullptr || plan->bias_gradient == nullptr ||
+      plan->weight_moment1 == nullptr || plan->bias_moment1 == nullptr ||
+      plan->weight_moment2 == nullptr || plan->bias_moment2 == nullptr ||
+      plan->batch_loss == nullptr || !std::isfinite(learning_rate) ||
+      learning_rate <= 0.0 || !std::isfinite(beta1) || beta1 < 0.0 ||
+      beta1 >= 1.0 || !std::isfinite(beta2) || beta2 < 0.0 || beta2 >= 1.0 ||
+      !std::isfinite(epsilon) || epsilon <= 0.0 ||
+      !std::isfinite(weight_decay) || weight_decay < 0.0 ||
+      optimizer_kind < 1 || optimizer_kind > 3 ||
+      plan->optimizer_step == UINT64_MAX)
+    return static_cast<int>(cudaErrorInvalidValue);
+
+  cudaError_t error = cudaSetDevice(plan->device_index);
+  if (error != cudaSuccess) return static_cast<int>(error);
+  const std::size_t weight_count =
+      static_cast<std::size_t>(plan->n_inputs) * plan->n_outputs;
+  const int parameter_count = static_cast<int>(weight_count + plan->n_outputs);
+  const double inv_count = 1.0 /
+      static_cast<double>(plan->batch_n_query * plan->n_outputs);
+  const std::uint64_t step = plan->optimizer_step + 1;
+  dense_train_resident_weight_gradient_kernel<<<
+      (weight_count + kThreads - 1) / kThreads, kThreads>>>(
+      *plan, inv_count);
+  error = cudaGetLastError();
+  if (error == cudaSuccess)
+    dense_train_resident_bias_gradient_loss_kernel<<<
+        (plan->n_outputs + kThreads - 1) / kThreads, kThreads>>>(
+        *plan, inv_count);
+  if (error == cudaSuccess) error = cudaGetLastError();
+  if (error == cudaSuccess)
+    dense_train_resident_update_kernel<<<
+        (parameter_count + kThreads - 1) / kThreads, kThreads>>>(
+        *plan, parameter_count, learning_rate, beta1, beta2, epsilon,
+        weight_decay, optimizer_kind, step);
+  if (error == cudaSuccess) error = cudaGetLastError();
+  if (error == cudaSuccess) error = cudaDeviceSynchronize();
+
+  double *host_loss = new (std::nothrow) double[plan->n_outputs];
+  if (error == cudaSuccess && host_loss == nullptr)
+    error = cudaErrorMemoryAllocation;
+  if (error == cudaSuccess)
+    error = cudaMemcpy(host_loss, plan->batch_loss,
+                       sizeof(double) * plan->n_outputs,
+                       cudaMemcpyDeviceToHost);
+  if (error == cudaSuccess) {
+    add_device_to_host(plan, sizeof(double) * plan->n_outputs);
+    *loss = 0.0;
+    for (int output = 0; output < plan->n_outputs; ++output)
+      *loss += host_loss[output];
+    plan->optimizer_step = step;
+  }
+  delete[] host_loss;
+  return static_cast<int>(error);
+}
+
 extern "C" int fortml_cuda_dense_plan_get_parameters(
     void *opaque_plan, double *weights, double *bias) {
   DensePlan *plan = static_cast<DensePlan *>(opaque_plan);
@@ -652,6 +907,17 @@ extern "C" int fortml_cuda_dense_plan_transfer_stats(
   *resident_bytes = sizeof(double) *
       (static_cast<std::size_t>(plan->n_inputs) * plan->n_outputs +
        static_cast<std::size_t>(plan->n_outputs));
+  if (plan->weight_gradient != nullptr) {
+    const std::size_t parameter_count =
+        static_cast<std::size_t>(plan->n_inputs) * plan->n_outputs +
+        static_cast<std::size_t>(plan->n_outputs);
+    *resident_bytes += sizeof(double) * 3 * parameter_count;
+    if (plan->batch_n_query > 0)
+    *resident_bytes += sizeof(double) *
+          (static_cast<std::size_t>(plan->n_inputs) * plan->batch_n_query +
+           static_cast<std::size_t>(plan->n_outputs) * plan->batch_n_query +
+           static_cast<std::size_t>(plan->n_outputs));
+  }
   return 0;
 }
 
