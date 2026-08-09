@@ -12,6 +12,7 @@ program test_logistic_regression
     call test_symmetric_coefficient_oracle(failures)
     call test_weighted_intercept_oracle(failures)
     call test_class_weight_intercept_oracle(failures)
+    call test_log_probability_products(failures)
     call test_refusals(failures)
     if (failures > 0) then
         write (*, '(a,i0)') "FAIL logistic regression cases: ", failures
@@ -36,7 +37,7 @@ contains
         integer, intent(inout) :: failures
         type(logistic_regression_t) :: model
         type(fortnum_status_t) :: status
-        real(dp) :: x(4, 1), scores(4), probabilities(4, 2)
+        real(dp) :: x(4, 1), scores(4), probabilities(4, 2), log_probabilities(4, 2)
         real(dp) :: expected_score
         real(dp), allocatable :: coefficients(:)
         integer :: labels(4), prediction(4), classes(2)
@@ -50,6 +51,7 @@ contains
 
         call model%decision_function(x, scores, status)
         call model%predict_proba(x, probabilities, status)
+        call model%predict_log_proba(x, log_probabilities, status)
         call model%predict(x, prediction, status)
         coefficients = model%coefficients()
         classes = model%classes()
@@ -67,6 +69,8 @@ contains
             "empirical class probability", failures)
         call check(maxval(abs(sum(probabilities, dim=2) - 1.0_dp)) < 1.0e-15_dp, &
             "probability normalization", failures)
+        call check(maxval(abs(exp(log_probabilities) - probabilities)) < 1.0e-15_dp, &
+            "log-probability consistency", failures)
         call check(all(classes == [-7, 42]), "deterministic class order", failures)
         call check(all(prediction == -7), "classification threshold", failures)
     end subroutine test_intercept_only_oracle
@@ -148,6 +152,47 @@ contains
         call check(maxval(abs(probabilities(:, 2) - expected_probability)) < &
             2.0e-8_dp, "class-weighted empirical probability", failures)
     end subroutine test_class_weight_intercept_oracle
+
+    subroutine test_log_probability_products(failures)
+        integer, intent(inout) :: failures
+        type(logistic_regression_t) :: model
+        type(fortnum_status_t) :: status
+        real(dp) :: x(3, 1), x_dot(3, 1), theta(2), theta_dot(2)
+        real(dp) :: logp(3, 2), logp_dot(3, 2), logp_plus(3, 2), logp_minus(3, 2)
+        real(dp) :: logp_bar(3, 2), theta_bar(2), x_bar(3, 1)
+        real(dp) :: lhs, rhs, epsilon
+        integer :: labels(3)
+
+        x(:, 1) = [-1.0_dp, 0.0_dp, 1.0_dp]
+        x_dot = 0.0_dp
+        labels = [0, 0, 1]
+        call model%fit(x, labels, status, l2=0.1_dp, max_iterations=1000, &
+            tolerance=1.0e-7_dp)
+        call check(status_ok(status), "log-probability product fit", failures)
+        if (.not. status_ok(status)) return
+        theta = model%parameters()
+        theta_dot = [0.17_dp, -0.23_dp]
+        call model%predict_log_proba_jvp(x, theta_dot, x_dot, logp, logp_dot, status)
+        call check(status_ok(status), "log-probability JVP", failures)
+        call check(maxval(abs(exp(logp(:, 1)) + exp(logp(:, 2)) - 1.0_dp)) < 1.0e-14_dp, &
+            "log-probability normalization", failures)
+        epsilon = 1.0e-6_dp
+        call model%set_parameters(theta + epsilon*theta_dot, status)
+        call model%predict_log_proba(x, logp_plus, status)
+        call model%set_parameters(theta - epsilon*theta_dot, status)
+        call model%predict_log_proba(x, logp_minus, status)
+        call model%set_parameters(theta, status)
+        call check(maxval(abs(logp_dot - (logp_plus - logp_minus)/(2.0_dp*epsilon))) < &
+            2.0e-7_dp, "log-probability finite-difference JVP", failures)
+        logp_bar = reshape([0.4_dp, -0.2_dp, 0.1_dp, 0.3_dp, -0.5_dp, 0.7_dp], &
+            shape(logp_bar))
+        call model%predict_log_proba_vjp(x, logp_bar, theta_bar, x_bar, status)
+        call check(status_ok(status), "log-probability VJP", failures)
+        lhs = sum(logp_bar*logp_dot)
+        rhs = dot_product(theta_bar, theta_dot) + sum(x_bar*x_dot)
+        call check(abs(lhs - rhs) < 2.0e-10_dp, &
+            "log-probability adjoint identity", failures)
+    end subroutine test_log_probability_products
 
     subroutine test_refusals(failures)
         integer, intent(inout) :: failures

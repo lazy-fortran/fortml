@@ -24,8 +24,11 @@ module fortml_softmax_regression
         procedure, public :: decision_function_jvp => softmax_decision_jvp
         procedure, public :: decision_function_vjp => softmax_decision_vjp
         procedure, public :: predict_proba => softmax_predict_proba
+        procedure, public :: predict_log_proba => softmax_predict_log_proba
         procedure, public :: predict_proba_jvp => softmax_predict_proba_jvp
+        procedure, public :: predict_log_proba_jvp => softmax_predict_log_proba_jvp
         procedure, public :: predict_proba_vjp => softmax_predict_proba_vjp
+        procedure, public :: predict_log_proba_vjp => softmax_predict_log_proba_vjp
         procedure, public :: predict => softmax_predict
         procedure, public :: coefficients => softmax_coefficients
         procedure, public :: intercept_values => softmax_intercepts
@@ -380,6 +383,40 @@ contains
         call softmax_value(scores, probabilities, status)
     end subroutine softmax_predict_proba
 
+    subroutine softmax_predict_log_proba(self, x, log_probabilities, status)
+        class(softmax_regression_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: log_probabilities(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: scores(:, :)
+        real(dp) :: maximum, normalizer
+        integer :: i, j, n_classes
+
+        if (.not. softmax_fitted(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "softmax predict_log_proba: model is not fitted")
+            return
+        end if
+        n_classes = self%class_count()
+        if (size(log_probabilities, 1) /= size(x, 1) .or. &
+            size(log_probabilities, 2) /= n_classes) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "softmax predict_log_proba: output shape is invalid")
+            return
+        end if
+        allocate(scores(size(x, 1), n_classes))
+        call self%decision_function(x, scores, status)
+        if (status%code /= FORTNUM_OK) return
+        do i = 1, size(scores, 1)
+            maximum = maxval(scores(i, :))
+            normalizer = log(sum(exp(scores(i, :) - maximum)))
+            do j = 1, n_classes
+                log_probabilities(i, j) = scores(i, j) - maximum - normalizer
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine softmax_predict_log_proba
+
     subroutine softmax_predict_proba_jvp(self, x, theta_dot, x_dot, probabilities, &
             probabilities_dot, status)
         class(softmax_regression_t), intent(in) :: self
@@ -407,6 +444,46 @@ contains
         if (status%code /= FORTNUM_OK) return
         call softmax_jvp(scores, scores_dot, probabilities, probabilities_dot, status)
     end subroutine softmax_predict_proba_jvp
+
+    subroutine softmax_predict_log_proba_jvp(self, x, theta_dot, x_dot, &
+            log_probabilities, log_probabilities_dot, status)
+        class(softmax_regression_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), theta_dot(:), x_dot(:, :)
+        real(dp), intent(out) :: log_probabilities(:, :), log_probabilities_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: scores(:, :), scores_dot(:, :), probabilities(:, :)
+        real(dp) :: mean_tangent
+        integer :: i, j, n_classes
+
+        if (.not. softmax_fitted(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "softmax log-probability JVP: model is not fitted")
+            return
+        end if
+        n_classes = self%class_count()
+        if (size(log_probabilities, 1) /= size(x, 1) .or. &
+            size(log_probabilities, 2) /= n_classes .or. &
+            any(shape(log_probabilities_dot) /= shape(log_probabilities))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "softmax log-probability JVP: output shape is invalid")
+            return
+        end if
+        allocate(scores(size(x, 1), n_classes), scores_dot(size(x, 1), n_classes), &
+            probabilities(size(x, 1), n_classes))
+        call self%decision_function_jvp(x, theta_dot, x_dot, scores, scores_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        call softmax_value(scores, probabilities, status)
+        if (status%code /= FORTNUM_OK) return
+        do i = 1, size(x, 1)
+            mean_tangent = dot_product(probabilities(i, :), scores_dot(i, :))
+            do j = 1, n_classes
+                log_probabilities_dot(i, j) = scores_dot(i, j) - mean_tangent
+            end do
+        end do
+        ! Recompute the values with a log-sum-exp expression so very small
+        ! probabilities retain finite logs instead of inheriting underflow.
+        call self%predict_log_proba(x, log_probabilities, status)
+    end subroutine softmax_predict_log_proba_jvp
 
     subroutine softmax_predict_proba_vjp(self, x, probabilities_bar, theta_bar, &
             x_bar, status)
@@ -443,6 +520,53 @@ contains
         if (status%code /= FORTNUM_OK) return
         call self%decision_function_vjp(x, logits_bar, theta_bar, x_bar, status)
     end subroutine softmax_predict_proba_vjp
+
+    subroutine softmax_predict_log_proba_vjp(self, x, log_probabilities_bar, &
+            theta_bar, x_bar, status)
+        class(softmax_regression_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), log_probabilities_bar(:, :)
+        real(dp), intent(out) :: theta_bar(:), x_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: scores(:, :), probabilities(:, :), scores_bar(:, :)
+        real(dp) :: total_bar
+        integer :: i, j, n_classes
+
+        theta_bar = 0.0_dp
+        x_bar = 0.0_dp
+        if (.not. softmax_fitted(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "softmax log-probability VJP: model is not fitted")
+            return
+        end if
+        n_classes = self%class_count()
+        if (size(log_probabilities_bar, 1) /= size(x, 1) .or. &
+            size(log_probabilities_bar, 2) /= n_classes .or. &
+            size(theta_bar) /= self%parameter_count() .or. &
+            size(x_bar, 1) /= size(x, 1) .or. size(x_bar, 2) /= size(x, 2)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "softmax log-probability VJP: shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(log_probabilities_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "softmax log-probability VJP: cotangent must be finite")
+            return
+        end if
+        allocate(scores(size(x, 1), n_classes), probabilities(size(x, 1), n_classes), &
+            scores_bar(size(x, 1), n_classes))
+        call self%decision_function(x, scores, status)
+        if (status%code /= FORTNUM_OK) return
+        call softmax_value(scores, probabilities, status)
+        if (status%code /= FORTNUM_OK) return
+        do i = 1, size(x, 1)
+            total_bar = sum(log_probabilities_bar(i, :))
+            do j = 1, n_classes
+                scores_bar(i, j) = log_probabilities_bar(i, j) - &
+                    probabilities(i, j)*total_bar
+            end do
+        end do
+        call self%decision_function_vjp(x, scores_bar, theta_bar, x_bar, status)
+    end subroutine softmax_predict_log_proba_vjp
 
     subroutine softmax_predict(self, x, labels, status)
         class(softmax_regression_t), intent(in) :: self

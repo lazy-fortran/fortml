@@ -23,8 +23,11 @@ module fortml_logistic_regression
         procedure, public :: decision_function_jvp => logistic_decision_jvp
         procedure, public :: decision_function_vjp => logistic_decision_vjp
         procedure, public :: predict_proba => logistic_predict_proba
+        procedure, public :: predict_log_proba => logistic_predict_log_proba
         procedure, public :: predict_proba_jvp => logistic_predict_proba_jvp
+        procedure, public :: predict_log_proba_jvp => logistic_predict_log_proba_jvp
         procedure, public :: predict_proba_vjp => logistic_predict_proba_vjp
+        procedure, public :: predict_log_proba_vjp => logistic_predict_log_proba_vjp
         procedure, public :: predict => logistic_predict
         procedure, public :: coefficients => logistic_coefficients
         procedure, public :: intercept_value => logistic_intercept_value
@@ -396,6 +399,32 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine logistic_predict_proba
 
+    subroutine logistic_predict_log_proba(self, x, log_probabilities, status)
+        class(logistic_regression_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: log_probabilities(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: scores(:)
+        integer :: i
+
+        if (size(log_probabilities, 1) /= size(x, 1) .or. &
+            size(log_probabilities, 2) /= 2) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "logistic predict_log_proba: output shape must be (n_samples,2)")
+            return
+        end if
+        allocate(scores(size(x, 1)))
+        call self%decision_function(x, scores, status)
+        if (status%code /= FORTNUM_OK) return
+        do i = 1, size(scores)
+            ! Compute the logs directly so probabilities that underflow to zero
+            ! still produce the finite log-sigmoid value expected by sklearn.
+            log_probabilities(i, 1) = -stable_softplus(scores(i))
+            log_probabilities(i, 2) = -stable_softplus(-scores(i))
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine logistic_predict_log_proba
+
     subroutine logistic_predict_proba_jvp(self, x, theta_dot, x_dot, probabilities, &
             probabilities_dot, status)
         class(logistic_regression_t), intent(in) :: self
@@ -430,6 +459,41 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine logistic_predict_proba_jvp
+
+    subroutine logistic_predict_log_proba_jvp(self, x, theta_dot, x_dot, &
+            log_probabilities, log_probabilities_dot, status)
+        class(logistic_regression_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), theta_dot(:), x_dot(:, :)
+        real(dp), intent(out) :: log_probabilities(:, :), log_probabilities_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: scores(:), scores_dot(:)
+        real(dp) :: positive
+        integer :: i
+
+        if (.not. logistic_fitted(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "logistic log-probability JVP: model is not fitted")
+            return
+        end if
+        if (size(log_probabilities, 1) /= size(x, 1) .or. &
+            size(log_probabilities, 2) /= 2 .or. &
+            any(shape(log_probabilities_dot) /= shape(log_probabilities))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "logistic log-probability JVP: output shape is invalid")
+            return
+        end if
+        allocate(scores(size(x, 1)), scores_dot(size(x, 1)))
+        call self%decision_function_jvp(x, theta_dot, x_dot, scores, scores_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        do i = 1, size(scores)
+            positive = stable_sigmoid(scores(i))
+            log_probabilities(i, 1) = -stable_softplus(scores(i))
+            log_probabilities(i, 2) = -stable_softplus(-scores(i))
+            log_probabilities_dot(i, 1) = -positive*scores_dot(i)
+            log_probabilities_dot(i, 2) = (1.0_dp - positive)*scores_dot(i)
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine logistic_predict_log_proba_jvp
 
     subroutine logistic_predict_proba_vjp(self, x, probabilities_bar, theta_bar, &
             x_bar, status)
@@ -467,6 +531,47 @@ contains
         end do
         call self%decision_function_vjp(x, scores_bar, theta_bar, x_bar, status)
     end subroutine logistic_predict_proba_vjp
+
+    subroutine logistic_predict_log_proba_vjp(self, x, log_probabilities_bar, &
+            theta_bar, x_bar, status)
+        class(logistic_regression_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), log_probabilities_bar(:, :)
+        real(dp), intent(out) :: theta_bar(:), x_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: scores(:), scores_bar(:)
+        real(dp) :: positive
+        integer :: i
+
+        theta_bar = 0.0_dp
+        x_bar = 0.0_dp
+        if (.not. logistic_fitted(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "logistic log-probability VJP: model is not fitted")
+            return
+        end if
+        if (size(log_probabilities_bar, 1) /= size(x, 1) .or. &
+            size(log_probabilities_bar, 2) /= 2 .or. &
+            size(theta_bar) /= self%parameter_count() .or. &
+            size(x_bar, 1) /= size(x, 1) .or. size(x_bar, 2) /= size(x, 2)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "logistic log-probability VJP: shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(log_probabilities_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "logistic log-probability VJP: cotangent must be finite")
+            return
+        end if
+        allocate(scores(size(x, 1)), scores_bar(size(x, 1)))
+        call self%decision_function(x, scores, status)
+        if (status%code /= FORTNUM_OK) return
+        do i = 1, size(scores)
+            positive = stable_sigmoid(scores(i))
+            scores_bar(i) = -positive*log_probabilities_bar(i, 1) + &
+                (1.0_dp - positive)*log_probabilities_bar(i, 2)
+        end do
+        call self%decision_function_vjp(x, scores_bar, theta_bar, x_bar, status)
+    end subroutine logistic_predict_log_proba_vjp
 
     subroutine logistic_predict(self, x, labels, status)
         class(logistic_regression_t), intent(in) :: self

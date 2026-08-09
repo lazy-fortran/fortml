@@ -16,7 +16,7 @@ fixed-leaf-product, plateau-trainer, affine Adagrad HVP, and CUDA VJP closure
 slices documented below are post-tag additions.
 The broad parity
 gate is still open, so this work does not move or recreate that tag.
-The checklist currently records 390 completed and 149 open items. Open rows are
+The checklist currently records 393 completed and 150 open items. Open rows are
 retained until their implementation, independent oracle, device/refusal
 behavior, and benchmark evidence land together.
 
@@ -146,6 +146,12 @@ it is checked off.
   difference, adjoint, malformed-input, and device-refusal oracles; the
   remaining sigmoid/precomputed kernels, SVR, calibration, shrinking/cache,
   multiclass coupling, and resident CUDA batching stay open.
+- [x] Add stable `predict_log_proba` to binary logistic and multinomial
+  softmax regression, with direct log-sigmoid/log-sum-exp evaluation and
+  exact fixed-state input/parameter JVP/VJP products. The independent
+  `test_logistic_regression` and `test_softmax_regression` gates cover
+  normalization, central differences, and the binary adjoint identity; the
+  resident CUDA reduction boundary remains a typed refusal.
 - [ ] Add a common calibration wrapper for sigmoid, temperature, isotonic, and
   Platt policies with leakage-safe cross-validation, weighted OOF state,
   calibration curves, and calibration-aware parameter products.
@@ -976,6 +982,25 @@ discrete. CPU dispatch is tested and selected CUDA calls, including HVP, return
 `FORTNUM_NOT_IMPLEMENTED`.
 The independent fixture is `test_classifier_chain`, with the release evidence
 in `fortml-bench/results/CLASSIFIER_CHAIN.md`.
+
+### 2026-08-09 continuation wave
+
+The classification and GP lanes now include stable log-probability products
+for the coupled categorical variational GP and for binary logistic and
+multinomial softmax regression. Direct log-space evaluation keeps saturated
+logits finite, while the packed-parameter and input products remain tied to
+the same fixed fitted state. The GP lane records a typed CUDA refusal until
+the inducing solve and softmax reduction are resident. The linear-classifier
+lane records the analogous reduction boundary in
+`fortml-bench/results/LINEAR_LOG_PROBA.md`.
+
+The trainer diagnostics lane persists successful fit-call counts, accepted
+optimizer iterations, and L-BFGS-B line-search and curvature counters in the
+schema-7 checkpoint. The categorical-tree lane adds bounded exhaustive
+partition search for small integer-coded feature cardinalities, including
+missing defaults, persistence metadata, and discrete product refusals. These
+contracts remain separate from the open shared-state, GPU-histogram, mixed
+precision, distributed, and full likelihood parity rows.
 
 Sparse variational-GP ELBOs now expose fixed-state kernel-log-parameter JVP and
 VJP products. The reverse product includes the inducing solve, cross-covariance,

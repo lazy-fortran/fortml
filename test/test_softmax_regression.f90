@@ -6,8 +6,10 @@ program test_softmax_regression
 
     type(softmax_regression_t) :: model
     type(fortnum_status_t) :: status
-    real(dp) :: x(6, 2), probabilities(6, 3), scores(6, 3), expected(6, 3)
-    integer :: labels(6), predicted(6), classes(3)
+    real(dp) :: x(6, 2), probabilities(6, 3), log_probabilities(6, 3)
+    real(dp) :: log_probabilities_dot(6, 3), scores(6, 3), expected(6, 3)
+    real(dp) :: x_dot(6, 2), theta(9), theta_dot(9), logp_plus(6, 3), logp_minus(6, 3)
+    integer :: labels(6), predicted(6), classes(3), i
     integer :: failures
 
     failures = 0
@@ -23,10 +25,12 @@ program test_softmax_regression
     end if
     call model%decision_function(x, scores, status)
     call model%predict_proba(x, probabilities, status)
+    call model%predict_log_proba(x, log_probabilities, status)
     call model%predict(x, predicted, status)
     classes = model%classes()
     if (.not. status_ok(status) .or. any(classes /= [-2, 7, 42]) .or. &
         maxval(abs(sum(probabilities, dim=2) - 1.0_dp)) > 1.0e-14_dp .or. &
+        maxval(abs(exp(log_probabilities) - probabilities)) > 1.0e-14_dp .or. &
         real(count(predicted == labels), dp)/real(size(labels), dp) < 0.99_dp .or. &
         any(shape(scores) /= [6, 3])) then
         write (error_unit, '(a)') "FAIL [softmax] independent probability/class oracle"
@@ -80,6 +84,40 @@ program test_softmax_regression
     if (status_ok(status)) then
         write (error_unit, '(a)') "FAIL [softmax] one-class refusal"
         failures = failures + 1
+    end if
+
+    ! Finite-difference and adjoint checks for the full log-softmax product.
+    x = reshape([ &
+        -1.0_dp, 0.5_dp, 0.2_dp, 1.0_dp, 0.7_dp, -0.4_dp, &
+        0.3_dp, -0.8_dp, 1.1_dp, 0.2_dp, -0.6_dp, 0.9_dp], shape(x))
+    labels = [-2, 7, 42, -2, 7, 42]
+    call model%fit(x, labels, status, l2=0.2_dp, max_iterations=1000, &
+        tolerance=1.0e-7_dp)
+    if (.not. status_ok(status)) then
+        write (error_unit, '(a)') "FAIL [softmax] product fit"
+        failures = failures + 1
+    else
+        x_dot = 0.0_dp
+        theta = model%parameters()
+        theta_dot = [(0.01_dp*real(i, dp), i=1,9)]
+        call model%predict_log_proba_jvp(x, theta_dot, x_dot, log_probabilities, &
+            log_probabilities_dot, status)
+        if (.not. status_ok(status)) then
+            write (error_unit, '(a)') "FAIL [softmax] log-probability JVP"
+            failures = failures + 1
+        end if
+        call model%set_parameters(theta + 1.0e-6_dp*theta_dot, status)
+        call model%predict_log_proba(x, logp_plus, status)
+        call model%set_parameters(theta - 1.0e-6_dp*theta_dot, status)
+        call model%predict_log_proba(x, logp_minus, status)
+        call model%set_parameters(theta, status)
+        if (maxval(abs(log_probabilities_dot - (logp_plus - logp_minus)/2.0e-6_dp)) > &
+            2.0e-6_dp) then
+            write (error_unit, '(a,es12.4)') &
+                "FAIL [softmax] log-probability finite difference: ", &
+                maxval(abs(log_probabilities_dot - (logp_plus - logp_minus)/2.0e-6_dp))
+            failures = failures + 1
+        end if
     end if
     if (failures /= 0) error stop 1
     write (*, '(a)') "PASS"
