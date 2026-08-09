@@ -305,12 +305,12 @@ contains
 
         select type (adapter => context_any)
             type is (poisson_likelihood_t)
-                call adapter%value_gradient(parameters, value, gradient, status)
-            class default
-                value = huge(1.0_dp)
-                gradient = 0.0_dp
-                call status_set(status, FORTNUM_DOMAIN_ERROR, &
-                    "Poisson likelihood objective: context has the wrong type")
+            call adapter%value_gradient(parameters, value, gradient, status)
+        class default
+            value = huge(1.0_dp)
+            gradient = 0.0_dp
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "Poisson likelihood objective: context has the wrong type")
         end select
     end subroutine poisson_likelihood_context
 
