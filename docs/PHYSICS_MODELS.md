@@ -36,6 +36,18 @@ tensor or an implicit integrator. `linear_autoencoder_t` is likewise only the ex
 tied, centered PCA reconstruction seam. It is not a nonlinear or physics
 autoencoder initializer.
 
+`fortml_hamiltonian_structure_gp` adds a finite-feature posterior warm start for
+the separable model. It fits independent last-layer kernel-ridge posteriors for
+`V(q)` and `T(p)`, captures both hidden parameter prefixes, and mutates only the
+two final affine layers after validating the packed state. Its metadata reports
+the potential/kinetic fit RMSE and a structure defect (zero for a successful
+separable apply), while explicitly setting `exact_infinite_width=.false.`.
+General nonseparable HNNs, symplectic GP priors, covariance propagation, and
+resident CUDA application remain open. CUDA requests in this initializer are
+typed `FORTNUM_NOT_IMPLEMENTED` refusals with no host fallback. See
+[`HAMILTONIAN_STRUCTURE_GP.md`](HAMILTONIAN_STRUCTURE_GP.md) and the independent
+[`test_hamiltonian_structure_gp.f90`](../test/test_hamiltonian_structure_gp.f90).
+
 `mlp_t%initialize_from_pca` exposes the same fixed-width reconstruction map as
 a two-layer linear MLP, including the center and optional PCA whitening scales.
 It is a checked finite linear/PCA optimum and leaves an existing model

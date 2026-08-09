@@ -991,6 +991,24 @@ This is a finite-width posterior-mean warm start. It records
 `exact_infinite_width=.false.` and leaves NNGP covariance propagation, sampled
 posterior weights, and Hamiltonian, symplectic, or PINN mappings open.
 
+### 2026-08-09 separable-Hamiltonian structure-aware GP initializer
+
+`fortml_hamiltonian_structure_gp` closes the bounded separable-Hamiltonian
+mapping slice. It fits independent finite-feature last-layer posteriors for
+`V(q)` and `T(p)`, captures both hidden parameter prefixes, and changes only
+the two final affine layers after validating topology and packed state. The
+metadata records potential/kinetic fit RMSE, regularization, hidden counts,
+and a zero structure-defect certificate for successful applies; it explicitly
+sets `exact_infinite_width=.false.`. The independent dense normal-equation
+oracle, hidden-mutation transaction, general-Hamiltonian refusal, and typed
+CUDA no-fallback boundary are in `test_hamiltonian_structure_gp` and
+`docs/HAMILTONIAN_STRUCTURE_GP.md`; the release lane is
+`fortml-bench/results/hamiltonian_structure_gp.csv`.
+
+This closes only a finite-width warm start for the existing separable model.
+NNGP covariance propagation, symplectic-GP priors, nonseparable HNN maps,
+PINN residual initialization, and resident GPU application remain open.
+
 ### 2026-08-07 closure slice
 
 The current release adds several cross-package contracts that were previously
@@ -4457,11 +4475,18 @@ checkouts before deciding that a product is unavailable.
   only the final affine layer after validating the captured state. The
   independent oracle and typed CUDA refusal are in `test_mlp_structure_gp` and
   `fortml-bench/results/mlp_structure_gp.csv`.
-- [ ] Extend structure-aware GP-posterior initialization to Hamiltonian and
-  symplectic networks and PINN residual networks. The mapping from the
-  infinite-width GP or NNGP/NTK feature representation to finite weights must
-  record its mean, covariance, and structure-defect error instead of claiming
-  an exact finite-width equivalence.
+- [x] Add a bounded structure-aware finite-feature GP-posterior initializer for
+  separable Hamiltonian MLPs. Independent `V(q)` and `T(p)` posteriors mutate
+  only final affine layers after hidden-state validation, and metadata records
+  fit RMSE plus a structure-defect certificate with an explicit finite-width
+  boundary. The independent oracle and typed CUDA refusal are in
+  `test_hamiltonian_structure_gp` and
+  `fortml-bench/results/hamiltonian_structure_gp.csv`.
+- [ ] Extend structure-aware GP-posterior initialization to symplectic networks
+  and PINN residual networks. The mapping from the infinite-width GP or
+  NNGP/NTK feature representation to finite weights must record its mean,
+  covariance, and structure-defect error instead of claiming an exact
+  finite-width equivalence.
 - [x] Add PCA initialization for linear autoencoders, following the exact
   Baldi--Hornik optimum above. The empirical [principal-component
   initialization proposal](https://doi.org/10.1007/978-3-030-30484-3_14)

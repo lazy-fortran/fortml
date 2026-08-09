@@ -1947,6 +1947,20 @@ The explicit leapfrog method refuses general mode with
 implicit symplectic integrator. Both modes refuse nonfinite states/directions
 and malformed layer or output shapes; no finite-difference fallback is used.
 
+### `fortml_hamiltonian_structure_gp`
+
+`hamiltonian_structure_gp_initializer_t` fits independent finite-feature
+last-layer kernel-ridge posteriors for the separable Hamiltonian components
+`V(q)` and `T(p)`. `fit` captures the packed hidden prefixes without mutating
+the model; `fit_apply` validates and changes only the two final affine layers.
+`predict_components` returns both posterior means, while
+`potential_predict` and `kinetic_predict` query one component. `metadata()`
+reports sample/feature dimensions, both fit RMSEs, regularization, hidden
+counts, and a structure-defect certificate. The certificate is zero for a
+successful separable application and does not claim an infinite-width GP
+equivalence. `apply_cuda` and `predict_cuda` return typed
+`FORTNUM_NOT_IMPLEMENTED` refusals without a host fallback.
+
 ### `fortml_symplectic`
 
 `symplectic_form_diagnostic_t` evaluates the canonical form defect for a map

@@ -37,6 +37,16 @@ module fortml_hamiltonian_mlp
         procedure, public :: leapfrog => hamiltonian_mlp_leapfrog
         procedure, public :: coordinate_count => hamiltonian_mlp_coordinate_count
         procedure, public :: is_general => hamiltonian_mlp_is_general
+        procedure, public :: potential_model => hamiltonian_mlp_potential_model
+        procedure, public :: kinetic_model => hamiltonian_mlp_kinetic_model
+        procedure, public :: potential_parameter_count => &
+            hamiltonian_mlp_potential_parameter_count
+        procedure, public :: kinetic_parameter_count => &
+            hamiltonian_mlp_kinetic_parameter_count
+        procedure, public :: set_potential_last_layer_parameters => &
+            hamiltonian_mlp_set_potential_last_layer_parameters
+        procedure, public :: set_kinetic_last_layer_parameters => &
+            hamiltonian_mlp_set_kinetic_last_layer_parameters
     end type hamiltonian_mlp_t
 
 contains
@@ -113,6 +123,72 @@ contains
 
         general = self%general_mode
     end function hamiltonian_mlp_is_general
+
+    function hamiltonian_mlp_potential_model(self) result(model)
+        !! Return a value copy of the separable potential MLP.
+        !!
+        !! The copy is intentional: structure-aware initializers can build a
+        !! posterior without exposing or mutating the private Hamiltonian
+        !! state until their validated apply step.
+        class(hamiltonian_mlp_t), intent(in) :: self
+        type(mlp_t) :: model
+
+        model = self%potential
+    end function hamiltonian_mlp_potential_model
+
+    function hamiltonian_mlp_kinetic_model(self) result(model)
+        !! Return a value copy of the separable kinetic MLP.
+        class(hamiltonian_mlp_t), intent(in) :: self
+        type(mlp_t) :: model
+
+        model = self%kinetic
+    end function hamiltonian_mlp_kinetic_model
+
+    integer function hamiltonian_mlp_potential_parameter_count(self) result(count)
+        class(hamiltonian_mlp_t), intent(in) :: self
+
+        if (self%general_mode) then
+            count = 0
+        else
+            count = self%potential%parameter_count()
+        end if
+    end function hamiltonian_mlp_potential_parameter_count
+
+    integer function hamiltonian_mlp_kinetic_parameter_count(self) result(count)
+        class(hamiltonian_mlp_t), intent(in) :: self
+
+        if (self%general_mode) then
+            count = 0
+        else
+            count = self%kinetic%parameter_count()
+        end if
+    end function hamiltonian_mlp_kinetic_parameter_count
+
+    subroutine hamiltonian_mlp_set_potential_last_layer_parameters(self, weight, bias, status)
+        class(hamiltonian_mlp_t), intent(inout) :: self
+        real(dp), intent(in) :: weight(:, :), bias(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (self%general_mode) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "Hamiltonian MLP potential setter: model is nonseparable")
+            return
+        end if
+        call self%potential%set_last_layer_parameters(weight, bias, status)
+    end subroutine hamiltonian_mlp_set_potential_last_layer_parameters
+
+    subroutine hamiltonian_mlp_set_kinetic_last_layer_parameters(self, weight, bias, status)
+        class(hamiltonian_mlp_t), intent(inout) :: self
+        real(dp), intent(in) :: weight(:, :), bias(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (self%general_mode) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "Hamiltonian MLP kinetic setter: model is nonseparable")
+            return
+        end if
+        call self%kinetic%set_last_layer_parameters(weight, bias, status)
+    end subroutine hamiltonian_mlp_set_kinetic_last_layer_parameters
 
     integer function hamiltonian_mlp_parameter_count(self) result(count)
         class(hamiltonian_mlp_t), intent(in) :: self
