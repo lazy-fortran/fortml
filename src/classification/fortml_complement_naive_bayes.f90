@@ -13,7 +13,9 @@ module fortml_complement_naive_bayes
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
-        FORTNUM_DOMAIN_ERROR
+        FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED
+    use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU, &
+        FORTML_DEVICE_CUDA
     implicit none
     private
 
@@ -32,8 +34,16 @@ module fortml_complement_naive_bayes
         real(dp) :: alpha = DEFAULT_ALPHA
         logical :: norm = .false.
         logical :: is_fitted = .false.
+        real(dp), allocatable :: partial_x(:, :), partial_weight(:)
+        integer, allocatable :: partial_labels(:), partial_classes(:)
+        real(dp) :: partial_alpha = DEFAULT_ALPHA
+        integer :: partial_sample_count = 0, partial_batch_count = 0
+        logical :: partial_initialized = .false.
     contains
         procedure, public :: fit => complement_nb_fit
+        procedure, public :: partial_fit => complement_nb_partial_fit
+        procedure, public :: warm_start => complement_nb_partial_fit
+        procedure, public :: partial_fit_device => complement_nb_partial_fit_device
         procedure, public :: predict_log_proba => complement_nb_predict_log_proba
         procedure, public :: predict_proba => complement_nb_predict_proba
         procedure, public :: predict => complement_nb_predict
@@ -64,9 +74,15 @@ module fortml_complement_naive_bayes
         procedure, public :: parameters => complement_nb_parameters
         procedure, public :: set_parameters => complement_nb_set_parameters
         procedure, public :: fitted => complement_nb_fitted
+        procedure, public :: partial_fit_initialized => complement_nb_partial_initialized
+        procedure, public :: sample_count => complement_nb_sample_count
+        procedure, public :: batch_count => complement_nb_batch_count
+        procedure, public :: device_supported => complement_nb_device_supported
     end type complement_naive_bayes_t
 
     public :: complement_nb_fit
+    public :: complement_nb_partial_fit
+    public :: complement_nb_partial_fit_device
     public :: complement_nb_predict_log_proba
     public :: complement_nb_predict_proba
     public :: complement_nb_predict
@@ -274,6 +290,207 @@ contains
         self%is_fitted = .true.
         call status_set(status, FORTNUM_OK, "")
     end subroutine complement_nb_fit
+
+    subroutine complement_nb_partial_fit(self, x, labels, status, classes, alpha, &
+            sample_weight, norm)
+        !! Transactionally append a nonnegative-count ComplementNB batch.
+        class(complement_naive_bayes_t), intent(inout) :: self
+        real(dp), intent(in) :: x(:, :)
+        integer, intent(in) :: labels(:)
+        type(fortnum_status_t), intent(out) :: status
+        integer, intent(in), optional :: classes(:)
+        real(dp), intent(in), optional :: alpha, sample_weight(:)
+        logical, intent(in), optional :: norm
+        type(complement_naive_bayes_t) :: candidate
+        type(fortnum_status_t) :: candidate_status
+        integer, allocatable :: candidate_classes(:), candidate_labels(:)
+        real(dp), allocatable :: candidate_x(:, :), candidate_weight(:), batch_weight(:)
+        real(dp) :: requested_alpha
+        logical :: requested_norm, first_call, complete
+        integer :: n_samples, n_features, n_old, n_classes, i, c
+
+        n_samples = size(x, 1); n_features = size(x, 2)
+        if (n_samples < 1 .or. n_features < 1 .or. size(labels) /= n_samples) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ComplementNB partial_fit: input dimensions are invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(x)) .or. any(x < 0.0_dp)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ComplementNB partial_fit: features must be finite and nonnegative")
+            return
+        end if
+        allocate(batch_weight(n_samples)); batch_weight = 1.0_dp
+        if (present(sample_weight)) then
+            if (size(sample_weight) /= n_samples .or. &
+                any(.not. ieee_is_finite(sample_weight)) .or. any(sample_weight < 0.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "ComplementNB partial_fit: sample weights are invalid")
+                return
+            end if
+            batch_weight = sample_weight
+        end if
+        if (.not. ieee_is_finite(sum(batch_weight)) .or. sum(batch_weight) <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ComplementNB partial_fit: batch weight mass must be positive")
+            return
+        end if
+        requested_alpha = DEFAULT_ALPHA
+        if (present(alpha)) requested_alpha = alpha
+        requested_norm = .false.
+        if (present(norm)) requested_norm = norm
+        first_call = .not. self%partial_initialized
+        if (first_call) then
+            if (self%is_fitted .or. .not. present(classes)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "ComplementNB partial_fit: fresh model and classes are required")
+                return
+            end if
+            if (size(classes) < 2) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "ComplementNB partial_fit: at least two classes are required")
+                return
+            end if
+            do i = 2, size(classes)
+                if (classes(i) <= classes(i - 1)) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "ComplementNB partial_fit: classes must be strictly increasing")
+                    return
+                end if
+            end do
+            if (.not. ieee_is_finite(requested_alpha) .or. requested_alpha <= 0.0_dp) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "ComplementNB partial_fit: alpha must be finite and positive")
+                return
+            end if
+            allocate(candidate_classes(size(classes))); candidate_classes = classes
+        else
+            if (n_features /= self%n_features) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "ComplementNB partial_fit: feature count changed")
+                return
+            end if
+            if (present(classes)) then
+                if (size(classes) /= size(self%partial_classes) .or. &
+                    any(classes /= self%partial_classes)) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "ComplementNB partial_fit: class vocabulary changed")
+                    return
+                end if
+            end if
+            requested_alpha = self%partial_alpha
+            if (present(alpha)) then
+                if (.not. ieee_is_finite(alpha) .or. alpha /= self%partial_alpha) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "ComplementNB partial_fit: alpha cannot change")
+                    return
+                end if
+            end if
+            requested_norm = self%norm
+            if (present(norm)) then
+                if (norm .neqv. self%norm) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "ComplementNB partial_fit: norm cannot change")
+                    return
+                end if
+            end if
+            allocate(candidate_classes(size(self%partial_classes)))
+            candidate_classes = self%partial_classes
+        end if
+        if (.not. ieee_is_finite(requested_alpha) .or. requested_alpha <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ComplementNB partial_fit: alpha must be finite and positive")
+            return
+        end if
+        n_classes = size(candidate_classes)
+        do i = 1, n_samples
+            if (.not. any(labels(i) == candidate_classes)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "ComplementNB partial_fit: batch contains an unseen class")
+                return
+            end if
+        end do
+        n_old = 0
+        if (allocated(self%partial_labels)) n_old = size(self%partial_labels)
+        allocate(candidate_x(n_old + n_samples, n_features), &
+            candidate_labels(n_old + n_samples), candidate_weight(n_old + n_samples))
+        if (n_old > 0) then
+            candidate_x(:n_old, :) = self%partial_x
+            candidate_labels(:n_old) = self%partial_labels
+            candidate_weight(:n_old) = self%partial_weight
+        end if
+        candidate_x(n_old + 1:, :) = x
+        candidate_labels(n_old + 1:) = labels
+        candidate_weight(n_old + 1:) = batch_weight
+        complete = .true.
+        do c = 1, n_classes
+            if (.not. any((candidate_labels == candidate_classes(c)) .and. &
+                    (candidate_weight > 0.0_dp))) complete = .false.
+        end do
+        if (complete) then
+            call candidate%fit(candidate_x, candidate_labels, candidate_status, &
+                alpha=requested_alpha, sample_weight=candidate_weight, norm=requested_norm)
+            if (candidate_status%code /= FORTNUM_OK) then
+                call status_set(status, candidate_status%code, trim(candidate_status%msg))
+                return
+            end if
+        end if
+        self%partial_initialized = .true.
+        if (first_call) self%partial_alpha = requested_alpha
+        self%partial_sample_count = n_old + n_samples
+        self%partial_batch_count = self%partial_batch_count + 1
+        if (allocated(self%partial_x)) deallocate(self%partial_x)
+        if (allocated(self%partial_labels)) deallocate(self%partial_labels)
+        if (allocated(self%partial_weight)) deallocate(self%partial_weight)
+        if (allocated(self%partial_classes)) deallocate(self%partial_classes)
+        call move_alloc(candidate_x, self%partial_x)
+        call move_alloc(candidate_labels, self%partial_labels)
+        call move_alloc(candidate_weight, self%partial_weight)
+        call move_alloc(candidate_classes, self%partial_classes)
+        self%n_features = n_features; self%n_classes = n_classes
+        if (allocated(self%class_label)) deallocate(self%class_label)
+        allocate(self%class_label(n_classes)); self%class_label = self%partial_classes
+        if (complete) then
+            self%complement_probability = candidate%complement_probability
+            self%feature_weight = candidate%feature_weight
+            self%feature_mass = candidate%feature_mass
+            self%prior = candidate%prior
+            self%weighted_count = candidate%weighted_count
+            self%alpha = candidate%alpha; self%norm = candidate%norm
+            self%is_fitted = .true.
+        else
+            self%is_fitted = .false.
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine complement_nb_partial_fit
+
+    subroutine complement_nb_partial_fit_device(self, device, x, labels, status, &
+            classes, alpha, sample_weight, norm)
+        class(complement_naive_bayes_t), intent(inout) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :)
+        integer, intent(in) :: labels(:)
+        type(fortnum_status_t), intent(out) :: status
+        integer, intent(in), optional :: classes(:)
+        real(dp), intent(in), optional :: alpha, sample_weight(:)
+        logical, intent(in), optional :: norm
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ComplementNB partial_fit device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%partial_fit(x, labels, status, classes, alpha, sample_weight, norm)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "ComplementNB partial_fit device: resident CUDA sufficient statistics are not implemented")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ComplementNB partial_fit device: device kind is invalid")
+        end select
+    end subroutine complement_nb_partial_fit_device
 
     subroutine complement_nb_predict_log_proba(self, x, log_probabilities, status)
         class(complement_naive_bayes_t), intent(in) :: self
@@ -859,6 +1076,27 @@ contains
 
         is_fitted = self%is_fitted
     end function complement_nb_fitted
+
+    logical function complement_nb_partial_initialized(self) result(value)
+        class(complement_naive_bayes_t), intent(in) :: self
+        value = self%partial_initialized
+    end function complement_nb_partial_initialized
+
+    integer function complement_nb_sample_count(self) result(value)
+        class(complement_naive_bayes_t), intent(in) :: self
+        value = self%partial_sample_count
+    end function complement_nb_sample_count
+
+    integer function complement_nb_batch_count(self) result(value)
+        class(complement_naive_bayes_t), intent(in) :: self
+        value = self%partial_batch_count
+    end function complement_nb_batch_count
+
+    logical function complement_nb_device_supported(self, device_kind) result(value)
+        class(complement_naive_bayes_t), intent(in) :: self
+        integer, intent(in) :: device_kind
+        value = device_kind == FORTML_DEVICE_CPU
+    end function complement_nb_device_supported
 
     subroutine build_feature_weights(probability, norm, weight, valid)
         real(dp), intent(in) :: probability(:, :)

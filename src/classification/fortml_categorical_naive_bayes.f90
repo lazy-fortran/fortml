@@ -10,6 +10,8 @@ module fortml_categorical_naive_bayes
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
         FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED
+    use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU, &
+        FORTML_DEVICE_CUDA
     implicit none
     private
 
@@ -23,8 +25,16 @@ module fortml_categorical_naive_bayes
         integer :: n_features = 0, n_classes = 0
         real(dp) :: alpha = DEFAULT_ALPHA
         logical :: handle_unknown = .false., is_fitted = .false.
+        integer, allocatable :: partial_x(:, :), partial_labels(:), partial_classes(:)
+        real(dp), allocatable :: partial_weight(:)
+        real(dp) :: partial_alpha = DEFAULT_ALPHA
+        integer :: partial_sample_count = 0, partial_batch_count = 0
+        logical :: partial_initialized = .false., partial_handle_unknown = .false.
     contains
         procedure, public :: fit => categorical_nb_fit
+        procedure, public :: partial_fit => categorical_nb_partial_fit
+        procedure, public :: warm_start => categorical_nb_partial_fit
+        procedure, public :: partial_fit_device => categorical_nb_partial_fit_device
         procedure, public :: predict_log_proba => categorical_nb_predict_log_proba
         procedure, public :: predict_proba => categorical_nb_predict_proba
         procedure, public :: predict => categorical_nb_predict
@@ -38,9 +48,15 @@ module fortml_categorical_naive_bayes
         procedure, public :: alpha_value => categorical_nb_alpha
         procedure, public :: fitted => categorical_nb_fitted
         procedure, public :: parameter_count => categorical_nb_parameter_count
+        procedure, public :: partial_fit_initialized => categorical_nb_partial_initialized
+        procedure, public :: sample_count => categorical_nb_sample_count
+        procedure, public :: batch_count => categorical_nb_batch_count
+        procedure, public :: device_supported => categorical_nb_device_supported
     end type categorical_naive_bayes_t
 
     public :: categorical_nb_fit
+    public :: categorical_nb_partial_fit
+    public :: categorical_nb_partial_fit_device
 
 contains
 
@@ -197,6 +213,207 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine categorical_nb_fit
 
+    subroutine categorical_nb_partial_fit(self, x, labels, status, classes, alpha, &
+            sample_weight, handle_unknown)
+        !! Transactionally append categorical observations and replay the stream.
+        !! Category vocabularies are rebuilt from the complete replay buffer, so
+        !! a later batch may introduce a new category without corrupting state.
+        class(categorical_naive_bayes_t), intent(inout) :: self
+        integer, intent(in) :: x(:, :), labels(:)
+        type(fortnum_status_t), intent(out) :: status
+        integer, intent(in), optional :: classes(:)
+        real(dp), intent(in), optional :: alpha, sample_weight(:)
+        logical, intent(in), optional :: handle_unknown
+        type(categorical_naive_bayes_t) :: candidate
+        type(fortnum_status_t) :: candidate_status
+        integer, allocatable :: candidate_x(:, :), candidate_labels(:), candidate_classes(:)
+        real(dp), allocatable :: candidate_weight(:), batch_weight(:)
+        real(dp) :: requested_alpha
+        logical :: requested_unknown, first_call, complete
+        integer :: n_samples, n_features, n_old, n_classes, i, c
+
+        n_samples = size(x, 1); n_features = size(x, 2)
+        if (n_samples < 1 .or. n_features < 1 .or. size(labels) /= n_samples) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "CategoricalNB partial_fit: input dimensions are invalid")
+            return
+        end if
+        allocate(batch_weight(n_samples)); batch_weight = 1.0_dp
+        if (present(sample_weight)) then
+            if (size(sample_weight) /= n_samples .or. &
+                any(.not. ieee_is_finite(sample_weight)) .or. any(sample_weight < 0.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "CategoricalNB partial_fit: sample weights are invalid")
+                return
+            end if
+            batch_weight = sample_weight
+        end if
+        if (.not. ieee_is_finite(sum(batch_weight)) .or. sum(batch_weight) <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "CategoricalNB partial_fit: batch weight mass must be positive")
+            return
+        end if
+        requested_alpha = DEFAULT_ALPHA
+        if (present(alpha)) requested_alpha = alpha
+        requested_unknown = .false.
+        if (present(handle_unknown)) requested_unknown = handle_unknown
+        first_call = .not. self%partial_initialized
+        if (first_call) then
+            if (self%is_fitted .or. .not. present(classes)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "CategoricalNB partial_fit: fresh model and classes are required")
+                return
+            end if
+            if (size(classes) < 2) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "CategoricalNB partial_fit: at least two classes are required")
+                return
+            end if
+            do i = 2, size(classes)
+                if (classes(i) <= classes(i - 1)) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "CategoricalNB partial_fit: classes must be strictly increasing")
+                    return
+                end if
+            end do
+            if (.not. ieee_is_finite(requested_alpha) .or. requested_alpha <= 0.0_dp) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "CategoricalNB partial_fit: alpha must be finite and positive")
+                return
+            end if
+            allocate(candidate_classes(size(classes))); candidate_classes = classes
+        else
+            if (n_features /= self%n_features) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "CategoricalNB partial_fit: feature count changed")
+                return
+            end if
+            if (present(classes)) then
+                if (size(classes) /= size(self%partial_classes) .or. &
+                    any(classes /= self%partial_classes)) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "CategoricalNB partial_fit: class vocabulary changed")
+                    return
+                end if
+            end if
+            requested_alpha = self%partial_alpha
+            if (present(alpha)) then
+                if (.not. ieee_is_finite(alpha) .or. alpha /= self%partial_alpha) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "CategoricalNB partial_fit: alpha cannot change")
+                    return
+                end if
+            end if
+            requested_unknown = self%partial_handle_unknown
+            if (present(handle_unknown)) then
+                if (handle_unknown .neqv. self%partial_handle_unknown) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "CategoricalNB partial_fit: handle_unknown cannot change")
+                    return
+                end if
+            end if
+            allocate(candidate_classes(size(self%partial_classes)))
+            candidate_classes = self%partial_classes
+        end if
+        if (.not. ieee_is_finite(requested_alpha) .or. requested_alpha <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "CategoricalNB partial_fit: alpha must be finite and positive")
+            return
+        end if
+        n_classes = size(candidate_classes)
+        do i = 1, n_samples
+            if (.not. any(labels(i) == candidate_classes)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "CategoricalNB partial_fit: batch contains an unseen class")
+                return
+            end if
+        end do
+        n_old = 0
+        if (allocated(self%partial_labels)) n_old = size(self%partial_labels)
+        allocate(candidate_x(n_old + n_samples, n_features), &
+            candidate_labels(n_old + n_samples), candidate_weight(n_old + n_samples))
+        if (n_old > 0) then
+            candidate_x(:n_old, :) = self%partial_x
+            candidate_labels(:n_old) = self%partial_labels
+            candidate_weight(:n_old) = self%partial_weight
+        end if
+        candidate_x(n_old + 1:, :) = x
+        candidate_labels(n_old + 1:) = labels
+        candidate_weight(n_old + 1:) = batch_weight
+        complete = .true.
+        do c = 1, n_classes
+            if (.not. any((candidate_labels == candidate_classes(c)) .and. &
+                    (candidate_weight > 0.0_dp))) complete = .false.
+        end do
+        if (complete) then
+            call candidate%fit(candidate_x, candidate_labels, candidate_status, &
+                alpha=requested_alpha, sample_weight=candidate_weight, &
+                handle_unknown=requested_unknown)
+            if (candidate_status%code /= FORTNUM_OK) then
+                call status_set(status, candidate_status%code, trim(candidate_status%msg))
+                return
+            end if
+        end if
+        self%partial_initialized = .true.
+        if (first_call) then
+            self%partial_alpha = requested_alpha
+            self%partial_handle_unknown = requested_unknown
+        end if
+        self%partial_sample_count = n_old + n_samples
+        self%partial_batch_count = self%partial_batch_count + 1
+        if (allocated(self%partial_x)) deallocate(self%partial_x)
+        if (allocated(self%partial_labels)) deallocate(self%partial_labels)
+        if (allocated(self%partial_weight)) deallocate(self%partial_weight)
+        if (allocated(self%partial_classes)) deallocate(self%partial_classes)
+        call move_alloc(candidate_x, self%partial_x)
+        call move_alloc(candidate_labels, self%partial_labels)
+        call move_alloc(candidate_weight, self%partial_weight)
+        call move_alloc(candidate_classes, self%partial_classes)
+        self%n_features = n_features; self%n_classes = n_classes
+        if (allocated(self%class_label)) deallocate(self%class_label)
+        allocate(self%class_label(n_classes)); self%class_label = self%partial_classes
+        if (complete) then
+            self%categories = candidate%categories
+            self%offsets = candidate%offsets
+            self%log_probability = candidate%log_probability
+            self%prior = candidate%prior
+            self%weighted_count = candidate%weighted_count
+            self%alpha = candidate%alpha
+            self%handle_unknown = candidate%handle_unknown
+            self%is_fitted = .true.
+        else
+            self%is_fitted = .false.
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine categorical_nb_partial_fit
+
+    subroutine categorical_nb_partial_fit_device(self, device, x, labels, status, &
+            classes, alpha, sample_weight, handle_unknown)
+        class(categorical_naive_bayes_t), intent(inout) :: self
+        type(fortml_device_t), intent(in) :: device
+        integer, intent(in) :: x(:, :), labels(:)
+        type(fortnum_status_t), intent(out) :: status
+        integer, intent(in), optional :: classes(:)
+        real(dp), intent(in), optional :: alpha, sample_weight(:)
+        logical, intent(in), optional :: handle_unknown
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "CategoricalNB partial_fit device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%partial_fit(x, labels, status, classes, alpha, sample_weight, handle_unknown)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "CategoricalNB partial_fit device: resident CUDA sufficient statistics are not implemented")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "CategoricalNB partial_fit device: device kind is invalid")
+        end select
+    end subroutine categorical_nb_partial_fit_device
+
     subroutine categorical_nb_predict_log_proba(self, x, log_probabilities, status)
         class(categorical_naive_bayes_t), intent(in) :: self
         integer, intent(in) :: x(:, :)
@@ -333,6 +550,27 @@ contains
         class(categorical_naive_bayes_t), intent(in) :: self
         value = self%is_fitted
     end function categorical_nb_fitted
+
+    logical function categorical_nb_partial_initialized(self) result(value)
+        class(categorical_naive_bayes_t), intent(in) :: self
+        value = self%partial_initialized
+    end function categorical_nb_partial_initialized
+
+    integer function categorical_nb_sample_count(self) result(value)
+        class(categorical_naive_bayes_t), intent(in) :: self
+        value = self%partial_sample_count
+    end function categorical_nb_sample_count
+
+    integer function categorical_nb_batch_count(self) result(value)
+        class(categorical_naive_bayes_t), intent(in) :: self
+        value = self%partial_batch_count
+    end function categorical_nb_batch_count
+
+    logical function categorical_nb_device_supported(self, device_kind) result(value)
+        class(categorical_naive_bayes_t), intent(in) :: self
+        integer, intent(in) :: device_kind
+        value = device_kind == FORTML_DEVICE_CPU
+    end function categorical_nb_device_supported
 
     integer function categorical_nb_parameter_count(self) result(count)
         class(categorical_naive_bayes_t), intent(in) :: self
