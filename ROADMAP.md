@@ -3168,6 +3168,14 @@ return status errors.
   names transactionally before a transform, and exposes stable name accessors;
   `test_pipeline_metadata` and `results/PIPELINE_SCHEMA.md` provide the
   independent refusal and release evidence.
+- [x] Add semantic output labels to `basis_map_t`. A map accepts one unique,
+  bounded name per feature through a transactional `set_feature_names` update;
+  horizontal, sequential, column-selecting, and fan-out pipelines qualify
+  those labels with stage or branch names without changing feature values,
+  derivative products, or packed parameter offsets. The independent
+  `test_basis_feature_names` oracle covers value preservation and duplicate
+  refusal; structural pipeline persistence and sparse/device metadata remain
+  separate follow-up contracts.
 - [ ] Extend schema metadata to dtypes, sparse layouts, feature names through
   every transformer, estimator-wide metadata routing, train-only fitting,
   `fit_transform`, `transform`, `inverse_transform` where mathematically

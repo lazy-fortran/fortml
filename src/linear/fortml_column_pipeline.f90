@@ -579,6 +579,7 @@ contains
         integer, intent(in) :: feature
         character(:), allocatable :: name
         integer :: i, offset, n_features
+        character(:), allocatable :: local_name
 
         name = ""
         if (feature < 1 .or. feature > self%feature_count()) return
@@ -586,8 +587,13 @@ contains
         do i = 1, self%n_stages
             n_features = self%stages(i)%map%feature_count()
             if (feature <= offset + n_features) then
-                name = qualified_stage_name(trim(self%stage_names(i)), &
-                    "feature", feature - offset)
+                local_name = self%stages(i)%map%feature_name(feature - offset)
+                if (len_trim(local_name) > 0) then
+                    name = trim(self%stage_names(i))//"."//trim(local_name)
+                else
+                    name = qualified_stage_name(trim(self%stage_names(i)), &
+                        "feature", feature - offset)
+                end if
                 return
             end if
             offset = offset + n_features

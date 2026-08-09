@@ -259,6 +259,13 @@ either estimator without changing parameter routing. Their nonsmooth fit
 solvers, active-set decisions, and regularization hyperparameters remain
 declared derivative boundaries.
 `basis_map_t` has a value/JVP/VJP contract and an explicit parameter layout.
+Output labels are optional semantic metadata: `set_feature_names` installs a
+validated unique vector transactionally and `feature_name` retrieves one
+label. Horizontal, sequential, column-selecting, and fan-out composition
+qualifies those labels with stage or branch names, while unnamed maps retain
+the deterministic positional fallback. Labels do not participate in numeric
+products or parameter offsets, and the current structural pipeline state
+dictionary does not yet persist them.
 The implemented basis families are:
 
 - separate polynomial powers for each input with degree/ordering recorded;

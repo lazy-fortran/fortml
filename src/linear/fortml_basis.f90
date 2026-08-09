@@ -22,6 +22,7 @@ module fortml_basis
         private
         logical :: include_intercept = .false.
         class(basis_impl_t), allocatable :: implementation
+        character(len=128), allocatable :: feature_names(:)
     contains
         procedure, public :: initialize_polynomial => basis_initialize_polynomial
         procedure, public :: initialize_polynomial_interactions => &
@@ -36,6 +37,8 @@ module fortml_basis
         procedure, public :: initialize_callback => basis_initialize_callback
         procedure, public :: input_count => basis_input_count
         procedure, public :: feature_count => basis_feature_count
+        procedure, public :: feature_name => basis_feature_name
+        procedure, public :: set_feature_names => basis_set_feature_names
         procedure, public :: parameter_count => basis_parameter_count
         procedure, public :: parameters => basis_parameters
         procedure, public :: set_parameters => basis_set_parameters
@@ -309,6 +312,67 @@ contains
         if (self%include_intercept) count = count + 1
     end function basis_feature_count
 
+    function basis_feature_name(self, feature) result(name)
+        !! Return a caller-defined semantic name for one output feature.
+        !!
+        !! A basis map keeps names optional so existing maps retain their
+        !! compact construction API.  Pipelines use this accessor when it is
+        !! populated and fall back to their stable positional name otherwise.
+        class(basis_map_t), intent(in) :: self
+        integer, intent(in) :: feature
+        character(:), allocatable :: name
+
+        name = ""
+        if (feature < 1 .or. feature > self%feature_count()) return
+        if (.not. allocated(self%feature_names)) return
+        if (size(self%feature_names) /= self%feature_count()) return
+        name = trim(self%feature_names(feature))
+    end function basis_feature_name
+
+    subroutine basis_set_feature_names(self, names, status)
+        !! Install semantic output names transactionally.
+        !!
+        !! Names are required to be nonempty, bounded, and unique.  A failed
+        !! update leaves an already-installed name vector unchanged.
+        class(basis_map_t), intent(inout) :: self
+        character(*), intent(in) :: names(:)
+        type(fortnum_status_t), intent(out) :: status
+        character(len=128), allocatable :: candidate(:)
+        integer :: i, j, n_features
+
+        if (.not. basis_valid(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "basis set_feature_names: model is not initialized")
+            return
+        end if
+        n_features = self%feature_count()
+        if (size(names) /= n_features) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "basis set_feature_names: name count does not match features")
+            return
+        end if
+        allocate(candidate(n_features))
+        do i = 1, n_features
+            if (len_trim(names(i)) < 1 .or. len_trim(names(i)) > 128) then
+                deallocate(candidate)
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "basis set_feature_names: names must be nonempty and bounded")
+                return
+            end if
+            candidate(i) = trim(names(i))
+            do j = 1, i - 1
+                if (trim(candidate(j)) == trim(candidate(i))) then
+                    deallocate(candidate)
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "basis set_feature_names: names must be unique")
+                    return
+                end if
+            end do
+        end do
+        call move_alloc(candidate, self%feature_names)
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine basis_set_feature_names
+
     integer function basis_input_count(self) result(count)
         class(basis_map_t), intent(in) :: self
 
@@ -460,13 +524,13 @@ contains
             return
         end if
         if (any(shape(x_dot) /= shape(x)) .or. &
-                any(shape(x_hvp) /= shape(x))) then
+            any(shape(x_hvp) /= shape(x))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "basis hvp: input direction or output shape is invalid")
             return
         end if
         if (size(theta_dot) /= self%parameter_count() .or. &
-                size(theta_hvp) /= self%parameter_count()) then
+            size(theta_hvp) /= self%parameter_count()) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "basis hvp: parameter direction or output shape is invalid")
             return

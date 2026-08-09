@@ -789,6 +789,7 @@ contains
         integer, intent(in) :: feature
         character(:), allocatable :: name
         integer :: i, offset, n_features
+        character(:), allocatable :: local_name
 
         name = ""
         if (feature < 1 .or. feature > self%feature_count()) return
@@ -796,8 +797,13 @@ contains
         do i = 1, self%n_stages
             n_features = self%stages(i)%feature_count()
             if (feature <= offset + n_features) then
-                name = qualified_stage_name(trim(self%stage_names(i)), &
-                    "feature", feature - offset)
+                local_name = self%stages(i)%feature_name(feature - offset)
+                if (len_trim(local_name) > 0) then
+                    name = trim(self%stage_names(i))//"."//trim(local_name)
+                else
+                    name = qualified_stage_name(trim(self%stage_names(i)), &
+                        "feature", feature - offset)
+                end if
                 return
             end if
             offset = offset + n_features
@@ -1486,12 +1492,18 @@ contains
         class(sequential_basis_pipeline_t), intent(in) :: self
         integer, intent(in) :: feature
         character(:), allocatable :: name
+        character(:), allocatable :: local_name
 
         name = ""
         if (self%n_stages < 1 .or. feature < 1 .or. &
             feature > self%feature_count()) return
-        name = qualified_stage_name(trim(self%stage_names(self%n_stages)), &
-            "feature", feature)
+        local_name = self%stages(self%n_stages)%feature_name(feature)
+        if (len_trim(local_name) > 0) then
+            name = trim(self%stage_names(self%n_stages))//"."//trim(local_name)
+        else
+            name = qualified_stage_name(trim(self%stage_names(self%n_stages)), &
+                "feature", feature)
+        end if
     end function sequential_pipeline_feature_name
 
     function sequential_pipeline_parameter_name(self, parameter) result(name)

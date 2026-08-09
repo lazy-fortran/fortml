@@ -1731,6 +1731,17 @@ extension and test code. Chebyshev maps use the three-term recurrence
 `T_0` column. They are parameter-free and exact on CPU; resident-CUDA calls
 return a typed refusal until a static device lowering is available.
 
+Semantic output labels are optional per map. Call
+`map%set_feature_names(names,status)` with one unique, nonempty name per
+feature, then retrieve a label with `map%feature_name(i)`. The update is
+transactional: a wrong count, duplicate, empty, or overlong name leaves the
+previous labels unchanged. Horizontal, sequential, column-selecting, and
+fan-out pipelines preserve these labels under their stage/branch prefixes;
+unnamed maps retain the positional `feature_N` fallback. Labels are metadata,
+so installing them does not alter values or derivative products. The current
+pipeline text state dictionary deliberately remains a structural map format;
+semantic labels are a separate persistence follow-up.
+
 `make_cubic_spline_basis` is the production convenience constructor for the
 common cubic case. It is exactly `make_spline_basis(n_inputs,4,...)`, with
 order fixed to four (degree three), and retains the same feature ordering,
@@ -1772,6 +1783,12 @@ parameter vectors. These accessors let a caller route coefficients or
 diagnostics without duplicating the pipeline's packing rules. Sequential
 transforms and DAG branches require separate input and output contracts and
 are not inferred from this horizontal union.
+
+When a stage carries semantic map labels, `feature_name` qualifies those
+labels (for example `seasonal.sin_x1`) instead of discarding them. The same
+rule applies to final features of a sequential pipeline and to selected
+columns in a column pipeline; a label is never used to infer a parameter
+offset.
 
 ### Versioned pipeline state
 
