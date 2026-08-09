@@ -65,7 +65,7 @@ derivative and reproducibility products.
 ## AdamW trajectory contract
 
 `mlp_adamw_hypergradient_objective_t` applies the same fixed full-batch
-validation objective through bias-corrected AdamW. Its packed outer vector is
+validation objective through bias-corrected AdamW. Its legacy packed outer vector is
 
 ```text
 [ log_learning_rate, log_l2, log_weight_decay ]
@@ -75,10 +75,25 @@ The first and second moment recurrences, decoupled weight decay, and each
 log-parameter sensitivity are propagated analytically using the MLP HVP. The
 object exposes exact `value_gradient`, `jvp`, and scalar `vjp` products;
 `mlp_optimize_adamw_hyperparameters` sends them to FortOpt L-BFGS-B with
-independent log bounds. The behavioral test
-`test_mlp_adamw_hypergradient` checks all three components against central
-differences, the JVP, the scalar adjoint, and an L-BFGS-B solve. Mini-batch,
-schedule, beta, and CUDA AdamW trajectories remain explicit follow-up work.
+independent log bounds.
+
+For differentiable moment coefficients use
+`mlp_adamw_full_hypergradient_objective_t`, whose packed vector is
+
+```text
+[ log_learning_rate, log_l2, log_weight_decay,
+  logit_beta1, logit_beta2 ]
+```
+
+The full objective propagates beta-logit sensitivities through bias correction
+and also exposes an analytic outer `hvp` on a one-layer linear MLP. That HVP
+uses the constant affine loss Hessian and returns
+`FORTNUM_NOT_IMPLEMENTED` for nonlinear or multilayer networks rather than
+approximating third derivatives. `test_mlp_adamw_hypergradient` checks the
+HVP against an independent central-difference derivative of the exact
+trajectory gradient, while `fortml-bench/results/ADAMW_BETA_HYPERGRADIENT.md`
+records the NumPy value, gradient, JVP, and HVP oracle. CUDA and lower
+precision AdamW hypergradient trajectories remain explicit typed refusals.
 
 ## Scheduled AdamW trajectory contract
 

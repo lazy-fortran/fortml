@@ -3,6 +3,7 @@ program test_mlp_adamw_hypergradient
     !! trajectory hypergradients.
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_NOT_IMPLEMENTED
+    use fortml_device, only: FORTML_DEVICE_CUDA
     use fortml_mlp, only: mlp_t
     use fortml_mlp_training, only: MLP_OPTIMIZER_SGD
     use fortml_mlp_hypergradient, only: &
@@ -18,10 +19,11 @@ program test_mlp_adamw_hypergradient
 
     type(mlp_t), target :: model
     type(mlp_t), target :: full_model
+    type(mlp_t), target :: nonlinear_model
     type(mlp_adamw_hypergradient_objective_t) :: objective
     type(mlp_adamw_full_hypergradient_objective_t) :: full_objective
     type(mlp_adamw_hypergradient_options_t) :: options, bad_options
-    type(mlp_adamw_full_hypergradient_options_t) :: full_options
+    type(mlp_adamw_full_hypergradient_options_t) :: full_options, bad_full_options
     type(mlp_adamw_hypergradient_result_t) :: result
     type(mlp_adamw_hypergradient_metadata_t) :: metadata
     type(mlp_adamw_full_hypergradient_metadata_t) :: full_metadata
@@ -30,6 +32,7 @@ program test_mlp_adamw_hypergradient
     real(dp) :: validation_x(3, 1), validation_target(3, 1)
     real(dp) :: parameters(3), direction(3), gradient(3), vjp_gradient(3)
     real(dp) :: full_parameters(5), full_direction(5), full_gradient(5), full_vjp_gradient(5)
+    real(dp) :: full_hvp(5), full_gradient_plus(5), full_gradient_minus(5)
     real(dp) :: value, value_plus, value_minus, tangent, h
     integer :: i, failures
 
@@ -144,6 +147,30 @@ program test_mlp_adamw_hypergradient
     call full_objective%value_gradient(full_parameters, value, full_gradient, status)
     call check(maxval(abs(full_vjp_gradient-1.7_dp*full_gradient)) < 2.0e-12_dp, &
         "full AdamW scalar VJP adjoint", failures)
+    call full_objective%hvp(full_parameters, full_direction, full_hvp, status)
+    call check(status_ok(status), "full AdamW affine outer HVP", failures)
+    call full_objective%value_gradient(full_parameters+h*full_direction, value_plus, &
+        full_gradient_plus, status)
+    call full_objective%value_gradient(full_parameters-h*full_direction, value_minus, &
+        full_gradient_minus, status)
+    call check(maxval(abs(full_hvp-(full_gradient_plus-full_gradient_minus)/(2.0_dp*h))) &
+        < 3.0e-5_dp, "full AdamW outer HVP central difference", failures)
+    full_direction = [0.31_dp, -0.27_dp, 0.19_dp, 0.13_dp, -0.22_dp]
+
+    call nonlinear_model%initialize([1, 2, 1], status, initialization_seed=23)
+    call full_objective%initialize(nonlinear_model, train_x, train_target, validation_x, &
+        validation_target, full_options, status)
+    call check(status_ok(status), "full AdamW nonlinear HVP setup", failures)
+    full_parameters = full_objective%parameters()
+    call full_objective%hvp(full_parameters, full_direction, full_hvp, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
+        "full AdamW nonlinear HVP typed refusal", failures)
+    bad_full_options = full_options
+    bad_full_options%device_kind = FORTML_DEVICE_CUDA
+    call full_objective%initialize(full_model, train_x, train_target, validation_x, &
+        validation_target, bad_full_options, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
+        "full AdamW CUDA typed refusal", failures)
     bad_options = options
     bad_options%optimizer = MLP_OPTIMIZER_SGD
     call objective%initialize(model, train_x, train_target, validation_x, &

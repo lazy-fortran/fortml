@@ -18,7 +18,7 @@ program fortml_bench_adamw_beta_hypergradient
     real(dp) :: validation_x(validation_count, n_features)
     real(dp) :: validation_target(validation_count, n_outputs)
     real(dp) :: parameters(parameter_count), direction(parameter_count)
-    real(dp) :: gradient(parameter_count), value, tangent, elapsed
+    real(dp) :: gradient(parameter_count), hvp(parameter_count), value, tangent, elapsed
     integer(int64) :: clock_start, clock_end, clock_rate
     integer :: oracle_unit, environment_status, repetition, index
     character(len=1024) :: oracle_path
@@ -59,6 +59,8 @@ program fortml_bench_adamw_beta_hypergradient
     direction = [0.31_dp, -0.27_dp, 0.19_dp, 0.13_dp, -0.22_dp]
     call objective%jvp(parameters, direction, value, tangent, status)
     if (.not. status_ok(status)) error stop "AdamW beta benchmark JVP failed"
+    call objective%hvp(parameters, direction, hvp, status)
+    if (.not. status_ok(status)) error stop "AdamW beta benchmark HVP failed"
 
     oracle_unit = -1
     call get_environment_variable("FORTML_BENCH_ADAMW_BETA_ORACLE", oracle_path, &
@@ -73,6 +75,9 @@ program fortml_bench_adamw_beta_hypergradient
                 gradient(index)
         end do
         write (oracle_unit, '(a,es26.17e3)') "jvp,1,", tangent
+        do index = 1, parameter_count
+            write (oracle_unit, '(a,i0,a,es26.17e3)') "hvp,", index, ",", hvp(index)
+        end do
         close (oracle_unit)
     end if
     if (oracle_only_requested()) stop

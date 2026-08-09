@@ -349,6 +349,7 @@ module fortml_mlp_hypergradient
         procedure, public :: value_gradient => mlp_adamw_full_hypergradient_value_gradient
         procedure, public :: jvp => mlp_adamw_full_hypergradient_jvp
         procedure, public :: vjp => mlp_adamw_full_hypergradient_vjp
+        procedure, public :: hvp => mlp_adamw_full_hypergradient_hvp
         procedure, public :: fortopt => mlp_adamw_full_hypergradient_fortopt
         procedure, public :: is_initialized => mlp_adamw_full_hypergradient_is_initialized
     end type mlp_adamw_full_hypergradient_objective_t
@@ -1686,6 +1687,303 @@ contains
         if (status%code /= FORTNUM_OK) return
         gradient = output_bar*gradient
     end subroutine mlp_adamw_full_hypergradient_vjp
+
+    subroutine mlp_adamw_full_hypergradient_hvp(self, parameters, direction, product, &
+            status)
+        !! Exact outer Hessian-vector product on the affine AdamW branch.
+        !!
+        !! The recurrence carries the directional tangent of each packed
+        !! hypergradient through parameters, moments, bias correction, and
+        !! decoupled decay.  For a one-layer linear MLP, the loss Hessian is
+        !! parameter independent, so this needs only the existing analytic
+        !! loss HVP.  Nonlinear or multilayer networks return a typed refusal
+        !! instead of introducing a finite-difference third derivative.
+        class(mlp_adamw_full_hypergradient_objective_t), intent(inout) :: self
+        real(dp), intent(in) :: parameters(:), direction(:)
+        real(dp), intent(out) :: product(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: learning_rate, l2, weight_decay, beta1, beta2
+        real(dp) :: learning_rate_q, l2_q, weight_decay_q, beta1_q, beta2_q
+        real(dp) :: learning_rate_i, l2_i, weight_decay_i, beta1_i, beta2_i
+        real(dp) :: learning_rate_iq, l2_iq, weight_decay_iq, beta1_iq, beta2_iq
+        real(dp) :: c1, c2, c1_q, c2_q, c1_i, c2_i, c1_iq, c2_iq
+        real(dp) :: train_value, l2_gradient, scalar_hvp
+        real(dp) :: validation_value, validation_l2_gradient
+        real(dp) :: a, a_q, a_i, a_iq
+        real(dp), allocatable :: theta(:), theta_q(:), theta_i(:, :), theta_iq(:, :)
+        real(dp), allocatable :: first(:), second(:), first_q(:), second_q(:)
+        real(dp), allocatable :: first_previous(:), second_previous(:)
+        real(dp), allocatable :: first_q_previous(:), second_q_previous(:)
+        real(dp), allocatable :: first_i(:, :), second_i(:, :)
+        real(dp), allocatable :: first_iq(:, :), second_iq(:, :)
+        real(dp), allocatable :: first_i_previous(:, :), second_i_previous(:, :)
+        real(dp), allocatable :: first_iq_previous(:, :), second_iq_previous(:, :)
+        real(dp), allocatable :: raw_gradient(:), gradient_q(:), gradient_i(:), gradient_iq(:)
+        real(dp), allocatable :: first_hat(:), second_hat(:), first_hat_q(:), second_hat_q(:)
+        real(dp), allocatable :: first_hat_i(:), second_hat_i(:), first_hat_iq(:), second_hat_iq(:)
+        real(dp), allocatable :: sqrt_second(:), denominator(:), denominator_q(:), denominator_i(:)
+        real(dp), allocatable :: denominator_iq(:), update(:), update_q(:), update_i(:), update_iq(:)
+        real(dp), allocatable :: validation_gradient(:), validation_hvp(:)
+        integer :: n_parameters, step, parameter_index
+
+        product = 0.0_dp
+        if (.not. self%is_initialized()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP full AdamW hypergradient HVP: objective is not initialized")
+            return
+        end if
+        if (size(parameters) /= MLP_ADAMW_FULL_HYPERPARAMETER_COUNT .or. &
+            size(direction) /= MLP_ADAMW_FULL_HYPERPARAMETER_COUNT .or. &
+            size(product) /= MLP_ADAMW_FULL_HYPERPARAMETER_COUNT .or. &
+            any(.not. ieee_is_finite(parameters)) .or. &
+            any(.not. ieee_is_finite(direction)) .or. &
+            .not. finite_adamw_full_parameters(parameters, learning_rate, l2, &
+            weight_decay, beta1, beta2)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP full AdamW hypergradient HVP: packed shape or values are invalid")
+            return
+        end if
+        if (size(self%base%model%layer) /= 1 .or. &
+            self%base%model%output_activation /= MLP_LINEAR) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "MLP full AdamW hypergradient HVP: nonlinear network needs third derivatives")
+            return
+        end if
+
+        n_parameters = size(self%base%initial_parameters)
+        allocate(theta, source=self%base%initial_parameters)
+        allocate(theta_q(n_parameters), theta_i(n_parameters, MLP_ADAMW_FULL_HYPERPARAMETER_COUNT), &
+            theta_iq(n_parameters, MLP_ADAMW_FULL_HYPERPARAMETER_COUNT))
+        allocate(first(n_parameters), second(n_parameters), first_q(n_parameters), second_q(n_parameters))
+        allocate(first_previous(n_parameters), second_previous(n_parameters), &
+            first_q_previous(n_parameters), second_q_previous(n_parameters))
+        allocate(first_i(n_parameters, MLP_ADAMW_FULL_HYPERPARAMETER_COUNT), &
+            second_i(n_parameters, MLP_ADAMW_FULL_HYPERPARAMETER_COUNT), &
+            first_iq(n_parameters, MLP_ADAMW_FULL_HYPERPARAMETER_COUNT), &
+            second_iq(n_parameters, MLP_ADAMW_FULL_HYPERPARAMETER_COUNT))
+        allocate(first_i_previous(n_parameters, MLP_ADAMW_FULL_HYPERPARAMETER_COUNT), &
+            second_i_previous(n_parameters, MLP_ADAMW_FULL_HYPERPARAMETER_COUNT), &
+            first_iq_previous(n_parameters, MLP_ADAMW_FULL_HYPERPARAMETER_COUNT), &
+            second_iq_previous(n_parameters, MLP_ADAMW_FULL_HYPERPARAMETER_COUNT))
+        allocate(raw_gradient(n_parameters), gradient_q(n_parameters), gradient_i(n_parameters), &
+            gradient_iq(n_parameters))
+        allocate(first_hat(n_parameters), second_hat(n_parameters), first_hat_q(n_parameters), &
+            second_hat_q(n_parameters), first_hat_i(n_parameters), second_hat_i(n_parameters), &
+            first_hat_iq(n_parameters), second_hat_iq(n_parameters))
+        allocate(sqrt_second(n_parameters), denominator(n_parameters), denominator_q(n_parameters), &
+            denominator_i(n_parameters), denominator_iq(n_parameters), update(n_parameters), &
+            update_q(n_parameters), update_i(n_parameters), update_iq(n_parameters))
+        theta_q = 0.0_dp
+        theta_i = 0.0_dp
+        theta_iq = 0.0_dp
+        first = 0.0_dp
+        second = 0.0_dp
+        first_q = 0.0_dp
+        second_q = 0.0_dp
+        first_i = 0.0_dp
+        second_i = 0.0_dp
+        first_iq = 0.0_dp
+        second_iq = 0.0_dp
+        learning_rate_q = learning_rate*direction(MLP_ADAMW_FULL_LOG_LEARNING_RATE)
+        l2_q = l2*direction(MLP_ADAMW_FULL_LOG_L2)
+        weight_decay_q = weight_decay*direction(MLP_ADAMW_FULL_LOG_WEIGHT_DECAY)
+        beta1_q = beta1*(1.0_dp-beta1)*direction(MLP_ADAMW_FULL_LOGIT_BETA1)
+        beta2_q = beta2*(1.0_dp-beta2)*direction(MLP_ADAMW_FULL_LOGIT_BETA2)
+
+        do step = 1, self%layout%inner_steps
+            call self%base%model%set_parameters(theta, status)
+            if (status%code /= FORTNUM_OK) return
+            call mlp_loss_value_gradient(self%base%model, self%base%train_x, &
+                self%base%train_target, l2, train_value, raw_gradient, l2_gradient, status)
+            if (status%code /= FORTNUM_OK) return
+            first_previous = first
+            second_previous = second
+            first_q_previous = first_q
+            second_q_previous = second_q
+            first_i_previous = first_i
+            second_i_previous = second_i
+            first_iq_previous = first_iq
+            second_iq_previous = second_iq
+
+            call mlp_loss_hvp(self%base%model, self%base%train_x, self%base%train_target, l2, &
+                theta_q, l2_q, gradient_q, scalar_hvp, status)
+            if (status%code /= FORTNUM_OK) return
+            first_q = beta1*first_q_previous + beta1_q*(first_previous-raw_gradient) + &
+                (1.0_dp-beta1)*gradient_q
+            second_q = beta2*second_q_previous + beta2_q*(second_previous-raw_gradient*raw_gradient) + &
+                (1.0_dp-beta2)*2.0_dp*raw_gradient*gradient_q
+
+            first = beta1*first_previous + (1.0_dp-beta1)*raw_gradient
+            second = beta2*second_previous + (1.0_dp-beta2)*raw_gradient*raw_gradient
+            do parameter_index = 1, MLP_ADAMW_FULL_HYPERPARAMETER_COUNT
+                learning_rate_i = 0.0_dp
+                l2_i = 0.0_dp
+                weight_decay_i = 0.0_dp
+                beta1_i = 0.0_dp
+                beta2_i = 0.0_dp
+                if (parameter_index == MLP_ADAMW_FULL_LOG_LEARNING_RATE) then
+                    learning_rate_i = learning_rate
+                else if (parameter_index == MLP_ADAMW_FULL_LOG_L2) then
+                    l2_i = l2
+                else if (parameter_index == MLP_ADAMW_FULL_LOG_WEIGHT_DECAY) then
+                    weight_decay_i = weight_decay
+                else if (parameter_index == MLP_ADAMW_FULL_LOGIT_BETA1) then
+                    beta1_i = beta1*(1.0_dp-beta1)
+                else if (parameter_index == MLP_ADAMW_FULL_LOGIT_BETA2) then
+                    beta2_i = beta2*(1.0_dp-beta2)
+                end if
+                call mlp_loss_hvp(self%base%model, self%base%train_x, self%base%train_target, &
+                    l2, theta_i(:, parameter_index), l2_i, gradient_i, scalar_hvp, status)
+                if (status%code /= FORTNUM_OK) return
+                learning_rate_iq = 0.0_dp
+                l2_iq = 0.0_dp
+                weight_decay_iq = 0.0_dp
+                beta1_iq = 0.0_dp
+                beta2_iq = 0.0_dp
+                if (parameter_index == MLP_ADAMW_FULL_LOG_LEARNING_RATE) then
+                    learning_rate_iq = learning_rate_q
+                else if (parameter_index == MLP_ADAMW_FULL_LOG_L2) then
+                    l2_iq = l2_q
+                else if (parameter_index == MLP_ADAMW_FULL_LOG_WEIGHT_DECAY) then
+                    weight_decay_iq = weight_decay_q
+                else if (parameter_index == MLP_ADAMW_FULL_LOGIT_BETA1) then
+                    beta1_iq = beta1_q*(1.0_dp-2.0_dp*beta1)
+                else if (parameter_index == MLP_ADAMW_FULL_LOGIT_BETA2) then
+                    beta2_iq = beta2_q*(1.0_dp-2.0_dp*beta2)
+                end if
+                call mlp_loss_hvp(self%base%model, self%base%train_x, self%base%train_target, &
+                    l2, theta_iq(:, parameter_index), l2_iq, gradient_iq, scalar_hvp, status)
+                if (status%code /= FORTNUM_OK) return
+                gradient_iq = gradient_iq + l2_q*theta_i(:, parameter_index) + l2_i*theta_q
+                first_i(:, parameter_index) = beta1*first_i_previous(:, parameter_index) + &
+                    (1.0_dp-beta1)*gradient_i + beta1_i*(first_previous-raw_gradient)
+                second_i(:, parameter_index) = beta2*second_i_previous(:, parameter_index) + &
+                    (1.0_dp-beta2)*2.0_dp*raw_gradient*gradient_i + &
+                    beta2_i*(second_previous-raw_gradient*raw_gradient)
+                first_iq(:, parameter_index) = beta1_q*first_i_previous(:, parameter_index) + &
+                    beta1*first_iq_previous(:, parameter_index) - beta1_q*gradient_i + &
+                    (1.0_dp-beta1)*gradient_iq + beta1_iq*(first_previous-raw_gradient) + &
+                    beta1_i*(first_q_previous-gradient_q)
+                second_iq(:, parameter_index) = beta2_q*second_i_previous(:, parameter_index) + &
+                    beta2*second_iq_previous(:, parameter_index) - &
+                    beta2_q*2.0_dp*raw_gradient*gradient_i + &
+                    (1.0_dp-beta2)*(2.0_dp*gradient_iq*raw_gradient + 2.0_dp*gradient_i*gradient_q) + &
+                    beta2_iq*(second_previous-raw_gradient*raw_gradient) + &
+                    beta2_i*(second_q_previous-2.0_dp*raw_gradient*gradient_q)
+            end do
+
+            c1 = 1.0_dp-beta1**step
+            c2 = 1.0_dp-beta2**step
+            c1_q = -real(step, dp)*beta1**(step-1)*beta1_q
+            c2_q = -real(step, dp)*beta2**(step-1)*beta2_q
+            first_hat = first/c1
+            second_hat = second/c2
+            first_hat_q = first_q/c1 - first*c1_q/(c1*c1)
+            second_hat_q = second_q/c2 - second*c2_q/(c2*c2)
+            sqrt_second = sqrt(second_hat)
+            denominator = sqrt_second+self%epsilon
+            denominator_q = 0.0_dp
+            where (sqrt_second > 0.0_dp)
+                denominator_q = second_hat_q/(2.0_dp*sqrt_second)
+            end where
+            update = first_hat/denominator
+            update_q = first_hat_q/denominator - first_hat*denominator_q/(denominator*denominator)
+
+            a = 1.0_dp-learning_rate*weight_decay
+            a_q = -(learning_rate_q*weight_decay + learning_rate*weight_decay_q)
+            do parameter_index = 1, MLP_ADAMW_FULL_HYPERPARAMETER_COUNT
+                learning_rate_i = 0.0_dp
+                weight_decay_i = 0.0_dp
+                beta1_i = 0.0_dp
+                beta2_i = 0.0_dp
+                if (parameter_index == MLP_ADAMW_FULL_LOG_LEARNING_RATE) then
+                    learning_rate_i = learning_rate
+                else if (parameter_index == MLP_ADAMW_FULL_LOG_WEIGHT_DECAY) then
+                    weight_decay_i = weight_decay
+                else if (parameter_index == MLP_ADAMW_FULL_LOGIT_BETA1) then
+                    beta1_i = beta1*(1.0_dp-beta1)
+                else if (parameter_index == MLP_ADAMW_FULL_LOGIT_BETA2) then
+                    beta2_i = beta2*(1.0_dp-beta2)
+                end if
+                beta1_iq = 0.0_dp
+                beta2_iq = 0.0_dp
+                if (parameter_index == MLP_ADAMW_FULL_LOGIT_BETA1) then
+                    beta1_iq = beta1_q*(1.0_dp-2.0_dp*beta1)
+                else if (parameter_index == MLP_ADAMW_FULL_LOGIT_BETA2) then
+                    beta2_iq = beta2_q*(1.0_dp-2.0_dp*beta2)
+                end if
+                c1_i = -real(step, dp)*beta1**(step-1)*beta1_i
+                c2_i = -real(step, dp)*beta2**(step-1)*beta2_i
+                c1_iq = -real(step, dp)*((real(step-1, dp)*beta1**max(0, step-2)* &
+                    beta1_q*beta1_i) + beta1**(step-1)*beta1_iq)
+                c2_iq = -real(step, dp)*((real(step-1, dp)*beta2**max(0, step-2)* &
+                    beta2_q*beta2_i) + beta2**(step-1)*beta2_iq)
+                first_hat_i = first_i(:, parameter_index)/c1 - first*c1_i/(c1*c1)
+                second_hat_i = second_i(:, parameter_index)/c2 - second*c2_i/(c2*c2)
+                first_hat_iq = first_iq(:, parameter_index)/c1 - &
+                    first_i(:, parameter_index)*c1_q/(c1*c1) - first_q*c1_i/(c1*c1) - &
+                    first*c1_iq/(c1*c1) + 2.0_dp*first*c1_i*c1_q/(c1**3)
+                second_hat_iq = second_iq(:, parameter_index)/c2 - &
+                    second_i(:, parameter_index)*c2_q/(c2*c2) - second_q*c2_i/(c2*c2) - &
+                    second*c2_iq/(c2*c2) + 2.0_dp*second*c2_i*c2_q/(c2**3)
+                denominator_i = 0.0_dp
+                denominator_iq = 0.0_dp
+                where (sqrt_second > 0.0_dp)
+                    denominator_i = second_hat_i/(2.0_dp*sqrt_second)
+                    denominator_iq = second_hat_iq/(2.0_dp*sqrt_second) - &
+                        second_hat_i*second_hat_q/(4.0_dp*sqrt_second**3)
+                end where
+                update_i = first_hat_i/denominator - first_hat*denominator_i/(denominator*denominator)
+                update_iq = first_hat_iq/denominator - first_hat_i*denominator_q/(denominator*denominator) - &
+                    first_hat_q*denominator_i/(denominator*denominator) - &
+                    first_hat*denominator_iq/(denominator*denominator) + &
+                    2.0_dp*first_hat*denominator_i*denominator_q/(denominator**3)
+                learning_rate_iq = 0.0_dp
+                weight_decay_iq = 0.0_dp
+                if (parameter_index == MLP_ADAMW_FULL_LOG_LEARNING_RATE) then
+                    learning_rate_iq = learning_rate_q
+                else if (parameter_index == MLP_ADAMW_FULL_LOG_WEIGHT_DECAY) then
+                    weight_decay_iq = weight_decay_q
+                end if
+                a_i = -(learning_rate_i*weight_decay + learning_rate*weight_decay_i)
+                a_iq = -(learning_rate_iq*weight_decay + learning_rate_i*weight_decay_q + &
+                    learning_rate_q*weight_decay_i + learning_rate*weight_decay_iq)
+                theta_iq(:, parameter_index) = a_iq*theta + a_i*theta_q + a_q*theta_i(:, parameter_index) + &
+                    a*theta_iq(:, parameter_index) - learning_rate_iq*update - &
+                    learning_rate_i*update_q - learning_rate_q*update_i - learning_rate*update_iq
+                theta_i(:, parameter_index) = a_i*theta + a*theta_i(:, parameter_index) - &
+                    learning_rate_i*update - learning_rate*update_i
+            end do
+            theta_q = a_q*theta + a*theta_q - learning_rate_q*update - learning_rate*update_q
+            theta = a*theta-learning_rate*update
+            if (any(.not. ieee_is_finite(theta)) .or. any(.not. ieee_is_finite(theta_q)) .or. &
+                any(.not. ieee_is_finite(theta_iq))) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP full AdamW hypergradient HVP: trajectory is not finite")
+                return
+            end if
+        end do
+        call self%base%model%set_parameters(theta, status)
+        if (status%code /= FORTNUM_OK) return
+        allocate(validation_gradient(n_parameters), validation_hvp(n_parameters))
+        call mlp_loss_value_gradient(self%base%model, self%base%validation_x, &
+            self%base%validation_target, 0.0_dp, validation_value, validation_gradient, &
+            validation_l2_gradient, status)
+        if (status%code /= FORTNUM_OK) return
+        call mlp_loss_hvp(self%base%model, self%base%validation_x, self%base%validation_target, &
+            0.0_dp, theta_q, 0.0_dp, validation_hvp, scalar_hvp, status)
+        if (status%code /= FORTNUM_OK) return
+        do parameter_index = 1, MLP_ADAMW_FULL_HYPERPARAMETER_COUNT
+            product(parameter_index) = dot_product(validation_gradient, theta_iq(:, parameter_index)) + &
+                dot_product(theta_i(:, parameter_index), validation_hvp)
+        end do
+        if (any(.not. ieee_is_finite(product))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP full AdamW hypergradient HVP: product is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine mlp_adamw_full_hypergradient_hvp
 
     subroutine mlp_adamw_full_hypergradient_fortopt(self, objective, status)
         class(mlp_adamw_full_hypergradient_objective_t), target, intent(inout) :: self
