@@ -961,6 +961,22 @@ close NNGP covariance propagation, sampled prior draws, full GP-posterior
 weight maps, or structure-preserving Hamiltonian/symplectic/PINN
 initialization; those remain explicit research and implementation gaps.
 
+### 2026-08-09 ordinary-MLP structure-aware GP initializer
+
+`fortml_mlp_structure_gp` closes the ordinary fixed-depth part of the
+structure-aware initializer gap. It wraps the finite-feature last-layer
+posterior, captures the packed hidden parameter prefix and RMS initialization
+scale, and validates topology, layout, hidden values, and scale before every
+apply or query. Only the final affine layer can change. The independent
+`test_mlp_structure_gp` fixture checks the dense normal-equation oracle,
+hidden-state preservation, mutation refusal, and typed CUDA refusal. The
+public contract is `docs/MLP_STRUCTURE_GP.md`, with the release row in
+`fortml-bench/results/mlp_structure_gp.csv`.
+
+This is a finite-width posterior-mean warm start. It records
+`exact_infinite_width=.false.` and leaves NNGP covariance propagation, sampled
+posterior weights, and Hamiltonian, symplectic, or PINN mappings open.
+
 ### 2026-08-07 closure slice
 
 The current release adds several cross-package contracts that were previously
@@ -4421,11 +4437,17 @@ checkouts before deciding that a product is unavailable.
   full GP-posterior/NTK weight maps. Each must record the kernel, architecture,
   width, seed, design set, solve tolerance, and whether it promises a mean fit
   or a covariance approximation.
-- [ ] Add structure-aware GP-posterior initialization for ordinary MLPs,
-  Hamiltonian and symplectic networks, and PINN residual networks. The mapping
-  from the infinite-width GP or NNGP/NTK feature representation to finite
-  weights must record its mean, covariance, and structure-defect error instead
-  of claiming an exact finite-width equivalence.
+- [x] Add structure-aware GP-posterior initialization for ordinary fixed-depth
+  MLPs. The finite-feature path records its packed hidden prefix, RMS scale,
+  topology boundary, and `exact_infinite_width=.false.` status, then mutates
+  only the final affine layer after validating the captured state. The
+  independent oracle and typed CUDA refusal are in `test_mlp_structure_gp` and
+  `fortml-bench/results/mlp_structure_gp.csv`.
+- [ ] Extend structure-aware GP-posterior initialization to Hamiltonian and
+  symplectic networks and PINN residual networks. The mapping from the
+  infinite-width GP or NNGP/NTK feature representation to finite weights must
+  record its mean, covariance, and structure-defect error instead of claiming
+  an exact finite-width equivalence.
 - [x] Add PCA initialization for linear autoencoders, following the exact
   Baldi--Hornik optimum above. The empirical [principal-component
   initialization proposal](https://doi.org/10.1007/978-3-030-30484-3_14)
