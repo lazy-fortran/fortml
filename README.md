@@ -64,8 +64,10 @@ returns a typed CUDA refusal until resident estimator callbacks exist.
 
 The GP surface also includes a latent-Gaussian ordinal classification baseline
 and dense Student-t, heteroskedastic, and robust Poisson/Student-t process
-regression references. The ordinal adapter exposes
-fixed-cut probability and input/parameter products; the Student-t process keeps
+regression references. The ordinal adapter exposes fixed-cut probability and
+input/parameter products plus exact kernel/log-noise evidence gradients and
+directional HVPs. Its bounded FortOpt L-BFGS-B companion optimizes those same
+analytic products and reports/restores state transactionally; the Student-t process keeps
 the GP mean but scales posterior variance by the observed Mahalanobis distance,
 and the heteroskedastic process conditions on supplied input-dependent noise.
 The robust Laplace adapter covers positive Poisson rates and bounded Student-t

@@ -4028,12 +4028,21 @@ controls positive latent noise variance and jitter.
 Packed kernel/noise products are available through
 `predict_latent_parameter_jvp/vjp` and
 `predict_proba_parameter_jvp/vjp`. Input JVP/VJP products differentiate the
-kernel cross-covariance and posterior variance analytically. CPU is the exact
-reference; prediction and reverse-product CUDA methods return
-`FORTNUM_NOT_IMPLEMENTED` until resident ordinal kernels are linked. This is a
-latent-Gaussian ordered surrogate, not a native cumulative-likelihood fit;
-optimized cut points and ordinal likelihood hyperparameters remain open. The
-independent oracle is `test_gp_ordinal_classification` and the design note is
+kernel cross-covariance and posterior variance analytically. The exact latent
+evidence additionally exposes `hyperparameter_gradient`,
+`hyperparameter_hvp(direction, product)`, and
+`log_marginal_likelihood_jvp`; these operate over the packed
+`[kernel..., log(noise variance)]` block. The companion
+`gp_ordinal_optimize_hyperparameters` adapter consumes the analytic gradient
+with bounded FortOpt L-BFGS-B and restores the initial state on failure.
+CPU is the exact reference; prediction, reverse-product, evidence-product,
+and optimizer CUDA methods return `FORTNUM_NOT_IMPLEMENTED` until resident
+ordinal kernels and factorization are linked. This is a latent-Gaussian
+ordered surrogate, not a native cumulative-likelihood fit; optimized cut
+points and ordinal likelihood hyperparameters remain open. The independent
+prediction oracle is `test_gp_ordinal_classification`, the evidence and
+optimizer oracle is `test_gp_ordinal_classification_hyperparameters`, and the
+design note is
 [`docs/GP_ORDINAL_CLASSIFICATION.md`](GP_ORDINAL_CLASSIFICATION.md).
 
 ### `fortml_student_t_process`

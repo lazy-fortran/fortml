@@ -90,6 +90,18 @@ release app are independently checked by `test_gp_classification_hvp` and
 `fortml-bench/results/GP_CLASSIFICATION_HYPERPARAMETER_HVP.md`. Full evidence,
 likelihood-parameter, coupled multiclass, and resident-GPU HVPs remain open.
 
+The ordinal-GP evidence slice now exposes the exact latent-Gaussian
+log-marginal-likelihood gradient and directional HVP over the packed kernel
+and log-noise coordinates. `gp_ordinal_optimize_hyperparameters` consumes
+those products with bounded FortOpt L-BFGS-B, reports convergence and final
+gradient diagnostics, and restores the initial state on failure. Independent
+finite-difference and optimizer checks live in
+`test_gp_ordinal_classification_hyperparameters`; CPU timing and typed CUDA
+refusal rows are pinned in
+`fortml-bench/results/GP_ORDINAL_HYPERPARAMETERS.md`. Native cumulative
+ordinal likelihoods, optimized cut points, and resident GPU solves remain
+open.
+
 The metric-learning loss slice adds a reusable weighted pairwise contrastive
 objective to `fortml_losses`: matching/non-matching Euclidean pairs expose
 value, JVP, VJP, and HVP products with mean/sum reductions.  Independent
@@ -1569,8 +1581,14 @@ when a lower-level primitive already exists.
   analytic input JVP/VJP products include the Cholesky solve and uncertainty
   chain. `test_gp_ordinal_classification` independently checks simplex rows,
   class order, parameter/input finite differences, JVP/VJP duality, and typed
-  CUDA refusals; see `docs/GP_ORDINAL_CLASSIFICATION.md`. Native cumulative
-  likelihoods, optimized cut points, and resident GPU inference remain open.
+  CUDA refusals; see `docs/GP_ORDINAL_CLASSIFICATION.md`. The exact evidence
+  surface now also exposes kernel/log-noise hyperparameter gradients, scalar
+  JVPs, directional HVPs, and a bounded FortOpt L-BFGS-B adapter with
+  transactional failure restoration. The independent
+  `test_gp_ordinal_classification_hyperparameters` oracle and release lane
+  cover finite differences, HVPs, convergence, and typed CUDA refusals.
+  Native cumulative likelihoods, optimized cut points, and resident GPU
+  inference remain open.
 - [x] Add `gp_multilabel_classification_t`, an independent binary Laplace-GP
   wrapper for dense indicator targets. Each label owns a weighted logistic or
   probit head; probabilities remain independently calibrated rather than being
