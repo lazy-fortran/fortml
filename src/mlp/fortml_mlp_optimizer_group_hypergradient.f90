@@ -7,8 +7,8 @@ module fortml_mlp_optimizer_group_hypergradient
     !! `[log(learning_rate), log(l2), log(multiplier_1), ...]`; group ranges
     !! and names are fixed discrete metadata captured at initialization.
     !!
-    !! The trajectory is plain full-batch SGD, which is the first complete
-    !! group-product adapter.  MLP analytic HVPs propagate every smooth outer
+    !! The trajectory supports plain full-batch SGD and coupled-L2 Adam.
+    !! MLP analytic HVPs propagate every smooth outer
     !! coordinate, and FortOpt consumes the resulting value/gradient callback.
     !! The outer HVP is intentionally a typed refusal: producing it would
     !! require third network derivatives (the inner recurrence already uses
@@ -85,7 +85,7 @@ module fortml_mlp_optimizer_group_hypergradient
         real(dp) :: upper_logit_min_fraction = 12.0_dp
         real(dp) :: lower_logit_decay_factor = -12.0_dp
         real(dp) :: upper_logit_decay_factor = 12.0_dp
-        !! Fixed global norm clipping applied before each grouped SGD update.
+        !! Fixed global norm clipping applied before each grouped optimizer update.
         !! The clipping norm is not an outer coordinate; derivatives are exact
         !! for the fixed active set and the norm boundary is a typed refusal.
         real(dp) :: gradient_clip_norm = 0.0_dp
