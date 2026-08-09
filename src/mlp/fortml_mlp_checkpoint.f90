@@ -12,19 +12,50 @@ module fortml_mlp_checkpoint
     use, intrinsic :: iso_fortran_env, only: int64, iostat_end
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
-        FORTNUM_DOMAIN_ERROR
+        FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED
     use fortml_mlp_training, only: mlp_training_checkpoint_t
+    use fortml_device, only: FORTML_DEVICE_CPU, FORTML_DEVICE_CUDA
     implicit none
     private
 
     character(*), parameter, public :: MLP_CHECKPOINT_MAGIC = &
         "FORTML_MLP_CHECKPOINT_TEXT"
-    integer, parameter, public :: MLP_CHECKPOINT_SCHEMA_VERSION = 11
+    integer, parameter, public :: MLP_CHECKPOINT_SCHEMA_VERSION = 12
 
     public :: mlp_checkpoint_save
     public :: mlp_checkpoint_load
+    public :: mlp_checkpoint_device_supported
+    public :: mlp_checkpoint_require_device
 
 contains
+
+    logical function mlp_checkpoint_device_supported(device_kind) result(supported)
+        !! Return whether formatted checkpoint state is supported on a device.
+        !!
+        !! The text format is a host-owned state boundary.  CUDA resident
+        !! trainers must first materialize a complete host snapshot through
+        !! their own explicit transfer contract; this predicate prevents a
+        !! caller from accidentally treating a host file as resident state.
+        integer, intent(in) :: device_kind
+
+        supported = device_kind == FORTML_DEVICE_CPU
+    end function mlp_checkpoint_device_supported
+
+    subroutine mlp_checkpoint_require_device(device_kind, status)
+        !! Validate the checkpoint/device boundary without a hidden fallback.
+        integer, intent(in) :: device_kind
+        type(fortnum_status_t), intent(out) :: status
+
+        if (device_kind == FORTML_DEVICE_CPU) then
+            call status_set(status, FORTNUM_OK, "")
+        else if (device_kind == FORTML_DEVICE_CUDA) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "MLP checkpoint: CUDA-resident serialization requires an explicit host snapshot")
+        else
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP checkpoint: invalid device kind")
+        end if
+    end subroutine mlp_checkpoint_require_device
 
     subroutine mlp_checkpoint_save(checkpoint, path, status)
         !! Write a valid checkpoint to a portable formatted-text file.
@@ -70,6 +101,8 @@ contains
             checkpoint%active_microbatches, ios)
         if (ios == 0) call write_i(unit, "accumulated_samples", &
             checkpoint%accumulated_samples, ios)
+        if (ios == 0) call write_r(unit, "accumulated_weight_mass", &
+            checkpoint%accumulated_weight_mass, ios)
         if (ios == 0) call write_i(unit, "iterator_epoch", checkpoint%iterator_epoch, ios)
         if (ios == 0) call write_i(unit, "iterator_position", &
             checkpoint%iterator_position, ios)
@@ -291,6 +324,8 @@ contains
             candidate%active_microbatches, ios)
         if (ios == 0) call read_i(unit, "accumulated_samples", &
             candidate%accumulated_samples, ios)
+        if (ios == 0) call read_r(unit, "accumulated_weight_mass", &
+            candidate%accumulated_weight_mass, ios)
         if (ios == 0) call read_i(unit, "iterator_epoch", candidate%iterator_epoch, ios)
         if (ios == 0) call read_i(unit, "iterator_position", &
             candidate%iterator_position, ios)

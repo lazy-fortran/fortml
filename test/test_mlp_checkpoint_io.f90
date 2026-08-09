@@ -8,7 +8,9 @@ program test_mlp_checkpoint_io
         MLP_OPTIMIZER_ADAM, MLP_OPTIMIZER_SGD, MLP_OPTIMIZER_ADAMW, &
         MLP_OPTIMIZER_ADAGRAD, MLP_OPTIMIZER_RMSPROP
     use fortml_mlp_checkpoint, only: mlp_checkpoint_save, mlp_checkpoint_load, &
-        MLP_CHECKPOINT_MAGIC
+        MLP_CHECKPOINT_MAGIC, MLP_CHECKPOINT_SCHEMA_VERSION, &
+        mlp_checkpoint_device_supported, mlp_checkpoint_require_device
+    use fortml_device, only: FORTML_DEVICE_CPU, FORTML_DEVICE_CUDA
     implicit none
 
     integer :: failures, optimizer
@@ -19,6 +21,7 @@ program test_mlp_checkpoint_io
         call test_round_trip_and_resume(optimizer, path, failures)
     end do
     call test_refusals(path, failures)
+    call test_device_contract(failures)
     call remove_file(path)
     if (failures > 0) then
         write (*, '(a,i0)') "FAIL MLP checkpoint persistence cases: ", failures
@@ -86,6 +89,13 @@ contains
         call check(status_ok(status) .and. split_checkpoint%valid(), &
             "split checkpoint capture", failures)
 
+        ! Exercise the weighted microbatch cursor explicitly.  A completed
+        ! epoch normally has zero pending mass; a production checkpoint may
+        ! also be written between microbatches, so this non-integral value is
+        ! an independent persistence oracle for the scalar state.
+        split_checkpoint%accumulated_weight_mass = 2.75_dp
+        call check(split_checkpoint%valid(), "weighted cursor checkpoint", failures)
+
         call mlp_checkpoint_save(split_checkpoint, path, status)
         call check(status_ok(status), "checkpoint save", failures)
         call mlp_checkpoint_load(loaded_checkpoint, path, status)
@@ -141,6 +151,24 @@ contains
         call check(.not. status_ok(status), "truncated snapshot refusal", failures)
     end subroutine test_refusals
 
+    subroutine test_device_contract(failures)
+        integer, intent(inout) :: failures
+        type(fortnum_status_t) :: status
+
+        call check(MLP_CHECKPOINT_SCHEMA_VERSION == 12, &
+            "checkpoint schema version", failures)
+        call mlp_checkpoint_require_device(FORTML_DEVICE_CPU, status)
+        call check(status_ok(status) .and. &
+            mlp_checkpoint_device_supported(FORTML_DEVICE_CPU), &
+            "CPU checkpoint capability", failures)
+        call mlp_checkpoint_require_device(FORTML_DEVICE_CUDA, status)
+        call check(.not. status_ok(status) .and. &
+            .not. mlp_checkpoint_device_supported(FORTML_DEVICE_CUDA), &
+            "CUDA checkpoint typed refusal", failures)
+        call mlp_checkpoint_require_device(-1, status)
+        call check(.not. status_ok(status), "invalid checkpoint device refusal", failures)
+    end subroutine test_device_contract
+
     logical function same_checkpoint(a, b) result(equal)
         type(mlp_training_checkpoint_t), intent(in) :: a, b
 
@@ -152,6 +180,7 @@ contains
             a%microbatches == b%microbatches .and. a%microbatch_position == b%microbatch_position .and. &
             a%active_epoch == b%active_epoch .and. a%active_microbatches == b%active_microbatches .and. &
             a%accumulated_samples == b%accumulated_samples .and. &
+            a%accumulated_weight_mass == b%accumulated_weight_mass .and. &
             a%iterator_epoch == b%iterator_epoch .and. a%iterator_position == b%iterator_position .and. &
             a%batch_size == b%batch_size .and. a%accumulation_steps == b%accumulation_steps .and. &
             a%shuffle_seed == b%shuffle_seed .and. a%adam_step_count == b%adam_step_count .and. &
