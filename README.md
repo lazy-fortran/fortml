@@ -55,6 +55,13 @@ dictionary and text round-trip in
 [`docs/PIPELINE_PERSISTENCE.md`](docs/PIPELINE_PERSISTENCE.md); resident CUDA
 serialization remains an explicit typed refusal.
 
+Deterministic K-fold, stratified, grouped, and chronological splitters can now
+feed [`fortml_cross_validation`](docs/CROSS_VALIDATION.md), which aggregates
+weighted fold scores and parameter gradients with explicit clone/reset leakage
+guards. Differentiable scorers expose the same oriented objective to FortOpt's
+grid, random, and bounded L-BFGS-B search drivers; the index/control plane
+returns a typed CUDA refusal until resident estimator callbacks exist.
+
 The GP surface also includes a latent-Gaussian ordinal classification baseline
 and dense Student-t, heteroskedastic, and robust Poisson/Student-t process
 regression references. The ordinal adapter exposes

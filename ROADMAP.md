@@ -2394,6 +2394,19 @@ return status errors.
   Independent tests cover scorer orientation and clone/reset guards. The
   records describe a model-specific clone protocol; they do not silently
   reuse fitted estimators.
+- [x] Add `fortml_cross_validation` scoring over K-fold, stratified, grouped,
+  and chronological splitters. `cross_validation_fold_proc` receives one
+  disjoint train/test partition and returns a natural-orientation score,
+  parameter gradient, and positive fold weight. `cross_validation_result_t`
+  retains fold diagnostics and computes weighted mean or weighted sum values,
+  oriented scores, and minimization gradients for FortOpt. The evaluator
+  refuses undeclared clone/reset state before invoking a callback, rejects
+  nonfinite fold products, and returns a typed CUDA refusal. A borrowed
+  `cross_validation_objective_t` exposes the same differentiable validation
+  objective through `fortopt_objective::objective_t` for grid/random/
+  L-BFGS-B search. `test_cross_validation` is an independent hand-computed
+  fold/gradient oracle; `docs/CROSS_VALIDATION.md` records the callback and
+  lifetime contract.
 - [ ] Define fitted transformer, predictor, regressor, and classifier contracts.
   The contracts cover feature counts, fitted state, reset or clone behavior,
   parameter names, and status propagation.
@@ -2510,10 +2523,11 @@ return status errors.
   every transformer, estimator-wide metadata routing, train-only fitting,
   `fit_transform`, `transform`, `inverse_transform` where mathematically
   defined, and partial-fit propagation for streaming data.
-- [ ] Add deterministic train/test, repeated K-fold, time-series/blocked, and
-  Monte Carlo split iterators plus cross-validation scoring and routed
-  parameters. The ordinary, stratified, and group-K-fold iterators now exist
-  as independent index-only contracts.
+- [ ] Add deterministic train/test, repeated K-fold, blocked, and Monte Carlo
+  split iterators plus routed estimator parameters. Ordinary, stratified,
+  grouped, and chronological splitters now feed weighted cross-validation
+  scoring; repeated/Monte Carlo policies, estimator-wide metadata routing, and
+  train-only transformer fitting remain open.
 - [x] Add `fortml_hyperparameter_search` orchestration for deterministic bounded
   Cartesian grids, seeded random candidates, and FortOpt L-BFGS-B. The grid
   path guards product overflow, the random path uses a caller-provided

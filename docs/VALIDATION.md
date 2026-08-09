@@ -31,5 +31,10 @@ iterator; no feature, target, transformer, derivative, or device state is
 implicitly routed.
 
 The splitters own no feature, target, or transformer state. They are therefore
-safe to reuse with sequential basis pipelines and with future cross-validation
-or hyperparameter-search drivers.
+safe to reuse with sequential basis pipelines and cross-validation drivers.
+`fortml_cross_validation` adds weighted mean/sum scorer aggregation, fold
+diagnostics, clone/reset leakage guards, and a differentiable FortOpt adapter;
+see [CROSS_VALIDATION.md](CROSS_VALIDATION.md). A scorer callback must fit a
+fresh clone or reset the estimator before each fold and returns a typed status
+on any failed fit. The evaluator remains index/control-plane CPU code and
+returns a typed CUDA refusal.
