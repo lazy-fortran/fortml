@@ -2,9 +2,10 @@ program test_xgboost_cuda_policy
     !! Independent device-policy oracle for the bounded XGBoost resident path.
     !! Numeric finite gbtree models may execute on native CUDA, while every
     !! discrete or unsupported policy must refuse before touching outputs.
-    use, intrinsic :: iso_fortran_env, only: real64, error_unit
+    use, intrinsic :: iso_fortran_env, only: real64, int64, error_unit
     use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_quiet_nan
     use fortml_xgboost, only: xgboost_t, xgboost_options_t
+    use fortml_cuda_boosted_tree_api, only: cuda_boosted_tree_plan_t
     use fortml_device, only: fortml_device_t, FORTML_DEVICE_CUDA
     use fortnum_status, only: fortnum_status_t, FORTNUM_OK, FORTNUM_NOT_IMPLEMENTED
     implicit none
@@ -13,9 +14,11 @@ program test_xgboost_cuda_policy
     type(fortnum_status_t) :: status
     type(xgboost_t) :: model
     type(xgboost_options_t) :: options
+    type(cuda_boosted_tree_plan_t) :: resident_plan
     real(real64) :: x(8, 2), y(8), prediction(8), host_prediction(8)
     real(real64) :: x_missing(8, 2), y_missing(8)
     integer :: i, failures
+    integer(int64) :: host_to_device_bytes, device_to_host_bytes, resident_bytes
     integer :: group(6)
     real(real64) :: ranking_x(6, 1), relevance(6)
 
@@ -49,6 +52,24 @@ program test_xgboost_cuda_policy
             "numeric unavailable plan is typed", failures)
         call check(all(prediction == -huge(1.0_real64)), &
             "numeric refusal preserves output", failures)
+    end if
+
+    call model%create_device_plan(cuda, resident_plan, status)
+    if (status%code == FORTNUM_OK) then
+        call resident_plan%predict(x, prediction, status)
+        call check(status%code == FORTNUM_OK .and. &
+            maxval(abs(prediction - host_prediction)) < 2.0e-11_real64, &
+            "reusable resident plan parity", failures)
+        call resident_plan%predict(x, prediction, status)
+        call resident_plan%transfer_stats(host_to_device_bytes, &
+            device_to_host_bytes, resident_bytes, status)
+        call check(status%code == FORTNUM_OK .and. resident_bytes > 0_int64 .and. &
+            host_to_device_bytes > 0_int64 .and. device_to_host_bytes > 0_int64, &
+            "resident plan transfer statistics", failures)
+        call resident_plan%destroy(status)
+    else
+        call check(status%code == FORTNUM_NOT_IMPLEMENTED .and. &
+            .not. resident_plan%fitted(), "reusable plan unavailable is typed", failures)
     end if
 
     options%categorical_policy = "ordered"

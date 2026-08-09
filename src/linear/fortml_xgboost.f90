@@ -217,6 +217,7 @@ module fortml_xgboost
         procedure, public :: predict_device_matrix => xgb_predict_device_matrix
         generic, public :: predict_device => predict_device_vector, &
             predict_device_matrix
+        procedure, public :: create_device_plan => xgb_create_device_plan
         procedure, public :: device_supported => xgb_device_supported
         procedure, public :: predict_margin_matrix => xgb_predict_margin_matrix
         procedure, public :: predict_margin_vector => xgb_predict_margin_vector
@@ -1959,39 +1960,33 @@ contains
         end if
     end function xgb_device_supported
 
-    subroutine xgb_predict_cuda_resident(self, device, x, y, status)
+    subroutine xgb_create_device_plan(self, device, plan, status)
+        !! Flatten a fitted finite numeric XGBoost ensemble into a reusable
+        !! resident plan.  The caller may retain `plan` across query batches;
+        !! only query and output buffers then cross the device boundary.
         class(xgboost_t), intent(in) :: self
         type(fortml_device_t), intent(in) :: device
-        real(dp), intent(in) :: x(:, :)
-        real(dp), intent(out) :: y(:)
+        type(cuda_boosted_tree_plan_t), intent(out) :: plan
         type(fortnum_status_t), intent(out) :: status
-        type(cuda_boosted_tree_plan_t) :: plan
         integer, allocatable :: tree_offset(:), node_feature(:), node_left(:), &
             node_right(:), node_missing_left(:)
-        real(dp), allocatable :: node_threshold(:), node_weight(:), tree_scale(:), &
-            margin(:)
+        real(dp), allocatable :: node_threshold(:), node_weight(:), tree_scale(:)
         integer :: tree, node, cursor, n_nodes, flat_node
-        type(fortnum_status_t) :: destroy_status
 
-        if (.not. self%initialized .or. size(x, 2) /= self%n_inputs .or. &
-                size(x, 1) < 1 .or. size(y) /= size(x, 1)) then
+        if (.not. device%selected .or. .not. device%available .or. &
+                device%kind /= FORTML_DEVICE_CUDA) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
-                "xgboost CUDA prediction: model or array shape is invalid")
+                "xgboost CUDA plan: selected CUDA device is required")
             return
         end if
-        if (.not. xgb_cuda_numeric_model(self)) then
+        if (.not. self%initialized .or. .not. xgb_cuda_numeric_model(self)) then
             call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
-                "xgboost CUDA prediction: resident plan supports finite gbtree numeric models only")
-            return
-        end if
-        if (.not. valid_query_values(self%missing_code, x)) then
-            call status_set(status, FORTNUM_DOMAIN_ERROR, &
-                "xgboost CUDA prediction: input has unsupported nonfinite values")
+                "xgboost CUDA plan: finite numeric gbtree model is required")
             return
         end if
         if (fortml_cuda_boosted_tree_available() == 0) then
             call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
-                "xgboost CUDA prediction: resident native plan is unavailable")
+                "xgboost CUDA plan: resident native plan is unavailable")
             return
         end if
 
@@ -1999,6 +1994,11 @@ contains
         do tree = 1, size(self%estimators)
             n_nodes = n_nodes + self%estimators(tree)%n_nodes
         end do
+        if (n_nodes < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost CUDA plan: fitted ensemble has no nodes")
+            return
+        end if
         allocate(tree_offset(size(self%estimators) + 1), node_feature(n_nodes), &
             node_left(n_nodes), node_right(n_nodes), node_missing_left(n_nodes), &
             node_threshold(n_nodes), node_weight(n_nodes), tree_scale(size(self%estimators)))
@@ -2032,6 +2032,35 @@ contains
             node_threshold, node_weight, node_missing_left, tree_scale, &
             self%base_score, self%learning_rate, device%device_index, status, &
             n_inputs=self%n_inputs)
+    end subroutine xgb_create_device_plan
+
+    subroutine xgb_predict_cuda_resident(self, device, x, y, status)
+        class(xgboost_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: y(:)
+        type(fortnum_status_t), intent(out) :: status
+        type(cuda_boosted_tree_plan_t) :: plan
+        real(dp), allocatable :: margin(:)
+        type(fortnum_status_t) :: destroy_status
+
+        if (.not. self%initialized .or. size(x, 2) /= self%n_inputs .or. &
+                size(x, 1) < 1 .or. size(y) /= size(x, 1)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost CUDA prediction: model or array shape is invalid")
+            return
+        end if
+        if (.not. xgb_cuda_numeric_model(self)) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "xgboost CUDA prediction: resident plan supports finite gbtree numeric models only")
+            return
+        end if
+        if (.not. valid_query_values(self%missing_code, x)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost CUDA prediction: input has unsupported nonfinite values")
+            return
+        end if
+        call self%create_device_plan(device, plan, status)
         if (status%code /= FORTNUM_OK) return
         allocate(margin(size(y)))
         call plan%predict(x, margin, status)
