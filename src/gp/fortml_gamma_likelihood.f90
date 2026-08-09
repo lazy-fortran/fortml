@@ -576,6 +576,10 @@ contains
 
         valid = ieee_is_finite(argument)
         if (.not. valid) return
+        valid = argument <= log(huge(1.0_dp))
+        if (.not. valid) return
+        valid = argument >= log(tiny(1.0_dp))
+        if (.not. valid) return
         shape = exp(argument)
         valid = ieee_is_finite(shape) .and. shape > 0.0_dp
         if (.not. valid) return
