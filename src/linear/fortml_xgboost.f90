@@ -2065,6 +2065,7 @@ contains
         ! stochastic dropout state remain CPU paths with typed refusal rather
         ! than silently falling back to host execution.
         numeric = self%initialized .and. self%missing_code == XGB_MISSING_ERROR .and. &
+            self%categorical_policy_code == XGB_CATEGORICAL_NONE .and. &
             self%booster_code == XGB_BOOSTER_GBTREE .and. &
             (self%objective_code == XGB_OBJECTIVE_SQUARED .or. &
              self%objective_code == XGB_OBJECTIVE_LOGISTIC)
