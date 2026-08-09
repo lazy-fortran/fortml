@@ -582,7 +582,8 @@ contains
                 end if
             end do
             residual=prediction-self%targets(i,o)
-            if (abs(abs(residual)-delta) <= self%kink_tolerance*max(1.0_dp,delta)) then
+            if (self%weights(i) > 0.0_dp .and. &
+                abs(abs(residual)-delta) <= self%kink_tolerance*max(1.0_dp,delta)) then
                 call status_set(status, FORTNUM_NOT_IMPLEMENTED, "Huber HVP: residual lies on a kink"); return
             end if
             if (abs(residual) < delta) then
