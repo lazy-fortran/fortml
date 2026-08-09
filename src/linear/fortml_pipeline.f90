@@ -105,6 +105,8 @@ module fortml_pipeline
     contains
         procedure, public :: initialize => sequential_pipeline_initialize
         procedure, public :: append => sequential_pipeline_append
+        procedure, public :: clone => sequential_pipeline_clone
+        procedure, public :: clone_device => sequential_pipeline_clone_device
         procedure, public :: fit => sequential_pipeline_fit
         procedure, public :: transform => sequential_pipeline_transform
         procedure, public :: evaluate => sequential_pipeline_transform
@@ -1084,6 +1086,58 @@ contains
         self%fitted = .false.
         call status_set(status, FORTNUM_OK, "")
     end subroutine sequential_pipeline_append
+
+    subroutine sequential_pipeline_clone(self, clone, status)
+        !! Deep-copy a configured sequential pipeline transactionally.
+        !!
+        !! Intrinsic assignment copies the allocatable basis maps, stage names,
+        !! fitted flag, and input schema.  A candidate is built before the
+        !! destination is changed so an invalid source cannot damage an
+        !! existing clone.  This is the host-side reset seam used by
+        !! cross-validation and composable DAG builders.
+        class(sequential_basis_pipeline_t), intent(in) :: self
+        type(sequential_basis_pipeline_t), intent(inout) :: clone
+        type(sequential_basis_pipeline_t) :: candidate
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. sequential_pipeline_valid(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "sequential basis pipeline clone: source pipeline is invalid")
+            return
+        end if
+        candidate = self
+        clone = candidate
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine sequential_pipeline_clone
+
+    subroutine sequential_pipeline_clone_device(self, device, clone, status)
+        !! Device-aware clone boundary; CUDA requires a resident graph.
+        class(sequential_basis_pipeline_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        type(sequential_basis_pipeline_t), intent(inout) :: clone
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. sequential_pipeline_valid(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "sequential basis pipeline clone device: source pipeline is invalid")
+            return
+        end if
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "sequential basis pipeline clone device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%clone(clone, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "sequential basis pipeline clone device: resident CUDA graph is unavailable")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "sequential basis pipeline clone device: device kind is invalid")
+        end select
+    end subroutine sequential_pipeline_clone_device
 
     subroutine sequential_pipeline_fit(self, x, status)
         class(sequential_basis_pipeline_t), intent(inout) :: self
