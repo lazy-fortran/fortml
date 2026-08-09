@@ -33,13 +33,17 @@ for mean and latent variance. `joint_covariance` returns posterior latent
 covariance and does not add observation noise.
 
 The packed state is `[log(variance), log(lengthscale), log(noise_variance)]`.
-For RBF states, `set_parameters` transactionally refactors the fitted model;
-`log_marginal_likelihood`, its JVP/VJP, `hyperparameter_gradient`, and analytic
-`hyperparameter_hvp` are available. The HVP differentiates the dense Cholesky
-solve and covariance parameter blocks, including the mixed log-lengthscale
-term. Matérn-5/2 hyperparameter products remain a typed
-`FORTNUM_NOT_IMPLEMENTED` refusal until their order-four parameter jets are
-generated. Invalid updates leave the fitted state unchanged.
+For RBF and Matérn-5/2 states, `set_parameters` transactionally refactors the
+fitted model; `log_marginal_likelihood`, its JVP/VJP,
+`hyperparameter_gradient`, and analytic `hyperparameter_hvp` are available.
+The HVP differentiates the dense Cholesky solve and covariance parameter
+blocks, including the mixed log-lengthscale term. Matérn-5/2 order-four
+parameter products use the exact scaling recurrence
+`d/d(log l) k^(n) = -n k^(n) - (x1-x2) k^(n+1)` (with the observation-side
+derivative sign included), and its directional derivative uses the matching
+`k^(n+2)` recurrence. The finite coincidence limit is handled without asking
+for the discontinuous fifth derivative. Invalid updates leave the fitted state
+unchanged.
 
 The implementation is a CPU reference. `predict_device`,
 `joint_covariance_device`, `predict_input_jvp_device`, and
@@ -55,7 +59,9 @@ all derivative products; no host fallback is used.
 `test_second_derivative_gp` independently assembles both RBF and Matérn-5/2
 derivative blocks, checks posterior means and variances, compares input JVPs
 with central differences, checks VJP duality, and verifies the CUDA,
-coincident-fifth-derivative, and non-RBF refusal boundaries. The dedicated
+coincident-fifth-derivative, and non-RBF refusal boundaries. Its independent
+dense Matérn-5/2 oracle also checks the analytic likelihood gradient and HVP
+against central differences over all packed coordinates. The dedicated
 `test_second_derivative_gp_rbf_order3` gate adds an independent order-six
 covariance oracle, likelihood-gradient finite differences, analytic HVP
 finite differences, transactional parameter updates, and the order-three

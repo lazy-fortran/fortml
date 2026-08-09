@@ -4212,6 +4212,14 @@ state phases are reported separately.
   refusals are independently checked. The later RBF order-three lane adds
   order-six/seven products and analytic likelihood HVPs; see
   `docs/SECOND_DERIVATIVE_GP.md` and the release benchmark lanes.
+- [x] Add analytic Matérn-5/2 parameter gradients and HVPs to the bounded
+  scalar 1-D `second_derivative_gp_t` reference. Order-four covariance jets use
+  the exact log-lengthscale scaling recurrence with a finite coincidence limit;
+  the differentiated Cholesky solve covers variance, lengthscale, and noise
+  coordinates. `test_second_derivative_gp` compares all products with an
+  independently assembled dense covariance and central finite differences;
+  selected CUDA remains a typed refusal. The companion lane is
+  `fortml-bench/results/SECOND_DERIVATIVE_GP_MATERN52_HYPERPARAMETERS.md`.
 - [ ] Add scalar objectives and parameter gradients for multi-output, sparse
   variational, local, SKI, Lanczos, and matrix-free GP paths. Inducing-point and
   local-gate training remain separate parameter blocks.

@@ -8,9 +8,10 @@ module fortml_second_derivative_gaussian_process
     !! order four, so mixed value/gradient/Hessian observations and predictions
     !! share one Cholesky state.  Query input JVP/VJP products use the fifth
     !! derivative.  The Matérn-5/2 fifth derivative is discontinuous at
-    !! coincident inputs, so that boundary is a typed refusal; hyperparameter
-    !! products and non-RBF/Matérn leaves remain explicit boundaries rather
-    !! than hidden finite-difference fallbacks.
+    !! coincident inputs, so that boundary is a typed refusal.  RBF and
+    !! Matérn-5/2 likelihood gradients and HVPs are analytic; non-RBF/Matérn
+    !! leaves remain explicit boundaries rather than hidden finite-difference
+    !! fallbacks.
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     use fortnum_kinds, only: dp
     use fortnum_cholesky, only: cholesky_factorization_t
@@ -602,9 +603,9 @@ contains
                 "second-derivative GP hyperparameter_gradient: output shape is invalid")
             return
         end if
-        if (self%kernel%kind /= KERNEL_RBF) then
+        if (self%kernel%kind /= KERNEL_RBF .and. self%kernel%kind /= KERNEL_MATERN52) then
             call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
-                "second-derivative GP hyperparameter_gradient: Matern-5/2 parameter products are not generated")
+                "second-derivative GP hyperparameter_gradient: kernel parameter products are not generated")
             return
         end if
         n = self%n_observations
@@ -658,9 +659,9 @@ contains
                 "second-derivative GP hyperparameter_hvp: parameter shape is invalid")
             return
         end if
-        if (self%kernel%kind /= KERNEL_RBF) then
+        if (self%kernel%kind /= KERNEL_RBF .and. self%kernel%kind /= KERNEL_MATERN52) then
             call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
-                "second-derivative GP hyperparameter_hvp: Matern-5/2 parameter products are not generated")
+                "second-derivative GP hyperparameter_hvp: kernel parameter products are not generated")
             return
         end if
         n = self%n_observations
@@ -910,12 +911,16 @@ contains
         real(dp), intent(in) :: variance, lengthscale, x1, x2
 
         value = 0.0_dp
-        if (kind /= KERNEL_RBF) return
-        if (parameter == 1) then
-            value = rbf_derivative_covariance(variance, lengthscale, x1, order1, x2, order2)
-        else if (parameter == 2) then
-            value = (-1.0_dp)**order2*rbf_log_lengthscale_derivative(variance, lengthscale, &
-                x1 - x2, order1 + order2)
+        if (kind == KERNEL_RBF) then
+            if (parameter == 1) then
+                value = rbf_derivative_covariance(variance, lengthscale, x1, order1, x2, order2)
+            else if (parameter == 2) then
+                value = (-1.0_dp)**order2*rbf_log_lengthscale_derivative(variance, lengthscale, &
+                    x1 - x2, order1 + order2)
+            end if
+        else if (kind == KERNEL_MATERN52) then
+            value = matern52_parameter_derivative(variance, lengthscale, x1, order1, x2, &
+                order2, parameter)
         end if
     end function second_derivative_covariance_parameter
 
@@ -926,16 +931,21 @@ contains
         real(dp) :: covariance, length_dot
 
         value = 0.0_dp
-        if (kind /= KERNEL_RBF .or. size(direction) /= 2) return
-        covariance = rbf_derivative_covariance(variance, lengthscale, x1, order1, x2, order2)
-        length_dot = (-1.0_dp)**order2*rbf_log_lengthscale_derivative(variance, lengthscale, &
-            x1 - x2, order1 + order2)
-        if (parameter == 1) then
-            value = direction(1)*covariance + direction(2)*length_dot
-        else if (parameter == 2) then
-            value = direction(1)*length_dot + direction(2)*(-1.0_dp)**order2* &
-                rbf_log_lengthscale_second_derivative(variance, lengthscale, x1 - x2, &
-                order1 + order2)
+        if (size(direction) /= 2) return
+        if (kind == KERNEL_RBF) then
+            covariance = rbf_derivative_covariance(variance, lengthscale, x1, order1, x2, order2)
+            length_dot = (-1.0_dp)**order2*rbf_log_lengthscale_derivative(variance, lengthscale, &
+                x1 - x2, order1 + order2)
+            if (parameter == 1) then
+                value = direction(1)*covariance + direction(2)*length_dot
+            else if (parameter == 2) then
+                value = direction(1)*length_dot + direction(2)*(-1.0_dp)**order2* &
+                    rbf_log_lengthscale_second_derivative(variance, lengthscale, x1 - x2, &
+                    order1 + order2)
+            end if
+        else if (kind == KERNEL_MATERN52) then
+            value = matern52_parameter_derivative_dot(variance, lengthscale, x1, order1, x2, &
+                order2, parameter, direction)
         end if
     end function second_derivative_covariance_parameter_dot
 
@@ -988,6 +998,9 @@ contains
         case (5)
             radial_derivative = (root_five**5/3.0_dp)*(-8.0_dp + 7.0_dp*root_five*radius - &
                 5.0_dp*radius*radius)
+        case (6)
+            radial_derivative = (root_five**5/3.0_dp)*(15.0_dp*root_five - 45.0_dp*radius + &
+                5.0_dp*root_five*radius*radius)
         case default
             radial_derivative = 0.0_dp
         end select
@@ -999,6 +1012,62 @@ contains
         value = sign_factor*value
         if (mod(order2, 2) == 1) value = -value
     end function matern52_derivative_covariance
+
+    pure real(dp) function matern52_parameter_derivative(variance, lengthscale, x1, order1, &
+            x2, order2, parameter) result(value)
+        real(dp), intent(in) :: variance, lengthscale, x1, x2
+        integer, intent(in) :: order1, order2, parameter
+        real(dp) :: covariance, next_covariance, tau
+        integer :: total_order
+
+        value = 0.0_dp
+        total_order = order1 + order2
+        covariance = matern52_derivative_covariance(variance, lengthscale, x1, order1, x2, order2)
+        if (parameter == 1) then
+            value = covariance
+        else if (parameter == 2) then
+            tau = x1 - x2
+            value = -real(total_order, dp)*covariance
+            if (tau /= 0.0_dp) then
+                next_covariance = matern52_derivative_covariance(variance, lengthscale, x1, &
+                    order1, x2, order2 + 1)
+                value = value + tau*next_covariance
+            end if
+        end if
+    end function matern52_parameter_derivative
+
+    pure real(dp) function matern52_parameter_derivative_dot(variance, lengthscale, x1, order1, &
+            x2, order2, parameter, direction) result(value)
+        real(dp), intent(in) :: variance, lengthscale, x1, x2, direction(:)
+        integer, intent(in) :: order1, order2, parameter
+        real(dp) :: covariance, length_covariance, next_covariance, next_next_covariance
+        real(dp) :: tau
+        integer :: total_order
+
+        value = 0.0_dp
+        if (size(direction) /= 2) return
+        total_order = order1 + order2
+        covariance = matern52_derivative_covariance(variance, lengthscale, x1, order1, x2, order2)
+        length_covariance = matern52_parameter_derivative(variance, lengthscale, x1, order1, &
+            x2, order2, 2)
+        if (parameter == 1) then
+            value = direction(1)*covariance + direction(2)*length_covariance
+        else if (parameter == 2) then
+            value = direction(1)*length_covariance
+            tau = x1 - x2
+            value = value + direction(2)*(-real(total_order, dp)*length_covariance)
+            if (tau /= 0.0_dp) then
+                next_covariance = matern52_derivative_covariance(variance, lengthscale, x1, &
+                    order1, x2, order2 + 1)
+                next_next_covariance = matern52_derivative_covariance(variance, lengthscale, &
+                    x1, order1, x2, order2 + 2)
+                ! h_n = -n*k_n + tau*k_(n+1), so its lengthscale tangent is
+                ! -n*h_n + tau*(-(n+1)*k_(n+1) + tau*k_(n+2)).
+                value = value + direction(2)*tau*( -real(total_order + 1, dp)*next_covariance + &
+                    tau*next_next_covariance )
+            end if
+        end if
+    end function matern52_parameter_derivative_dot
 
     pure real(dp) function rbf_derivative_covariance(variance, lengthscale, x1, order1, &
             x2, order2) result(value)

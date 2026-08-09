@@ -20,8 +20,11 @@ program test_second_derivative_gp
     real(dp) :: mean_expected(4), variance_expected(4), prior
     real(dp) :: mean_bar(4), variance_bar(4), query_bar(4)
     real(dp), allocatable :: gram(:, :), alpha(:), cross(:, :), work(:, :)
+    real(dp), allocatable :: matern_parameters(:), matern_gradient(:), matern_hvp(:)
     integer :: orders(4), query_orders(4), bad_orders(4), failures, i, j
-    real(dp) :: h, lhs, rhs, max_error
+    real(dp) :: h, lhs, rhs, max_error, matern_objective
+    real(dp) :: matern_gradient_fd(3), matern_hvp_fd(3), matern_direction(3)
+    real(dp) :: matern_h_gradient, matern_h_hvp
 
     x(:, 1) = [-1.1_dp, -0.25_dp, 0.45_dp, 1.2_dp]
     orders = [0, 1, 2, 0]
@@ -93,6 +96,29 @@ program test_second_derivative_gp
     call check(status_ok(status), "Matern-5/2 kernel construction", failures)
     call matern_model%fit(x, orders, y, matern52, 0.035_dp, status, 1.0e-10_dp)
     call check(status_ok(status) .and. matern_model%fitted(), "order-two Matern-5/2 fit", failures)
+    matern_parameters = matern_model%parameters()
+    allocate(matern_gradient(3), matern_hvp(3))
+    call matern_model%log_marginal_likelihood(matern_objective, status)
+    call matern_model%hyperparameter_gradient(matern_gradient, status)
+    call check(status_ok(status) .and. all(ieee_is_finite(matern_gradient)), &
+        "Matern-5/2 analytic likelihood gradient", failures)
+    matern_h_gradient = 2.0e-5_dp
+    do i = 1, 3
+        matern_gradient_fd(i) = (matern_oracle_lml(matern_parameters + matern_h_gradient* &
+            unit_vector(3, i), x, orders, y, 0.035_dp) - matern_oracle_lml(matern_parameters - &
+            matern_h_gradient*unit_vector(3, i), x, orders, y, 0.035_dp))/(2.0_dp*matern_h_gradient)
+    end do
+    call check(maxval(abs(matern_gradient - matern_gradient_fd)) < 3.0e-5_dp, &
+        "Matern-5/2 likelihood gradient finite difference", failures)
+    matern_direction = [0.13_dp, -0.09_dp, 0.07_dp]
+    call matern_model%hyperparameter_hvp(matern_direction, matern_hvp, status)
+    matern_h_hvp = 2.0e-3_dp
+    do i = 1, 3
+        matern_hvp_fd(i) = matern_mixed_second_difference(matern_parameters, matern_direction, &
+            unit_vector(3, i), x, orders, y, 0.035_dp, matern_h_hvp)
+    end do
+    call check(status_ok(status) .and. maxval(abs(matern_hvp - matern_hvp_fd)) < 5.0e-4_dp, &
+        "Matern-5/2 likelihood HVP finite difference", failures)
     deallocate(gram, alpha)
     call matern_independent_setup(x, orders, y, 1.6_dp, 0.75_dp, 0.035_dp, gram, alpha)
     do j = 1, 4
@@ -207,6 +233,69 @@ contains
         alpha = y
         call oracle_solve(gram, alpha)
     end subroutine matern_independent_setup
+
+    real(dp) function matern_oracle_lml(theta, x, orders, y, noise) result(value)
+        real(dp), intent(in) :: theta(:), x(:, :), y(:), noise
+        integer, intent(in) :: orders(:)
+        real(dp), allocatable :: gram(:, :), alpha(:), lower(:, :)
+        real(dp) :: total, logdet
+        integer :: i, j, k, n
+
+        n = size(y)
+        allocate(gram(n, n), alpha(n), lower(n, n))
+        do j = 1, n
+            do i = 1, n
+                gram(i, j) = matern52_oracle_cov(exp(theta(1)), exp(theta(2)), x(i, 1), &
+                    orders(i), x(j, 1), orders(j))
+            end do
+            gram(j, j) = gram(j, j) + exp(theta(3)) + 1.0e-10_dp
+        end do
+        lower = 0.0_dp
+        do i = 1, n
+            do j = 1, i
+                total = gram(i, j)
+                do k = 1, j - 1
+                    total = total - lower(i, k)*lower(j, k)
+                end do
+                if (i == j) then
+                    lower(i, j) = sqrt(total)
+                else
+                    lower(i, j) = total/lower(j, j)
+                end if
+            end do
+        end do
+        alpha = y
+        call oracle_solve(gram, alpha)
+        logdet = 0.0_dp
+        do i = 1, n
+            logdet = logdet + 2.0_dp*log(lower(i, i))
+        end do
+        value = -0.5_dp*dot_product(y, alpha) - 0.5_dp*logdet - &
+            0.5_dp*real(n, dp)*log(2.0_dp*acos(-1.0_dp))
+    end function matern_oracle_lml
+
+    real(dp) function matern_mixed_second_difference(theta, direction, probe, x, orders, y, &
+            noise, step) result(value)
+        real(dp), intent(in) :: theta(:), direction(:), probe(:), x(:, :), y(:), noise, step
+        integer, intent(in) :: orders(:)
+        real(dp) :: pp(size(theta)), pm(size(theta)), mp(size(theta)), mm(size(theta))
+
+        pp = theta + step*direction + step*probe
+        pm = theta + step*direction - step*probe
+        mp = theta - step*direction + step*probe
+        mm = theta - step*direction - step*probe
+        value = (matern_oracle_lml(pp, x, orders, y, noise) - matern_oracle_lml(pm, x, orders, y, noise) - &
+            matern_oracle_lml(mp, x, orders, y, noise) + matern_oracle_lml(mm, x, orders, y, noise))/ &
+            (4.0_dp*step*step)
+    end function matern_mixed_second_difference
+
+    pure function unit_vector(n, index) result(vector)
+        integer, intent(in) :: n, index
+        real(dp) :: vector(n)
+
+        vector = 0.0_dp
+        vector(index) = 1.0_dp
+    end function unit_vector
 
     subroutine oracle_solve(matrix, rhs)
         real(dp), intent(in) :: matrix(:, :)
