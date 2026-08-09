@@ -31,20 +31,47 @@ module fortml_lightgbm_multiclass
     contains
         procedure, public :: fit => lgbm_multiclass_fit
         procedure, public :: predict_proba => lgbm_multiclass_predict_proba
+        procedure, public :: predict_log_proba => lgbm_multiclass_predict_log_proba
         procedure, public :: predict_proba_device => &
             lgbm_multiclass_predict_proba_device
+        procedure, public :: predict_log_proba_device => &
+            lgbm_multiclass_predict_log_proba_device
         procedure, public :: predict_proba_staged => &
             lgbm_multiclass_predict_proba_staged
         procedure, public :: decision_function_staged => &
             lgbm_multiclass_decision_function_staged
         procedure, public :: predict_proba_jvp => lgbm_multiclass_predict_proba_jvp
+        procedure, public :: predict_log_proba_jvp => &
+            lgbm_multiclass_predict_log_proba_jvp
+        procedure, public :: predict_proba_parameter_jvp => &
+            lgbm_multiclass_predict_proba_parameter_jvp
+        procedure, public :: predict_log_proba_parameter_jvp => &
+            lgbm_multiclass_predict_log_proba_parameter_jvp
         procedure, public :: predict_proba_vjp => lgbm_multiclass_predict_proba_vjp
+        procedure, public :: predict_log_proba_vjp => &
+            lgbm_multiclass_predict_log_proba_vjp
+        procedure, public :: predict_proba_parameter_vjp => &
+            lgbm_multiclass_predict_proba_parameter_vjp
+        procedure, public :: predict_log_proba_parameter_vjp => &
+            lgbm_multiclass_predict_log_proba_parameter_vjp
+        procedure, public :: predict_proba_parameter_jvp_device => &
+            lgbm_multiclass_predict_proba_parameter_jvp_device
+        procedure, public :: predict_proba_parameter_vjp_device => &
+            lgbm_multiclass_predict_proba_parameter_vjp_device
+        procedure, public :: predict_log_proba_parameter_jvp_device => &
+            lgbm_multiclass_predict_log_proba_parameter_jvp_device
+        procedure, public :: predict_log_proba_parameter_vjp_device => &
+            lgbm_multiclass_predict_log_proba_parameter_vjp_device
         procedure, public :: decision_function => lgbm_multiclass_decision_function
         procedure, public :: predict => lgbm_multiclass_predict
         procedure, public :: predict_device => lgbm_multiclass_predict_device
         procedure, public :: classes => lgbm_multiclass_classes
         procedure, public :: feature_count => lgbm_multiclass_feature_count
         procedure, public :: class_count => lgbm_multiclass_class_count
+        procedure, public :: parameter_count => lgbm_multiclass_parameter_count
+        procedure, public :: parameters => lgbm_multiclass_parameters
+        procedure, public :: leaf_parameter_count => lgbm_multiclass_parameter_count
+        procedure, public :: leaf_parameters => lgbm_multiclass_parameters
         procedure, public :: estimator_count => lgbm_multiclass_estimator_count
         procedure, public :: requested_estimator_count => &
             lgbm_multiclass_requested_estimator_count
@@ -98,24 +125,24 @@ contains
             return
         end if
         if (settings%early_stopping_rounds < 0 .or. &
-                .not. ieee_is_finite(settings%early_stopping_min_delta) .or. &
-                settings%early_stopping_min_delta < 0.0_dp .or. &
-                (settings%early_stopping_rounds > 0 .and. .not. have_validation)) then
+            .not. ieee_is_finite(settings%early_stopping_min_delta) .or. &
+            settings%early_stopping_min_delta < 0.0_dp .or. &
+            (settings%early_stopping_rounds > 0 .and. .not. have_validation)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "LightGBM multiclass fit: invalid early-stopping configuration")
             return
         end if
         n_samples = size(x, 1)
         if (n_samples < 2 .or. size(x, 2) < 1 .or. size(labels) /= n_samples .or. &
-                any(.not. ieee_is_finite(x))) then
+            any(.not. ieee_is_finite(x))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "LightGBM multiclass fit: input dimensions or finite-value contract failed")
             return
         end if
         if (present(sample_weight)) then
             if (size(sample_weight) /= n_samples .or. &
-                    any(.not. ieee_is_finite(sample_weight)) .or. &
-                    any(sample_weight <= 0.0_dp)) then
+                any(.not. ieee_is_finite(sample_weight)) .or. &
+                any(sample_weight <= 0.0_dp)) then
                 call status_set(status, FORTNUM_DOMAIN_ERROR, &
                     "LightGBM multiclass fit: sample_weight must be positive and finite")
                 return
@@ -131,16 +158,16 @@ contains
         if (have_validation) then
             n_validation = size(validation_x, 1)
             if (n_validation < 1 .or. size(validation_x, 2) /= size(x, 2) .or. &
-                    size(validation_labels) /= n_validation .or. &
-                    any(.not. ieee_is_finite(validation_x))) then
+                size(validation_labels) /= n_validation .or. &
+                any(.not. ieee_is_finite(validation_x))) then
                 call status_set(status, FORTNUM_DOMAIN_ERROR, &
                     "LightGBM multiclass fit: validation dimensions or finite-value contract failed")
                 return
             end if
             if (present(validation_weight)) then
                 if (size(validation_weight) /= n_validation .or. &
-                        any(.not. ieee_is_finite(validation_weight)) .or. &
-                        any(validation_weight <= 0.0_dp)) then
+                    any(.not. ieee_is_finite(validation_weight)) .or. &
+                    any(validation_weight <= 0.0_dp)) then
                     call status_set(status, FORTNUM_DOMAIN_ERROR, &
                         "LightGBM multiclass fit: validation_weight must be positive and finite")
                     return
@@ -263,7 +290,7 @@ contains
                     stale_rounds = stale_rounds + 1
                 end if
                 if (settings%early_stopping_rounds > 0 .and. &
-                        stale_rounds >= settings%early_stopping_rounds) then
+                    stale_rounds >= settings%early_stopping_rounds) then
                     candidate%early_stopped_flag = .true.
                     exit
                 end if
@@ -320,7 +347,7 @@ contains
             return
         end if
         if (size(probabilities, 1) /= size(x, 1) .or. &
-                size(probabilities, 2) /= self%class_count()) then
+            size(probabilities, 2) /= self%class_count()) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "LightGBM multiclass predict_proba: output shape is invalid")
             return
@@ -344,6 +371,53 @@ contains
         probabilities = candidate
         call status_set(status, FORTNUM_OK, "")
     end subroutine lgbm_multiclass_predict_proba
+
+    !> Return normalized OVR probabilities in log space.
+    !>
+    !> Each child margin is transformed with a stable log-sigmoid and the
+    !> class reduction uses log-sum-exp.  This keeps the API finite even when
+    !> a fitted leaf margin is far outside the representable probability
+    !> range.
+    subroutine lgbm_multiclass_predict_log_proba(self, x, log_probabilities, status)
+        class(lightgbm_multiclass_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: log_probabilities(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: margins(:, :), log_positive(:, :), log_totals(:)
+        integer :: i, j
+
+        if (.not. valid_query(self, x)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "LightGBM multiclass predict_log_proba: model or input is invalid")
+            return
+        end if
+        if (any(shape(log_probabilities) /= [size(x, 1), self%class_count()])) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "LightGBM multiclass predict_log_proba: output shape is invalid")
+            return
+        end if
+        allocate(margins(size(x, 1), self%class_count()), &
+            log_positive(size(x, 1), self%class_count()), log_totals(size(x, 1)))
+        do j = 1, self%class_count()
+            call self%one_vs_rest(j)%predict_margin(x, margins(:, j), status)
+            if (status%code /= FORTNUM_OK) return
+            do i = 1, size(x, 1)
+                log_positive(i, j) = stable_log_sigmoid(margins(i, j))
+            end do
+        end do
+        do i = 1, size(x, 1)
+            log_totals(i) = stable_logsumexp(log_positive(i, :))
+            if (.not. ieee_is_finite(log_totals(i))) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "LightGBM multiclass predict_log_proba: normalization failed")
+                return
+            end if
+        end do
+        do j = 1, self%class_count()
+            log_probabilities(:, j) = log_positive(:, j) - log_totals
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine lgbm_multiclass_predict_log_proba
 
     subroutine lgbm_multiclass_predict_proba_device(self, device, x, probabilities, &
             status)
@@ -370,6 +444,31 @@ contains
         end select
     end subroutine lgbm_multiclass_predict_proba_device
 
+    subroutine lgbm_multiclass_predict_log_proba_device(self, device, x, &
+            log_probabilities, status)
+        class(lightgbm_multiclass_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: log_probabilities(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "LightGBM multiclass log-probability device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_log_proba(x, log_probabilities, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "LightGBM multiclass log-probability device: no resident CUDA tree kernel is linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "LightGBM multiclass log-probability device: device kind is invalid")
+        end select
+    end subroutine lgbm_multiclass_predict_log_proba_device
+
     subroutine lgbm_multiclass_predict_proba_staged(self, x, probabilities, status)
         class(lightgbm_multiclass_t), intent(in) :: self
         real(dp), intent(in) :: x(:, :)
@@ -385,8 +484,8 @@ contains
         end if
         stages = self%estimator_count()
         if (size(probabilities, 1) /= size(x, 1) .or. &
-                size(probabilities, 2) /= self%class_count() .or. &
-                size(probabilities, 3) /= stages .or. stages < 1) then
+            size(probabilities, 2) /= self%class_count() .or. &
+            size(probabilities, 3) /= stages .or. stages < 1) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "LightGBM multiclass predict_proba_staged: output shape is invalid")
             return
@@ -427,7 +526,7 @@ contains
         end if
         stages = self%estimator_count()
         if (size(margins, 1) /= size(x, 1) .or. size(margins, 2) /= self%class_count() .or. &
-                size(margins, 3) /= stages .or. stages < 1) then
+            size(margins, 3) /= stages .or. stages < 1) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "LightGBM multiclass decision_function_staged: output shape is invalid")
             return
@@ -454,15 +553,15 @@ contains
         integer :: i
 
         if (.not. valid_query(self, x) .or. size(x_dot, 1) /= size(x, 1) .or. &
-                size(x_dot, 2) /= size(x, 2) .or. any(.not. ieee_is_finite(x_dot))) then
+            size(x_dot, 2) /= size(x, 2) .or. any(.not. ieee_is_finite(x_dot))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "LightGBM multiclass probability JVP: model or input is invalid")
             return
         end if
         if (size(probabilities, 1) /= size(x, 1) .or. &
-                size(probabilities, 2) /= self%class_count() .or. &
-                size(probabilities_dot, 1) /= size(x, 1) .or. &
-                size(probabilities_dot, 2) /= self%class_count()) then
+            size(probabilities, 2) /= self%class_count() .or. &
+            size(probabilities_dot, 1) /= size(x, 1) .or. &
+            size(probabilities_dot, 2) /= self%class_count()) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "LightGBM multiclass probability JVP: output shape is invalid")
             return
@@ -481,7 +580,7 @@ contains
         totals = sum(raw, dim=2)
         totals_dot = sum(raw_dot, dim=2)
         if (any(.not. ieee_is_finite(totals)) .or. any(totals <= 0.0_dp) .or. &
-                any(.not. ieee_is_finite(totals_dot))) then
+            any(.not. ieee_is_finite(totals_dot))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "LightGBM multiclass probability JVP: normalization failed")
             return
@@ -507,9 +606,9 @@ contains
 
         x_bar = 0.0_dp
         if (.not. valid_query(self, x) .or. size(probabilities_bar, 1) /= size(x, 1) .or. &
-                size(probabilities_bar, 2) /= self%class_count() .or. &
-                size(x_bar, 1) /= size(x, 1) .or. size(x_bar, 2) /= size(x, 2) .or. &
-                any(.not. ieee_is_finite(probabilities_bar))) then
+            size(probabilities_bar, 2) /= self%class_count() .or. &
+            size(x_bar, 1) /= size(x, 1) .or. size(x_bar, 2) /= size(x, 2) .or. &
+            any(.not. ieee_is_finite(probabilities_bar))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "LightGBM multiclass probability VJP: model, cotangent, or output shape is invalid")
             return
@@ -545,6 +644,418 @@ contains
         x_bar = candidate
         call status_set(status, FORTNUM_OK, "")
     end subroutine lgbm_multiclass_predict_proba_vjp
+
+    !> Forward product of normalized OVR probabilities with respect to the
+    !> packed `[base_score, leaf weights]` coordinates of all child trees.
+    subroutine lgbm_multiclass_predict_proba_parameter_jvp(self, x, parameter_dot, &
+            probabilities, probabilities_dot, status)
+        class(lightgbm_multiclass_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), parameter_dot(:)
+        real(dp), intent(out) :: probabilities(:, :), probabilities_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: margins(:, :), margins_dot(:, :), positive(:, :)
+        real(dp), allocatable :: positive_dot(:, :), totals(:), totals_dot(:)
+        integer :: i
+
+        if (.not. valid_query(self, x)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "LightGBM multiclass probability parameter JVP: model or input is invalid")
+            return
+        end if
+        if (any(shape(probabilities) /= [size(x, 1), self%class_count()]) .or. &
+            any(shape(probabilities_dot) /= shape(probabilities))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "LightGBM multiclass probability parameter JVP: output shape is invalid")
+            return
+        end if
+        if (size(parameter_dot) /= self%parameter_count() .or. &
+            any(.not. ieee_is_finite(parameter_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "LightGBM multiclass probability parameter JVP: parameter tangent is invalid")
+            return
+        end if
+        allocate(margins(size(x, 1), self%class_count()), &
+            margins_dot(size(x, 1), self%class_count()), &
+            positive(size(x, 1), self%class_count()), &
+            positive_dot(size(x, 1), self%class_count()), &
+            totals(size(x, 1)), totals_dot(size(x, 1)))
+        call multiclass_parameter_margin_jvp(self, x, parameter_dot, margins, &
+            margins_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        do i = 1, self%class_count()
+            positive(:, i) = stable_sigmoid_array(margins(:, i))
+            positive_dot(:, i) = positive(:, i)*(1.0_dp - positive(:, i))* &
+                margins_dot(:, i)
+        end do
+        totals = sum(positive, dim=2)
+        totals_dot = sum(positive_dot, dim=2)
+        if (any(.not. ieee_is_finite(totals)) .or. any(totals <= 0.0_dp) .or. &
+            any(.not. ieee_is_finite(totals_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "LightGBM multiclass probability parameter JVP: normalization failed")
+            return
+        end if
+        do i = 1, self%class_count()
+            probabilities(:, i) = positive(:, i)/totals
+            probabilities_dot(:, i) = (positive_dot(:, i)*totals - &
+                positive(:, i)*totals_dot)/(totals*totals)
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine lgbm_multiclass_predict_proba_parameter_jvp
+
+    !> Reverse product of normalized OVR probabilities with respect to the
+    !> packed fixed-structure leaf coordinates of all child trees.
+    subroutine lgbm_multiclass_predict_proba_parameter_vjp(self, x, &
+            probabilities_bar, parameter_bar, status)
+        class(lightgbm_multiclass_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), probabilities_bar(:, :)
+        real(dp), intent(out) :: parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: margins(:, :), positive(:, :), probabilities(:, :)
+        real(dp), allocatable :: margin_bar(:), child_bar(:)
+        real(dp) :: normalization, dot_product_bar
+        integer :: i, j, first, last, count
+
+        parameter_bar = 0.0_dp
+        if (.not. valid_query(self, x)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "LightGBM multiclass probability parameter VJP: model or input is invalid")
+            return
+        end if
+        if (any(shape(probabilities_bar) /= [size(x, 1), self%class_count()])) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "LightGBM multiclass probability parameter VJP: cotangent shape is invalid")
+            return
+        end if
+        if (size(parameter_bar) /= self%parameter_count() .or. &
+            any(.not. ieee_is_finite(probabilities_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "LightGBM multiclass probability parameter VJP: parameter or cotangent is invalid")
+            return
+        end if
+        allocate(margins(size(x, 1), self%class_count()), &
+            positive(size(x, 1), self%class_count()), &
+            probabilities(size(x, 1), self%class_count()), &
+            margin_bar(size(x, 1)), child_bar(0))
+        call multiclass_margin_probabilities(self, x, margins, positive, &
+            probabilities, status)
+        if (status%code /= FORTNUM_OK) return
+        first = 1
+        do i = 1, self%class_count()
+            count = self%one_vs_rest(i)%leaf_parameter_count()
+            last = first + count - 1
+            deallocate(child_bar)
+            allocate(child_bar(count))
+            do j = 1, size(x, 1)
+                normalization = sum(positive(j, :))
+                dot_product_bar = sum(probabilities_bar(j, :)*probabilities(j, :))
+                margin_bar(j) = positive(j, i)*(1.0_dp - positive(j, i))/ &
+                    normalization*(probabilities_bar(j, i) - dot_product_bar)
+            end do
+            call self%one_vs_rest(i)%predict_leaf_vjp(x, margin_bar, child_bar, status)
+            if (status%code /= FORTNUM_OK) return
+            parameter_bar(first:last) = child_bar
+            first = last + 1
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine lgbm_multiclass_predict_proba_parameter_vjp
+
+    !> Forward product of stable log probabilities with respect to inputs.
+    subroutine lgbm_multiclass_predict_log_proba_jvp(self, x, x_dot, &
+            log_probabilities, log_probabilities_dot, status)
+        class(lightgbm_multiclass_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), x_dot(:, :)
+        real(dp), intent(out) :: log_probabilities(:, :), log_probabilities_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: probabilities(:, :), probabilities_dot(:, :)
+
+        if (any(shape(log_probabilities) /= [size(x, 1), self%class_count()]) .or. &
+            any(shape(log_probabilities_dot) /= shape(log_probabilities))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "LightGBM multiclass log-probability JVP: output shape is invalid")
+            return
+        end if
+        allocate(probabilities(size(x, 1), self%class_count()), &
+            probabilities_dot(size(x, 1), self%class_count()))
+        call self%predict_proba_jvp(x, x_dot, probabilities, probabilities_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        call self%predict_log_proba(x, log_probabilities, status)
+        if (status%code /= FORTNUM_OK) return
+        log_probabilities_dot = probabilities_dot/max(probabilities, tiny(1.0_dp))
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine lgbm_multiclass_predict_log_proba_jvp
+
+    !> Forward product of stable log probabilities with respect to packed
+    !> fixed-structure leaf coordinates.
+    subroutine lgbm_multiclass_predict_log_proba_parameter_jvp(self, x, parameter_dot, &
+            log_probabilities, log_probabilities_dot, status)
+        class(lightgbm_multiclass_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), parameter_dot(:)
+        real(dp), intent(out) :: log_probabilities(:, :), log_probabilities_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: margins(:, :), margins_dot(:, :), positive(:, :)
+        real(dp), allocatable :: log_positive(:, :), log_totals(:), log_dot(:, :)
+        real(dp), allocatable :: positive_dot(:, :)
+        integer :: i, j
+
+        if (.not. valid_query(self, x)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "LightGBM multiclass log-probability parameter JVP: model or input is invalid")
+            return
+        end if
+        if (any(shape(log_probabilities) /= [size(x, 1), self%class_count()]) .or. &
+            any(shape(log_probabilities_dot) /= shape(log_probabilities))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "LightGBM multiclass log-probability parameter JVP: output shape is invalid")
+            return
+        end if
+        if (size(parameter_dot) /= self%parameter_count() .or. &
+            any(.not. ieee_is_finite(parameter_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "LightGBM multiclass log-probability parameter JVP: parameter tangent is invalid")
+            return
+        end if
+        allocate(margins(size(x, 1), self%class_count()), &
+            margins_dot(size(x, 1), self%class_count()), &
+            positive(size(x, 1), self%class_count()), &
+            positive_dot(size(x, 1), self%class_count()), &
+            log_positive(size(x, 1), self%class_count()), &
+            log_totals(size(x, 1)), log_dot(size(x, 1), self%class_count()))
+        call multiclass_parameter_margin_jvp(self, x, parameter_dot, margins, &
+            margins_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        do i = 1, self%class_count()
+            positive(:, i) = stable_sigmoid_array(margins(:, i))
+            positive_dot(:, i) = positive(:, i)*(1.0_dp - positive(:, i))* &
+                margins_dot(:, i)
+            do j = 1, size(x, 1)
+                log_positive(j, i) = stable_log_sigmoid(margins(j, i))
+            end do
+        end do
+        do j = 1, size(x, 1)
+            log_totals(j) = stable_logsumexp(log_positive(j, :))
+            if (.not. ieee_is_finite(log_totals(j))) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "LightGBM multiclass log-probability parameter JVP: normalization failed")
+                return
+            end if
+        end do
+        do i = 1, self%class_count()
+            log_probabilities(:, i) = log_positive(:, i) - log_totals
+            do j = 1, size(x, 1)
+                log_dot(j, i) = margins_dot(j, i)*(1.0_dp - positive(j, i)) - &
+                    sum(exp(log_positive(j, :) - log_totals(j))* &
+                    margins_dot(j, :)*(1.0_dp - positive(j, :)))
+            end do
+        end do
+        log_probabilities_dot = log_dot
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine lgbm_multiclass_predict_log_proba_parameter_jvp
+
+    !> Reverse product of normalized OVR probabilities with respect to inputs.
+    subroutine lgbm_multiclass_predict_log_proba_vjp(self, x, log_probabilities_bar, &
+            x_bar, status)
+        class(lightgbm_multiclass_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), log_probabilities_bar(:, :)
+        real(dp), intent(out) :: x_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: margins(:, :), positive(:, :), probabilities(:, :)
+        real(dp), allocatable :: margin_bar(:), child_x_bar(:, :)
+        real(dp) :: dot_product_bar
+        integer :: i, j
+
+        x_bar = 0.0_dp
+        if (.not. valid_query(self, x)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "LightGBM multiclass log-probability VJP: model or input is invalid")
+            return
+        end if
+        if (any(shape(log_probabilities_bar) /= [size(x, 1), self%class_count()]) .or. &
+            any(shape(x_bar) /= shape(x)) .or. &
+            any(.not. ieee_is_finite(log_probabilities_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "LightGBM multiclass log-probability VJP: cotangent or output shape is invalid")
+            return
+        end if
+        allocate(margins(size(x, 1), self%class_count()), &
+            positive(size(x, 1), self%class_count()), &
+            probabilities(size(x, 1), self%class_count()), &
+            margin_bar(size(x, 1)), child_x_bar(size(x, 1), self%n_inputs))
+        call multiclass_margin_probabilities(self, x, margins, positive, &
+            probabilities, status)
+        if (status%code /= FORTNUM_OK) return
+        do i = 1, self%class_count()
+            do j = 1, size(x, 1)
+                dot_product_bar = sum(log_probabilities_bar(j, :))*probabilities(j, i)
+                margin_bar(j) = (1.0_dp - positive(j, i))* &
+                    (log_probabilities_bar(j, i) - dot_product_bar)
+            end do
+            call self%one_vs_rest(i)%predict_vjp(x, margin_bar, child_x_bar, status)
+            if (status%code /= FORTNUM_OK) return
+            x_bar = x_bar + child_x_bar
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine lgbm_multiclass_predict_log_proba_vjp
+
+    !> Reverse product of stable log probabilities with respect to packed
+    !> fixed-structure leaf coordinates.
+    subroutine lgbm_multiclass_predict_log_proba_parameter_vjp(self, x, &
+            log_probabilities_bar, parameter_bar, status)
+        class(lightgbm_multiclass_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), log_probabilities_bar(:, :)
+        real(dp), intent(out) :: parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: margins(:, :), positive(:, :), probabilities(:, :)
+        real(dp), allocatable :: margin_bar(:), child_bar(:)
+        real(dp) :: dot_product_bar
+        integer :: i, j, first, last, count
+
+        parameter_bar = 0.0_dp
+        if (.not. valid_query(self, x)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "LightGBM multiclass log-probability parameter VJP: model or input is invalid")
+            return
+        end if
+        if (any(shape(log_probabilities_bar) /= [size(x, 1), self%class_count()]) .or. &
+            any(.not. ieee_is_finite(log_probabilities_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "LightGBM multiclass log-probability parameter VJP: cotangent shape or values are invalid")
+            return
+        end if
+        if (size(parameter_bar) /= self%parameter_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "LightGBM multiclass log-probability parameter VJP: parameter shape is invalid")
+            return
+        end if
+        allocate(margins(size(x, 1), self%class_count()), &
+            positive(size(x, 1), self%class_count()), &
+            probabilities(size(x, 1), self%class_count()), &
+            margin_bar(size(x, 1)), child_bar(0))
+        call multiclass_margin_probabilities(self, x, margins, positive, &
+            probabilities, status)
+        if (status%code /= FORTNUM_OK) return
+        first = 1
+        do i = 1, self%class_count()
+            count = self%one_vs_rest(i)%leaf_parameter_count()
+            last = first + count - 1
+            deallocate(child_bar)
+            allocate(child_bar(count))
+            do j = 1, size(x, 1)
+                dot_product_bar = sum(log_probabilities_bar(j, :))*probabilities(j, i)
+                margin_bar(j) = (1.0_dp - positive(j, i))* &
+                    (log_probabilities_bar(j, i) - dot_product_bar)
+            end do
+            call self%one_vs_rest(i)%predict_leaf_vjp(x, margin_bar, child_bar, status)
+            if (status%code /= FORTNUM_OK) return
+            parameter_bar(first:last) = child_bar
+            first = last + 1
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine lgbm_multiclass_predict_log_proba_parameter_vjp
+
+    subroutine lgbm_multiclass_predict_proba_parameter_jvp_device(self, device, x, &
+            parameter_dot, probabilities, probabilities_dot, status)
+        class(lightgbm_multiclass_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :), parameter_dot(:)
+        real(dp), intent(out) :: probabilities(:, :), probabilities_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "LightGBM multiclass probability parameter JVP device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_proba_parameter_jvp(x, parameter_dot, probabilities, &
+                probabilities_dot, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "LightGBM multiclass probability parameter JVP device: no resident CUDA tree kernel is linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "LightGBM multiclass probability parameter JVP device: device kind is invalid")
+        end select
+    end subroutine lgbm_multiclass_predict_proba_parameter_jvp_device
+
+    subroutine lgbm_multiclass_predict_proba_parameter_vjp_device(self, device, x, &
+            probabilities_bar, parameter_bar, status)
+        class(lightgbm_multiclass_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :), probabilities_bar(:, :)
+        real(dp), intent(out) :: parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "LightGBM multiclass probability parameter VJP device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_proba_parameter_vjp(x, probabilities_bar, parameter_bar, &
+                status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "LightGBM multiclass probability parameter VJP device: no resident CUDA tree kernel is linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "LightGBM multiclass probability parameter VJP device: device kind is invalid")
+        end select
+    end subroutine lgbm_multiclass_predict_proba_parameter_vjp_device
+
+    subroutine lgbm_multiclass_predict_log_proba_parameter_jvp_device(self, device, x, &
+            parameter_dot, log_probabilities, log_probabilities_dot, status)
+        class(lightgbm_multiclass_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :), parameter_dot(:)
+        real(dp), intent(out) :: log_probabilities(:, :), log_probabilities_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "LightGBM multiclass log-probability parameter JVP device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_log_proba_parameter_jvp(x, parameter_dot, &
+                log_probabilities, log_probabilities_dot, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "LightGBM multiclass log-probability parameter JVP device: no resident CUDA tree kernel is linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "LightGBM multiclass log-probability parameter JVP device: device kind is invalid")
+        end select
+    end subroutine lgbm_multiclass_predict_log_proba_parameter_jvp_device
+
+    subroutine lgbm_multiclass_predict_log_proba_parameter_vjp_device(self, device, x, &
+            log_probabilities_bar, parameter_bar, status)
+        class(lightgbm_multiclass_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :), log_probabilities_bar(:, :)
+        real(dp), intent(out) :: parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "LightGBM multiclass log-probability parameter VJP device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_log_proba_parameter_vjp(x, log_probabilities_bar, &
+                parameter_bar, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "LightGBM multiclass log-probability parameter VJP device: no resident CUDA tree kernel is linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "LightGBM multiclass log-probability parameter VJP device: device kind is invalid")
+        end select
+    end subroutine lgbm_multiclass_predict_log_proba_parameter_vjp_device
 
     subroutine lgbm_multiclass_decision_function(self, x, margins, status)
         class(lightgbm_multiclass_t), intent(in) :: self
@@ -648,6 +1159,42 @@ contains
         if (allocated(self%class_label)) count = size(self%class_label)
     end function lgbm_multiclass_class_count
 
+    integer function lgbm_multiclass_parameter_count(self) result(count)
+        class(lightgbm_multiclass_t), intent(in) :: self
+        integer :: i
+
+        count = 0
+        if (.not. self%initialized .or. .not. allocated(self%one_vs_rest)) return
+        do i = 1, size(self%one_vs_rest)
+            count = count + self%one_vs_rest(i)%leaf_parameter_count()
+        end do
+    end function lgbm_multiclass_parameter_count
+
+    function lgbm_multiclass_parameters(self, status) result(parameters)
+        class(lightgbm_multiclass_t), intent(in) :: self
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: parameters(:), child_parameters(:)
+        integer :: i, first, last, count
+
+        allocate(parameters(max(0, self%parameter_count())))
+        parameters = 0.0_dp
+        if (.not. self%initialized .or. .not. allocated(self%one_vs_rest)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "LightGBM multiclass parameters: model is not initialized")
+            return
+        end if
+        first = 1
+        do i = 1, size(self%one_vs_rest)
+            child_parameters = self%one_vs_rest(i)%leaf_parameters(status)
+            if (status%code /= FORTNUM_OK) return
+            count = size(child_parameters)
+            last = first + count - 1
+            parameters(first:last) = child_parameters
+            first = last + 1
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end function lgbm_multiclass_parameters
+
     integer function lgbm_multiclass_estimator_count(self) result(count)
         class(lightgbm_multiclass_t), intent(in) :: self
         count = 0
@@ -701,6 +1248,85 @@ contains
         fitted = self%initialized
     end function lgbm_multiclass_fitted
 
+    subroutine multiclass_margin_probabilities(self, x, margins, positive, &
+            probabilities, status)
+        class(lightgbm_multiclass_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: margins(:, :), positive(:, :), probabilities(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: totals(:)
+        integer :: i, j
+
+        if (.not. valid_query(self, x)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "LightGBM multiclass margin products: model or input is invalid")
+            return
+        end if
+        if (any(shape(margins) /= [size(x, 1), self%class_count()]) .or. &
+            any(shape(positive) /= shape(margins)) .or. &
+            any(shape(probabilities) /= shape(margins))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "LightGBM multiclass margin products: output shape is invalid")
+            return
+        end if
+        allocate(totals(size(x, 1)))
+        do i = 1, self%class_count()
+            call self%one_vs_rest(i)%predict_margin(x, margins(:, i), status)
+            if (status%code /= FORTNUM_OK) return
+            positive(:, i) = stable_sigmoid_array(margins(:, i))
+        end do
+        totals = sum(positive, dim=2)
+        if (any(.not. ieee_is_finite(totals)) .or. any(totals <= 0.0_dp)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "LightGBM multiclass margin products: normalization failed")
+            return
+        end if
+        do j = 1, self%class_count()
+            probabilities(:, j) = positive(:, j)/totals
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine multiclass_margin_probabilities
+
+    subroutine multiclass_parameter_margin_jvp(self, x, parameter_dot, margins, &
+            margins_dot, status)
+        class(lightgbm_multiclass_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), parameter_dot(:)
+        real(dp), intent(out) :: margins(:, :), margins_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: child_dot(:)
+        integer :: i, first, last, count
+
+        if (.not. valid_query(self, x)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "LightGBM multiclass parameter products: model or input is invalid")
+            return
+        end if
+        if (any(shape(margins) /= [size(x, 1), self%class_count()]) .or. &
+            any(shape(margins_dot) /= shape(margins))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "LightGBM multiclass parameter products: output shape is invalid")
+            return
+        end if
+        if (size(parameter_dot) /= self%parameter_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "LightGBM multiclass parameter products: parameter shape is invalid")
+            return
+        end if
+        first = 1
+        do i = 1, self%class_count()
+            count = self%one_vs_rest(i)%leaf_parameter_count()
+            last = first + count - 1
+            allocate(child_dot(count))
+            child_dot = parameter_dot(first:last)
+            call self%one_vs_rest(i)%predict_leaf_jvp(x, child_dot, margins(:, i), &
+                margins_dot(:, i), status)
+            deallocate(child_dot)
+            if (status%code /= FORTNUM_OK) return
+            first = last + 1
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine multiclass_parameter_margin_jvp
+
     logical function valid_query(self, x) result(valid)
         class(lightgbm_multiclass_t), intent(in) :: self
         real(dp), intent(in) :: x(:, :)
@@ -711,6 +1337,50 @@ contains
         if (.not. valid) return
         valid = all(ieee_is_finite(x))
     end function valid_query
+
+    pure real(dp) function stable_log_sigmoid(value) result(log_probability)
+        real(dp), intent(in) :: value
+
+        if (value >= 0.0_dp) then
+            log_probability = -log(1.0_dp + exp(-value))
+        else
+            log_probability = value - log(1.0_dp + exp(value))
+        end if
+    end function stable_log_sigmoid
+
+    pure elemental real(dp) function stable_sigmoid(value) result(probability)
+        real(dp), intent(in) :: value
+
+        if (value >= 0.0_dp) then
+            probability = 1.0_dp/(1.0_dp + exp(-value))
+        else
+            probability = exp(value)/(1.0_dp + exp(value))
+        end if
+    end function stable_sigmoid
+
+    pure function stable_sigmoid_array(values) result(probabilities)
+        real(dp), intent(in) :: values(:)
+        real(dp) :: probabilities(size(values))
+
+        probabilities = stable_sigmoid(values)
+    end function stable_sigmoid_array
+
+    pure real(dp) function stable_logsumexp(values) result(value)
+        real(dp), intent(in) :: values(:)
+        real(dp) :: maximum, shifted
+
+        maximum = maxval(values)
+        if (.not. ieee_is_finite(maximum)) then
+            value = maximum
+            return
+        end if
+        shifted = sum(exp(values - maximum))
+        if (shifted <= 0.0_dp .or. .not. ieee_is_finite(shifted)) then
+            value = huge(1.0_dp)
+        else
+            value = maximum + log(shifted)
+        end if
+    end function stable_logsumexp
 
     logical function valid_multiclass_model(self) result(valid)
         class(lightgbm_multiclass_t), intent(in) :: self
@@ -723,8 +1393,8 @@ contains
         if (self%n_inputs < 1 .or. size(self%class_label) < 2) return
         if (size(self%one_vs_rest) /= size(self%class_label)) return
         if (self%requested_estimators < 1 .or. self%best_iteration_value < 1 .or. &
-                self%best_iteration_value > self%requested_estimators .or. &
-                .not. ieee_is_finite(self%best_validation_loss_value)) return
+            self%best_iteration_value > self%requested_estimators .or. &
+            .not. ieee_is_finite(self%best_validation_loss_value)) return
         do i = 2, size(self%class_label)
             if (self%class_label(i) <= self%class_label(i - 1)) return
         end do
