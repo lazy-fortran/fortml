@@ -16,7 +16,7 @@ fixed-leaf-product, plateau-trainer, affine Adagrad HVP, and CUDA VJP closure
 slices documented below are post-tag additions.
 The broad parity
 gate is still open, so this work does not move or recreate that tag.
-The checklist currently records 379 completed and 124 open items. Open rows are
+The checklist currently records 379 completed and 150 open items. Open rows are
 retained until their implementation, independent oracle, device/refusal
 behavior, and benchmark evidence land together.
 
@@ -117,6 +117,126 @@ and FortOpt adapters. Then lower the same operators to resident devices. A
 benchmark row never promotes an implementation that bypasses the shared
 objective or hides a host fallback. The open checklist below is the source of
 truth for which rows have reached each stage.
+
+## 2026-08 parity expansion backlog
+
+This backlog makes the requested scikit-learn/PyTorch/JAX/GPyTorch/XGBoost/
+LightGBM parity target executable. Each row below requires a public
+transactional contract, an independent behavioral oracle, a declared
+derivative/device result, persistence evidence, and a pinned benchmark before
+it is checked off.
+
+### Classification and probabilistic classification
+
+- [ ] Complete one shared classification state for binary, multinomial, OVR,
+  OVO, multilabel, classifier-chain, ordinal, and multioutput targets. Every
+  adapter exposes sorted labels, class/sample weights, decision, prediction,
+  probabilities, log probabilities, deterministic ties, thresholds, score
+  metadata, cloning, and schema persistence.
+- [ ] Add kernel SVM/SVR parity with RBF, polynomial, sigmoid, and precomputed
+  kernels, support-vector metadata, probability calibration, shrinking/cache
+  policy, class weights, multiclass coupling, and fixed-support derivative
+  refusals at active-set boundaries.
+- [ ] Add a common calibration wrapper for sigmoid, temperature, isotonic, and
+  Platt policies with leakage-safe cross-validation, weighted OOF state,
+  calibration curves, and calibration-aware parameter products.
+- [ ] Add shared missing-value, sparse-layout, categorical-code, monotonic,
+  and class-weight policies across linear, SVM, neighbor, tree, GP, and neural
+  classifiers; reject unsupported combinations before mutating fitted state.
+- [ ] Add `partial_fit` and warm-start contracts for linear, NB, SGD, MLP, GP
+  approximation, tree ensembles, and classifier chains with deterministic
+  replay, class expansion, sample-count state, and malformed-batch rollback.
+
+### Gaussian-process and likelihood parity
+
+- [ ] Finish the likelihood catalog: Gaussian, Bernoulli/probit, categorical,
+  multinomial, Poisson/count, Gamma, Student-t, heteroskedastic, censored,
+  ordinal, and warped links with constraints, stable tails, batch shapes, and
+  value/gradient/JVP/VJP/HVP products.
+- [ ] Finish the observation registry for function values, input derivatives,
+  mixed derivatives, Hessians, registered linear operators, vector fields, and
+  physics/symplectic observations for every smooth kernel family.
+- [ ] Add exact batched/multitask GP state with mean functions, priors,
+  constraints, lazy/matrix-free solves, preconditioners, stochastic
+  log-determinants, predictive roots, fantasy updates, and online updates.
+- [ ] Add whitened and unwhitened SVGP with natural gradients, stochastic
+  minibatches, interdomain features, SKI/KISS-GP, local/deep GPs, and
+  distributed inducing points; FortOpt consumes the same ELBO products.
+- [ ] Differentiate through GP fits where mathematically defined: covariance
+  hyperparameters, likelihood parameters, inducing locations, solve state,
+  Laplace modes, variational optima, and derivative-observation operators;
+  otherwise return a typed implicit-product refusal with a reason.
+- [ ] Add resident GPU GP execution for dense, lazy, derivative, sparse, and
+  variational paths with device kernels, workspace/accounting state,
+  deterministic reductions, and no host callback or hidden transfer.
+
+### Neural-network and training parity
+
+- [ ] Add one module-tree API with named parameter paths, buffers, aliases,
+  frozen/tied parameters, train/eval state, masks, shape inference, residual
+  connections, and deterministic flatten/unflatten for dense, convolutional,
+  pooling, normalization, embedding, attention, recurrent, graph, neural
+  operator, autoencoder, VAE, BNN, HNN, LNN, SympNet, and PINN modules.
+- [ ] Complete trainer ownership of deterministic loaders, sparse/batched
+  views, weighted reductions, accumulation, clipping, validation, early
+  stopping, callbacks, RNG state, optimizer groups, schedules, mixed precision,
+  activation checkpointing, truncated BPTT, and resumable checkpoints.
+- [ ] Make every supported optimizer expose exact trajectory products through
+  learning rate, decay, momentum, betas, schedules, batch cursor, clipping,
+  validation, and early-stopping coordinates, with FortOpt L-BFGS-B using the
+  same callback and transactional best-state selection.
+- [ ] Add FP16/BF16 storage and resident CUDA mixed-precision training around
+  binary64 master weights, deterministic loss scaling, overflow recovery,
+  reduction policy, checkpoint migration, and typed unsupported-device rows.
+- [ ] Add convolutional, recurrent/attention, graph, autoencoder, VAE, BNN,
+  Hamiltonian/Lagrangian, symplectic, PINN, and physics-consistent trainer
+  adapters with input/parameter JVP/VJP/HVP products and independent PyTorch,
+  JAX, or analytic trajectory comparisons.
+- [ ] Add distributed and sharded training state: deterministic all-reduce,
+  rank-local RNG/checkpoints, data/model partitioning, streaming inference,
+  and reproducible restart across world sizes.
+
+### Basis, pipeline, and hyperparameter composition
+
+- [ ] Finish a DAG pipeline graph with named feature paths, sparse layouts,
+  missing-value policies, leakage guards, fold-local fitting, cloning,
+  conditional/residual/fan-out/fan-in nodes, schema persistence, and static
+  CPU/CUDA lowering.
+- [ ] Make polynomial, interaction, spline, Fourier/random-Fourier, radial,
+  Chebyshev, GP/NNGP/NTK, PCA, autoencoder, imputation, encoding, scaling,
+  and physics maps interchangeable basis nodes and initializers.
+- [ ] Add one parameter-group registry across model, basis, kernel, likelihood,
+  optimizer, schedule, validation, and initialization coordinates, including
+  exact mixed products and explicit active-set/implicit refusals.
+- [ ] Add grid/random/successive-halving/Bayesian/multi-fidelity and
+  differentiable HPO APIs with deterministic trials, pruning, parallel workers,
+  resume, seed isolation, and FortOpt-compatible continuous subproblems.
+
+### XGBoost, LightGBM, and tree systems
+
+- [ ] Complete shared boosted-tree state for exact/histogram/quantile growth,
+  missing defaults, categorical partitions, monotonic and interaction
+  constraints, ranking objectives, DART, GOSS, EFB, staged predictions,
+  contributions, SHAP-compatible values, validation stopping, warm starts,
+  slicing, text/JSON persistence, and fixed-topology products.
+- [ ] Add ranking and survival-style objectives with pair/group metadata,
+  NDCG/MAP or concordance metrics, weighted query boundaries, and independent
+  XGBoost/LightGBM fixtures.
+- [ ] Add resident CUDA/OpenACC histogram, quantile-sketch, categorical, and
+  prediction kernels with transfer/memory accounting and deterministic
+  float32/float64 reductions; distributed workers remain explicit state.
+
+### Derivatives, devices, and benchmark evidence
+
+- [ ] Maintain a generated derivative capability matrix covering every public
+  estimator, transform, kernel, likelihood, optimizer coordinate, state
+  variable, and device transfer counter. Cross-check FortAD and FortSym
+  products, Hessian symmetry, adjoints, and finite-difference fallbacks.
+- [ ] Publish matched benchmark tiers against scikit-learn, PyTorch, JAX,
+  GPyTorch, GPflow, Flux/Lux, XGBoost, and LightGBM for correctness, compile,
+  warmup, transfer, steady-state latency, throughput, memory, precision,
+  initialization, convergence, and energy. Every unavailable dependency or
+  backend is a parseable refusal row with provenance.
 
 The current parity wave closes the following bounded contracts: chronological
 expanding/rolling validation with scorer and clone/reset metadata,
