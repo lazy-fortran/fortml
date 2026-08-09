@@ -366,9 +366,10 @@ its own CPU-product and CUDA-refusal rows in
 rather than host timings. The XGBoost warm-start lane adds an independent
 Newton-stump replay, transactional refusal rows, and an explicit CUDA-
 unavailable record in `results/xgboost_warm_start.csv`. The classifier-chain
-lane adds packed-head NumPy replay, integer-label prediction checks, fit/predict
-timing, and an explicit CUDA-unavailable row in
-`results/classifier_chain.csv`. The XGBoost interaction-constraint lane adds
+lane adds packed-head NumPy replay, integer-label prediction checks, exact joint
+input/parameter probability HVP checks, fit/predict/HVP timing, and explicit
+CUDA-unavailable rows in `results/classifier_chain.csv`. The XGBoost
+interaction-constraint lane adds
 an independent NumPy group-mean/path-mask oracle for unconstrained and
 separated-group depth-two trees; its CPU rows pass with zero prediction error
 and its CUDA row is an explicit unavailable capability record in
@@ -511,8 +512,11 @@ output, accepts arbitrary sorted integer label pairs, supports shared sample
 weights, per-output class weights and thresholds, and uses observed positive
 indicators during fitting followed by smooth positive probabilities at
 prediction. Its packed head parameters have exact input and parameter JVP/VJP
-products; hard labels and fit-time optimizer decisions remain discrete. CPU
-dispatch is tested and selected CUDA calls return `FORTNUM_NOT_IMPLEMENTED`.
+products plus a joint input/parameter forward-over-reverse HVP of a probability
+cotangent. The HVP differentiates every smooth chain-feature edge and logistic
+sigmoid second derivative; hard labels and fit-time optimizer decisions remain
+discrete. CPU dispatch is tested and selected CUDA calls, including HVP, return
+`FORTNUM_NOT_IMPLEMENTED`.
 The independent fixture is `test_classifier_chain`, with the release evidence
 in `fortml-bench/results/CLASSIFIER_CHAIN.md`.
 
@@ -3110,9 +3114,11 @@ state, scoring, and refusal rules.
   seeded behavior is specified.
 - [x] Add a sequential binary classifier-chain adapter with arbitrary sorted
   integer labels, observed-label training features, smooth probability-chain
-  prediction, packed-head input/parameter JVP/VJPs, thresholds, weights, and a
-  typed CUDA refusal. The bounded release evidence is `test_classifier_chain`
-  and `fortml-bench/results/classifier_chain.csv`.
+  prediction, packed-head input/parameter JVP/VJPs, an exact joint
+  parameter/input probability-cotangent HVP, thresholds, weights, and typed
+  CUDA refusals. The bounded release evidence is `test_classifier_chain` and
+  `fortml-bench/results/classifier_chain.csv` (including independent HVP
+  finite-difference rows).
 - [ ] Add general multioutput, multiclass, multilabel, regressor chains,
   voting, stacking, bagging, and calibrated meta-estimators with nested
   parameter routing and leakage-safe fitting.

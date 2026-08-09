@@ -170,7 +170,7 @@ repeated resident-batch evidence.
 | `lda_classifier_t` | Gaussian log probabilities, probabilities, and labels | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
 | `qda_classifier_t` | Class-specific Gaussian log probabilities, probabilities, and labels | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
 | `multilabel_logistic_classifier_t` | Independent positive probabilities for an indicator matrix | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
-| `classifier_chain_t` | Sequential binary logistic heads with soft chain probabilities and arbitrary per-output label pairs | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
+| `classifier_chain_t` | Sequential binary logistic heads with soft chain probabilities and arbitrary per-output label pairs | Input and packed-parameter JVP; joint input/parameter HVP | Input and packed-parameter VJP | No |
 | `ordinal_logistic_classifier_t` | Ordered cumulative-logit probabilities and labels | Input and packed-parameter JVP | Input and packed-parameter VJP | No |
 | `basis_map_t` | `evaluate` | Parameters and inputs | Parameters and inputs | Analytic for polynomial/Fourier/radial/spline; callback maps refuse |
 | `one_hot_encoder_t` | Dense one-hot `transform` | Refused: integer categories have no canonical tangent space | Refused: integer categories have no canonical cotangent space | No |
@@ -1245,13 +1245,21 @@ applies the per-output thresholds and maps back to the stored integer labels.
 `parameters()` concatenates head coefficient/intercept blocks in output order,
 so later heads have one additional packed feature parameter each. The input and
 packed-parameter `predict_proba_jvp`/`predict_proba_vjp` products propagate the
-same forward and reverse chain rules exactly. Hard labels and fit-time optimizer
-paths are discrete and are not differentiated.
+same forward and reverse chain rules exactly. The
+`predict_proba_hvp(x,u,theta_dot,x_dot,theta_hvp,x_hvp,status)` product is the
+exact forward-over-reverse HVP of the scalar contraction `sum(u*proba)` in the
+joint parameter/input direction; it includes the sigmoid second derivative and
+the bilinear head score term. Hard labels and fit-time optimizer paths are
+discrete and are not differentiated. See
+[`CLASSIFIER_CHAIN_HVP.md`](CLASSIFIER_CHAIN_HVP.md) for the contract and
+finite-difference oracle.
 
 `device_supported(FORTML_DEVICE_CPU)` is true for fitted models. The selected
 CPU device methods dispatch to the host implementation; selected CUDA requests
 return `FORTNUM_NOT_IMPLEMENTED` until a resident classifier-chain kernel is
-linked, with no hidden host fallback. `fortml_classifier_chain_logistic_classifier`
+linked, with no hidden host fallback. The HVP device entry point follows the
+same boundary and preserves output arrays on CUDA refusal.
+`fortml_classifier_chain_logistic_classifier`
 re-exports the type under the longer compatibility name
 `classifier_chain_logistic_classifier_t`.
 

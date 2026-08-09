@@ -13,6 +13,8 @@ program test_classifier_chain
     real(dp) :: probabilities_plus(6, 2), probabilities_minus(6, 2)
     real(dp) :: probabilities_dot(6, 2), parameter_dot(6, 2)
     real(dp) :: probabilities_bar(6, 2), x_bar(6, 2), theta_bar(7)
+    real(dp) :: theta_hvp(7), x_hvp(6, 2), theta_bar_plus(7), theta_bar_minus(7)
+    real(dp) :: x_bar_plus(6, 2), x_bar_minus(6, 2)
     real(dp) :: theta(7), theta_dot(7), theta_plus(7), theta_minus(7)
     real(dp) :: expected(6, 2), expected_plus, h, lhs, rhs
     real(dp) :: thresholds(2)
@@ -92,6 +94,23 @@ program test_classifier_chain
     call check(status_ok(status) .and. abs(lhs-rhs) < 2.0e-8_dp, &
         "input VJP adjoint identity", failures)
 
+    call model%predict_proba_hvp(x, probabilities_bar, theta_dot, x_dot, &
+        theta_hvp, x_hvp, status)
+    call check(status_ok(status), "HVP status", failures)
+    call model%set_parameters(theta_plus, status)
+    call model%predict_proba_parameter_vjp(x+h*x_dot, probabilities_bar, &
+        theta_bar_plus, status)
+    call model%predict_proba_vjp(x+h*x_dot, probabilities_bar, x_bar_plus, status)
+    call model%set_parameters(theta_minus, status)
+    call model%predict_proba_parameter_vjp(x-h*x_dot, probabilities_bar, &
+        theta_bar_minus, status)
+    call model%predict_proba_vjp(x-h*x_dot, probabilities_bar, x_bar_minus, status)
+    call model%set_parameters(theta, status)
+    call check(status_ok(status) .and. maxval(abs(theta_hvp - &
+        (theta_bar_plus-theta_bar_minus)/(2.0_dp*h))) < 2.0e-7_dp .and. &
+        maxval(abs(x_hvp - (x_bar_plus-x_bar_minus)/(2.0_dp*h))) < 2.0e-7_dp, &
+        "joint parameter/input HVP finite difference", failures)
+
     cuda%kind = FORTML_DEVICE_CUDA
     cuda%selected = .true.
     cuda%available = .true.
@@ -104,6 +123,9 @@ program test_classifier_chain
     call check(status_ok(status) .and. maxval(abs(probabilities_plus- &
         probabilities_minus)) < 1.0e-14_dp .and. &
         model%device_supported(FORTML_DEVICE_CPU), "CPU dispatch", failures)
+    call model%predict_proba_hvp_device(cuda, x, probabilities_bar, theta_dot, &
+        x_dot, theta_hvp, x_hvp, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED, "CUDA HVP refusal", failures)
 
     if (failures /= 0) error stop failures
     print '(a)', "test_classifier_chain: PASS"

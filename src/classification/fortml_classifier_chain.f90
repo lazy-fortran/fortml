@@ -40,6 +40,9 @@ module fortml_classifier_chain
         procedure, public :: predict_proba_vjp => classifier_chain_predict_proba_vjp
         procedure, public :: predict_proba_parameter_vjp => &
             classifier_chain_predict_proba_parameter_vjp
+        procedure, public :: predict_proba_hvp => classifier_chain_predict_proba_hvp
+        procedure, public :: predict_proba_hvp_device => &
+            classifier_chain_predict_proba_hvp_device
         procedure, public :: predict => classifier_chain_predict
         procedure, public :: predict_device => classifier_chain_predict_device
         procedure, public :: classes => classifier_chain_classes
@@ -62,6 +65,8 @@ module fortml_classifier_chain
     public :: classifier_chain_predict_proba_parameter_jvp
     public :: classifier_chain_predict_proba_vjp
     public :: classifier_chain_predict_proba_parameter_vjp
+    public :: classifier_chain_predict_proba_hvp
+    public :: classifier_chain_predict_proba_hvp_device
     public :: classifier_chain_predict
 
 contains
@@ -377,6 +382,7 @@ contains
             probabilities(size(x, 1), self%n_outputs))
         call forward_values(self, x, augmented, scores, probabilities, status)
         if (status%code /= FORTNUM_OK) return
+        ! forward_values establishes the fixed chain state before the tangent pass.
         allocate(probability_bar_work(size(x, 1), self%n_outputs), &
             binary_bar(size(x, 1), 2))
         probability_bar_work = probabilities_bar
@@ -445,6 +451,166 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine classifier_chain_predict_proba_parameter_vjp
+
+    subroutine classifier_chain_predict_proba_hvp(self, x, probabilities_bar, &
+            theta_dot, x_dot, theta_hvp, x_hvp, status)
+        !! Forward-over-reverse HVP for a fixed probability cotangent.
+        !!
+        !! The chain's previous positive probabilities are smooth features at
+        !! prediction time.  This routine differentiates the complete reverse
+        !! probability graph in the joint direction ``(theta_dot,x_dot)``;
+        !! thresholded labels and head fitting remain discrete boundaries.
+        class(classifier_chain_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), probabilities_bar(:, :)
+        real(dp), intent(in) :: theta_dot(:), x_dot(:, :)
+        real(dp), intent(out) :: theta_hvp(:), x_hvp(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: augmented(:, :), augmented_dot(:, :)
+        real(dp), allocatable :: scores(:, :), probabilities(:, :)
+        real(dp), allocatable :: probability_bar_work(:, :)
+        real(dp), allocatable :: probability_bar_tangent(:, :)
+        real(dp), allocatable :: head_theta_hvp(:)
+        real(dp), allocatable :: head_augmented_bar(:, :), head_augmented_hvp(:, :)
+        real(dp), allocatable :: head_theta_dot(:), coefficients(:)
+        real(dp), allocatable :: scores_dot(:, :), positive_dot(:)
+        real(dp), allocatable :: positive_prime(:), positive_second(:)
+        real(dp), allocatable :: score_bar(:), score_bar_dot(:)
+        real(dp) :: lambda, lambda_dot, q, q_dot
+        integer :: i, j, k, feature_count, first, last, n_features
+        integer :: head_parameter_count
+
+        theta_hvp = 0.0_dp
+        x_hvp = 0.0_dp
+        n_features = self%n_features
+        if (.not. valid_query(self, x, probabilities_bar, status, &
+                "classifier chain probability HVP")) return
+        if (any(shape(x_dot) /= shape(x)) .or. &
+                size(theta_dot) /= self%parameter_count() .or. &
+                size(theta_hvp) /= self%parameter_count() .or. &
+                any(shape(x_hvp) /= shape(x)) .or. &
+                any(.not. ieee_is_finite(probabilities_bar)) .or. &
+                any(.not. ieee_is_finite(theta_dot)) .or. &
+                any(.not. ieee_is_finite(x_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "classifier chain probability HVP: direction, cotangent, or output shape is invalid")
+            return
+        end if
+
+        allocate(scores(size(x, 1), self%n_outputs), &
+            probabilities(size(x, 1), self%n_outputs))
+        call forward_values(self, x, augmented, scores, probabilities, status)
+        if (status%code /= FORTNUM_OK) return
+        allocate(augmented_dot(size(x, 1), n_features+self%n_outputs-1))
+        allocate(scores_dot(size(x, 1), self%n_outputs), positive_dot(size(x, 1)))
+        augmented_dot = 0.0_dp
+        augmented_dot(:, :n_features) = x_dot
+        do j = 1, self%n_outputs
+            feature_count = n_features + j - 1
+            head_parameter_count = self%parameter_sizes(j)
+            allocate(head_theta_dot(head_parameter_count), coefficients(feature_count))
+            first = packed_first(self, j)
+            last = packed_last(self, j)
+            head_theta_dot = theta_dot(first:last)
+            coefficients = self%models(j)%coefficients()
+            call self%models(j)%decision_function_jvp( &
+                augmented(:, :feature_count), head_theta_dot, &
+                augmented_dot(:, :feature_count), scores(:, j), scores_dot(:, j), status)
+            if (status%code /= FORTNUM_OK) return
+            do i = 1, size(x, 1)
+                positive_dot(i) = probabilities(i, j)*(1.0_dp-probabilities(i, j))* &
+                    scores_dot(i, j)
+            end do
+            if (j < self%n_outputs) &
+                augmented_dot(:, n_features+j) = positive_dot
+            deallocate(head_theta_dot, coefficients)
+        end do
+
+        allocate(probability_bar_work(size(x, 1), self%n_outputs))
+        allocate(probability_bar_tangent(size(x, 1), self%n_outputs))
+        probability_bar_work = probabilities_bar
+        probability_bar_tangent = 0.0_dp
+        do j = self%n_outputs, 1, -1
+            feature_count = n_features + j - 1
+            head_parameter_count = self%parameter_sizes(j)
+            first = packed_first(self, j)
+            last = packed_last(self, j)
+            allocate(head_theta_dot(head_parameter_count), coefficients(feature_count))
+            head_theta_dot = theta_dot(first:last)
+            coefficients = self%models(j)%coefficients()
+            allocate(score_bar(size(x, 1)), score_bar_dot(size(x, 1)))
+            allocate(positive_prime(size(x, 1)), positive_second(size(x, 1)))
+            do i = 1, size(x, 1)
+                positive_prime(i) = probabilities(i, j)*(1.0_dp-probabilities(i, j))
+                positive_second(i) = positive_prime(i)*(1.0_dp- &
+                    2.0_dp*probabilities(i, j))
+                lambda = probability_bar_work(i, j)
+                lambda_dot = probability_bar_tangent(i, j)
+                q = lambda*positive_prime(i)
+                q_dot = lambda_dot*positive_prime(i) + lambda*positive_second(i)* &
+                    scores_dot(i, j)
+                score_bar(i) = q
+                score_bar_dot(i) = q_dot
+            end do
+            allocate(head_theta_hvp(head_parameter_count))
+            allocate(head_augmented_bar(size(x, 1), feature_count), &
+                head_augmented_hvp(size(x, 1), feature_count))
+            head_theta_hvp = 0.0_dp
+            head_augmented_bar = 0.0_dp
+            head_augmented_hvp = 0.0_dp
+            do i = 1, size(x, 1)
+                do k = 1, feature_count
+                    head_theta_hvp(k) = head_theta_hvp(k) + score_bar_dot(i)* &
+                        augmented(i, k) + score_bar(i)*augmented_dot(i, k)
+                    head_augmented_bar(i, k) = score_bar(i)*coefficients(k)
+                    head_augmented_hvp(i, k) = score_bar_dot(i)*coefficients(k) + &
+                        score_bar(i)*head_theta_dot(k)
+                end do
+            end do
+            if (head_parameter_count > feature_count) then
+                head_theta_hvp(head_parameter_count) = sum(score_bar_dot)
+            end if
+            theta_hvp(first:last) = head_theta_hvp
+            x_hvp = x_hvp + head_augmented_hvp(:, :n_features)
+            if (j > 1) then
+                probability_bar_work(:, :j-1) = probability_bar_work(:, :j-1) + &
+                    head_augmented_bar(:, n_features+1:n_features+j-1)
+                probability_bar_tangent(:, :j-1) = probability_bar_tangent(:, :j-1) + &
+                    head_augmented_hvp(:, n_features+1:n_features+j-1)
+            end if
+            deallocate(head_theta_dot, coefficients, score_bar, score_bar_dot, &
+                positive_prime, positive_second, head_theta_hvp, &
+                head_augmented_bar, head_augmented_hvp)
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine classifier_chain_predict_proba_hvp
+
+    subroutine classifier_chain_predict_proba_hvp_device(self, device, x, &
+            probabilities_bar, theta_dot, x_dot, theta_hvp, x_hvp, status)
+        !! Device dispatch for the chain HVP; CUDA is an explicit boundary.
+        class(classifier_chain_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :), probabilities_bar(:, :)
+        real(dp), intent(in) :: theta_dot(:), x_dot(:, :)
+        real(dp), intent(out) :: theta_hvp(:), x_hvp(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "classifier chain HVP device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_proba_hvp(x, probabilities_bar, theta_dot, x_dot, &
+                theta_hvp, x_hvp, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "classifier chain HVP device: no resident CUDA kernel is linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "classifier chain HVP device: device kind is invalid")
+        end select
+    end subroutine classifier_chain_predict_proba_hvp_device
 
     subroutine classifier_chain_predict(self, x, labels, status)
         class(classifier_chain_t), intent(in) :: self
