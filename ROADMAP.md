@@ -1181,6 +1181,34 @@ the generic `trainer_lion` rows in
 CPU-resident; CUDA requests remain typed refusals until model, objective, and
 optimizer state can stay resident together.
 
+### 2026-08-09 wave 6 closure
+
+The composable basis slice adds `basis_blend_pipeline_t`, a transactional
+same-shape fan-in node with named branches, learned mixing weights, stable
+metadata and packed parameter routing, and value/JVP/VJP/HVP products over
+weights, branch parameters, and inputs. CPU execution and output-preserving
+CUDA/OpenACC refusals are covered by an independent NumPy oracle in
+`fortml-bench/results/BASIS_BLEND_PIPELINE.md`. The clean CSV pins source
+`a3a28a4` and benchmark `7ff48db`, with maximum product error `1.466e-10`.
+The NVFortran runtime fixture remains an explicit open compatibility boundary.
+
+The neural training slice adds exact fixed-full-batch SGD global-norm clipping
+hypergradients over log learning rate, log L2, and log clip norm. Active and
+inactive branches share analytic JVP/VJP products, while the clip kink, outer
+HVP, and CUDA trajectory are typed boundaries. FortOpt L-BFGS-B consumes the
+same callback. The independent production-trainer oracle and 15-row release
+lane are documented in `fortml-bench/MLP_CLIP_HYPERGRADIENT.md`; the CSV pins
+source `9f4b23e` and benchmark `8683d98` with complete-array error
+`1.455e-11`.
+
+The GP likelihood slice adds a weighted positive-target Gamma density over
+latent log means and a transformed log-shape coordinate. Value, gradient,
+JVP, VJP, and directional HVP products share one bounded FortOpt L-BFGS-B
+objective with transactional rollback. The independent NumPy/SciPy lane in
+`fortml-bench/results/GP_GAMMA_LIKELIHOOD.md` pins source `a3a28a4` and
+benchmark `566fbc1`, reports product error `1.399e-6` and fitted log-shape
+error `4.274e-9`, and records CUDA special functions as a typed refusal.
+
 ### 2026-08-07 objective-trainer and tree-contribution slice
 
 The model-agnostic `fortml_trainer` core is now a shared full-batch state
