@@ -21,7 +21,7 @@ boosted-tree partial-dependence/ICE, learned basis fan-in, fixed-full-batch
 SGD clipping hypergradient, and fixed-shape Gamma-GP likelihood slices.
 The broad parity
 gate is still open, so this work does not move or recreate that tag.
-The checklist currently records 427 completed and 155 open items. Open rows are
+The checklist currently records 430 completed and 155 open items. Open rows are
 retained until their implementation, independent oracle, device/refusal
 behavior, and benchmark evidence land together.
 
@@ -363,6 +363,25 @@ revisions, compiler and precision metadata, and a schema-valid CSV row. The
 comparison tiers separate correctness from performance. A CPU correctness row
 does not promote a GPU row. A typed GPU refusal is useful evidence for the
 capability matrix, but it is not GPU parity.
+
+Wave 12 promoted slices:
+
+- [x] **Class-weighted discriminant analysis:** LDA and QDA accept positive
+  per-class factors in sorted-label order and multiply them with sample
+  weights before moments and empirical priors. The independent oracle covers
+  arbitrary labels, probability values, QDA covariances, equivalence to
+  explicit sample weights, and malformed-weight refusals. Evidence is
+  `e0eed24` and `fortml-bench/results/wave12_parity.csv`.
+- [x] **Multi-output GP HPO:** exact ICM models expose a transactional,
+  bounded, deterministic multistart FortOpt L-BFGS-B adapter over kernel,
+  noise, coregionalization, and independent-output coordinates. The dense
+  NumPy LML oracle and explicit CUDA refusal are in
+  `555ba92` and `fortml-bench/results/wave12_parity.csv`.
+- [x] **Weighted neural checkpoint replay:** MLP checkpoints persist pending
+  microbatch weight mass with schema 12, validate malformed state
+  transactionally, and expose CPU support plus a typed CUDA boundary. The
+  independent persistence oracle is in `56a1bac` and the Wave 12 benchmark
+  lane.
 
 ## 2026-08 parity expansion backlog
 
