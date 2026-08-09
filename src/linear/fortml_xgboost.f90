@@ -28,6 +28,7 @@ module fortml_xgboost
     integer, parameter, public :: XGB_TREE_HIST = 2
     integer, parameter, public :: XGB_CATEGORICAL_NONE = 0
     integer, parameter, public :: XGB_CATEGORICAL_ORDERED = 1
+    integer, parameter, public :: XGB_CATEGORICAL_PARTITION = 2
     character(*), parameter, public :: XGB_MODEL_TEXT_MAGIC = &
         "FORTML_XGBOOST_TEXT"
     integer, parameter, public :: XGB_MODEL_TEXT_SCHEMA_VERSION = 5
@@ -99,8 +100,11 @@ module fortml_xgboost
         integer :: max_bin = 256
         !! Integer-coded categorical feature indices (one-based, sorted).
         !! The bounded ordered-gradient policy is selected with
-        !! `categorical_policy="ordered"`; categories beyond
-        !! `categorical_max_categories` are refused explicitly.
+        !! `categorical_policy="ordered"` uses the XGBoost ordered-gradient
+        !! prefix policy. `categorical_policy="partition"` exhaustively
+        !! enumerates nontrivial category subsets for small cardinalities;
+        !! categories beyond `categorical_max_categories` are refused
+        !! explicitly for both policies.
         character(len=16) :: categorical_policy = "none"
         integer :: categorical_max_categories = 8
         integer, allocatable :: categorical_features(:)
@@ -403,13 +407,13 @@ contains
         categorical_policy_code = parse_categorical_policy(settings%categorical_policy)
         if (categorical_policy_code < 0) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
-                "xgboost fit: categorical_policy must be none or ordered")
+                "xgboost fit: categorical_policy must be none, ordered, or partition")
             return
         end if
         if (categorical_policy_code == 0 .and. allocated(settings%categorical_features)) then
             if (size(settings%categorical_features) > 0) then
                 call status_set(status, FORTNUM_DOMAIN_ERROR, &
-                    "xgboost fit: categorical_features require categorical_policy=ordered")
+                    "xgboost fit: categorical_features require an enabled categorical policy")
                 return
             end if
         end if
@@ -456,14 +460,14 @@ contains
               .not. ieee_is_finite(settings%dart_skip_drop) .or. &
               settings%dart_skip_drop < 0.0_dp .or. settings%dart_skip_drop >= 1.0_dp .or. &
               settings%dart_max_drop < 0)) .or. &
-            (categorical_policy_code == XGB_CATEGORICAL_ORDERED .and. &
+            (categorical_policy_code >= XGB_CATEGORICAL_ORDERED .and. &
              (settings%categorical_max_categories < 2 .or. &
               settings%categorical_max_categories > XGB_MAX_CATEGORICAL_VALUES))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "xgboost fit: invalid dimensions or hyperparameters")
             return
         end if
-        if (categorical_policy_code == XGB_CATEGORICAL_ORDERED) then
+        if (categorical_policy_code >= XGB_CATEGORICAL_ORDERED) then
             if (.not. allocated(settings%categorical_features) .or. &
                 size(settings%categorical_features) < 1 .or. &
                 any(settings%categorical_features < 1) .or. &
@@ -496,7 +500,7 @@ contains
                 "xgboost fit: inputs must be finite or IEEE NaN and targets finite")
             return
         end if
-        if (categorical_policy_code == XGB_CATEGORICAL_ORDERED) then
+        if (categorical_policy_code >= XGB_CATEGORICAL_ORDERED) then
             if (.not. valid_categorical_values(x, settings%categorical_features, &
                     settings%categorical_max_categories)) then
                 call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
@@ -942,7 +946,7 @@ contains
         categorical_policy_code = parse_categorical_policy(settings%categorical_policy)
         if (categorical_policy_code < 0) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
-                "xgboost warm start: categorical_policy must be none or ordered")
+                "xgboost warm start: categorical_policy must be none, ordered, or partition")
             return
         end if
         is_ranking = self%objective_code == XGB_OBJECTIVE_RANK_PAIRWISE
@@ -965,7 +969,7 @@ contains
                 "xgboost warm start: objective, tree, sampling, or regularisation controls differ")
             return
         end if
-        if (categorical_policy_code == XGB_CATEGORICAL_ORDERED) then
+        if (categorical_policy_code >= XGB_CATEGORICAL_ORDERED) then
             if (.not. allocated(settings%categorical_features) .or. &
                 size(settings%categorical_features) /= size(self%categorical_features) .or. &
                 any(settings%categorical_features /= self%categorical_features)) then
@@ -1128,7 +1132,7 @@ contains
                 "xgboost warm start: training inputs are invalid")
             return
         end if
-        if (categorical_policy_code == XGB_CATEGORICAL_ORDERED) then
+        if (categorical_policy_code >= XGB_CATEGORICAL_ORDERED) then
             if (.not. valid_categorical_values(x, settings%categorical_features, &
                     settings%categorical_max_categories)) then
                 call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
@@ -2324,7 +2328,7 @@ contains
                 "xgboost predict_jvp: model, input, or output shape is invalid")
             return
         end if
-        if (self%categorical_policy_code == XGB_CATEGORICAL_ORDERED) then
+        if (self%categorical_policy_code >= XGB_CATEGORICAL_ORDERED) then
             call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
                 "xgboost predict_jvp: categorical feature tangents are discrete")
             return
@@ -2382,7 +2386,7 @@ contains
                 "xgboost predict_vjp: model, cotangent, or output shape is invalid")
             return
         end if
-        if (self%categorical_policy_code == XGB_CATEGORICAL_ORDERED) then
+        if (self%categorical_policy_code >= XGB_CATEGORICAL_ORDERED) then
             call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
                 "xgboost predict_vjp: categorical feature cotangents are discrete")
             return
@@ -2978,6 +2982,8 @@ contains
             name = "none"
         case (XGB_CATEGORICAL_ORDERED)
             name = "ordered"
+        case (XGB_CATEGORICAL_PARTITION)
+            name = "partition"
         case default
             name = "unfitted"
         end select
@@ -3101,7 +3107,7 @@ contains
                 "xgboost save_text: model contains invalid interaction groups")
             return
         end if
-        if (self%categorical_policy_code == XGB_CATEGORICAL_ORDERED) then
+        if (self%categorical_policy_code >= XGB_CATEGORICAL_ORDERED) then
             if (self%categorical_max_categories_value < 2 .or. &
                 size(self%categorical_features) < 1 .or. &
                 any(self%categorical_features < 1) .or. &
@@ -3113,7 +3119,7 @@ contains
             end if
         else if (size(self%categorical_features) /= 0) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
-                "xgboost save_text: categorical feature list requires ordered policy")
+                    "xgboost save_text: categorical feature list requires an enabled policy")
             return
         end if
         do i = 1, self%n_estimators
@@ -3310,7 +3316,7 @@ contains
             call xgb_read_i(unit, "categorical_item", candidate%categorical_features(i), ios)
             if (ios /= 0) goto 900
         end do
-        if (candidate%categorical_policy_code == XGB_CATEGORICAL_ORDERED) then
+        if (candidate%categorical_policy_code >= XGB_CATEGORICAL_ORDERED) then
             if (categorical_count < 1 .or. candidate%categorical_max_categories_value < 2 .or. &
                 any(candidate%categorical_features < 1) .or. &
                 any(candidate%categorical_features > candidate%n_inputs) .or. &
@@ -3513,7 +3519,8 @@ contains
         if (valid) then
             valid = (model%categorical_policy_code == XGB_CATEGORICAL_NONE .and. &
                 model%categorical_max_categories_value >= 0) .or. &
-                (model%categorical_policy_code == XGB_CATEGORICAL_ORDERED .and. &
+                ((model%categorical_policy_code == XGB_CATEGORICAL_ORDERED .or. &
+                  model%categorical_policy_code == XGB_CATEGORICAL_PARTITION) .and. &
                 model%categorical_max_categories_value >= 2)
         end if
         if (valid .and. model%booster_code == XGB_BOOSTER_DART) then
@@ -4478,6 +4485,7 @@ contains
         real(dp) :: best_right_lower, best_right_upper
         integer :: monotone
         integer :: n_categories, category_index, best_category_count
+        integer :: subset_code, max_subset_code, left_category_count
         logical :: best_missing_left, missing_left, best_is_categorical
 
         n_local = size(sample_index)
@@ -4567,6 +4575,93 @@ contains
                     end if
                 end do
                 if (n_categories < 2) cycle
+                if (parse_categorical_policy(options%categorical_policy) == &
+                    XGB_CATEGORICAL_PARTITION) then
+                    ! Exhaustive partitions are canonicalised by always
+                    ! placing the first category in the left child. This
+                    ! removes complement duplicates while retaining every
+                    ! nontrivial subset for the bounded small-cardinality
+                    ! contract. Sort by code before enumeration so the
+                    ! selected partition is independent of row order.
+                    call sort_category_values(category_values_local, category_counts_local, &
+                        category_gradients, category_hessians, n_categories)
+                    max_subset_code = 2**(n_categories - 1) - 1
+                    do subset_code = 0, max_subset_code - 1
+                        left_gradient = category_gradients(1)
+                        left_hessian = category_hessians(1)
+                        left_count = category_counts_local(1)
+                        left_category_count = 1
+                        do category_index = 2, n_categories
+                            if (iand(subset_code, ishft(1, category_index - 2)) /= 0) then
+                                left_gradient = left_gradient + category_gradients(category_index)
+                                left_hessian = left_hessian + category_hessians(category_index)
+                                left_count = left_count + category_counts_local(category_index)
+                                left_category_count = left_category_count + 1
+                            end if
+                        end do
+                        do direction = 1, merge(2, 1, &
+                                missing_code_for_options(options) == XGB_MISSING_LEARN)
+                            missing_left = direction == 1
+                            if (missing_code_for_options(options) == XGB_MISSING_RIGHT) then
+                                missing_left = .false.
+                            else if (missing_code_for_options(options) == XGB_MISSING_LEFT) then
+                                missing_left = .true.
+                            end if
+                            if (missing_left) then
+                                if (left_count + n_missing < options%min_samples_leaf .or. &
+                                    n_local - left_count < options%min_samples_leaf) cycle
+                                if (left_hessian + missing_hessian < options%min_child_weight .or. &
+                                    total_hessian - left_hessian - missing_hessian < options%min_child_weight) cycle
+                                candidate_left_weight = bounded_leaf_weight(left_gradient + missing_gradient, &
+                                    left_hessian + missing_hessian, options, lower_bound, upper_bound)
+                                candidate_right_weight = bounded_leaf_weight(total_gradient - left_gradient - &
+                                    missing_gradient, total_hessian - left_hessian - missing_hessian, options, &
+                                    lower_bound, upper_bound)
+                                candidate_gain = 0.5_dp*(regularized_leaf_score(left_gradient + missing_gradient, &
+                                    left_hessian + missing_hessian, options) + regularized_leaf_score( &
+                                    total_gradient - left_gradient - missing_gradient, total_hessian - &
+                                    left_hessian - missing_hessian, options) - regularized_leaf_score( &
+                                    total_gradient, total_hessian, options)) - options%gamma
+                            else
+                                if (left_count < options%min_samples_leaf .or. &
+                                    n_local - left_count + n_missing < options%min_samples_leaf) cycle
+                                if (left_hessian < options%min_child_weight .or. &
+                                    total_hessian - left_hessian - missing_hessian < options%min_child_weight) cycle
+                                candidate_left_weight = bounded_leaf_weight(left_gradient, left_hessian, options, &
+                                    lower_bound, upper_bound)
+                                candidate_right_weight = bounded_leaf_weight(total_gradient - left_gradient - &
+                                    missing_gradient, total_hessian - left_hessian - missing_hessian, options, &
+                                    lower_bound, upper_bound)
+                                candidate_gain = 0.5_dp*(regularized_leaf_score(left_gradient, left_hessian, options) + &
+                                    regularized_leaf_score(total_gradient - left_gradient - missing_gradient, &
+                                    total_hessian - left_hessian - missing_hessian, options) - regularized_leaf_score( &
+                                    total_gradient, total_hessian, options)) - options%gamma
+                            end if
+                            if (candidate_gain > best_gain) then
+                                best_gain = candidate_gain
+                                best_feature = feature
+                                best_threshold = 0.0_dp
+                                best_missing_left = missing_left
+                                best_is_categorical = .true.
+                                best_category_count = left_category_count
+                                best_categories(1) = category_values_local(1)
+                                left_category_count = 1
+                                do category_index = 2, n_categories
+                                    if (iand(subset_code, ishft(1, category_index - 2)) /= 0) then
+                                        left_category_count = left_category_count + 1
+                                        best_categories(left_category_count) = &
+                                            category_values_local(category_index)
+                                    end if
+                                end do
+                                best_left_lower = lower_bound
+                                best_left_upper = upper_bound
+                                best_right_lower = lower_bound
+                                best_right_upper = upper_bound
+                            end if
+                        end do
+                    end do
+                    cycle
+                end if
                 do i = 1, n_categories
                     category_order(i) = i
                     category_scores(i) = category_gradients(i) / max(category_hessians(i), 1.0e-12_dp)
@@ -5113,6 +5208,8 @@ contains
             code = XGB_CATEGORICAL_NONE
         case ("ordered", "ordered-gradient", "gradient")
             code = XGB_CATEGORICAL_ORDERED
+        case ("partition", "exhaustive", "one-hot", "onehot")
+            code = XGB_CATEGORICAL_PARTITION
         case default
             code = -1
         end select
@@ -5182,7 +5279,7 @@ contains
         integer, intent(in) :: feature
 
         value = .false.
-        if (parse_categorical_policy(options%categorical_policy) /= XGB_CATEGORICAL_ORDERED) return
+        if (parse_categorical_policy(options%categorical_policy) < XGB_CATEGORICAL_ORDERED) return
         if (.not. allocated(options%categorical_features)) return
         value = any(options%categorical_features == feature)
     end function is_categorical_feature
@@ -5218,6 +5315,37 @@ contains
             order(j + 1) = key
         end do
     end subroutine sort_category_order
+
+    subroutine sort_category_values(values, counts, gradients, hessians, n_values)
+        !! Stable insertion sort for the exhaustive-partition category table.
+        !! Code order is part of the deterministic tree contract and keeps
+        !! tied gains independent of the order in which rows were supplied.
+        integer, intent(inout) :: values(:), counts(:)
+        real(dp), intent(inout) :: gradients(:), hessians(:)
+        integer, intent(in) :: n_values
+        integer :: i, j, value_key, count_key
+        real(dp) :: gradient_key, hessian_key
+
+        do i = 2, n_values
+            value_key = values(i)
+            count_key = counts(i)
+            gradient_key = gradients(i)
+            hessian_key = hessians(i)
+            j = i - 1
+            do while (j >= 1)
+                if (values(j) <= value_key) exit
+                values(j + 1) = values(j)
+                counts(j + 1) = counts(j)
+                gradients(j + 1) = gradients(j)
+                hessians(j + 1) = hessians(j)
+                j = j - 1
+            end do
+            values(j + 1) = value_key
+            counts(j + 1) = count_key
+            gradients(j + 1) = gradient_key
+            hessians(j + 1) = hessian_key
+        end do
+    end subroutine sort_category_values
 
     integer function missing_code_for_options(options) result(code)
         type(xgboost_options_t), intent(in) :: options
@@ -5261,7 +5389,7 @@ contains
         integer :: j, i, feature
 
         valid = .true.
-        if (model%categorical_policy_code /= XGB_CATEGORICAL_ORDERED) return
+        if (model%categorical_policy_code < XGB_CATEGORICAL_ORDERED) return
         if (.not. allocated(model%categorical_features)) then
             valid = .false.
             return
