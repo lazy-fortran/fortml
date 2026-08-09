@@ -23,8 +23,8 @@ the requested pair is smooth and finite. A refusal is a typed
 | RBF | Yes | Yes, including analytic mixed-observation HVPs | Yes | none |
 | ARD RBF | Yes | Yes, including analytic mixed-observation HVPs for log variance and every log lengthscale | Yes | CUDA covariance/factorization remains `FORTNUM_NOT_IMPLEMENTED` |
 | Matérn 1/2 | Value-only, derivative blocks are singular at coincident points | Value-only and noncoincident gradient/JVP/VJP; mixed HVP refusal | No at coincident query blocks | `FORTNUM_DOMAIN_ERROR` at coincidence |
-| Matérn 3/2 | Yes | Gradient/JVP/VJP; mixed HVP refusal | Yes away from coincidence | Nonzero directional third derivative at coincidence is `FORTNUM_NOT_IMPLEMENTED` |
-| Matérn 5/2 | Yes | Gradient/JVP/VJP; value-only HVP is a FortSym-generated leaf; mixed HVP refusal | Yes | mixed HVP `FORTNUM_NOT_IMPLEMENTED` |
+| Matérn 3/2 | Yes | Gradient/JVP/VJP and analytic mixed-observation HVP over both log kernel coordinates | Yes away from coincidence | Nonzero directional third derivative at coincidence is `FORTNUM_NOT_IMPLEMENTED` |
+| Matérn 5/2 | Yes | Gradient/JVP/VJP and analytic mixed-observation HVP over both log kernel coordinates; value-only HVP is a FortSym-generated leaf | Yes | CUDA covariance/factorization remains `FORTNUM_NOT_IMPLEMENTED` |
 | Periodic | Yes | Gradient/JVP/VJP and analytic mixed-observation HVP for all three logarithmic parameters | Yes | CUDA covariance/factorization remains `FORTNUM_NOT_IMPLEMENTED` |
 | Rational-quadratic, cosine | Yes | Gradient/JVP/VJP; mixed HVP refusal | Yes | mixed HVP `FORTNUM_NOT_IMPLEMENTED` |
 | Local-periodic | Yes, including coincident radial limits | Gradient/JVP/VJP; mixed HVP refusal | Yes, including coincident query blocks | mixed HVP `FORTNUM_NOT_IMPLEMENTED`; CUDA covariance graph is not linked |
@@ -42,15 +42,18 @@ four logarithmic polynomial parameters. `log_marginal_likelihood_vjp` and its
 packed kernel/noise pullback. For value-only observation lists,
 `hyperparameter_hvp` uses the analytic kernel parameter-HVP and differentiated
 Cholesky solve. For mixed value/first-derivative lists, the HVP is analytic for
-RBF, periodic, linear, constant, polynomial, and sums/products built entirely from those leaves;
+RBF, Matérn 3/2, Matérn 5/2, periodic, linear, constant, polynomial, and
+sums/products built entirely from those leaves;
 the implementation differentiates the dense covariance, Cholesky solve, and
 each parameter covariance block in one direction. Polynomial mixed HVPs now
 use a closed-form positive-base expression, including the degree-log tangent
 at degree one, and are checked against an independent finite-difference
-likelihood oracle. Matérn, rational-quadratic, cosine, user-formula,
-and other leaves return `FORTNUM_NOT_IMPLEMENTED` for a mixed HVP until their
-required second input/parameter products have generated kernels and independent
-oracles. The spectral-mixture leaf now carries an exact four-jet through each
+likelihood oracle. Rational-quadratic, cosine, user-formula, and other leaves
+return `FORTNUM_NOT_IMPLEMENTED` for a mixed HVP until their required second
+input/parameter products have generated kernels and independent oracles. The
+Matérn 3/2 and 5/2 leaves use exact radial polynomial products plus the
+FortSym-generated value/HVP kernels; coincident derivative blocks use their
+finite analytic limits. The spectral-mixture leaf now carries an exact four-jet through each
 separable factor and provides the same mixed HVP contract on the CPU reference
 path. A mixed HVP never silently central-differences the likelihood gradient.
 The periodic leaf carries the radial fourth-input term required by its
@@ -92,7 +95,8 @@ touching their outputs. `test_derivative_gp_device` checks both refusal and
 CPU-dispatch contracts.
 
 The independent behavior gates are `test_derivative_gp_products`,
-`test_derivative_gp_periodic_hvp`, `test_derivative_gp_spectral_mixture`,
+`test_derivative_gp_matern_hvp`, `test_derivative_gp_periodic_hvp`,
+`test_derivative_gp_spectral_mixture`,
 `test_derivative_gp_device`, and `test_derivative_gp_capabilities`. The
 product test compares dense covariance, parameter products, query JVP/VJP,
 and adjoint identities against independent finite-difference oracles. The
@@ -114,9 +118,9 @@ generation task remains tracked in the roadmap.
 `test_fortsym_matern52` independently checks the generated Matérn-5/2
 value/JVP/VJP/HVP leaf against closed-form values and central differences of
 the value gradient. The leaf records FortSym revision `873d33f` (80 IR nodes,
-65 compound operations) and is used by the ordinary kernel parameter-HVP path;
-mixed value/first-derivative likelihood HVPs still return the typed refusal
-until their fourth input/parameter products are generated.
+65 compound operations) and is used by the ordinary kernel parameter-HVP path.
+`test_derivative_gp_matern_hvp` independently checks both Matérn
+mixed-observation likelihood HVPs and their typed CUDA prediction refusal.
 The spectral-mixture derivative-GP gate independently assembles its dense
 two-dimensional value/first-derivative covariance blocks and checks packed
 parameter gradients, posterior covariance, query JVP/VJP, and the mixed HVP

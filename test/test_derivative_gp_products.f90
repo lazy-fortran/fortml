@@ -155,8 +155,8 @@ contains
 
     subroutine test_likelihood_vjp_and_hvp_boundaries(failures)
         !! Check the scalar reverse product against an independently assembled
-        !! finite-difference likelihood oracle, and ensure a mixed Matern
-        !! second product refuses explicitly rather than finite-differencing.
+        !! finite-difference likelihood oracle, including the smooth Matern
+        !! mixed-observation second product.
         integer, intent(inout) :: failures
         type(gp_derivative_regression_t) :: model
         type(kernel_t) :: kernel
@@ -212,9 +212,9 @@ contains
         call model%fit(x, [0, 1, 0], y, kernel, 0.07_dp, status, jitter=1.0e-10_dp)
         direction = [0.21_dp, -0.13_dp, 0.17_dp]
         call model%hyperparameter_hvp(direction, hvp, status)
-        if (status%code /= FORTNUM_NOT_IMPLEMENTED) then
+        if (.not. status_ok(status)) then
             write (error_unit, '(a,i0)') &
-                "FAIL [derivative GP mixed HVP] unsupported Matern refusal code=", status%code
+                "FAIL [derivative GP mixed HVP] Matern product code=", status%code
             failures = failures + 1
         end if
     end subroutine test_likelihood_vjp_and_hvp_boundaries

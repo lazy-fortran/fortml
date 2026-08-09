@@ -6,6 +6,8 @@ module fortml_derivative_gaussian_process
         FORTNUM_DOMAIN_ERROR, FORTNUM_CONVERGENCE_ERROR, FORTNUM_NOT_IMPLEMENTED
     use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU, &
         FORTML_DEVICE_CUDA
+    use fortml_generated_matern32_products, only: fortml_matern32_hvp
+    use fortml_generated_matern52_products, only: fortml_matern52_hvp
     use fortml_kernels, only: kernel_t, clone_kernel_into, KERNEL_RBF, KERNEL_MATERN12, &
         KERNEL_MATERN32, KERNEL_MATERN52, KERNEL_LINEAR, KERNEL_CONSTANT, &
         KERNEL_WHITE_NOISE, KERNEL_SUM, KERNEL_PRODUCT, KERNEL_USER, &
@@ -1851,6 +1853,11 @@ contains
                 parameter, direction, covariance, covariance_dot, covariance_parameter, &
                 covariance_parameter_dot, status)
             return
+        case (KERNEL_MATERN32, KERNEL_MATERN52)
+            call matern_derivative_parameter_hvp(kernel, x1, component1, x2, component2, &
+                parameter, direction, covariance, covariance_dot, covariance_parameter, &
+                covariance_parameter_dot, status)
+            return
         case (KERNEL_SPECTRAL_MIXTURE)
             call spectral_derivative_parameter_hvp(kernel, x1, component1, x2, component2, &
                 parameter, direction, covariance, covariance_dot, covariance_parameter, &
@@ -1867,6 +1874,250 @@ contains
             return
         end select
     end subroutine derivative_covariance_parameter_hvp
+
+    subroutine matern_derivative_parameter_hvp(kernel, x1, component1, x2, component2, &
+            parameter, direction, covariance, covariance_dot, covariance_parameter, &
+            covariance_parameter_dot, status)
+        !! Analytic parameter/HVP products for mixed Matérn observations.
+        !!
+        !! A radial covariance is written as ``f(r)`` with ``r=||x1-x2||``.
+        !! The generated Matérn value kernels provide the exact value and
+        !! parameter tangent; the radial first and second derivatives use the
+        !! same closed-form polynomials and their exact parameter tangents.
+        !! The observation blocks then follow from
+        !!
+        !!   C10 = s1*d_i, C01 = -s1*d_j,
+        !!   C11 = -(s1*delta_ij + s2*d_i*d_j),
+        !!
+        !! where ``s1=f'(r)/r`` and ``s2=(f''(r)-s1)/r**2``.  At coincidence
+        !! only ``s1=f''(0)`` is needed; this avoids a removable zero divided
+        !! by zero and preserves the finite Matérn derivative covariance.
+        !! No finite difference is used in this production path.
+        type(kernel_t), intent(in) :: kernel
+        real(dp), intent(in) :: x1(:), x2(:), direction(:)
+        integer, intent(in) :: component1, component2, parameter
+        real(dp), intent(out) :: covariance, covariance_dot
+        real(dp), intent(out) :: covariance_parameter, covariance_parameter_dot
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: difference(size(x1)), squared_distance, distance
+        real(dp) :: f(0:2), f_dot(0:2), f_parameter(0:2), f_parameter_dot(0:2)
+        real(dp) :: scale, scale_dot, scale_parameter, scale_parameter_dot
+        real(dp) :: coefficient, coefficient_dot, coefficient_parameter
+        real(dp) :: coefficient_parameter_dot
+        real(dp) :: log_variance, log_lengthscale
+        integer :: i, j
+
+        covariance = 0.0_dp
+        covariance_dot = 0.0_dp
+        covariance_parameter = 0.0_dp
+        covariance_parameter_dot = 0.0_dp
+        if (kernel%parameter_count() /= 2 .or. size(x1) /= size(x2) .or. &
+            size(direction) /= 2 .or. parameter < 1 .or. parameter > 2 .or. &
+            component1 < 0 .or. component2 < 0 .or. component1 > size(x1) .or. &
+            component2 > size(x2) .or. any(.not. ieee_is_finite(x1)) .or. &
+            any(.not. ieee_is_finite(x2)) .or. any(.not. ieee_is_finite(direction))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "derivative GP Matern HVP: input, component, or parameter is invalid")
+            return
+        end if
+        if (kernel%kind /= KERNEL_MATERN32 .and. kernel%kind /= KERNEL_MATERN52) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "derivative GP Matern HVP: kernel kind is invalid")
+            return
+        end if
+
+        difference = x1 - x2
+        squared_distance = dot_product(difference, difference)
+        distance = sqrt(squared_distance)
+        log_variance = kernel%log_parameters(1)
+        log_lengthscale = kernel%log_parameters(2)
+        call matern_radial_parameter_terms(kernel%kind, distance, log_variance, &
+            log_lengthscale, direction, parameter, f, f_dot, f_parameter, &
+            f_parameter_dot, status)
+        if (status%code /= FORTNUM_OK) return
+
+        covariance = f(0)
+        covariance_dot = f_dot(0)
+        covariance_parameter = f_parameter(0)
+        covariance_parameter_dot = f_parameter_dot(0)
+        if (distance == 0.0_dp) then
+            ! The Matérn first radial derivative is odd and vanishes at the
+            ! origin, whereas f'(r)/r tends to f''(0).
+            scale = f(2)
+            scale_dot = f_dot(2)
+            scale_parameter = f_parameter(2)
+            scale_parameter_dot = f_parameter_dot(2)
+            if (component1 == 0 .and. component2 == 0) then
+                continue
+            else if (component1 > 0 .and. component2 == 0) then
+                covariance = 0.0_dp
+                covariance_dot = 0.0_dp
+                covariance_parameter = 0.0_dp
+                covariance_parameter_dot = 0.0_dp
+            else if (component1 == 0 .and. component2 > 0) then
+                covariance = 0.0_dp
+                covariance_dot = 0.0_dp
+                covariance_parameter = 0.0_dp
+                covariance_parameter_dot = 0.0_dp
+            else
+                covariance = -scale*merge(1.0_dp, 0.0_dp, component1 == component2)
+                covariance_dot = -scale_dot*merge(1.0_dp, 0.0_dp, component1 == component2)
+                covariance_parameter = -scale_parameter* &
+                    merge(1.0_dp, 0.0_dp, component1 == component2)
+                covariance_parameter_dot = -scale_parameter_dot* &
+                    merge(1.0_dp, 0.0_dp, component1 == component2)
+            end if
+            call status_set(status, FORTNUM_OK, "")
+            return
+        end if
+
+        scale = f(1)/distance
+        scale_dot = f_dot(1)/distance
+        scale_parameter = f_parameter(1)/distance
+        scale_parameter_dot = f_parameter_dot(1)/distance
+        coefficient = (f(2) - scale)/squared_distance
+        coefficient_dot = (f_dot(2) - scale_dot)/squared_distance
+        coefficient_parameter = (f_parameter(2) - scale_parameter)/squared_distance
+        coefficient_parameter_dot = (f_parameter_dot(2) - scale_parameter_dot)/ &
+            squared_distance
+
+        if (component1 == 0 .and. component2 == 0) then
+            continue
+        else if (component1 > 0 .and. component2 == 0) then
+            covariance = scale*difference(component1)
+            covariance_dot = scale_dot*difference(component1)
+            covariance_parameter = scale_parameter*difference(component1)
+            covariance_parameter_dot = scale_parameter_dot*difference(component1)
+        else if (component1 == 0 .and. component2 > 0) then
+            covariance = -scale*difference(component2)
+            covariance_dot = -scale_dot*difference(component2)
+            covariance_parameter = -scale_parameter*difference(component2)
+            covariance_parameter_dot = -scale_parameter_dot*difference(component2)
+        else
+            i = component1
+            j = component2
+            covariance = -(scale*merge(1.0_dp, 0.0_dp, i == j) + &
+                coefficient*difference(i)*difference(j))
+            covariance_dot = -(scale_dot*merge(1.0_dp, 0.0_dp, i == j) + &
+                coefficient_dot*difference(i)*difference(j))
+            covariance_parameter = -(scale_parameter*merge(1.0_dp, 0.0_dp, i == j) + &
+                coefficient_parameter*difference(i)*difference(j))
+            covariance_parameter_dot = -(scale_parameter_dot* &
+                merge(1.0_dp, 0.0_dp, i == j) + coefficient_parameter_dot* &
+                difference(i)*difference(j))
+        end if
+        if (.not. ieee_is_finite(covariance) .or. .not. ieee_is_finite(covariance_dot) .or. &
+            .not. ieee_is_finite(covariance_parameter) .or. &
+            .not. ieee_is_finite(covariance_parameter_dot)) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "derivative GP Matern HVP: nonfinite analytic product")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine matern_derivative_parameter_hvp
+
+    subroutine matern_radial_parameter_terms(kind, distance, log_variance, log_lengthscale, &
+            direction, parameter, f, f_dot, f_parameter, f_parameter_dot, status)
+        !! Radial f, f', f'' and their parameter/directional products.
+        !! ``P_n`` denotes the dimensionless polynomial in
+        !! ``f^(n)=exp(lv) g^n exp(-z) P_n(z)``, with ``g=sqrt(nu)/l``.
+        integer, intent(in) :: kind, parameter
+        real(dp), intent(in) :: distance, log_variance, log_lengthscale, direction(:)
+        real(dp), intent(out) :: f(0:2), f_dot(0:2), f_parameter(0:2)
+        real(dp), intent(out) :: f_parameter_dot(0:2)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: z, variance, g, base, p, p_prime, p_second, q, q_prime, r
+        real(dp) :: generated_value, generated_dot, distance_bar, distance_bar_dot
+        real(dp) :: generated_lv_bar, generated_lv_bar_dot, generated_ll_bar
+        real(dp) :: generated_ll_bar_dot
+        integer :: n
+
+        f = 0.0_dp
+        f_dot = 0.0_dp
+        f_parameter = 0.0_dp
+        f_parameter_dot = 0.0_dp
+        if (parameter < 1 .or. parameter > 2 .or. size(direction) /= 2 .or. &
+            distance < 0.0_dp .or. any(.not. ieee_is_finite(direction))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "derivative GP Matern radial HVP: shape or value is invalid")
+            return
+        end if
+        variance = exp(log_variance)
+        if (kind == KERNEL_MATERN32) then
+            g = sqrt(3.0_dp)*exp(-log_lengthscale)
+            call fortml_matern32_hvp(distance, 0.0_dp, log_variance, direction(1), &
+                log_lengthscale, direction(2), generated_value, generated_dot, 1.0_dp, &
+                distance_bar, distance_bar_dot, generated_lv_bar, generated_lv_bar_dot, &
+                generated_ll_bar, generated_ll_bar_dot)
+        else if (kind == KERNEL_MATERN52) then
+            g = sqrt(5.0_dp)*exp(-log_lengthscale)
+            call fortml_matern52_hvp(distance, 0.0_dp, log_variance, direction(1), &
+                log_lengthscale, direction(2), generated_value, generated_dot, 1.0_dp, &
+                distance_bar, distance_bar_dot, generated_lv_bar, generated_lv_bar_dot, &
+                generated_ll_bar, generated_ll_bar_dot)
+        else
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "derivative GP Matern radial HVP: kernel kind is invalid")
+            return
+        end if
+        f(0) = generated_value
+        f_dot(0) = generated_dot
+        if (parameter == 1) then
+            f_parameter(0) = generated_lv_bar
+            f_parameter_dot(0) = generated_lv_bar_dot
+        else
+            f_parameter(0) = generated_ll_bar
+            f_parameter_dot(0) = generated_ll_bar_dot
+        end if
+
+        z = g*distance
+        do n = 1, 2
+            if (kind == KERNEL_MATERN32) then
+                select case (n)
+                case (1)
+                    p = -z
+                    p_prime = -1.0_dp
+                    p_second = 0.0_dp
+                case (2)
+                    p = z - 1.0_dp
+                    p_prime = 1.0_dp
+                    p_second = 0.0_dp
+                end select
+            else
+                select case (n)
+                case (1)
+                    p = -z*(1.0_dp + z)/3.0_dp
+                    p_prime = -(1.0_dp + 2.0_dp*z)/3.0_dp
+                    p_second = -2.0_dp/3.0_dp
+                case (2)
+                    p = (z*z - z - 1.0_dp)/3.0_dp
+                    p_prime = (2.0_dp*z - 1.0_dp)/3.0_dp
+                    p_second = 2.0_dp/3.0_dp
+                end select
+            end if
+            base = variance*g**n*exp(-z)
+            f(n) = base*p
+            q = (z - real(n, dp))*p - z*p_prime
+            q_prime = p + (z - real(n, dp) - 1.0_dp)*p_prime - z*p_second
+            r = (z - real(n, dp))*q - z*q_prime
+            f_dot(n) = direction(1)*f(n) + direction(2)*base*q
+            if (parameter == 1) then
+                f_parameter(n) = f(n)
+                f_parameter_dot(n) = direction(1)*f(n) + direction(2)*base*q
+            else
+                f_parameter(n) = base*q
+                f_parameter_dot(n) = direction(1)*base*q + direction(2)*base*r
+            end if
+        end do
+        if (any(.not. ieee_is_finite(f)) .or. any(.not. ieee_is_finite(f_dot)) .or. &
+            any(.not. ieee_is_finite(f_parameter)) .or. &
+            any(.not. ieee_is_finite(f_parameter_dot))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "derivative GP Matern radial HVP: nonfinite analytic product")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine matern_radial_parameter_terms
 
     subroutine periodic_derivative_parameter_hvp(kernel, x1, component1, x2, component2, &
             parameter, direction, covariance, covariance_dot, covariance_parameter, &
