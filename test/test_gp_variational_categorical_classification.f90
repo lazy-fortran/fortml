@@ -225,17 +225,25 @@ program test_gp_variational_categorical_classification
     device%available = .true.
     call model%predict_proba_device(device, x, probabilities_plus, status)
     call check(status%code == FORTNUM_NOT_IMPLEMENTED, "CUDA probability refusal", failures)
+    call check(maxval(abs(probabilities_plus)) == 0.0_dp, "CUDA probability output cleared", failures)
     call model%predict_log_proba_device(device, x, log_probabilities_plus, status)
     call check(status%code == FORTNUM_NOT_IMPLEMENTED, "CUDA log-probability refusal", failures)
+    call check(maxval(abs(log_probabilities_plus)) == 0.0_dp, &
+        "CUDA log-probability output cleared", failures)
     call model%predict_proba_parameter_vjp_device(device, x, probabilities_bar, parameter_bar, status)
     call check(status%code == FORTNUM_NOT_IMPLEMENTED, "CUDA parameter refusal", failures)
+    call check(maxval(abs(parameter_bar)) == 0.0_dp, "CUDA parameter output cleared", failures)
     call model%predict_log_proba_parameter_vjp_device(device, x, log_probabilities_bar, &
         log_parameter_bar, status)
     call check(status%code == FORTNUM_NOT_IMPLEMENTED, "CUDA log-parameter refusal", failures)
+    call check(maxval(abs(log_parameter_bar)) == 0.0_dp, &
+        "CUDA log-parameter output cleared", failures)
     call model%predict_proba_input_vjp_device(device, x, probabilities_bar, x_bar, status)
     call check(status%code == FORTNUM_NOT_IMPLEMENTED, "CUDA input refusal", failures)
+    call check(maxval(abs(x_bar)) == 0.0_dp, "CUDA input output cleared", failures)
     call model%predict_log_proba_input_vjp_device(device, x, log_probabilities_bar, log_x_bar, status)
     call check(status%code == FORTNUM_NOT_IMPLEMENTED, "CUDA log-input refusal", failures)
+    call check(maxval(abs(log_x_bar)) == 0.0_dp, "CUDA log-input output cleared", failures)
     call model%elbo_device(device, x, labels, value, status)
     call check(status%code == FORTNUM_NOT_IMPLEMENTED, "CUDA ELBO refusal", failures)
 
