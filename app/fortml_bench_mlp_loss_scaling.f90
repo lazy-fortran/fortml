@@ -7,7 +7,7 @@ program fortml_bench_mlp_loss_scaling
     use fortml_mlp_training, only: mlp_loss_scale_state_t, mlp_train, &
         mlp_training_options_t, mlp_training_state_t, MLP_OPTIMIZER_SGD, &
         mlp_training_checkpoint_t, MLP_PRECISION_FP32, MLP_PRECISION_FP16, &
-        MLP_PRECISION_BF16, MLP_EVENT_UPDATE_SKIPPED
+        MLP_PRECISION_BF16, MLP_PRECISION_FP64, MLP_EVENT_UPDATE_SKIPPED
     implicit none
 
     type(mlp_loss_scale_state_t) :: scaler
