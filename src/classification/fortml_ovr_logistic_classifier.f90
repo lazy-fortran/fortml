@@ -38,6 +38,7 @@ module fortml_ovr_logistic_classifier
     contains
         procedure, public :: fit => ovr_logistic_fit
         procedure, public :: partial_fit => ovr_logistic_partial_fit
+        procedure, public :: warm_start => ovr_logistic_partial_fit
         procedure, public :: decision_function => ovr_logistic_decision
         procedure, public :: predict_proba => ovr_logistic_predict_proba
         procedure, public :: predict_proba_device => ovr_logistic_predict_proba_device

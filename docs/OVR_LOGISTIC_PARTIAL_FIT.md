@@ -17,6 +17,9 @@ changing the fixed-state prediction products.
         call model%predict_proba(x_query, probabilities, status)
     end if
 
+The warm_start binding is an explicit alias for partial_fit when an
+application names the continuation operation rather than the batch API.
+
 The optional classes argument is required only when the first batch does
 not contain at least two distinct labels. It must be strictly increasing.
 Every later batch must use the initialized vocabulary without changes. A first batch that does
