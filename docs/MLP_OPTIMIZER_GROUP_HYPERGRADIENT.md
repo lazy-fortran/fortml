@@ -2,7 +2,8 @@
 
 `fortml_mlp_optimizer_group_hypergradient` exposes the production trainer's
 contiguous optimizer-group update rule to FortOpt hyperparameter search. The
-fixed full-batch SGD trajectory packs
+fixed full-batch SGD trajectory (and the coupled-L2 Adam variant described in
+[`MLP_ADAM_OPTIMIZER_GROUP_HYPERGRADIENT.md`](MLP_ADAM_OPTIMIZER_GROUP_HYPERGRADIENT.md)) packs
 
 ```text
 [ log(learning_rate), log(l2), log(multiplier_1), ..., log(multiplier_g) ]
@@ -20,7 +21,8 @@ kind and integer warm-up/total-update counts are fixed metadata.
 Group names and ranges are discrete metadata captured at initialization.
 Every update uses the same post-optimizer scaling as `mlp_train`. Parameters in
 group `i` receive `multiplier_i` times the shared SGD delta, while uncovered
-parameters retain multiplier one. The outer coordinates are differentiable
+parameters retain multiplier one. The Adam variant applies the same group
+scales after bias-corrected moment updates. The outer coordinates are differentiable
 through the MLP analytic HVP, the learning rate, L2, and every group
 multiplier. `value_gradient`, `jvp`, `vjp`, and the FortOpt bounded L-BFGS-B
 adapter share one deterministic objective. No finite-difference optimizer
@@ -34,8 +36,9 @@ global-norm clipping order as `mlp_train`, after the L2 term and before grouped
 scaling. The packed derivatives propagate through the clipped branch for a
 fixed active set. A trajectory that lands on the clipping boundary returns a
 typed `FORTNUM_NOT_IMPLEMENTED` instead of assigning a false derivative. The
-clip norm itself is not an outer coordinate. Momentum, Adam-family state, and
-minibatch cursors remain separate capability boundaries. Cosine, linear
+clip norm itself is not an outer coordinate. Momentum beyond Adam, other
+Adam-family state, and minibatch cursors remain separate capability boundaries.
+Cosine, linear
 warm-up, warm-up/cosine, and one-cycle rates use the schedule's analytic
 `rate_with_full_derivatives` path on CPU. Plateau schedules and resident CUDA
 group state return typed

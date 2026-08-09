@@ -27,7 +27,7 @@ module fortml_mlp_optimizer_group_hypergradient
         MLP_SCHEDULE_CONSTANT, MLP_SCHEDULE_COSINE_DECAY, MLP_SCHEDULE_WARMUP_COSINE, &
         MLP_SCHEDULE_EXPONENTIAL_DECAY, MLP_SCHEDULE_PLATEAU, MLP_SCHEDULE_ONE_CYCLE
     use fortml_mlp_training, only: mlp_loss_value_gradient, mlp_loss_hvp, &
-        mlp_optimizer_group_t, MLP_OPTIMIZER_SGD
+        mlp_optimizer_group_t, MLP_OPTIMIZER_SGD, MLP_OPTIMIZER_ADAM
     use fortopt_objective, only: objective_t
     use fortopt_lbfgsb, only: lbfgsb_t, lbfgsb_options_t, lbfgsb_result_t
     implicit none
@@ -42,6 +42,9 @@ module fortml_mlp_optimizer_group_hypergradient
     integer, parameter, public :: MLP_OPTIMIZER_GROUP_LOG_PEAK_FRACTION = 3
     integer, parameter, public :: MLP_OPTIMIZER_GROUP_LOG_FINAL_FRACTION = 4
     integer, parameter, public :: MLP_OPTIMIZER_GROUP_OPTIMIZER = MLP_OPTIMIZER_SGD
+    !! The group trajectory follows the production trainer's post-update
+    !! multiplier contract for either plain SGD or coupled-L2 Adam.
+    integer, parameter, public :: MLP_OPTIMIZER_GROUP_ADAM = MLP_OPTIMIZER_ADAM
     real(dp), parameter :: LOG_PARAMETER_MIN = -40.0_dp
     real(dp), parameter :: LOG_PARAMETER_MAX = 40.0_dp
 
@@ -49,6 +52,7 @@ module fortml_mlp_optimizer_group_hypergradient
         integer :: parameter_count = 0
         integer :: group_count = 0
         integer :: inner_steps = 0
+        integer :: optimizer = MLP_OPTIMIZER_GROUP_OPTIMIZER
         integer :: log_learning_rate_index = MLP_OPTIMIZER_GROUP_LOG_LEARNING_RATE
         integer :: log_l2_index = MLP_OPTIMIZER_GROUP_LOG_L2
         integer :: first_log_multiplier_index = MLP_OPTIMIZER_GROUP_FIRST_LOG_MULTIPLIER
@@ -63,8 +67,14 @@ module fortml_mlp_optimizer_group_hypergradient
         integer :: steps = 8
         real(dp) :: learning_rate = 1.0e-2_dp
         real(dp) :: l2 = 1.0e-4_dp
+        !! Adam moment coefficients are fixed trajectory metadata unless an
+        !! outer method explicitly exposes them in a future layout revision.
+        real(dp) :: beta1 = 0.9_dp
+        real(dp) :: beta2 = 0.999_dp
+        real(dp) :: epsilon = 1.0e-8_dp
         type(mlp_learning_rate_schedule_t) :: schedule
         type(mlp_optimizer_group_t), allocatable :: groups(:)
+        integer :: optimizer = MLP_OPTIMIZER_GROUP_OPTIMIZER
         real(dp) :: lower_log_learning_rate = -16.0_dp
         real(dp) :: upper_log_learning_rate = 1.0_dp
         real(dp) :: lower_log_l2 = -24.0_dp
@@ -79,7 +89,6 @@ module fortml_mlp_optimizer_group_hypergradient
         !! The clipping norm is not an outer coordinate; derivatives are exact
         !! for the fixed active set and the norm boundary is a typed refusal.
         real(dp) :: gradient_clip_norm = 0.0_dp
-        integer :: optimizer = MLP_OPTIMIZER_GROUP_OPTIMIZER
         integer :: device_kind = FORTML_DEVICE_CPU
         integer :: memory = 8
         integer :: max_iterations = 100
@@ -120,6 +129,9 @@ module fortml_mlp_optimizer_group_hypergradient
         real(dp) :: initial_log_learning_rate = 0.0_dp
         real(dp) :: initial_log_l2 = 0.0_dp
         real(dp) :: gradient_clip_norm = 0.0_dp
+        real(dp) :: beta1 = 0.9_dp
+        real(dp) :: beta2 = 0.999_dp
+        real(dp) :: epsilon = 1.0e-8_dp
         type(mlp_learning_rate_schedule_t) :: schedule
         logical :: initialized = .false.
     contains
@@ -159,7 +171,8 @@ contains
         self%initialized = .false.
         self%layout = mlp_optimizer_group_hypergradient_metadata_t_default
         if (.not. valid_options(options)) then
-            if (options%optimizer /= MLP_OPTIMIZER_GROUP_OPTIMIZER .or. &
+            if ((options%optimizer /= MLP_OPTIMIZER_SGD .and. &
+                options%optimizer /= MLP_OPTIMIZER_ADAM) .or. &
                 options%device_kind == FORTML_DEVICE_CUDA .or. &
                 options%schedule%kind == MLP_SCHEDULE_PLATEAU) then
                 call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
@@ -221,11 +234,15 @@ contains
         allocate(self%initial_parameters, source=model%parameters())
         allocate(self%groups, source=options%groups)
         self%layout%group_count = n_groups
+        self%layout%optimizer = options%optimizer
         self%layout%parameter_count = MLP_OPTIMIZER_GROUP_BASE_COUNT + n_groups
         self%layout%inner_steps = options%steps
         self%initial_log_learning_rate = log(options%learning_rate)
         self%initial_log_l2 = log(options%l2)
         self%gradient_clip_norm = options%gradient_clip_norm
+        self%beta1 = options%beta1
+        self%beta2 = options%beta2
+        self%epsilon = options%epsilon
         self%schedule = options%schedule
         self%layout%schedule_kind = options%schedule%kind
         self%layout%warmup_updates = options%schedule%warmup_updates
@@ -573,6 +590,11 @@ contains
         type(fortnum_status_t), intent(out) :: status
         real(dp), allocatable :: theta(:), theta_dot(:, :), raw_gradient(:)
         real(dp), allocatable :: gradient_dot(:, :), hvp(:), scale(:), scale_dot(:, :)
+        real(dp), allocatable :: first_moment(:), second_moment(:)
+        real(dp), allocatable :: first_moment_dot(:, :), second_moment_dot(:, :)
+        real(dp), allocatable :: adam_direction(:), adam_direction_dot(:, :)
+        real(dp), allocatable :: adam_root(:), adam_denominator(:)
+        real(dp), allocatable :: adam_root_dot(:, :), adam_denominator_dot(:, :)
         real(dp), allocatable :: validation_gradient(:)
         real(dp) :: learning_rate, l2, train_value, l2_gradient, scalar_hvp
         real(dp) :: learning_rate_dot, l2_dot, multiplier, rate
@@ -580,6 +602,7 @@ contains
         real(dp) :: min_fraction, decay_factor, peak_fraction, final_fraction
         real(dp) :: base_dot, min_dot, decay_dot, peak_dot, final_dot
         real(dp) :: raw_gradient_norm, clip_scale, norm_dot, clip_tolerance
+        real(dp) :: beta1, beta2, epsilon, bias1, bias2
         type(mlp_learning_rate_schedule_t) :: schedule
         integer :: n_model, n_outer, step, parameter_index, group_index, first, last
 
@@ -601,9 +624,21 @@ contains
         allocate(theta_dot(n_model, n_outer), raw_gradient(n_model))
         allocate(gradient_dot(n_model, n_outer), hvp(n_model))
         allocate(scale(n_model), scale_dot(n_model, n_outer))
+        allocate(first_moment(n_model), second_moment(n_model), &
+            first_moment_dot(n_model, n_outer), second_moment_dot(n_model, n_outer))
+        allocate(adam_direction(n_model), adam_direction_dot(n_model, n_outer), &
+            adam_root(n_model), adam_denominator(n_model), &
+            adam_root_dot(n_model, n_outer), adam_denominator_dot(n_model, n_outer))
         theta_dot = 0.0_dp
         scale = 1.0_dp
         scale_dot = 0.0_dp
+        first_moment = 0.0_dp
+        second_moment = 0.0_dp
+        first_moment_dot = 0.0_dp
+        second_moment_dot = 0.0_dp
+        beta1 = self%beta1
+        beta2 = self%beta2
+        epsilon = self%epsilon
         do group_index = 1, self%layout%group_count
             first = self%groups(group_index)%first
             last = self%groups(group_index)%last
@@ -662,6 +697,38 @@ contains
                 end do
                 raw_gradient = clip_scale*raw_gradient
             end if
+            if (self%layout%optimizer == MLP_OPTIMIZER_ADAM) then
+                first_moment = beta1*first_moment + (1.0_dp-beta1)*raw_gradient
+                second_moment = beta2*second_moment + (1.0_dp-beta2)*raw_gradient*raw_gradient
+                do parameter_index = 1, n_outer
+                    first_moment_dot(:, parameter_index) = beta1*first_moment_dot(:, parameter_index) + &
+                        (1.0_dp-beta1)*gradient_dot(:, parameter_index)
+                    second_moment_dot(:, parameter_index) = beta2*second_moment_dot(:, parameter_index) + &
+                        2.0_dp*(1.0_dp-beta2)*raw_gradient*gradient_dot(:, parameter_index)
+                end do
+                bias1 = 1.0_dp-beta1**step
+                bias2 = 1.0_dp-beta2**step
+                adam_root = sqrt(second_moment/bias2)
+                if (any(adam_root <= 0.0_dp)) then
+                    call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                        "MLP optimizer-group Adam hypergradient: zero second-moment boundary")
+                    return
+                end if
+                adam_denominator = adam_root+epsilon
+                adam_direction = (first_moment/bias1)/adam_denominator
+                do parameter_index = 1, n_outer
+                    adam_root_dot(:, parameter_index) = 0.5_dp* &
+                        second_moment_dot(:, parameter_index)/(bias2*adam_root)
+                    adam_denominator_dot(:, parameter_index) = adam_root_dot(:, parameter_index)
+                    adam_direction_dot(:, parameter_index) = &
+                        first_moment_dot(:, parameter_index)/(bias1*adam_denominator) - &
+                        (first_moment/bias1)*adam_denominator_dot(:, parameter_index) / &
+                        (adam_denominator*adam_denominator)
+                end do
+            else
+                adam_direction = raw_gradient
+                adam_direction_dot = gradient_dot
+            end if
             do parameter_index = 1, n_outer
                 learning_rate_dot = 0.0_dp
                 if (parameter_index == MLP_OPTIMIZER_GROUP_LOG_LEARNING_RATE) then
@@ -682,11 +749,11 @@ contains
                     learning_rate_dot = d_final*final_dot
                 end if
                 theta_dot(:, parameter_index) = theta_dot(:, parameter_index) - &
-                    learning_rate_dot*scale*raw_gradient - &
-                rate*scale_dot(:, parameter_index)*raw_gradient - &
-                    rate*scale*gradient_dot(:, parameter_index)
+                    learning_rate_dot*scale*adam_direction - &
+                    rate*scale_dot(:, parameter_index)*adam_direction - &
+                    rate*scale*adam_direction_dot(:, parameter_index)
             end do
-            theta = theta-rate*scale*raw_gradient
+            theta = theta-rate*scale*adam_direction
             if (any(.not. ieee_is_finite(theta)) .or. &
                 any(.not. ieee_is_finite(theta_dot))) then
                 call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -753,7 +820,8 @@ contains
     logical function valid_options(options) result(valid)
         type(mlp_optimizer_group_hypergradient_options_t), intent(in) :: options
 
-        valid = options%steps >= 1 .and. options%optimizer == MLP_OPTIMIZER_GROUP_OPTIMIZER .and. &
+        valid = options%steps >= 1 .and. (options%optimizer == MLP_OPTIMIZER_SGD .or. &
+            options%optimizer == MLP_OPTIMIZER_ADAM) .and. &
             options%device_kind == FORTML_DEVICE_CPU .and. &
             options%schedule%valid() .and. options%schedule%kind /= MLP_SCHEDULE_PLATEAU .and. &
             ieee_is_finite(options%learning_rate) .and. ieee_is_finite(options%l2) .and. &
@@ -783,6 +851,13 @@ contains
             options%lower_logit_min_fraction <= options%upper_logit_min_fraction .and. &
             options%lower_logit_decay_factor <= options%upper_logit_decay_factor
         if (.not. valid) return
+        if (options%optimizer == MLP_OPTIMIZER_ADAM) then
+            valid = ieee_is_finite(options%beta1) .and. ieee_is_finite(options%beta2) .and. &
+                ieee_is_finite(options%epsilon) .and. options%beta1 > 0.0_dp .and. &
+                options%beta1 < 1.0_dp .and. options%beta2 > 0.0_dp .and. &
+                options%beta2 < 1.0_dp .and. options%epsilon > 0.0_dp
+            if (.not. valid) return
+        end if
         if (options%schedule%kind == MLP_SCHEDULE_ONE_CYCLE) then
             valid = log(options%schedule%peak_rate_fraction) >= options%lower_logit_min_fraction .and. &
                 log(options%schedule%peak_rate_fraction) <= options%upper_logit_min_fraction .and. &
