@@ -21,7 +21,7 @@ boosted-tree partial-dependence/ICE, learned basis fan-in, fixed-full-batch
 SGD clipping hypergradient, and fixed-shape Gamma-GP likelihood slices.
 The broad parity
 gate is still open, so this work does not move or recreate that tag.
-The checklist currently records 419 completed and 144 open items. Open rows are
+The checklist currently records 420 completed and 144 open items. Open rows are
 retained until their implementation, independent oracle, device/refusal
 behavior, and benchmark evidence land together.
 
