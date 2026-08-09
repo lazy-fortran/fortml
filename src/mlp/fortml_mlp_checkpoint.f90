@@ -19,7 +19,7 @@ module fortml_mlp_checkpoint
 
     character(*), parameter, public :: MLP_CHECKPOINT_MAGIC = &
         "FORTML_MLP_CHECKPOINT_TEXT"
-    integer, parameter, public :: MLP_CHECKPOINT_SCHEMA_VERSION = 10
+    integer, parameter, public :: MLP_CHECKPOINT_SCHEMA_VERSION = 11
 
     public :: mlp_checkpoint_save
     public :: mlp_checkpoint_load
@@ -81,6 +81,26 @@ contains
             checkpoint%adam_step_count, ios)
         if (ios == 0) call write_i(unit, "optimizer", checkpoint%optimizer, ios)
         if (ios == 0) call write_i(unit, "precision_kind", checkpoint%precision_kind, ios)
+        if (ios == 0) call write_l(unit, "loss_scale_enabled", checkpoint%loss_scale%enabled, ios)
+        if (ios == 0) call write_r(unit, "loss_scale_scale", checkpoint%loss_scale%scale, ios)
+        if (ios == 0) call write_r(unit, "loss_scale_initial_scale", &
+            checkpoint%loss_scale%initial_scale, ios)
+        if (ios == 0) call write_r(unit, "loss_scale_growth_factor", &
+            checkpoint%loss_scale%growth_factor, ios)
+        if (ios == 0) call write_r(unit, "loss_scale_backoff_factor", &
+            checkpoint%loss_scale%backoff_factor, ios)
+        if (ios == 0) call write_r(unit, "loss_scale_minimum_scale", &
+            checkpoint%loss_scale%minimum_scale, ios)
+        if (ios == 0) call write_r(unit, "loss_scale_maximum_scale", &
+            checkpoint%loss_scale%maximum_scale, ios)
+        if (ios == 0) call write_i(unit, "loss_scale_growth_interval", &
+            checkpoint%loss_scale%growth_interval, ios)
+        if (ios == 0) call write_i(unit, "loss_scale_good_steps", &
+            checkpoint%loss_scale%good_steps, ios)
+        if (ios == 0) call write_i(unit, "loss_scale_overflow_count", &
+            checkpoint%loss_scale%overflow_count, ios)
+        if (ios == 0) call write_i(unit, "loss_scale_skipped_updates", &
+            checkpoint%loss_scale%skipped_updates, ios)
         if (ios == 0) call write_i(unit, "stale_epochs", checkpoint%stale_epochs, ios)
         if (ios == 0) call write_i(unit, "schedule_bad_updates", &
             checkpoint%schedule_bad_updates, ios)
@@ -280,6 +300,26 @@ contains
             candidate%adam_step_count, ios)
         if (ios == 0) call read_i(unit, "optimizer", candidate%optimizer, ios)
         if (ios == 0) call read_i(unit, "precision_kind", candidate%precision_kind, ios)
+        if (ios == 0) call read_l(unit, "loss_scale_enabled", candidate%loss_scale%enabled, ios)
+        if (ios == 0) call read_r(unit, "loss_scale_scale", candidate%loss_scale%scale, ios)
+        if (ios == 0) call read_r(unit, "loss_scale_initial_scale", &
+            candidate%loss_scale%initial_scale, ios)
+        if (ios == 0) call read_r(unit, "loss_scale_growth_factor", &
+            candidate%loss_scale%growth_factor, ios)
+        if (ios == 0) call read_r(unit, "loss_scale_backoff_factor", &
+            candidate%loss_scale%backoff_factor, ios)
+        if (ios == 0) call read_r(unit, "loss_scale_minimum_scale", &
+            candidate%loss_scale%minimum_scale, ios)
+        if (ios == 0) call read_r(unit, "loss_scale_maximum_scale", &
+            candidate%loss_scale%maximum_scale, ios)
+        if (ios == 0) call read_i(unit, "loss_scale_growth_interval", &
+            candidate%loss_scale%growth_interval, ios)
+        if (ios == 0) call read_i(unit, "loss_scale_good_steps", &
+            candidate%loss_scale%good_steps, ios)
+        if (ios == 0) call read_i(unit, "loss_scale_overflow_count", &
+            candidate%loss_scale%overflow_count, ios)
+        if (ios == 0) call read_i(unit, "loss_scale_skipped_updates", &
+            candidate%loss_scale%skipped_updates, ios)
         if (ios == 0) call read_i(unit, "stale_epochs", candidate%stale_epochs, ios)
         if (ios == 0) call read_i(unit, "schedule_bad_updates", &
             candidate%schedule_bad_updates, ios)

@@ -108,7 +108,7 @@ contains
             resumed_checkpoint%optimizer == MLP_OPTIMIZER_RADAM .and. &
             resumed_checkpoint%format_version == 10 .and. &
             resumed_checkpoint%adam_step_count == 3 .and. &
-            MLP_CHECKPOINT_SCHEMA_VERSION == 10, &
+            MLP_CHECKPOINT_SCHEMA_VERSION == 11, &
             "RAdam checkpoint metadata and format bump", failures)
         call mlp_checkpoint_save(resumed_checkpoint, "test_mlp_radam_checkpoint.txt", status)
         call mlp_checkpoint_load(loaded_checkpoint, "test_mlp_radam_checkpoint.txt", status)

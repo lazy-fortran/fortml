@@ -15,7 +15,7 @@ attribution, binary-GP log-probability, fixed-leaf-product, plateau-trainer,
 and CUDA VJP closure slices documented below are post-tag additions.
 The broad parity
 gate is still open, so this work does not move or recreate that tag.
-The checklist currently records 340 completed and 127 open items; open rows are
+The checklist currently records 341 completed and 127 open items; open rows are
 retained until their implementation, independent oracle, device/refusal
 behavior, and benchmark evidence land together.
 
@@ -57,6 +57,16 @@ weighted log-loss, common-prefix early stopping, best-prefix restoration,
 schema-2 metadata validation, and staged probability records. Each slice has a
 CPU oracle, a typed CUDA boundary, and a benchmark record in
 `fortml-bench`.
+
+The mixed-precision infrastructure slice adds `mlp_loss_scale_state_t`, a
+validated deterministic finite-update growth/overflow-backoff recurrence with
+skipped-update accounting. The FP64 CPU reference can exercise the policy and
+skip a scaled-gradient overflow without changing the disabled default
+trajectory. Dynamic state and static policy are validated in memory and in
+formatted checkpoint schema 11; FP32/FP16/BF16 and resident CUDA requests
+remain typed refusals until master-weight and lower-precision kernels have
+independent gates. `test_mlp_loss_scaling` and the companion benchmark provide
+the independent recurrence, persistence, and refusal evidence.
 
 The binary Laplace-GP derivative slice now adds an implicit-mode kernel
 hyperparameter HVP. `gp_classification_t%hyperparameter_hvp` differentiates the
@@ -1743,6 +1753,12 @@ when a lower-level primitive already exists.
   `test_mlp_adafactor_factored` and the NumPy benchmark oracle cover both
   recurrences and the explicit CUDA boundary. Ragged factor-state checkpoint
   migration and resident CUDA remain typed follow-up gates.
+- [x] Add `mlp_loss_scale_state_t` with deterministic finite-update growth,
+  overflow backoff, skipped-update accounting, and static-policy/dynamic-state
+  validation. The FP64 CPU trainer checks scaled-gradient overflow and captures
+  the state in schema-11 checkpoints; an independent recurrence/persistence
+  oracle and typed lower-precision boundary are released. Master-weight FP32,
+  FP16, BF16, and resident CUDA training remain open.
 - [ ] Exact fixed-trajectory and implicit hypergradients through all supported
   optimizers, schedules, batch cursors, clipping, weight decay, validation,
   early stopping, and optimizer state. Fixed full-batch SGD/AdamW/Adagrad/

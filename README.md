@@ -36,6 +36,14 @@ products as well; clip, rate, and scale active-set boundaries return typed
 refusals. See
 [docs/MLP_HYPERGRADIENT.md](docs/MLP_HYPERGRADIENT.md).
 
+The trainer also exposes an explicit `mlp_loss_scale_state_t` recurrence for
+automatic mixed-precision policy testing: finite-update growth, overflow
+backoff, skipped-update counters, and transactional schema-11 checkpoint
+state. The CPU FP64 reference can exercise the recurrence without changing
+the default trajectory; FP32/FP16/BF16 and resident CUDA training remain typed
+refusals until master-weight and lower-precision kernels have independent
+gates. See [docs/MLP_LOSS_SCALING.md](docs/MLP_LOSS_SCALING.md).
+
 The production trainer also exposes layout-aware matrix-factored Adafactor
 state through `fortml_adafactor_factored`. Matrix blocks use row and column
 second-moment factors, vectors use the unfactored fallback, and checkpoint

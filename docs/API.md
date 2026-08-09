@@ -193,7 +193,7 @@ repeated resident-batch evidence.
 | `mlp_rmsprop_hypergradient_objective_t` | Validation MSE after fixed full-batch RMSprop trajectory | Packed `[log(learning_rate),log(l2),decay,log(epsilon),momentum]` JVP | Exact trajectory value gradient and scalar VJP | Forward state sensitivities; inner MLP HVP |
 | `mlp_adagrad_hypergradient_objective_t` | Validation MSE after fixed full-batch Adagrad trajectory | Packed `[log(learning_rate),log(l2),log(epsilon)]` JVP | Exact trajectory value gradient and scalar VJP | Forward accumulated-square sensitivities; inner MLP HVP |
 | `mlp_adafactor_hypergradient_objective_t` | Validation MSE after fixed full-batch unfactored Adafactor trajectory | Packed `[log(learning_rate),log(l2),decay,log(epsilon),log(clip_threshold)]` JVP | Exact trajectory value gradient and scalar VJP | Forward second-moment, update-RMS clipping, and denominator sensitivities; active-set and discrete branches refuse |
-| `adafactor_factored_t` | Layout-aware matrix-factorized Adafactor with vector fallback | Parameter update | Dense second-moment inspection | Explicit row/column state for matrix blocks; CPU recurrence; formatted and in-memory schema-10 checkpoint migration; CUDA remains a typed refusal |
+| `adafactor_factored_t` | Layout-aware matrix-factorized Adafactor with vector fallback | Parameter update | Dense second-moment inspection | Explicit row/column state for matrix blocks; CPU recurrence; formatted and in-memory schema-11 checkpoint migration; CUDA remains a typed refusal |
 | `mlp_schedule_hypergradient_objective_t` | Validation MSE after a typed scheduled full-batch trajectory | Packed `[log(base_rate),log(l2),logit(min_fraction),logit(decay_factor)]` JVP, or `[log(base_rate),log(l2),log(peak_fraction),log(final_fraction)]` for one-cycle | Exact schedule/trajectory value gradient and scalar VJP | Exact affine outer HVP for stateless schedules; nonlinear/plateau/CUDA boundaries are typed |
 | `mlp_radam_schedule_hypergradient_objective_t` | Validation MSE after a typed scheduled full-batch RAdam trajectory | Packed base-rate/L2/beta/epsilon/schedule JVP | Exact trajectory value gradient and scalar VJP | Moment, bias-correction, rectification, and schedule sensitivities; outer HVP/CUDA refusal |
 | `mlp_minibatch_hypergradient_objective_t` | Validation MSE after a fixed seeded mini-batch SGD trajectory | Packed `[log(learning_rate),log(l2)]` JVP | Exact batch-cursor trajectory value gradient and scalar VJP | Per-batch MLP HVP; outer hyper-HVP is a typed refusal |
@@ -1974,7 +1974,7 @@ matrix-factorized state is available by setting
 `options%adafactor_factored=.true.`. The layout-aware path factors dense weight
 blocks and keeps bias/singleton blocks unfactored; see
 [`ADAFACTOR_FACTORED.md`](ADAFACTOR_FACTORED.md). Its ragged row/column state is
-included in the in-memory and formatted schema-10 checkpoints, with block shape
+included in the in-memory and formatted schema-11 checkpoints, with block shape
 metadata and transactional layout validation; CUDA-resident Adafactor remains
 a typed refusal.
 `MLP_OPTIMIZER_AMSGRAD` keeps the Adam first and second moments plus an
@@ -1991,7 +1991,7 @@ denominators, and CUDA trajectory requests are typed refusals. See
 then applies the RAdam variance-rectification factor once `rho_t > 4`; before
 that threshold it uses the bias-corrected first moment. The two moment arrays,
 step count, and common beta/epsilon configuration are captured in the
-in-memory and text-schema-10 checkpoints. The independent
+in-memory and text-schema-11 checkpoints. The independent
 `test_mlp_radam` fixture checks both sides of the threshold, uninterrupted versus
 formatted checkpoint resume, invalid hyperparameters, and the CPU/CUDA device
 boundary. RAdam is CPU-only in this slice: `radam_t%step_device` returns
@@ -2289,6 +2289,21 @@ typed schedule request therefore remains an explicit capability boundary in
 the trajectory APIs.
 See [`docs/MLP_SCHEDULES.md`](MLP_SCHEDULES.md) for constructors and a
 callback adapter.
+
+`mlp_loss_scale_state_t` is the explicit automatic-mixed-precision policy and
+dynamic state embedded in `mlp_training_options_t`, the returned
+`mlp_training_state_t`, and `mlp_training_checkpoint_t`. Call
+`options%loss_scale%initialize(status, enabled=.true., initial_scale=...,`
+`growth_factor=..., backoff_factor=..., growth_interval=...,`
+`minimum_scale=..., maximum_scale=...)` to configure deterministic growth and
+overflow backoff. `observe(finite_gradient,update_applied,status)` is public
+for custom trainers and increments the same good-step, overflow, and skipped
+update counters used by `mlp_train`. The FP64 reference path checks scaled
+gradients and skips an overflowing update; disabled scaling leaves the existing
+trajectory unchanged. FP32/FP16/BF16 and CUDA resident training return a typed
+`FORTNUM_NOT_IMPLEMENTED` until master-weight and resident lower-precision
+kernels are independently gated. Loss-scale policy and dynamic counters are
+validated and persisted in formatted checkpoint schema 11.
 
 `mlp_training_options_t%event_callback` installs a typed
 `mlp_training_event_proc` callback for `train_begin`, `update`, `validation`,

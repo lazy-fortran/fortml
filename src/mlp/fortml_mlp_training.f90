@@ -55,6 +55,31 @@ module fortml_mlp_training
     integer, parameter, public :: MLP_PRECISION_FP16 = 3
     integer, parameter, public :: MLP_PRECISION_BF16 = 4
 
+    type, public :: mlp_loss_scale_state_t
+        !! Explicit automatic-mixed-precision loss-scale state.
+        !!
+        !! The state is deliberately independent of a device backend.  It is
+        !! therefore usable by the FP64 reference path as a deterministic
+        !! recurrence oracle, while lower-precision resident kernels retain a
+        !! typed refusal until their master-weight implementation is present.
+        logical :: enabled = .false.
+        real(dp) :: scale = 1.0_dp
+        real(dp) :: initial_scale = 1.0_dp
+        real(dp) :: growth_factor = 2.0_dp
+        real(dp) :: backoff_factor = 0.5_dp
+        real(dp) :: minimum_scale = 1.0_dp
+        real(dp) :: maximum_scale = 16777216.0_dp
+        integer :: growth_interval = 2000
+        integer :: good_steps = 0
+        integer :: overflow_count = 0
+        integer :: skipped_updates = 0
+    contains
+        procedure, public :: initialize => loss_scale_initialize
+        procedure, public :: observe => loss_scale_observe
+        procedure, public :: valid => loss_scale_valid
+        procedure, public :: compatible => loss_scale_compatible
+    end type mlp_loss_scale_state_t
+
     integer, parameter, public :: MLP_EVENT_TRAIN_BEGIN = 1
     integer, parameter, public :: MLP_EVENT_UPDATE = 2
     integer, parameter, public :: MLP_EVENT_VALIDATION = 3
@@ -133,6 +158,11 @@ module fortml_mlp_training
         logical :: rmsprop_centered = .false.
         integer :: optimizer = MLP_OPTIMIZER_ADAM
         integer :: precision_kind = MLP_PRECISION_FP64
+        !! Loss scaling is explicit and can be enabled on the FP64 reference
+        !! path for recurrence/checkpoint testing.  FP32/FP16/BF16 still
+        !! return a typed refusal because resident master-weight kernels are
+        !! not yet available.
+        type(mlp_loss_scale_state_t) :: loss_scale
         real(dp) :: momentum = 0.0_dp
         logical :: nesterov = .false.
         real(dp) :: weight_decay = 0.0_dp
@@ -164,6 +194,7 @@ module fortml_mlp_training
         integer :: microbatches = 0
         integer :: accumulation_steps = 1
         integer :: precision_kind = MLP_PRECISION_FP64
+        type(mlp_loss_scale_state_t) :: loss_scale
         integer :: best_epoch = 0
         integer :: best_validation_epoch = 0
         integer :: schedule_bad_updates = 0
@@ -224,6 +255,7 @@ module fortml_mlp_training
         integer :: adam_step_count = 0
         integer :: optimizer = MLP_OPTIMIZER_ADAM
         integer :: precision_kind = MLP_PRECISION_FP64
+        type(mlp_loss_scale_state_t) :: loss_scale
         integer :: stale_epochs = 0
         integer :: schedule_bad_updates = 0
         integer :: schedule_reductions = 0
@@ -424,6 +456,114 @@ contains
         end select
     end function mlp_precision_name
 
+    subroutine loss_scale_initialize(self, status, enabled, initial_scale, growth_factor, &
+            backoff_factor, growth_interval, minimum_scale, maximum_scale)
+        class(mlp_loss_scale_state_t), intent(out) :: self
+        type(fortnum_status_t), intent(out) :: status
+        logical, intent(in), optional :: enabled
+        real(dp), intent(in), optional :: initial_scale, growth_factor, backoff_factor
+        integer, intent(in), optional :: growth_interval
+        real(dp), intent(in), optional :: minimum_scale, maximum_scale
+
+        self%enabled = .false.
+        self%scale = 1.0_dp
+        self%initial_scale = 1.0_dp
+        self%growth_factor = 2.0_dp
+        self%backoff_factor = 0.5_dp
+        self%minimum_scale = 1.0_dp
+        self%maximum_scale = 16777216.0_dp
+        self%growth_interval = 2000
+        self%good_steps = 0
+        self%overflow_count = 0
+        self%skipped_updates = 0
+        if (present(enabled)) self%enabled = enabled
+        if (present(initial_scale)) self%initial_scale = initial_scale
+        if (present(growth_factor)) self%growth_factor = growth_factor
+        if (present(backoff_factor)) self%backoff_factor = backoff_factor
+        if (present(growth_interval)) self%growth_interval = growth_interval
+        if (present(minimum_scale)) self%minimum_scale = minimum_scale
+        if (present(maximum_scale)) self%maximum_scale = maximum_scale
+        self%scale = self%initial_scale
+        if (.not. self%enabled) then
+            self%scale = 1.0_dp
+            self%initial_scale = 1.0_dp
+        end if
+        if (.not. self%valid()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP loss scale: invalid initialization parameters")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine loss_scale_initialize
+
+    subroutine loss_scale_observe(self, finite_gradient, update_applied, status)
+        class(mlp_loss_scale_state_t), intent(inout) :: self
+        logical, intent(in) :: finite_gradient, update_applied
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: next_scale
+
+        if (.not. self%valid()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP loss scale: state is invalid")
+            return
+        end if
+        if (.not. self%enabled) then
+            call status_set(status, FORTNUM_OK, "")
+            return
+        end if
+        if (.not. finite_gradient) then
+            self%overflow_count = self%overflow_count + 1
+            self%skipped_updates = self%skipped_updates + 1
+            self%good_steps = 0
+            next_scale = self%scale*self%backoff_factor
+            self%scale = max(self%minimum_scale, next_scale)
+        else if (update_applied) then
+            self%good_steps = self%good_steps + 1
+            if (self%good_steps >= self%growth_interval) then
+                next_scale = self%scale*self%growth_factor
+                self%scale = min(self%maximum_scale, next_scale)
+                self%good_steps = 0
+            end if
+        end if
+        if (.not. self%valid()) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "MLP loss scale: update produced invalid state")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine loss_scale_observe
+
+    logical function loss_scale_valid(self) result(valid)
+        class(mlp_loss_scale_state_t), intent(in) :: self
+
+        valid = self%growth_interval > 0 .and. self%good_steps >= 0 .and. &
+            self%overflow_count >= 0 .and. self%skipped_updates >= 0 .and. &
+            ieee_is_finite(self%scale) .and. ieee_is_finite(self%initial_scale) .and. &
+            ieee_is_finite(self%growth_factor) .and. ieee_is_finite(self%backoff_factor) .and. &
+            ieee_is_finite(self%minimum_scale) .and. ieee_is_finite(self%maximum_scale) .and. &
+            self%minimum_scale > 0.0_dp .and. self%maximum_scale >= self%minimum_scale .and. &
+            self%initial_scale >= self%minimum_scale .and. &
+            self%initial_scale <= self%maximum_scale .and. &
+            self%scale >= self%minimum_scale .and. self%scale <= self%maximum_scale .and. &
+            self%growth_factor >= 1.0_dp .and. self%backoff_factor > 0.0_dp .and. &
+            self%backoff_factor <= 1.0_dp
+        if (.not. valid) return
+        if (.not. self%enabled) valid = self%scale == 1.0_dp .and. self%initial_scale == 1.0_dp
+    end function loss_scale_valid
+
+    logical function loss_scale_compatible(self, other) result(equal)
+        class(mlp_loss_scale_state_t), intent(in) :: self
+        type(mlp_loss_scale_state_t), intent(in) :: other
+
+        equal = self%enabled .eqv. other%enabled .and. &
+            self%initial_scale == other%initial_scale .and. &
+            self%growth_factor == other%growth_factor .and. &
+            self%backoff_factor == other%backoff_factor .and. &
+            self%minimum_scale == other%minimum_scale .and. &
+            self%maximum_scale == other%maximum_scale .and. &
+            self%growth_interval == other%growth_interval
+    end function loss_scale_compatible
+
     subroutine mlp_optimizer_group_initialize(self, name, first, last, &
             learning_rate_multiplier, status)
         class(mlp_optimizer_group_t), intent(out) :: self
@@ -589,6 +729,7 @@ contains
         !! structure constructors: nvfortran rejects `T()` outright,
         !! and a declared local carries the same default init.
         type(mlp_learning_rate_schedule_t) :: mlp_learning_rate_schedule_t_default
+        type(mlp_loss_scale_state_t) :: mlp_loss_scale_state_t_default
 
         if (allocated(self%parameters)) deallocate(self%parameters)
         if (allocated(self%optimizer_group_first)) deallocate(self%optimizer_group_first)
@@ -641,6 +782,7 @@ contains
         self%batch_size = 0
         self%accumulation_steps = 1
         self%precision_kind = MLP_PRECISION_FP64
+        self%loss_scale = mlp_loss_scale_state_t_default
         self%shuffle_seed = 17
         self%adam_step_count = 0
         self%optimizer = MLP_OPTIMIZER_ADAM
@@ -710,6 +852,7 @@ contains
             self%shuffle_seed > 0 .and. self%adam_step_count >= 0 .and. &
             self%precision_kind >= MLP_PRECISION_FP64 .and. &
             self%precision_kind <= MLP_PRECISION_BF16 .and. &
+            self%loss_scale%valid() .and. &
             (self%optimizer == MLP_OPTIMIZER_ADAM .or. &
             self%optimizer == MLP_OPTIMIZER_SGD .or. &
             self%optimizer == MLP_OPTIMIZER_ADAMW .or. &
@@ -1490,6 +1633,7 @@ contains
         logical :: schedule_metric_initialized, schedule_improved, schedule_reduced
         real(dp) :: schedule_best_metric, next_schedule_best_metric
         type(mlp_learning_rate_schedule_t) :: schedule_config
+        type(mlp_loss_scale_state_t) :: loss_scaler
         type(mlp_parameter_block_t), allocatable :: parameter_layout(:)
         type(adafactor_block_spec_t), allocatable :: adafactor_specs(:)
 
@@ -1504,6 +1648,8 @@ contains
         resume_active_epoch = .false.
         if (present(options)) config = options
         result%precision_kind = config%precision_kind
+        loss_scaler = config%loss_scale
+        result%loss_scale = loss_scaler
         has_typed_schedule = config%use_typed_schedule
         schedule_config = config%typed_schedule
         if (has_typed_schedule .and. .not. schedule_config%valid()) then
@@ -1556,6 +1702,9 @@ contains
             if (checkpoint%n_outputs /= n_outputs) incompatible_checkpoint = .true.
             if (checkpoint%n_parameters /= n_parameters) incompatible_checkpoint = .true.
             if (checkpoint%precision_kind /= config%precision_kind) then
+                incompatible_checkpoint = .true.
+            end if
+            if (.not. checkpoint%loss_scale%compatible(config%loss_scale)) then
                 incompatible_checkpoint = .true.
             end if
             if (checkpoint%batch_size /= batch) incompatible_checkpoint = .true.
@@ -1662,6 +1811,7 @@ contains
             schedule_reductions = checkpoint%schedule_reductions
             schedule_best_metric = checkpoint%schedule_best_metric
             schedule_metric_initialized = checkpoint%schedule_metric_initialized
+            loss_scaler = checkpoint%loss_scale
         else
             theta = model%parameters()
             allocate(best_theta, source=theta)
@@ -1673,6 +1823,7 @@ contains
                 lion_momentum = 0.0_dp
             end if
         end if
+        result%loss_scale = loss_scaler
         result%has_ema = config%ema_decay > 0.0_dp
         if (result%has_ema) allocate(result%ema_parameters, source=ema_parameters)
         allocate(gradient(n_parameters))
@@ -1977,6 +2128,20 @@ contains
                             real(accumulated_samples, dp)
                         theta = model%parameters()
                         gradient = gradient + config%l2*theta
+                        if (loss_scaler%enabled) then
+                            if (any(.not. ieee_is_finite(loss_scaler%scale*gradient))) then
+                                call loss_scaler%observe(.false., .false., status)
+                                if (status%code /= FORTNUM_OK) then
+                                    if (present(state)) state = result
+                                    return
+                                end if
+                                result%loss_scale = loss_scaler
+                                accumulated_gradient = 0.0_dp
+                                accumulated_samples = 0
+                                microbatch_count = 0
+                                cycle
+                            end if
+                        end if
                         raw_gradient_norm = sqrt(sum(gradient*gradient))
                         if (config%gradient_clip_norm > 0.0_dp .and. &
                             raw_gradient_norm > config%gradient_clip_norm) then
@@ -2086,6 +2251,12 @@ contains
                                 (1.0_dp-config%ema_decay)*theta
                             result%ema_parameters = ema_parameters
                         end if
+                        call loss_scaler%observe(.true., .true., status)
+                        if (status%code /= FORTNUM_OK) then
+                            if (present(state)) state = result
+                            return
+                        end if
+                        result%loss_scale = loss_scaler
                         result%updates = result%updates + 1
                         call emit_training_event(config, MLP_EVENT_UPDATE, epoch, &
                             result%updates, loss, validation_loss, &
@@ -2102,6 +2273,7 @@ contains
                 end if
                 if (present(checkpoint)) then
                     call checkpoint_capture(checkpoint, x, target, config, result, &
+                        loss_scaler, &
                         iterator, optimizer, adamw_optimizer, adagrad_optimizer, &
                         rmsprop_optimizer, adafactor_optimizer, adafactor_factored_optimizer, &
                         amsgrad_optimizer, &
@@ -2225,6 +2397,7 @@ contains
             end if
             if (present(checkpoint)) then
                 call checkpoint_capture(checkpoint, x, target, config, result, &
+                    loss_scaler, &
                     iterator, optimizer, adamw_optimizer, adagrad_optimizer, &
                     rmsprop_optimizer, adafactor_optimizer, adafactor_factored_optimizer, &
                     amsgrad_optimizer, &
@@ -2342,7 +2515,7 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine lion_step
 
-    subroutine checkpoint_capture(checkpoint, x, target, config, result, iterator, &
+    subroutine checkpoint_capture(checkpoint, x, target, config, result, loss_scaler, iterator, &
             optimizer, adamw_optimizer, adagrad_optimizer, rmsprop_optimizer, &
             adafactor_optimizer, adafactor_factored_optimizer, amsgrad_optimizer, &
             radam_optimizer, sgd_optimizer, lion_momentum, theta, best_theta, &
@@ -2355,6 +2528,7 @@ contains
         real(dp), intent(in) :: x(:, :), target(:, :)
         type(mlp_training_options_t), intent(in) :: config
         type(mlp_training_state_t), intent(in) :: result
+        type(mlp_loss_scale_state_t), intent(in) :: loss_scaler
         type(mlp_batch_iterator_t), intent(in) :: iterator
         type(adam_t), intent(in) :: optimizer
         type(adamw_t), intent(in) :: adamw_optimizer
@@ -2540,6 +2714,7 @@ contains
         checkpoint%batch_size = iterator%batch_size
         checkpoint%accumulation_steps = config%accumulation_steps
         checkpoint%precision_kind = config%precision_kind
+        checkpoint%loss_scale = loss_scaler
         checkpoint%shuffle_seed = config%shuffle_seed
         checkpoint%optimizer = config%optimizer
         if (config%optimizer == MLP_OPTIMIZER_ADAM) then
@@ -2736,6 +2911,7 @@ contains
             ieee_is_finite(options%gradient_clip_norm) .and. &
             ieee_is_finite(options%ema_decay)
         valid = valid .and. options%weight_decay >= 0.0_dp
+        valid = valid .and. options%loss_scale%valid()
         valid = valid .and. options%rmsprop_decay >= 0.0_dp .and. &
             options%rmsprop_decay < 1.0_dp .and. options%rmsprop_momentum >= 0.0_dp .and. &
             options%rmsprop_momentum < 1.0_dp

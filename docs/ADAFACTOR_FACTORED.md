@@ -46,5 +46,5 @@ The recurrence is CPU-resident. `step_device` reports
 that GPU execution. Factored checkpoints include block shape metadata and
 flattened row, column, and vector states, and the resume path rejects a
 different parameter layout before restoring any state. Formatted checkpoints
-use schema 10; the default vector Adafactor path remains checkpoint/resume
+use schema 11; the default vector Adafactor path remains checkpoint/resume
 compatible as before. These are typed boundaries, not silent fallbacks.
