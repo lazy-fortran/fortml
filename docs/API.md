@@ -726,6 +726,39 @@ CUDA value and derivative methods return typed `FORTNUM_NOT_IMPLEMENTED` until
 a resident batched RBF implementation is linked, with no host fallback. See
 [`docs/RBF_SVM_MULTICLASS.md`](RBF_SVM_MULTICLASS.md).
 
+### `fortml_ovo_rbf_svm_classifier`
+
+`ovo_rbf_svm_classifier_t%fit(x,labels,status[,c,gamma,max_iterations,
+tolerance,sample_weight,class_weight])` fits a deterministic one-vs-one
+collection of finite-basis `rbf_svm_classifier_t` children over arbitrary
+integer labels. Classes are sorted ascending; pair order is `(1,2),(1,3),...`
+and is returned as `(negative,positive)` columns by `pair_classes()`. Each
+child keeps only rows belonging to its pair, so packed parameter blocks may
+have different lengths. `parameter_count()` and `parameters()` use the
+transactional pair-offset layout `[coefficients,intercept,log(gamma)]` per
+child.
+
+`decision_function(x,scores,status)` returns one margin per pair.
+`predict_proba(x,probabilities,status)` adds each pair's two sigmoid
+probabilities to its classes and divides by `pair_count`; rows therefore sum
+to one. `predict` returns the original class labels and breaks exact ties in
+sorted-class order. `class_count`, `pair_count`, `feature_count`, `classes`,
+`pair_classes`, `parameter_count`, `parameters`, `set_parameters`, and
+`fitted` expose metadata and fixed-state mutation.
+
+`decision_function_jvp(x,x_dot,scores,scores_dot,status)` and
+`decision_function_vjp(x,scores_bar,x_bar,status)` provide exact continuous
+query products. Their packed-parameter counterparts are
+`decision_function_parameter_jvp(x,direction,scores,scores_dot,status)` and
+`decision_function_parameter_vjp(x,scores_bar,parameter_bar,status)`.
+`predict_proba_jvp`, `predict_proba_vjp`,
+`predict_proba_parameter_jvp`, and `predict_proba_parameter_vjp` apply the
+same products through the normalized pairwise probability map. Fit,
+active-set, squared-hinge boundary, and hard-label derivatives are not
+exposed. CPU device methods are complete; CUDA value requests return typed
+`FORTNUM_NOT_IMPLEMENTED` with no host fallback. See
+[`RBF_SVM_OVO.md`](RBF_SVM_OVO.md).
+
 ### `fortml_linear_svr`
 
 `linear_svr_regression_t%fit(x,targets,status[,l2,epsilon,fit_intercept,loss,

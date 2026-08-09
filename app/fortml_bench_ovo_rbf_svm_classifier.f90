@@ -1,0 +1,109 @@
+program fortml_bench_ovo_rbf_svm_classifier
+    !! Correctness-gated dense OVO RBF-SVM workload.
+    use, intrinsic :: iso_fortran_env, only: dp => real64, int64
+    use fortml_device, only: fortml_device_t, FORTML_DEVICE_CUDA
+    use fortml_ovo_rbf_svm_classifier, only: ovo_rbf_svm_classifier_t
+    use fortnum_status, only: fortnum_status_t, status_ok
+    implicit none
+
+    integer, parameter :: n_samples = 36, n_features = 2, n_classes = 3
+    integer, parameter :: n_pairs = 3, prediction_repetitions = 64
+    integer, parameter :: class_labels(3) = [-12, 7, 37]
+    real(dp) :: x(n_samples, n_features), probabilities(n_samples, n_classes)
+    real(dp) :: scores(n_samples, n_pairs), cuda_probabilities(n_samples, n_classes)
+    real(dp), allocatable :: parameters(:)
+    integer :: labels(n_samples), predicted(n_samples), classes(n_classes)
+    integer(int64) :: clock_start, clock_end, clock_rate
+    real(dp) :: fit_seconds, predict_seconds
+    character(len=1024) :: oracle_path
+    integer :: environment_status, unit, i, j, repetition, cuda_code
+    type(fortnum_status_t) :: status
+    type(fortml_device_t) :: cuda
+    type(ovo_rbf_svm_classifier_t) :: model
+
+    call get_environment_variable("FORTML_BENCH_OVO_RBF_SVM_ORACLE", oracle_path, &
+        status=environment_status)
+    if (environment_status /= 0 .or. len_trim(oracle_path) == 0) then
+        error stop "FORTML_BENCH_OVO_RBF_SVM_ORACLE is required"
+    end if
+    call make_fixture(x, labels)
+    call system_clock(clock_start, clock_rate)
+    call model%fit(x, labels, status, c=2.0_dp, gamma=0.6_dp, &
+        max_iterations=50000, tolerance=1.0e-6_dp)
+    call system_clock(clock_end)
+    if (.not. status_ok(status)) error stop "OVO RBF-SVM fit failed"
+    fit_seconds = real(clock_end-clock_start, dp)/real(clock_rate, dp)
+    call model%decision_function(x, scores, status)
+    call model%predict_proba(x, probabilities, status)
+    call model%predict(x, predicted, status)
+    parameters = model%parameters()
+    classes = model%classes()
+    if (.not. status_ok(status)) error stop "OVO RBF-SVM prediction failed"
+    call system_clock(clock_start, clock_rate)
+    do repetition = 1, prediction_repetitions
+        call model%predict_proba(x, probabilities, status)
+    end do
+    call system_clock(clock_end)
+    predict_seconds = real(clock_end-clock_start, dp)/real(clock_rate, dp) &
+        /real(prediction_repetitions, dp)
+
+    cuda%kind = FORTML_DEVICE_CUDA
+    cuda%selected = .true.
+    cuda%available = .true.
+    call model%predict_proba_device(cuda, x, cuda_probabilities, status)
+    cuda_code = status%code
+
+    open (newunit=unit, file=trim(oracle_path), status="replace", action="write")
+    write (unit, '(a)') "quantity,row,column,value"
+    do i = 1, n_samples
+        write (unit, '(a,i0,a,i0,a,i0)') "label,", i, ",1,", labels(i)
+        write (unit, '(a,i0,a,i0,a,i0)') "prediction,", i, ",1,", predicted(i)
+        do j = 1, n_classes
+            write (unit, '(a,i0,a,i0,a,es24.16)') "probability,", i, ",", &
+                j, ",", probabilities(i, j)
+        end do
+        do j = 1, n_pairs
+            write (unit, '(a,i0,a,i0,a,es24.16)') "decision,", i, ",", &
+                j, ",", scores(i, j)
+        end do
+    end do
+    do i = 1, size(parameters)
+        write (unit, '(a,i0,a,es24.16)') "parameter,", i, ",1,", parameters(i)
+    end do
+    do j = 1, n_classes
+        write (unit, '(a,i0,a,i0)') "class,", j, ",1,", classes(j)
+    end do
+    write (unit, '(a,i0)') "pair_count,1,1,", model%pair_count()
+    write (unit, '(a,es24.16)') "fit_seconds,1,1,", fit_seconds
+    write (unit, '(a,es24.16)') "predict_seconds,1,1,", predict_seconds
+    write (unit, '(a,i0)') "cuda_status,1,1,", cuda_code
+    close (unit)
+
+contains
+
+    subroutine make_fixture(x, labels)
+        real(dp), intent(out) :: x(:, :)
+        integer, intent(out) :: labels(:)
+        real(dp) :: phase
+        integer :: i
+
+        do i = 1, size(x, 1)
+            phase = real(i, dp)
+            select case ((i - 1)/(size(x, 1)/3))
+            case (0)
+                x(i, 1) = -1.0_dp + 0.05_dp*sin(0.17_dp*phase)
+                x(i, 2) = 0.2_dp*cos(0.13_dp*phase)
+                labels(i) = class_labels(1)
+            case (1)
+                x(i, 1) = 0.0_dp + 0.05_dp*sin(0.17_dp*phase)
+                x(i, 2) = -0.2_dp*cos(0.13_dp*phase)
+                labels(i) = class_labels(2)
+            case default
+                x(i, 1) = 1.0_dp + 0.05_dp*sin(0.17_dp*phase)
+                x(i, 2) = 0.2_dp*cos(0.13_dp*phase)
+                labels(i) = class_labels(3)
+            end select
+        end do
+    end subroutine make_fixture
+
+end program fortml_bench_ovo_rbf_svm_classifier
