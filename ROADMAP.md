@@ -20,7 +20,7 @@ hypergradient, fixed-latent ordinal-GP cut-point calibration, and weighted
 boosted-tree partial-dependence/ICE slices.
 The broad parity
 gate is still open, so this work does not move or recreate that tag.
-The checklist currently records 402 completed and 150 open items. Open rows are
+The checklist currently records 403 completed and 150 open items. Open rows are
 retained until their implementation, independent oracle, device/refusal
 behavior, and benchmark evidence land together.
 
@@ -5023,9 +5023,12 @@ peak memory, and batch-size scaling with the same correctness gate as training.
   weight scaling, and returns a typed CUDA refusal; hand-computed and NumPy
   oracles are pinned in
   [`results/BOOSTED_PARTIAL_DEPENDENCE.md`](../fortml-bench/results/BOOSTED_PARTIAL_DEPENDENCE.md).
-- [ ] Define one versioned result schema for correctness, train time, predict
+- [x] Define one versioned result schema for correctness, train time, predict
   time, peak host and device memory, compiler, flags, dependency revisions,
-  hardware, seed, warmup, repetitions, and refusal reason.
+  hardware, seed, warmup, repetitions, and refusal reason. `fortml-bench`
+  provides [`RESULT_SCHEMA.md`](../fortml-bench/RESULT_SCHEMA.md) and
+  `scripts/validate_result_schema.py`; migration of historical pre-v1 rows
+  remains an explicit follow-up.
 - [ ] Add pinned external oracle harnesses for every completed classifier,
   transformer pipeline, boosted tree, trainer, GP derivative, and serialization
   package.
