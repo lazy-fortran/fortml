@@ -280,6 +280,7 @@ contains
         type(kernel_t) :: kernel
         type(fortnum_status_t) :: status
         real(dp) :: x(3, 1), y(3, 1), theta(3), gradient(3), finite_gradient(3)
+        real(dp) :: direction(3), hvp(3), gradient_plus(3), gradient_minus(3), fd_hvp(3)
         real(dp) :: plus, minus, h
         integer :: i
 
@@ -303,6 +304,19 @@ contains
         if (.not. status_ok(status) .or. maxval(abs(gradient - finite_gradient)) > 3.0e-6_dp) then
             write (error_unit, '(a,es12.4)') "FAIL [cosine derivative GP] independent gradient ", &
                 maxval(abs(gradient - finite_gradient))
+            failures = failures + 1
+        end if
+        direction = [0.17_dp, -0.11_dp, 0.08_dp]
+        call model%hyperparameter_hvp(direction, hvp, status)
+        h = 2.0e-4_dp
+        gradient_plus = oracle_gradient_cosine(theta + h*direction, x, [0, 1, 0], y, &
+            0.08_dp, 1.0e-10_dp)
+        gradient_minus = oracle_gradient_cosine(theta - h*direction, x, [0, 1, 0], y, &
+            0.08_dp, 1.0e-10_dp)
+        fd_hvp = (gradient_plus - gradient_minus)/(2.0_dp*h)
+        if (.not. status_ok(status) .or. maxval(abs(hvp - fd_hvp)) > 5.0e-4_dp) then
+            write (error_unit, '(a,es12.4)') "FAIL [cosine derivative GP] independent HVP ", &
+                maxval(abs(hvp - fd_hvp))
             failures = failures + 1
         end if
     end subroutine test_cosine_parameter_products
@@ -967,6 +981,26 @@ contains
         value = -0.5_dp*sum(y*alpha) - 0.5_dp*logdet - &
             0.5_dp*real(size(x, 1), dp)*log(2.0_dp*acos(-1.0_dp))
     end function oracle_lml_cosine
+
+    function oracle_gradient_cosine(theta, x, components, y, noise, jitter) result(gradient)
+        !! Central differences of the independent cosine likelihood oracle are
+        !! used only as a behavioral reference for the production HVP.
+        real(dp), intent(in) :: theta(:), x(:, :), y(:, :), noise, jitter
+        integer, intent(in) :: components(:)
+        real(dp) :: gradient(size(theta))
+        real(dp) :: plus(size(theta)), minus(size(theta)), step
+        integer :: i
+
+        do i = 1, size(theta)
+            step = 2.0e-5_dp*max(1.0_dp, abs(theta(i)))
+            plus = theta
+            minus = theta
+            plus(i) = plus(i) + step
+            minus(i) = minus(i) - step
+            gradient(i) = (oracle_lml_cosine(plus, x, components, y, noise, jitter) - &
+                oracle_lml_cosine(minus, x, components, y, noise, jitter))/(2.0_dp*step)
+        end do
+    end function oracle_gradient_cosine
 
     function oracle_gradient_rational(theta, x, components, y, noise, jitter) result(gradient)
         real(dp), intent(in) :: theta(:), x(:, :), y(:, :), noise, jitter

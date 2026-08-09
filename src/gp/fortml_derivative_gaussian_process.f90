@@ -1675,6 +1675,9 @@ contains
         real(dp) :: variance, lengthscale, q, r2, f, t
         real(dp) :: c_length, c_length_length, a, a_length, a_length_length
         real(dp) :: difference
+        real(dp) :: z, sine_value, cosine_value, cosine_numerator
+        real(dp) :: p, p_length, p_length_length, p2, p2_length, p2_length_length
+        real(dp) :: value_length, value_length_length
 
         covariance = 0.0_dp
         covariance_dot = 0.0_dp
@@ -1872,6 +1875,119 @@ contains
             call rational_quadratic_derivative_parameter_hvp(kernel, x1, component1, x2, &
                 component2, parameter, direction, covariance, covariance_dot, &
                 covariance_parameter, covariance_parameter_dot, status)
+            return
+        case (KERNEL_COSINE)
+            !! The cosine leaf is radial in ``s=||x1-x2||**2``:
+            !! ``F(s)=v*cos(sqrt(s)/l)``.  The mixed-observation blocks use
+            !! ``C10=2 p d_i`` and ``C11=-2 p delta_ij-4 p2 d_i d_j``
+            !! with ``p=F'(s)`` and ``p2=F''(s)``.  This branch returns the
+            !! exact kernel-parameter derivative and its directional product
+            !! in the logarithmic variance/length-scale coordinates.  The
+            !! coincidence series avoids removable zero-over-zero forms.
+            if (kernel%parameter_count() /= 2) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "derivative GP mixed HVP: cosine parameter layout is invalid")
+                return
+            end if
+            variance = exp(kernel%log_parameters(1))
+            lengthscale = exp(kernel%log_parameters(2))
+            !! Use a scalar lag norm; the component blocks below only require
+            !! the indexed entries of the original coordinate arrays.
+            r2 = sum((x1 - x2)**2)
+            if (r2 < 0.0_dp) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "derivative GP mixed HVP: cosine squared distance is invalid")
+                return
+            end if
+            q = sqrt(r2)
+            if (q <= 1.0e-8_dp) then
+                f = variance
+                value_length = 0.0_dp
+                value_length_length = 0.0_dp
+                p = -variance/(2.0_dp*lengthscale*lengthscale)
+                p_length = -2.0_dp*p
+                p_length_length = 4.0_dp*p
+                p2 = variance/(12.0_dp*lengthscale**4)
+                p2_length = -4.0_dp*p2
+                p2_length_length = 16.0_dp*p2
+            else
+                z = q/lengthscale
+                sine_value = sin(z)
+                cosine_value = cos(z)
+                cosine_numerator = sine_value - z*cosine_value
+                f = variance*cosine_value
+                value_length = variance*z*sine_value
+                value_length_length = -variance*(z*sine_value + z*z*cosine_value)
+                p = -variance*sine_value/(2.0_dp*lengthscale*q)
+                p_length = variance/(2.0_dp*lengthscale**2)* &
+                    (sine_value/z + cosine_value)
+                p_length_length = -variance/(2.0_dp*lengthscale**2)* &
+                    (sine_value/z + 3.0_dp*cosine_value - z*sine_value)
+                p2 = variance*cosine_numerator/(4.0_dp*lengthscale**4*z**3)
+                p2_length = variance/(4.0_dp*lengthscale**4)* &
+                    (-cosine_numerator/z**3 - sine_value/z)
+                p2_length_length = variance/(4.0_dp*lengthscale**4)* &
+                    (cosine_numerator/z**3 + 4.0_dp*sine_value/z + cosine_value)
+            end if
+            if (component1 == 0 .and. component2 == 0) then
+                covariance = f
+                covariance_dot = direction(1)*f + direction(2)*value_length
+                if (parameter == 1) then
+                    covariance_parameter = f
+                    covariance_parameter_dot = covariance_dot
+                else
+                    covariance_parameter = value_length
+                    covariance_parameter_dot = direction(1)*value_length + &
+                        direction(2)*value_length_length
+                end if
+            else if (component1 > 0 .and. component2 == 0) then
+                covariance = 2.0_dp*p*(x1(component1) - x2(component1))
+                covariance_dot = 2.0_dp*(direction(1)*p + direction(2)*p_length)* &
+                    (x1(component1) - x2(component1))
+                if (parameter == 1) then
+                    covariance_parameter = covariance
+                    covariance_parameter_dot = covariance_dot
+                else
+                    covariance_parameter = 2.0_dp*p_length*(x1(component1) - x2(component1))
+                    covariance_parameter_dot = 2.0_dp*(direction(1)*p_length + &
+                        direction(2)*p_length_length)*(x1(component1) - x2(component1))
+                end if
+            else if (component1 == 0 .and. component2 > 0) then
+                covariance = -2.0_dp*p*(x1(component2) - x2(component2))
+                covariance_dot = -2.0_dp*(direction(1)*p + direction(2)*p_length)* &
+                    (x1(component2) - x2(component2))
+                if (parameter == 1) then
+                    covariance_parameter = covariance
+                    covariance_parameter_dot = covariance_dot
+                else
+                    covariance_parameter = -2.0_dp*p_length*(x1(component2) - x2(component2))
+                    covariance_parameter_dot = -2.0_dp*(direction(1)*p_length + &
+                        direction(2)*p_length_length)*(x1(component2) - x2(component2))
+                end if
+            else
+                covariance = -2.0_dp*p*merge(1.0_dp, 0.0_dp, component1 == component2) - &
+                    4.0_dp*p2*(x1(component1) - x2(component1))* &
+                    (x1(component2) - x2(component2))
+                covariance_dot = -2.0_dp*(direction(1)*p + direction(2)*p_length)* &
+                    merge(1.0_dp, 0.0_dp, component1 == component2) - &
+                    4.0_dp*(direction(1)*p2 + direction(2)*p2_length)* &
+                    (x1(component1) - x2(component1))*(x1(component2) - x2(component2))
+                if (parameter == 1) then
+                    covariance_parameter = covariance
+                    covariance_parameter_dot = covariance_dot
+                else
+                    covariance_parameter = -2.0_dp*p_length* &
+                        merge(1.0_dp, 0.0_dp, component1 == component2) - &
+                        4.0_dp*p2_length*(x1(component1) - x2(component1))* &
+                        (x1(component2) - x2(component2))
+                    covariance_parameter_dot = -2.0_dp*(direction(1)*p_length + &
+                        direction(2)*p_length_length)*merge(1.0_dp, 0.0_dp, &
+                        component1 == component2) - 4.0_dp*(direction(1)*p2_length + &
+                        direction(2)*p2_length_length)*(x1(component1) - x2(component1))* &
+                        (x1(component2) - x2(component2))
+                end if
+            end if
+            call status_set(status, FORTNUM_OK, "")
             return
         case default
             call status_set(status, FORTNUM_NOT_IMPLEMENTED, &

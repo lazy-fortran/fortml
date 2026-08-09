@@ -15,7 +15,7 @@ attribution, binary-GP log-probability, fixed-leaf-product, plateau-trainer,
 and CUDA VJP closure slices documented below are post-tag additions.
 The broad parity
 gate is still open, so this work does not move or recreate that tag.
-The checklist currently records 348 completed and 127 open items; open rows are
+The checklist currently records 349 completed and 127 open items; open rows are
 retained until their implementation, independent oracle, device/refusal
 behavior, and benchmark evidence land together.
 
@@ -288,8 +288,20 @@ one-dimensional covariance, checks the packed gradient/HVP against central
 differences, and verifies that selected CUDA prediction remains a typed
 `FORTNUM_NOT_IMPLEMENTED` refusal. The release app and independent benchmark
 are `fortml_bench_derivative_gp_rational_quadratic_hvp` and
-`fortml-bench/results/DERIVATIVE_GP_RATIONAL_QUADRATIC_HVP.md`; cosine,
-user-formula, higher operator orders, and resident CUDA covariance remain open.
+`fortml-bench/results/DERIVATIVE_GP_RATIONAL_QUADRATIC_HVP.md`; user-formula,
+higher operator orders, and resident CUDA covariance remain open.
+
+The cosine derivative-observation slice closes the corresponding mixed
+likelihood HVP row. `gp_derivative_regression_t%hyperparameter_hvp` now carries
+the exact variance/length-scale and log-noise products through value,
+first-derivative, and mixed-Hessian covariance blocks, including finite
+coincidence series. `test_derivative_gp_products` independently differentiates
+a dense one-dimensional cosine likelihood twice, while the existing query
+JVP/VJP checks cover the third-input products; selected CUDA prediction keeps
+the explicit `FORTNUM_NOT_IMPLEMENTED` refusal. The release app and benchmark
+record are `fortml_bench_derivative_gp_cosine_hvp` and
+`fortml-bench/results/DERIVATIVE_GP_COSINE_HVP.md`. User-formula, higher
+operator orders, and resident CUDA covariance remain open.
 
 The metric-learning loss slice adds a reusable weighted pairwise contrastive
 objective to `fortml_losses`: matching/non-matching Euclidean pairs expose
