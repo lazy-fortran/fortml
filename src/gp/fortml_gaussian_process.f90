@@ -35,6 +35,12 @@ module fortml_gaussian_process
         procedure, public :: predict => gp_predict
         procedure, public :: predict_covariance => gp_predict_covariance
         procedure, public :: predict_covariance_device => gp_predict_covariance_device
+        procedure, public :: predict_covariance_jvp => gp_predict_covariance_jvp
+        procedure, public :: predict_covariance_vjp => gp_predict_covariance_vjp
+        procedure, public :: predict_covariance_jvp_device => &
+            gp_predict_covariance_jvp_device
+        procedure, public :: predict_covariance_vjp_device => &
+            gp_predict_covariance_vjp_device
         procedure, public :: predict_jvp => gp_predict_jvp
         procedure, public :: predict_vjp => gp_predict_vjp
         procedure, public :: predict_hvp => gp_predict_hvp
@@ -48,6 +54,10 @@ module fortml_gaussian_process
     public :: gp_predict
     public :: gp_predict_covariance
     public :: gp_predict_covariance_device
+    public :: gp_predict_covariance_jvp
+    public :: gp_predict_covariance_vjp
+    public :: gp_predict_covariance_jvp_device
+    public :: gp_predict_covariance_vjp_device
     public :: gp_predict_jvp
     public :: gp_predict_vjp
     public :: gp_predict_hvp
@@ -323,6 +333,210 @@ contains
                 "GP covariance device: device kind is invalid")
         end select
     end subroutine gp_predict_covariance_device
+
+    subroutine gp_predict_covariance_jvp(self, x, direction, covariance, &
+            covariance_dot, status)
+        !! Directional hyperparameter product of the dense latent covariance.
+        !!
+        !! The fitted solve state is differentiated implicitly without
+        !! differentiating a Cholesky factor.  With ``W=K^{-1}K(X,x)`` the
+        !! posterior is ``K(x,x)-K(X,x)^T W`` and the tangent reuses the
+        !! factorization for ``W_dot=K^{-1}(K_dot(X,x)-K_dot W)``.
+        class(gp_regression_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), direction(:)
+        real(dp), intent(out) :: covariance(:, :), covariance_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: cross(:, :), cross_dot(:, :), prior(:, :)
+        real(dp), allocatable :: prior_dot(:, :), train_dot(:, :)
+        real(dp), allocatable :: train(:, :), work(:, :), work_dot(:, :)
+        real(dp) :: noise_dot
+        integer :: m, i, kernel_count
+
+        covariance = 0.0_dp
+        covariance_dot = 0.0_dp
+        if (.not. gp_fitted(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP predict_covariance_jvp: model is not fitted")
+            return
+        end if
+        m = size(x, 1)
+        kernel_count = self%kernel%parameter_count()
+        if (m < 1 .or. size(x, 2) /= self%n_features .or. &
+            any(shape(covariance) /= [m, m]) .or. &
+            any(shape(covariance_dot) /= [m, m]) .or. &
+            size(direction) /= self%parameter_count() .or. &
+            any(.not. ieee_is_finite(direction))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP predict_covariance_jvp: input, tangent, or output shape is invalid")
+            return
+        end if
+
+        allocate(cross(self%n_samples, m), cross_dot(self%n_samples, m))
+        allocate(prior(m, m), prior_dot(m, m))
+        allocate(train(self%n_samples, self%n_samples))
+        allocate(train_dot, mold=train)
+        allocate(work(self%n_samples, m), work_dot(self%n_samples, m))
+        call self%kernel%matrix_jvp(self%x_train, x, direction(:kernel_count), &
+            cross, cross_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        call self%kernel%matrix_jvp(x, x, direction(:kernel_count), &
+            prior, prior_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        call self%kernel%matrix_jvp(self%x_train, self%x_train, &
+            direction(:kernel_count), train, train_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        noise_dot = exp(self%log_noise_variance)*direction(kernel_count + 1)
+        do i = 1, self%n_samples
+            train_dot(i, i) = train_dot(i, i) + noise_dot
+        end do
+
+        work = cross
+        call self%factorization%solve(work, status)
+        if (status%code /= FORTNUM_OK) return
+        work_dot = cross_dot - matmul(train_dot, work)
+        call self%factorization%solve(work_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        covariance = prior - matmul(transpose(cross), work)
+        covariance_dot = prior_dot - matmul(transpose(cross_dot), work) - &
+            matmul(transpose(cross), work_dot)
+        covariance = 0.5_dp*(covariance + transpose(covariance))
+        covariance_dot = 0.5_dp*(covariance_dot + transpose(covariance_dot))
+        if (any(.not. ieee_is_finite(covariance)) .or. &
+            any(.not. ieee_is_finite(covariance_dot))) then
+            covariance = 0.0_dp
+            covariance_dot = 0.0_dp
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "GP predict_covariance_jvp: nonfinite covariance product")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_predict_covariance_jvp
+
+    subroutine gp_predict_covariance_vjp(self, x, covariance_bar, parameter_bar, status)
+        !! Reverse hyperparameter product of the dense latent covariance.
+        !!
+        !! The cotangent is symmetrized because the public covariance is
+        !! explicitly symmetrized.  Mean coefficients have zero cotangent:
+        !! the latent posterior covariance is independent of the mean.
+        class(gp_regression_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), covariance_bar(:, :)
+        real(dp), intent(out) :: parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: cross(:, :), work(:, :), cross_bar(:, :)
+        real(dp), allocatable :: prior_bar(:, :), train_bar(:, :), local_bar(:)
+        real(dp), allocatable :: effective_bar(:, :)
+        integer :: m, i, kernel_count
+
+        parameter_bar = 0.0_dp
+        if (.not. gp_fitted(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP predict_covariance_vjp: model is not fitted")
+            return
+        end if
+        m = size(x, 1)
+        kernel_count = self%kernel%parameter_count()
+        if (m < 1 .or. size(x, 2) /= self%n_features .or. &
+            any(shape(covariance_bar) /= [m, m]) .or. &
+            size(parameter_bar) /= self%parameter_count() .or. &
+            any(.not. ieee_is_finite(covariance_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP predict_covariance_vjp: input, cotangent, or output shape is invalid")
+            return
+        end if
+
+        allocate(cross(self%n_samples, m), work(self%n_samples, m))
+        allocate(cross_bar(self%n_samples, m), prior_bar(m, m))
+        allocate(train_bar(self%n_samples, self%n_samples))
+        allocate(effective_bar(m, m), local_bar(kernel_count))
+        effective_bar = 0.5_dp*(covariance_bar + transpose(covariance_bar))
+        call self%kernel%matrix(self%x_train, x, cross, status)
+        if (status%code /= FORTNUM_OK) return
+        work = cross
+        call self%factorization%solve(work, status)
+        if (status%code /= FORTNUM_OK) return
+        prior_bar = effective_bar
+        cross_bar = -matmul(work, covariance_bar + transpose(covariance_bar))
+        train_bar = matmul(work, matmul(effective_bar, transpose(work)))
+
+        call self%kernel%parameter_vjp(self%x_train, self%x_train, train_bar, &
+            local_bar, status)
+        if (status%code /= FORTNUM_OK) return
+        parameter_bar(:kernel_count) = local_bar
+        call self%kernel%parameter_vjp(self%x_train, x, cross_bar, local_bar, status)
+        if (status%code /= FORTNUM_OK) return
+        parameter_bar(:kernel_count) = parameter_bar(:kernel_count) + local_bar
+        call self%kernel%parameter_vjp(x, x, prior_bar, local_bar, status)
+        if (status%code /= FORTNUM_OK) return
+        parameter_bar(:kernel_count) = parameter_bar(:kernel_count) + local_bar
+        parameter_bar(kernel_count + 1) = exp(self%log_noise_variance)* &
+            sum([(train_bar(i, i), i = 1, self%n_samples)])
+        if (size(parameter_bar) > kernel_count + 1) then
+            parameter_bar(kernel_count + 2:) = 0.0_dp
+        end if
+        if (any(.not. ieee_is_finite(parameter_bar))) then
+            parameter_bar = 0.0_dp
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "GP predict_covariance_vjp: nonfinite covariance product")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_predict_covariance_vjp
+
+    subroutine gp_predict_covariance_jvp_device(self, device, x, direction, &
+            covariance, covariance_dot, status)
+        !! Explicit device boundary for covariance JVP products.
+        class(gp_regression_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :), direction(:)
+        real(dp), intent(out) :: covariance(:, :), covariance_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        covariance = 0.0_dp
+        covariance_dot = 0.0_dp
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP covariance JVP device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_covariance_jvp(x, direction, covariance, &
+                covariance_dot, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "GP covariance JVP device: resident CUDA covariance kernel is not linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP covariance JVP device: device kind is invalid")
+        end select
+    end subroutine gp_predict_covariance_jvp_device
+
+    subroutine gp_predict_covariance_vjp_device(self, device, x, covariance_bar, &
+            parameter_bar, status)
+        !! Explicit device boundary for covariance VJP products.
+        class(gp_regression_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :), covariance_bar(:, :)
+        real(dp), intent(out) :: parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        parameter_bar = 0.0_dp
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP covariance VJP device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_covariance_vjp(x, covariance_bar, parameter_bar, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "GP covariance VJP device: resident CUDA covariance kernel is not linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP covariance VJP device: device kind is invalid")
+        end select
+    end subroutine gp_predict_covariance_vjp_device
 
     subroutine gp_predict_jvp(self, x, direction, mean, mean_dot, variance, &
             variance_dot, status)

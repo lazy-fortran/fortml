@@ -333,6 +333,15 @@ final parameters, and EMA parameters.
 `state_copy()` is an in-memory checkpoint and `clone(copy,status)` copies the
 complete optimizer and objective state, including moments and L-BFGS-B
 parameters, so an interrupted run can resume without process-global state.
+`partial_fit(steps,status)` is the bounded warm-start entry point for streaming
+adapters: it advances exactly the requested chunk (unless a declared
+validation/callback boundary stops it), preserves optimizer moments, EMA,
+schedule position, validation counters, and histories, and treats
+`max_steps` as the total update budget. Requests beyond that budget are
+transactionally refused. `partial_fit_device(device_kind,steps,status)`
+dispatches the same contract on CPU and returns `FORTNUM_NOT_IMPLEMENTED` for
+CUDA until a resident objective, batch, and optimizer state are linked; it
+never falls back to host execution.
 `parameters()` and `value_gradient()` return copies/products for deployment and
 outer hyperparameter search. The core is CPU objective execution; a device
 adapter must supply a resident objective or return `FORTNUM_NOT_IMPLEMENTED`.
@@ -4044,6 +4053,16 @@ observation-noise variance is not added. `predict_covariance_device` dispatches
 the same reference calculation for an explicitly selected CPU context and
 returns `FORTNUM_NOT_IMPLEMENTED` for CUDA until a resident covariance and
 factorization kernel is linked. It never hides a host fallback.
+
+Hyperparameter products of that full matrix are available as
+`predict_covariance_jvp(x,direction,covariance,covariance_dot,status)` and
+`predict_covariance_vjp(x,covariance_bar,parameter_bar,status)`. They
+differentiate the covariance and its implicit solve state, include kernel and
+log-noise coordinates, and leave mean-coordinate cotangents zero because the
+latent covariance is mean-independent. The device wrappers
+`predict_covariance_jvp_device` and `predict_covariance_vjp_device` dispatch
+CPU explicitly and return a typed CUDA refusal until resident covariance
+derivative kernels are linked; refusal paths clear every output.
 
 The HVP covers a weighted predictive mean. The LML methods are
 `log_marginal_likelihood`, `log_marginal_likelihood_jvp`,

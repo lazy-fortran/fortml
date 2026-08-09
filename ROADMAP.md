@@ -162,6 +162,12 @@ it is checked off.
   query sets, with Cholesky reuse, symmetry/round-off guards, and an explicit
   CPU device dispatch plus typed CUDA refusal; retain an independent dense
   oracle and pinned benchmark row.
+- [x] Add exact-GP posterior-covariance hyperparameter JVP/VJP products over
+  kernel and log-noise coordinates, with implicit solve-state differentiation,
+  covariance-cotangent symmetrization, mean-coordinate zero cotangents, and
+  explicit CPU/CUDA derivative dispatch. `test_gp_posterior_covariance`
+  checks a dense finite-difference tangent and Frobenius adjoint identity;
+  CUDA derivative requests are typed refusals with cleared outputs.
 - [ ] Finish the likelihood catalog: Gaussian, Bernoulli/probit, categorical,
   multinomial, Poisson/count, Gamma, Student-t, heteroskedastic, censored,
   ordinal, and warped links with constraints, stable tails, batch shapes, and

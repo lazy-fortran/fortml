@@ -7,11 +7,14 @@ program test_gp_posterior_covariance
     use fortml_gaussian_process, only: gp_regression_t
     implicit none
 
-    integer, parameter :: n = 5, m = 3, d = 1, p = 2
+    integer, parameter :: n = 5, m = 3, d = 1, p = 2, n_parameters = 3
     real(dp), parameter :: signal = 1.4_dp, lengthscale = 0.65_dp
     real(dp), parameter :: noise = 0.09_dp, jitter = 1.0e-10_dp
     real(dp) :: x(n, d), y(n, p), query(m, d)
     real(dp) :: covariance(m, m), expected(m, m), prior(m, m)
+    real(dp) :: covariance_dot(m, m), covariance_plus(m, m), covariance_minus(m, m)
+    real(dp) :: covariance_bar(m, m), parameter_bar(n_parameters), direction(n_parameters)
+    real(dp) :: parameters(n_parameters), parameters_plus(n_parameters), parameters_minus(n_parameters)
     real(dp) :: cross(n, m), train(n, n), solved(n, m)
     real(dp) :: mean(m, p), variance(m), expected_variance(m)
     type(gp_regression_t) :: model
@@ -19,6 +22,7 @@ program test_gp_posterior_covariance
     type(fortnum_status_t) :: status
     type(fortml_device_t) :: cpu, cuda
     integer :: failures, i, j
+    real(dp) :: h, lhs, rhs
 
     do i = 1, n
         x(i, 1) = -0.8_dp + 0.37_dp*real(i - 1, dp)
@@ -68,6 +72,36 @@ program test_gp_posterior_covariance
     call check(maxval(abs(variance - expected_variance)) < 3.0e-11_dp, &
         "covariance diagonal agrees with marginal variance", failures)
 
+    ! The covariance product oracle is a central difference through the
+    ! independently checked dense posterior, and the reverse product obeys
+    ! the defining Frobenius adjoint identity.
+    parameters = model%parameters()
+    direction = [0.13_dp, -0.19_dp, 0.23_dp]
+    call model%predict_covariance_jvp(query, direction, covariance, covariance_dot, status)
+    call check(status_ok(status), "covariance JVP", failures)
+    h = 1.0e-5_dp
+    parameters_plus = parameters + h*direction
+    parameters_minus = parameters - h*direction
+    call model%set_parameters(parameters_plus, status)
+    call check(status_ok(status), "positive covariance perturbation", failures)
+    call model%predict_covariance(query, covariance_plus, status)
+    call check(status_ok(status), "positive covariance finite difference", failures)
+    call model%set_parameters(parameters_minus, status)
+    call check(status_ok(status), "negative covariance perturbation", failures)
+    call model%predict_covariance(query, covariance_minus, status)
+    call check(status_ok(status), "negative covariance finite difference", failures)
+    call model%set_parameters(parameters, status)
+    call check(status_ok(status), "covariance parameter restore", failures)
+    call check(maxval(abs(covariance_dot - (covariance_plus - covariance_minus)/(2.0_dp*h))) < &
+        3.0e-7_dp, "covariance JVP finite-difference oracle", failures)
+    covariance_bar = reshape([0.4_dp, -0.2_dp, 0.3_dp, 0.5_dp, -0.7_dp, 0.1_dp, &
+        0.6_dp, -0.4_dp, 0.2_dp], shape(covariance_bar))
+    call model%predict_covariance_vjp(query, covariance_bar, parameter_bar, status)
+    call check(status_ok(status), "covariance VJP", failures)
+    lhs = sum(covariance_bar*covariance_dot)
+    rhs = sum(parameter_bar*direction)
+    call check(abs(lhs - rhs) < 3.0e-9_dp, "covariance JVP/VJP adjoint", failures)
+
     cpu%kind = FORTML_DEVICE_CPU
     cpu%selected = .true.
     cpu%available = .true.
@@ -82,6 +116,17 @@ program test_gp_posterior_covariance
     call model%predict_covariance_device(cuda, query, covariance, status)
     call check(status%code == FORTNUM_NOT_IMPLEMENTED, "CUDA typed refusal", failures)
     call check(maxval(abs(covariance)) == 0.0_dp, "CUDA refusal clears output", failures)
+    covariance = 7.0_dp
+    covariance_dot = 8.0_dp
+    call model%predict_covariance_jvp_device(cuda, query, direction, covariance, &
+        covariance_dot, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED, "CUDA JVP typed refusal", failures)
+    call check(maxval(abs(covariance)) == 0.0_dp .and. maxval(abs(covariance_dot)) == 0.0_dp, &
+        "CUDA JVP refusal clears output", failures)
+    parameter_bar = 8.0_dp
+    call model%predict_covariance_vjp_device(cuda, query, covariance_bar, parameter_bar, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED, "CUDA VJP typed refusal", failures)
+    call check(maxval(abs(parameter_bar)) == 0.0_dp, "CUDA VJP refusal clears output", failures)
 
     if (failures /= 0) then
         write (error_unit, '(i0,a)') failures, " GP posterior covariance test(s) failed"
