@@ -293,6 +293,29 @@ it is checked off.
   initialization, convergence, and energy. Every unavailable dependency or
   backend is a parseable refusal row with provenance.
 
+## 2026-08-09 reference-surface audit
+
+The parity backlog above is the implementation checklist. This audit records
+the reference surfaces that must remain visible while the checklist is closed;
+it prevents a narrow estimator inventory from being mistaken for package
+parity. Official reference inventories: [scikit-learn user
+guide](https://scikit-learn.org/stable/user_guide.html), [PyTorch modules and
+autograd](https://docs.pytorch.org/docs/main/nn.html), [JAX automatic
+differentiation](https://docs.jax.dev/en/latest/automatic-differentiation.html),
+[GPyTorch](https://docs.gpytorch.ai/en/stable/), [Flux](https://fluxml.ai/Flux.jl/stable/),
+[Lux](https://lux.csail.mit.edu/stable/), [XGBoost parameters](https://xgboost.readthedocs.io/en/latest/parameter.html),
+and [LightGBM early stopping](https://lightgbm.readthedocs.io/en/stable/pythonapi/lightgbm.early_stopping.html).
+
+| Reference surface | Required FortML closure | Current gap to keep explicit |
+| --- | --- | --- |
+| scikit-learn estimators | Kernel ridge, SGD estimators, PLS/CCA, feature selection, semi-supervised learning, mixtures, manifold embedding, clustering, decomposition/ICA/NMF/LDA, covariance and density/outlier estimators, plus sparse/missing/categorical policies. | The current CPU inventory is broad but these estimator families, shared preprocessing semantics, and matched external fixtures remain open. |
+| scikit-learn operations | Pipelines/ColumnTransformer DAGs, metadata routing, `set_output`-style schema propagation, callbacks, cross-validation/learning and validation curves, persistence/ONNX-style interchange, and parallel execution. | Named basis composition and bounded search exist; full routing, model-selection, interchange, and performance evidence remain open. |
+| PyTorch/Flux/Lux modules | Containers, convolution/pooling/padding, normalization, embeddings, recurrent and transformer blocks, sparse/vision/data-parallel modules, train/eval buffers, serialization, callbacks, and accelerator lowering. | Dense MLP/selected recurrent/physics primitives exist; the unified module tree, AMP, distributed state, and resident accelerator graph remain open. |
+| JAX transformations | `jit`, `vmap`, pytrees, forward/reverse and higher-order AD, custom derivative rules, rematerialization/checkpointing, sharding, compilation cache, donation, export/serialization, and generated GPU kernels. | FortAD/FortSym products are explicit per estimator; the whole-program transform, sharding, checkpoint, and compilation contracts remain open. |
+| GPyTorch/GPflow | BBMM/CG, LOVE/CIQ, KISS-GP/SKI and structured kernels, multitask/batch/deep GPs, DKL/Pyro-style inference, fantasization, constraints/priors, derivative observations, and scalable GPU solves. | Exact, sparse, variational, derivative, and physics slices are partial; scalable inference, natural gradients, multitask/deep state, and resident GP graphs remain open. |
+| XGBoost/LightGBM | Quantile/histogram growth, categorical optimal partitioning, ranking and AFT survival, DART/GOSS/EFB, monotonic/interaction policies, SHAP interactions, callbacks/early stopping, distributed workers, and GPU histograms. | Exact and bounded histogram/tree products plus selected ranking/categorical/validation lanes exist; full growth, explanations, survival, distributed, and GPU parity remain open. |
+| Cross-library performance | Matched fixtures and release tiers must separate compile, warmup, transfer, steady-state, memory, precision, initialization, convergence, and refusal rows across CPU/GPU/OpenACC. | Current benchmarks are correctness-gated and mostly CPU or typed GPU boundaries; matched PyTorch/JAX/GPyTorch/GPflow/Flux/Lux and scaling evidence remains open. |
+
 The current parity wave closes the following bounded contracts: chronological
 expanding/rolling validation with scorer and clone/reset metadata,
 multiclass focal-softmax value/JVP/VJP/HVP products wired through MLP and
