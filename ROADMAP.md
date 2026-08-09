@@ -151,6 +151,19 @@ boundary; `fortml-bench/results/MLP_REGRESSOR.md` records the pinned CPU and
 CUDA-refusal rows. Sample-weighted fitting, sparse/streaming loaders,
 mixed-precision state, and resident multilayer GPU training remain open.
 
+The weighted MLP training slice closes sample weighting for the dense MLP
+trainer and regressor facade. `sample_weight` and `validation_weight` are
+append-only optional arguments with finite, non-negative, positive-mass
+validation. The trainer accumulates microbatch data gradients by weight mass,
+adds L2 exactly once, and stores active accumulation mass in checkpoints. The
+FortOpt L-BFGS-B adapter uses the same weighted objective. The independent
+`test_mlp_weighted_training` hand oracle covers value, gradient, L2, SGD
+accumulation, every current CPU optimizer dispatch, transactional malformed
+weights, validation, and the public regressor path. The release app and
+NumPy comparison are pinned in `fortml-bench/results/MLP_WEIGHTED_TRAINING.md`.
+Resident CUDA network training and sparse or streaming weight loaders remain
+open.
+
 The multiclass RBF-SVM slice adds a transactional sorted-label one-vs-rest
 adapter over the finite-basis binary RBF SVM. It exposes normalized simplex
 probabilities, packed per-class coefficient/intercept/log-gamma metadata,

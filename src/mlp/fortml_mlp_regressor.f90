@@ -77,7 +77,8 @@ module fortml_mlp_regressor
 contains
 
     subroutine mlp_regressor_fit(self, x, target, status, options, state, &
-            validation_x, validation_target, checkpoint)
+            validation_x, validation_target, checkpoint, sample_weight, &
+            validation_weight)
         class(mlp_regressor_t), intent(inout) :: self
         real(dp), intent(in) :: x(:, :), target(:, :)
         type(fortnum_status_t), intent(out) :: status
@@ -85,6 +86,7 @@ contains
         type(mlp_regressor_state_t), intent(out), optional :: state
         real(dp), intent(in), optional :: validation_x(:, :), validation_target(:, :)
         type(mlp_training_checkpoint_t), intent(inout), optional :: checkpoint
+        real(dp), intent(in), optional :: sample_weight(:), validation_weight(:)
         type(mlp_t) :: candidate
         type(mlp_regressor_state_t) :: candidate_state
         integer :: layers(2), n_layers
@@ -92,7 +94,6 @@ contains
 
         candidate_state%used_lbfgsb = .false.
         candidate_state%converged = .false.
-        self%fitted_value = .false.
         valid_validation = present(validation_x) .eqv. present(validation_target)
         if (.not. valid_validation .or. size(x, 1) < 1 .or. size(x, 2) < 1 .or. &
             size(target, 1) /= size(x, 1) .or. size(target, 2) < 1 .or. &
@@ -101,6 +102,44 @@ contains
                 "MLP regressor fit: finite row-oriented data and validation pairs are required")
             if (present(state)) state = candidate_state
             return
+        end if
+        if (present(validation_x)) then
+            if (size(validation_x, 1) < 1 .or. size(validation_x, 2) /= size(x, 2) .or. &
+                size(validation_target, 1) /= size(validation_x, 1) .or. &
+                size(validation_target, 2) /= size(target, 2) .or. &
+                any(.not. ieee_is_finite(validation_x)) .or. &
+                any(.not. ieee_is_finite(validation_target))) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP regressor fit: validation shapes or values are invalid")
+                if (present(state)) state = candidate_state
+                return
+            end if
+        end if
+        if (present(sample_weight)) then
+            if (size(sample_weight) /= size(x, 1) .or. &
+                any(.not. ieee_is_finite(sample_weight)) .or. &
+                any(sample_weight < 0.0_dp) .or. sum(sample_weight) <= 0.0_dp) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP regressor fit: sample weights must be finite, non-negative, and supported")
+                if (present(state)) state = candidate_state
+                return
+            end if
+        end if
+        if (present(validation_weight)) then
+            if (.not. present(validation_x)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP regressor fit: validation weights require validation data")
+                if (present(state)) state = candidate_state
+                return
+            end if
+            if (size(validation_weight) /= size(validation_x, 1) .or. &
+                any(.not. ieee_is_finite(validation_weight)) .or. &
+                any(validation_weight < 0.0_dp) .or. sum(validation_weight) <= 0.0_dp) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP regressor fit: validation weights must be finite, non-negative, and supported")
+                if (present(state)) state = candidate_state
+                return
+            end if
         end if
         if (allocated(options%layer_sizes)) then
             n_layers = size(options%layer_sizes)
@@ -127,25 +166,32 @@ contains
         end if
 
         if (options%use_lbfgsb) then
-            call mlp_optimize_lbfgsb(candidate, x, target, options%lbfgsb, &
-                candidate_state%lbfgsb, status)
+            if (present(sample_weight)) then
+                call mlp_optimize_lbfgsb(candidate, x, target, options%lbfgsb, &
+                    candidate_state%lbfgsb, status, sample_weight=sample_weight)
+            else
+                call mlp_optimize_lbfgsb(candidate, x, target, options%lbfgsb, &
+                    candidate_state%lbfgsb, status)
+            end if
             candidate_state%used_lbfgsb = .true.
             candidate_state%converged = status_ok(status)
         else
             if (present(validation_x)) then
                 if (present(checkpoint)) then
                     call mlp_train(candidate, x, target, status, options%training, &
-                        candidate_state%training, validation_x, validation_target, checkpoint)
+                        candidate_state%training, validation_x, validation_target, checkpoint, &
+                        sample_weight, validation_weight)
                 else
                     call mlp_train(candidate, x, target, status, options%training, &
-                        candidate_state%training, validation_x, validation_target)
+                        candidate_state%training, validation_x, validation_target, &
+                        sample_weight=sample_weight, validation_weight=validation_weight)
                 end if
             else if (present(checkpoint)) then
                 call mlp_train(candidate, x, target, status, options%training, &
-                    candidate_state%training, checkpoint=checkpoint)
+                    candidate_state%training, checkpoint=checkpoint, sample_weight=sample_weight)
             else
                 call mlp_train(candidate, x, target, status, options%training, &
-                    candidate_state%training)
+                    candidate_state%training, sample_weight=sample_weight)
             end if
             candidate_state%converged = candidate_state%training%converged .or. &
                 status_ok(status)

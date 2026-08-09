@@ -44,6 +44,12 @@ the default trajectory; FP32/FP16/BF16 and resident CUDA training remain typed
 refusals until master-weight and lower-precision kernels have independent
 gates. See [docs/MLP_LOSS_SCALING.md](docs/MLP_LOSS_SCALING.md).
 
+MLP training and `mlp_regressor_t%fit` also accept finite, non-negative row
+weights for exact weighted-mean MSE+L2 gradients. Weight mass is preserved
+through minibatch accumulation and checkpoints, and a separate validation
+weight vector controls held-out loss and early stopping. See
+[docs/MLP_WEIGHTED_TRAINING.md](docs/MLP_WEIGHTED_TRAINING.md).
+
 The production trainer also exposes layout-aware matrix-factored Adafactor
 state through `fortml_adafactor_factored`. Matrix blocks use row and column
 second-moment factors, vectors use the unfactored fallback, and checkpoint

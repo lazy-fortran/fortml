@@ -247,6 +247,7 @@ module fortml_mlp_training
         integer :: active_epoch = 0
         integer :: active_microbatches = 0
         integer :: accumulated_samples = 0
+        real(dp) :: accumulated_weight_mass = 0.0_dp
         integer :: iterator_epoch = 0
         integer :: iterator_position = 1
         integer :: batch_size = 0
@@ -379,6 +380,7 @@ module fortml_mlp_training
         private
         type(mlp_t), pointer :: model => null()
         real(dp), allocatable :: features(:, :), targets(:, :)
+        real(dp), allocatable :: sample_weight(:)
         real(dp) :: l2 = 0.0_dp
         logical :: optimize_l2 = .false.
     contains
@@ -777,6 +779,7 @@ contains
         self%active_epoch = 0
         self%active_microbatches = 0
         self%accumulated_samples = 0
+        self%accumulated_weight_mass = 0.0_dp
         self%iterator_epoch = 0
         self%iterator_position = 1
         self%batch_size = 0
@@ -871,6 +874,9 @@ contains
             allocated(self%iterator_order) .and. &
             allocated(self%loss_history) .and. &
             allocated(self%learning_rate_history)
+        if (.not. valid) return
+        valid = ieee_is_finite(self%accumulated_weight_mass) .and. &
+            self%accumulated_weight_mass >= 0.0_dp
         if (.not. valid) return
         valid = size(self%parameters) == self%n_parameters .and. &
             size(self%first_moment) == self%n_parameters .and. &
@@ -1253,12 +1259,14 @@ contains
     end subroutine mlp_loss_hvp
 
     subroutine mlp_objective_initialize(self, model, x, target, l2, status, &
-            optimize_l2)
+            optimize_l2, sample_weight)
         class(mlp_training_objective_t), intent(out) :: self
         type(mlp_t), target, intent(inout) :: model
         real(dp), intent(in) :: x(:, :), target(:, :), l2
         type(fortnum_status_t), intent(out) :: status
         logical, intent(in), optional :: optimize_l2
+        real(dp), intent(in), optional :: sample_weight(:)
+        real(dp) :: weight_mass
 
         self%l2 = 0.0_dp
         self%optimize_l2 = .false.
@@ -1273,9 +1281,15 @@ contains
                 "MLP objective: L2 coefficient is invalid")
             return
         end if
+        if (present(sample_weight)) then
+            call validate_sample_weight(sample_weight, size(x, 1), weight_mass, &
+                status, "MLP objective")
+            if (status%code /= FORTNUM_OK) return
+        end if
         self%model => model
         allocate(self%features, source=x)
         allocate(self%targets, source=target)
+        if (present(sample_weight)) allocate(self%sample_weight, source=sample_weight)
         self%l2 = l2
         call status_set(status, FORTNUM_OK, "")
     end subroutine mlp_objective_initialize
@@ -1336,8 +1350,14 @@ contains
         end if
         call self%model%set_parameters(parameters(:n_model), status)
         if (status%code /= FORTNUM_OK) return
-        call mlp_loss_value_gradient(self%model, self%features, self%targets, &
-            l2, value, gradient(:n_model), l2_gradient, status)
+        if (allocated(self%sample_weight)) then
+            call mlp_loss_value_gradient(self%model, self%features, self%targets, &
+                l2, value, gradient(:n_model), l2_gradient, status, &
+                sample_weight=self%sample_weight)
+        else
+            call mlp_loss_value_gradient(self%model, self%features, self%targets, &
+                l2, value, gradient(:n_model), l2_gradient, status)
+        end if
         if (status%code /= FORTNUM_OK) return
         if (self%optimize_l2) gradient(n_model + 1) = l2_gradient
         call status_set(status, FORTNUM_OK, "")
@@ -1442,8 +1462,14 @@ contains
         call self%model%set_parameters(parameters(:n_model), status)
         if (status%code /= FORTNUM_OK) return
         allocate(parameter_hvp(n_model))
-        call mlp_loss_hvp(self%model, self%features, self%targets, l2, &
-            direction(:n_model), l2_direction, parameter_hvp, l2_hvp, status)
+        if (allocated(self%sample_weight)) then
+            call mlp_loss_hvp(self%model, self%features, self%targets, l2, &
+                direction(:n_model), l2_direction, parameter_hvp, l2_hvp, status, &
+                sample_weight=self%sample_weight)
+        else
+            call mlp_loss_hvp(self%model, self%features, self%targets, l2, &
+                direction(:n_model), l2_direction, parameter_hvp, l2_hvp, status)
+        end if
         if (status%code /= FORTNUM_OK) return
         product(:n_model) = parameter_hvp
         if (self%optimize_l2) product(n_model + 1) = l2_hvp
@@ -1480,7 +1506,8 @@ contains
         end select
     end subroutine mlp_objective_context_callback
 
-    subroutine mlp_optimize_lbfgsb(model, x, target, options, result, status)
+    subroutine mlp_optimize_lbfgsb(model, x, target, options, result, status, &
+            sample_weight)
         !! Optimize an MLP MSE+L2 objective with FortOpt L-BFGS-B.
         !!
         !! This is a full-batch objective adapter, intended for deterministic
@@ -1495,6 +1522,7 @@ contains
         type(mlp_lbfgsb_options_t), intent(in) :: options
         type(mlp_lbfgsb_result_t), intent(out) :: result
         type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:)
         type(mlp_training_objective_t), target :: adapter
         type(objective_t) :: objective
         type(lbfgsb_t) :: optimizer
@@ -1521,8 +1549,13 @@ contains
                 "MLP L-BFGS-B: model has no parameters")
             return
         end if
-        call adapter%initialize(model, x, target, options%l2, status, &
-            optimize_l2=options%optimize_l2)
+        if (present(sample_weight)) then
+            call adapter%initialize(model, x, target, options%l2, status, &
+                optimize_l2=options%optimize_l2, sample_weight=sample_weight)
+        else
+            call adapter%initialize(model, x, target, options%l2, status, &
+                optimize_l2=options%optimize_l2)
+        end if
         if (status%code /= FORTNUM_OK) return
         n_parameters = adapter%parameter_count()
         parameters = adapter%parameters()
@@ -1572,7 +1605,8 @@ contains
     end subroutine mlp_optimize_lbfgsb
 
     subroutine mlp_train(model, x, target, status, options, state, &
-            validation_x, validation_target, checkpoint)
+            validation_x, validation_target, checkpoint, sample_weight, &
+            validation_weight)
         !! Train `model` with deterministic Adam, AMSGrad, AdamW, Adagrad, RMSprop, or
         !! SGD updates, as selected by `options%optimizer`.
         !!
@@ -1591,6 +1625,11 @@ contains
         !! schedule callbacks and typed schedules are mutually exclusive.
         !! `options%max_epochs` is a total target epoch on both fresh and
         !! resumed calls.
+        !! Optional `sample_weight` values are finite, non-negative row weights
+        !! with positive total mass.  Minibatch accumulation forms the exact
+        !! weighted mean by accumulating each microbatch gradient with its
+        !! weight mass.  `validation_weight` applies the same contract to the
+        !! optional validation objective.
         class(mlp_t), intent(inout) :: model
         real(dp), intent(in) :: x(:, :), target(:, :)
         type(fortnum_status_t), intent(out) :: status
@@ -1598,6 +1637,7 @@ contains
         type(mlp_training_state_t), intent(out), optional :: state
         real(dp), intent(in), optional :: validation_x(:, :), validation_target(:, :)
         type(mlp_training_checkpoint_t), intent(inout), optional :: checkpoint
+        real(dp), intent(in), optional :: sample_weight(:), validation_weight(:)
         type(mlp_training_options_t) :: config
         type(mlp_training_state_t) :: result
         type(adam_t) :: optimizer
@@ -1615,11 +1655,14 @@ contains
         real(dp), allocatable :: ema_parameters(:)
         real(dp), allocatable :: lion_momentum(:)
         real(dp), allocatable :: x_batch(:, :), target_batch(:, :)
+        real(dp), allocatable :: weight_batch(:)
         integer, allocatable :: batch_indices(:)
         real(dp) :: loss, l2_gradient, gradient_norm, improvement
         real(dp) :: best_loss
         real(dp) :: validation_loss, monitored_loss
         real(dp) :: effective_rate, raw_gradient_norm
+        real(dp) :: batch_weight_mass, accumulated_weight_mass
+        real(dp) :: validation_weight_mass
         integer :: n_samples, n_outputs, n_parameters
         integer :: batch, epoch
         integer :: microbatch_count, accumulated_samples
@@ -1682,6 +1725,32 @@ contains
         end if
 
         n_samples = size(x, 1)
+        if (present(sample_weight)) then
+            call validate_sample_weight(sample_weight, n_samples, batch_weight_mass, &
+                status, "MLP train")
+            if (status%code /= FORTNUM_OK) then
+                if (present(state)) state = result
+                return
+            end if
+        else
+            batch_weight_mass = real(n_samples, dp)
+        end if
+        if (present(validation_weight)) then
+            if (.not. present(validation_x)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP train: validation weights require validation data")
+                if (present(state)) state = result
+                return
+            end if
+            call validate_sample_weight(validation_weight, size(validation_x, 1), &
+                validation_weight_mass, status, "MLP train validation")
+            if (status%code /= FORTNUM_OK) then
+                if (present(state)) state = result
+                return
+            end if
+        else if (present(validation_x)) then
+            validation_weight_mass = real(size(validation_x, 1), dp)
+        end if
         n_outputs = size(target, 2)
         n_parameters = model%parameter_count()
         if (.not. optimizer_groups_fit(n_parameters, config%optimizer_groups)) then
@@ -1870,8 +1939,13 @@ contains
             stale_epochs = checkpoint%stale_epochs
             monitored_loss = checkpoint%best_loss
         else
-            call mlp_loss_value_gradient(model, x, target, config%l2, loss, &
-                gradient, l2_gradient, status)
+            if (present(sample_weight)) then
+                call mlp_loss_value_gradient(model, x, target, config%l2, loss, &
+                    gradient, l2_gradient, status, sample_weight=sample_weight)
+            else
+                call mlp_loss_value_gradient(model, x, target, config%l2, loss, &
+                    gradient, l2_gradient, status)
+            end if
             if (status%code /= FORTNUM_OK) then
                 if (present(state)) state = result
                 return
@@ -1881,8 +1955,14 @@ contains
             result%best_loss = loss
             monitored_loss = loss
             if (present(validation_x)) then
-                call mlp_loss_value_gradient(model, validation_x, validation_target, &
-                    config%l2, validation_loss, gradient, l2_gradient, status)
+                if (present(validation_weight)) then
+                    call mlp_loss_value_gradient(model, validation_x, validation_target, &
+                        config%l2, validation_loss, gradient, l2_gradient, status, &
+                        sample_weight=validation_weight)
+                else
+                    call mlp_loss_value_gradient(model, validation_x, validation_target, &
+                        config%l2, validation_loss, gradient, l2_gradient, status)
+                end if
                 if (status%code /= FORTNUM_OK) then
                     if (present(state)) state = result
                     return
@@ -2084,10 +2164,15 @@ contains
             end if
             accumulated_gradient = 0.0_dp
             accumulated_samples = 0
+            accumulated_weight_mass = 0.0_dp
             microbatch_count = 0
             if (resuming .and. resume_active_epoch .and. epoch == start_epoch) then
                 accumulated_gradient = checkpoint%accumulated_gradient
                 accumulated_samples = checkpoint%accumulated_samples
+                accumulated_weight_mass = checkpoint%accumulated_weight_mass
+                if (accumulated_weight_mass <= 0.0_dp .and. accumulated_samples > 0) then
+                    accumulated_weight_mass = real(accumulated_samples, dp)
+                end if
                 microbatch_count = checkpoint%active_microbatches
                 resume_active_epoch = .false.
             end if
@@ -2101,21 +2186,37 @@ contains
                 if (.not. has_batch) exit
                 allocate(x_batch(size(batch_indices), size(x, 2)))
                 allocate(target_batch(size(batch_indices), n_outputs))
+                allocate(weight_batch(size(batch_indices)))
                 x_batch = x(batch_indices, :)
                 target_batch = target(batch_indices, :)
+                if (present(sample_weight)) then
+                    weight_batch = sample_weight(batch_indices)
+                else
+                    weight_batch = 1.0_dp
+                end if
+                batch_weight_mass = sum(weight_batch)
                 ! Accumulate only the data term.  Add the L2 penalty once at
                 ! the optimizer boundary so it is not counted once per
                 ! microbatch.
-                call mlp_loss_value_gradient(model, x_batch, target_batch, &
-                    0.0_dp, loss, gradient, l2_gradient, status)
-                deallocate(x_batch, target_batch)
+                if (batch_weight_mass > 0.0_dp) then
+                    call mlp_loss_value_gradient(model, x_batch, target_batch, &
+                        0.0_dp, loss, gradient, l2_gradient, status, &
+                        sample_weight=weight_batch)
+                else
+                    loss = 0.0_dp
+                    gradient = 0.0_dp
+                    l2_gradient = 0.0_dp
+                    call status_set(status, FORTNUM_OK, "")
+                end if
+                deallocate(x_batch, target_batch, weight_batch)
                 if (status%code /= FORTNUM_OK) then
                     if (present(state)) state = result
                     return
                 end if
                 accumulated_gradient = accumulated_gradient + &
-                    real(size(batch_indices), dp)*gradient
+                    batch_weight_mass*gradient
                 accumulated_samples = accumulated_samples + size(batch_indices)
+                accumulated_weight_mass = accumulated_weight_mass + batch_weight_mass
                 microbatch_count = microbatch_count + 1
                 result%microbatches = result%microbatches + 1
 
@@ -2124,8 +2225,8 @@ contains
                 if (microbatch_count >= config%accumulation_steps .or. &
                     iterator%current_position() > n_samples) then
                     if (microbatch_count > 0) then
-                        gradient = accumulated_gradient/ &
-                            real(accumulated_samples, dp)
+                        if (accumulated_weight_mass > 0.0_dp) then
+                            gradient = accumulated_gradient/accumulated_weight_mass
                         theta = model%parameters()
                         gradient = gradient + config%l2*theta
                         if (loss_scaler%enabled) then
@@ -2138,6 +2239,7 @@ contains
                                 result%loss_scale = loss_scaler
                                 accumulated_gradient = 0.0_dp
                                 accumulated_samples = 0
+                                accumulated_weight_mass = 0.0_dp
                                 microbatch_count = 0
                                 cycle
                             end if
@@ -2266,8 +2368,10 @@ contains
                             return
                         end if
                         if (event_stop) result%early_stopped = .true.
+                        end if
                         accumulated_gradient = 0.0_dp
                         accumulated_samples = 0
+                        accumulated_weight_mass = 0.0_dp
                         microbatch_count = 0
                     end if
                 end if
@@ -2280,6 +2384,7 @@ contains
                         radam_optimizer, sgd_optimizer, lion_momentum, theta, &
                         best_theta, stale_epochs, &
                         epoch, microbatch_count, accumulated_samples, &
+                        accumulated_weight_mass, &
                         accumulated_gradient, ema_parameters, has_typed_schedule, &
                         schedule_config, present(validation_x), schedule_bad_updates, &
                         schedule_reductions, schedule_best_metric, &
@@ -2299,8 +2404,13 @@ contains
                 end if
             end do
 
-            call mlp_loss_value_gradient(model, x, target, config%l2, loss, &
-                gradient, l2_gradient, status)
+            if (present(sample_weight)) then
+                call mlp_loss_value_gradient(model, x, target, config%l2, loss, &
+                    gradient, l2_gradient, status, sample_weight=sample_weight)
+            else
+                call mlp_loss_value_gradient(model, x, target, config%l2, loss, &
+                    gradient, l2_gradient, status)
+            end if
             if (status%code /= FORTNUM_OK) then
                 if (present(state)) state = result
                 return
@@ -2310,10 +2420,16 @@ contains
             result%loss_history(epoch) = loss
             result%learning_rate_history(epoch) = result%last_learning_rate
             result%gradient_norm = gradient_norm
-            if (present(validation_x) .and. &
-                mod(epoch, config%validation_interval) == 0) then
-                call mlp_loss_value_gradient(model, validation_x, validation_target, &
-                    config%l2, validation_loss, gradient, l2_gradient, status)
+            if (present(validation_x)) then
+                if (mod(epoch, config%validation_interval) == 0) then
+                    if (present(validation_weight)) then
+                        call mlp_loss_value_gradient(model, validation_x, validation_target, &
+                            config%l2, validation_loss, gradient, l2_gradient, status, &
+                            sample_weight=validation_weight)
+                    else
+                        call mlp_loss_value_gradient(model, validation_x, validation_target, &
+                            config%l2, validation_loss, gradient, l2_gradient, status)
+                    end if
                 if (status%code /= FORTNUM_OK) then
                     if (present(state)) state = result
                     return
@@ -2328,6 +2444,7 @@ contains
                     return
                 end if
                 if (event_stop) result%early_stopped = .true.
+                end if
             else
                 monitored_loss = loss
             end if
@@ -2352,9 +2469,12 @@ contains
                 result%last_learning_rate = effective_rate
                 result%learning_rate_history(epoch) = effective_rate
             end if
-            if (present(validation_x) .and. &
-                mod(epoch, config%validation_interval) /= 0) then
-                improvement = -1.0_dp
+            if (present(validation_x)) then
+                if (mod(epoch, config%validation_interval) /= 0) then
+                    improvement = -1.0_dp
+                else
+                    improvement = best_loss - monitored_loss
+                end if
             else
                 improvement = best_loss - monitored_loss
             end if
@@ -2369,8 +2489,11 @@ contains
                 best_theta = theta
                 stale_epochs = 0
             else
-                if (.not. present(validation_x) .or. &
-                    mod(epoch, config%validation_interval) == 0) then
+                if (present(validation_x)) then
+                    if (mod(epoch, config%validation_interval) == 0) then
+                        stale_epochs = stale_epochs + 1
+                    end if
+                else
                     stale_epochs = stale_epochs + 1
                 end if
             end if
@@ -2404,6 +2527,7 @@ contains
                     radam_optimizer, sgd_optimizer, lion_momentum, theta, &
                     best_theta, stale_epochs, &
                     epoch, microbatch_count, accumulated_samples, &
+                    accumulated_weight_mass, &
                     accumulated_gradient, ema_parameters, has_typed_schedule, &
                     schedule_config, present(validation_x), schedule_bad_updates, &
                     schedule_reductions, schedule_best_metric, &
@@ -2438,8 +2562,13 @@ contains
                 if (present(state)) state = result
                 return
             end if
-            call mlp_loss_value_gradient(model, x, target, config%l2, loss, &
-                gradient, l2_gradient, status)
+            if (present(sample_weight)) then
+                call mlp_loss_value_gradient(model, x, target, config%l2, loss, &
+                    gradient, l2_gradient, status, sample_weight=sample_weight)
+            else
+                call mlp_loss_value_gradient(model, x, target, config%l2, loss, &
+                    gradient, l2_gradient, status)
+            end if
             if (status%code /= FORTNUM_OK) then
                 if (present(state)) state = result
                 return
@@ -2449,8 +2578,14 @@ contains
         end if
         result%final_loss = loss
         if (present(validation_x)) then
-            call mlp_loss_value_gradient(model, validation_x, validation_target, &
-                config%l2, validation_loss, gradient, l2_gradient, status)
+            if (present(validation_weight)) then
+                call mlp_loss_value_gradient(model, validation_x, validation_target, &
+                    config%l2, validation_loss, gradient, l2_gradient, status, &
+                    sample_weight=validation_weight)
+            else
+                call mlp_loss_value_gradient(model, validation_x, validation_target, &
+                    config%l2, validation_loss, gradient, l2_gradient, status)
+            end if
             if (status%code /= FORTNUM_OK) then
                 if (present(state)) state = result
                 return
@@ -2520,7 +2655,8 @@ contains
             adafactor_optimizer, adafactor_factored_optimizer, amsgrad_optimizer, &
             radam_optimizer, sgd_optimizer, lion_momentum, theta, best_theta, &
             stale_epochs, active_epoch, &
-            active_microbatches, accumulated_samples, accumulated_gradient, &
+            active_microbatches, accumulated_samples, accumulated_weight_mass, &
+            accumulated_gradient, &
             ema_parameters, has_typed_schedule, typed_schedule, has_validation, &
             schedule_bad_updates, schedule_reductions, schedule_best_metric, &
             schedule_metric_initialized, status)
@@ -2543,6 +2679,7 @@ contains
         real(dp), intent(in) :: theta(:), best_theta(:)
         integer, intent(in) :: stale_epochs
         integer, intent(in) :: active_epoch, active_microbatches, accumulated_samples
+        real(dp), intent(in) :: accumulated_weight_mass
         real(dp), intent(in) :: accumulated_gradient(:)
         real(dp), allocatable, intent(in) :: ema_parameters(:)
         logical, intent(in) :: has_typed_schedule
@@ -2709,6 +2846,7 @@ contains
         checkpoint%active_epoch = active_epoch
         checkpoint%active_microbatches = active_microbatches
         checkpoint%accumulated_samples = accumulated_samples
+        checkpoint%accumulated_weight_mass = accumulated_weight_mass
         checkpoint%iterator_epoch = iterator%epoch_number
         checkpoint%iterator_position = iterator%position
         checkpoint%batch_size = iterator%batch_size
@@ -3249,6 +3387,31 @@ contains
         ! check; this call avoids exposing its private allocation predicate.
         valid = model%parameter_count() > 0
     end function valid_data
+
+    subroutine validate_sample_weight(sample_weight, n_samples, weight_mass, &
+            status, context)
+        real(dp), intent(in) :: sample_weight(:)
+        integer, intent(in) :: n_samples
+        real(dp), intent(out) :: weight_mass
+        type(fortnum_status_t), intent(out) :: status
+        character(len=*), intent(in) :: context
+
+        weight_mass = 0.0_dp
+        if (size(sample_weight) /= n_samples .or. &
+            any(.not. ieee_is_finite(sample_weight)) .or. &
+            any(sample_weight < 0.0_dp)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                trim(context)//": sample weights must be finite and non-negative")
+            return
+        end if
+        weight_mass = sum(sample_weight)
+        if (.not. ieee_is_finite(weight_mass) .or. weight_mass <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                trim(context)//": sample weights must have positive mass")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine validate_sample_weight
 
     subroutine shuffle_order(order, generator)
         integer, intent(inout) :: order(:)
