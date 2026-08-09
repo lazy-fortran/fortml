@@ -1615,6 +1615,18 @@ same explicit backend boundary: CPU dispatch is supported for fitted models,
 while CUDA returns `FORTNUM_NOT_IMPLEMENTED` because no resident pairwise
 logistic kernel is linked.
 
+`partial_fit(x,labels,status[,classes,l2,fit_intercept,max_iterations,
+tolerance,sample_weight,class_weight])` and its `warm_start` alias provide a
+transactional replayable stream contract.  `classes` declares the complete
+sorted vocabulary on the first batch, allowing pending batches that do not yet
+contain every class.  Accepted history is replayed with the stored positive
+class weights; `metadata()` returns the class vocabulary and batch/sample
+counters.  Unknown labels, changed vocabularies, malformed weights, and
+failed pair fits leave the live model unchanged.  See
+[`OVO_LOGISTIC_PARTIAL_FIT.md`](OVO_LOGISTIC_PARTIAL_FIT.md) and
+`test_ovo_logistic_partial_fit` for the weighted one-shot and CUDA-refusal
+oracles.
+
 ### `fortml_knn_classifier`
 
 `knn_classifier_t%fit(x,labels,status[,n_neighbors,weights,sample_weight])`

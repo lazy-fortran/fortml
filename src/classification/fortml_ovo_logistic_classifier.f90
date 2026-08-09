@@ -14,6 +14,7 @@ module fortml_ovo_logistic_classifier
     use fortml_logistic_regression, only: logistic_regression_t
     use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU, &
         FORTML_DEVICE_CUDA
+    use fortml_classification_state, only: classification_state_t
     implicit none
     private
 
@@ -27,8 +28,19 @@ module fortml_ovo_logistic_classifier
         integer :: n_features = 0
         integer :: n_parameters_per_model = 0
         logical :: is_fitted = .false.
+        type(classification_state_t) :: state
+        real(dp), allocatable :: history_x(:, :), history_weight(:)
+        integer, allocatable :: history_labels(:)
+        real(dp), allocatable :: configured_class_weight(:)
+        real(dp) :: configured_l2 = 1.0_dp
+        real(dp) :: configured_tolerance = 1.0e-8_dp
+        integer :: configured_max_iterations = 200
+        logical :: configured_fit_intercept = .true.
+        logical :: configuration_initialized = .false.
     contains
         procedure, public :: fit => ovo_logistic_fit
+        procedure, public :: partial_fit => ovo_logistic_partial_fit
+        procedure, public :: warm_start => ovo_logistic_partial_fit
         procedure, public :: decision_function => ovo_logistic_decision
         procedure, public :: predict_proba => ovo_logistic_predict_proba
         procedure, public :: predict_proba_device => ovo_logistic_predict_proba_device
@@ -50,9 +62,11 @@ module fortml_ovo_logistic_classifier
         procedure, public :: parameters => ovo_logistic_parameters
         procedure, public :: set_parameters => ovo_logistic_set_parameters
         procedure, public :: fitted => ovo_logistic_fitted
+        procedure, public :: metadata => ovo_logistic_metadata
     end type ovo_logistic_classifier_t
 
     public :: ovo_logistic_fit
+    public :: ovo_logistic_partial_fit
     public :: ovo_logistic_decision
     public :: ovo_logistic_predict_proba
     public :: ovo_logistic_predict_proba_jvp
@@ -197,8 +211,255 @@ contains
         end do
         self%n_parameters_per_model = self%models(1)%parameter_count()
         self%is_fitted = .true.
+        self%configured_l2 = 1.0_dp
+        if (present(l2)) self%configured_l2 = l2
+        self%configured_fit_intercept = .true.
+        if (present(fit_intercept)) self%configured_fit_intercept = fit_intercept
+        self%configured_max_iterations = 200
+        if (present(max_iterations)) self%configured_max_iterations = max_iterations
+        self%configured_tolerance = 1.0e-8_dp
+        if (present(tolerance)) self%configured_tolerance = tolerance
+        allocate(self%configured_class_weight(n_classes))
+        self%configured_class_weight = class_factors
+        self%configuration_initialized = .true.
+        call self%state%initialize(classes, n_features, status)
+        if (status%code /= FORTNUM_OK) then
+            self%is_fitted = .false.
+            return
+        end if
+        call self%state%append_batch(n_samples, status)
+        if (status%code /= FORTNUM_OK) then
+            self%is_fitted = .false.
+            return
+        end if
+        call ovo_store_history(self, x, labels, sample_weight, status)
+        if (status%code /= FORTNUM_OK) then
+            self%is_fitted = .false.
+            return
+        end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine ovo_logistic_fit
+
+    subroutine ovo_logistic_partial_fit(self, x, labels, status, classes, &
+            l2, fit_intercept, max_iterations, tolerance, sample_weight, &
+            class_weight)
+        !! Incremental OVO fitting with an explicit, replayable history.
+        !!
+        !! A first batch may omit one or more declared classes.  In that case
+        !! the model remains pending until every class has positive support.
+        !! Every accepted batch is replayed through the same deterministic
+        !! pair fits, so weighted partial fitting is an exact one-shot oracle
+        !! up to the configured optimizer tolerance.  All validation occurs
+        !! before assigning the candidate, making malformed batches atomic.
+        class(ovo_logistic_classifier_t), intent(inout) :: self
+        real(dp), intent(in) :: x(:, :)
+        integer, intent(in) :: labels(:)
+        type(fortnum_status_t), intent(out) :: status
+        integer, intent(in), optional :: classes(:)
+        real(dp), intent(in), optional :: l2, tolerance, sample_weight(:), &
+            class_weight(:)
+        logical, intent(in), optional :: fit_intercept
+        integer, intent(in), optional :: max_iterations
+        type(ovo_logistic_classifier_t) :: candidate
+        type(classification_state_t) :: candidate_state
+        type(fortnum_status_t) :: local_status
+        integer, allocatable :: batch_classes(:), state_classes(:)
+        integer, allocatable :: combined_labels(:)
+        real(dp), allocatable :: combined_x(:, :), combined_weight(:)
+        real(dp), allocatable :: requested_class_weight(:)
+        real(dp) :: requested_l2, requested_tolerance
+        integer :: requested_iterations, n_old, n_new, n_features
+        logical :: requested_fit_intercept, has_all_classes
+
+        if (size(x, 1) < 1 .or. size(x, 2) < 1 .or. &
+                size(labels) /= size(x, 1)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "OVO logistic partial_fit: input dimensions are invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(x))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "OVO logistic partial_fit: inputs must be finite")
+            return
+        end if
+        n_features = size(x, 2)
+        n_new = size(x, 1)
+        allocate(combined_weight(n_new))
+        combined_weight = 1.0_dp
+        if (present(sample_weight)) then
+            if (size(sample_weight) /= n_new .or. &
+                    any(.not. ieee_is_finite(sample_weight)) .or. &
+                    any(sample_weight < 0.0_dp) .or. &
+                    sum(sample_weight) <= 0.0_dp) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "OVO logistic partial_fit: sample weights are invalid")
+                return
+            end if
+            combined_weight = sample_weight
+        end if
+
+        if (.not. self%state%initialized()) then
+            if (present(classes)) then
+                allocate(batch_classes(size(classes)))
+                batch_classes = classes
+            else
+                call sorted_unique_labels(labels, batch_classes)
+            end if
+            call candidate_state%initialize(batch_classes, n_features, local_status)
+            if (local_status%code /= FORTNUM_OK) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, trim(local_status%msg))
+                return
+            end if
+            if (.not. labels_in_classes(labels, batch_classes)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "OVO logistic partial_fit: batch contains an unknown class")
+                return
+            end if
+            requested_l2 = 1.0_dp
+            if (present(l2)) requested_l2 = l2
+            requested_fit_intercept = .true.
+            if (present(fit_intercept)) requested_fit_intercept = fit_intercept
+            requested_iterations = 200
+            if (present(max_iterations)) requested_iterations = max_iterations
+            requested_tolerance = 1.0e-8_dp
+            if (present(tolerance)) requested_tolerance = tolerance
+            allocate(requested_class_weight(size(batch_classes)))
+            requested_class_weight = 1.0_dp
+            if (present(class_weight)) then
+                if (size(class_weight) /= size(batch_classes) .or. &
+                        any(.not. ieee_is_finite(class_weight)) .or. &
+                        any(class_weight <= 0.0_dp)) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "OVO logistic partial_fit: class weights are invalid")
+                    return
+                end if
+                requested_class_weight = class_weight
+            end if
+            has_all_classes = labels_cover_classes(labels, batch_classes)
+            if (has_all_classes) then
+                call candidate%fit(x, labels, local_status, l2=requested_l2, &
+                    fit_intercept=requested_fit_intercept, &
+                    max_iterations=requested_iterations, tolerance=requested_tolerance, &
+                    sample_weight=combined_weight, class_weight=requested_class_weight)
+                if (local_status%code /= FORTNUM_OK) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, trim(local_status%msg))
+                    return
+                end if
+            else
+                candidate%is_fitted = .false.
+                candidate%n_features = n_features
+                candidate%n_classes = size(batch_classes)
+                allocate(candidate%class_label(size(batch_classes)))
+                candidate%class_label = batch_classes
+            end if
+            candidate%configured_l2 = requested_l2
+            candidate%configured_fit_intercept = requested_fit_intercept
+            candidate%configured_max_iterations = requested_iterations
+            candidate%configured_tolerance = requested_tolerance
+            candidate%configured_class_weight = requested_class_weight
+            candidate%configuration_initialized = .true.
+            candidate%state = candidate_state
+            call candidate%state%append_batch(n_new, local_status)
+            if (local_status%code /= FORTNUM_OK) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, trim(local_status%msg))
+                return
+            end if
+            call ovo_store_history(candidate, x, labels, combined_weight, local_status)
+            if (local_status%code /= FORTNUM_OK) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, trim(local_status%msg))
+                return
+            end if
+            select type (self)
+            type is (ovo_logistic_classifier_t)
+                self = candidate
+            end select
+            call status_set(status, FORTNUM_OK, "")
+            return
+        end if
+
+        call self%state%validate_batch(labels, n_features, local_status)
+        if (local_status%code /= FORTNUM_OK) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, trim(local_status%msg))
+            return
+        end if
+        state_classes = self%state%classes()
+        if (present(classes)) then
+            if (size(classes) /= size(state_classes) .or. &
+                    any(classes /= state_classes)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "OVO logistic partial_fit: classes do not match initialized metadata")
+                return
+            end if
+        end if
+        requested_l2 = self%configured_l2
+        if (present(l2)) requested_l2 = l2
+        requested_fit_intercept = self%configured_fit_intercept
+        if (present(fit_intercept)) requested_fit_intercept = fit_intercept
+        requested_iterations = self%configured_max_iterations
+        if (present(max_iterations)) requested_iterations = max_iterations
+        requested_tolerance = self%configured_tolerance
+        if (present(tolerance)) requested_tolerance = tolerance
+        requested_class_weight = self%configured_class_weight
+        if (present(class_weight)) then
+            if (size(class_weight) /= size(state_classes) .or. &
+                    any(.not. ieee_is_finite(class_weight)) .or. &
+                    any(class_weight <= 0.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "OVO logistic partial_fit: class weights are invalid")
+                return
+            end if
+            requested_class_weight = class_weight
+        end if
+        n_old = size(self%history_labels)
+        deallocate(combined_weight)
+        allocate(combined_x(n_old + n_new, n_features), &
+            combined_labels(n_old + n_new), combined_weight(n_old + n_new))
+        combined_x(:n_old, :) = self%history_x
+        combined_x(n_old + 1:, :) = x
+        combined_labels(:n_old) = self%history_labels
+        combined_labels(n_old + 1:) = labels
+        combined_weight(:n_old) = self%history_weight
+        if (present(sample_weight)) then
+            combined_weight(n_old + 1:) = sample_weight
+        else
+            combined_weight(n_old + 1:) = 1.0_dp
+        end if
+        has_all_classes = labels_cover_classes(combined_labels, state_classes)
+        candidate = self
+        if (has_all_classes) then
+            call candidate%fit(combined_x, combined_labels, local_status, l2=requested_l2, &
+                fit_intercept=requested_fit_intercept, max_iterations=requested_iterations, &
+                tolerance=requested_tolerance, sample_weight=combined_weight, &
+                class_weight=requested_class_weight)
+            if (local_status%code /= FORTNUM_OK) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, trim(local_status%msg))
+                return
+            end if
+            candidate%state = self%state
+        end if
+        call candidate%state%append_batch(n_new, local_status)
+        if (local_status%code /= FORTNUM_OK) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, trim(local_status%msg))
+            return
+        end if
+        candidate%configured_l2 = requested_l2
+        candidate%configured_fit_intercept = requested_fit_intercept
+        candidate%configured_max_iterations = requested_iterations
+        candidate%configured_tolerance = requested_tolerance
+        candidate%configured_class_weight = requested_class_weight
+        candidate%configuration_initialized = .true.
+        call ovo_store_history(candidate, combined_x, combined_labels, combined_weight, &
+            local_status)
+        if (local_status%code /= FORTNUM_OK) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, trim(local_status%msg))
+            return
+        end if
+        select type (self)
+        type is (ovo_logistic_classifier_t)
+            self = candidate
+        end select
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine ovo_logistic_partial_fit
 
     subroutine ovo_logistic_decision(self, x, scores, status)
         class(ovo_logistic_classifier_t), intent(in) :: self
@@ -652,6 +913,76 @@ contains
             supported = .false.
         end select
     end function ovo_logistic_device_supported
+
+    function ovo_logistic_metadata(self) result(metadata)
+        class(ovo_logistic_classifier_t), intent(in) :: self
+        type(classification_state_t) :: metadata
+
+        metadata = self%state
+    end function ovo_logistic_metadata
+
+    subroutine ovo_store_history(self, x, labels, sample_weight, status)
+        class(ovo_logistic_classifier_t), intent(inout) :: self
+        real(dp), intent(in) :: x(:, :)
+        integer, intent(in) :: labels(:)
+        real(dp), intent(in), optional :: sample_weight(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: candidate_x(:, :), candidate_weight(:)
+        integer, allocatable :: candidate_labels(:)
+
+        if (size(x, 1) < 1 .or. size(x, 2) < 1 .or. &
+                size(labels) /= size(x, 1)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "OVO logistic history: batch dimensions are invalid")
+            return
+        end if
+        allocate(candidate_x(size(x, 1), size(x, 2)), &
+            candidate_labels(size(labels)), candidate_weight(size(labels)))
+        candidate_x = x
+        candidate_labels = labels
+        candidate_weight = 1.0_dp
+        if (present(sample_weight)) then
+            if (size(sample_weight) /= size(labels) .or. &
+                    any(.not. ieee_is_finite(sample_weight)) .or. &
+                    any(sample_weight < 0.0_dp) .or. &
+                    sum(sample_weight) <= 0.0_dp) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "OVO logistic history: sample weights are invalid")
+                return
+            end if
+            candidate_weight = sample_weight
+        end if
+        call move_alloc(candidate_x, self%history_x)
+        call move_alloc(candidate_labels, self%history_labels)
+        call move_alloc(candidate_weight, self%history_weight)
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine ovo_store_history
+
+    logical function labels_in_classes(labels, classes) result(found)
+        integer, intent(in) :: labels(:), classes(:)
+        integer :: i
+
+        found = .true.
+        do i = 1, size(labels)
+            if (.not. any(classes == labels(i))) then
+                found = .false.
+                return
+            end if
+        end do
+    end function labels_in_classes
+
+    logical function labels_cover_classes(labels, classes) result(covered)
+        integer, intent(in) :: labels(:), classes(:)
+        integer :: i
+
+        covered = .true.
+        do i = 1, size(classes)
+            if (.not. any(labels == classes(i))) then
+                covered = .false.
+                return
+            end if
+        end do
+    end function labels_cover_classes
 
     subroutine sorted_unique_labels(labels, classes)
         integer, intent(in) :: labels(:)
