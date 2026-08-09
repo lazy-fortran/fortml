@@ -7,10 +7,10 @@ bound to clamp every objective-gradient coordinate to
 The default zero disables value clipping. Global norm clipping, when enabled,
 is applied after this coordinate-wise bound.
 
-The operation is transactional: objective products are checked for finite
+The operation is transactional. Objective products are checked for finite
 values before clipping, and optimizer failures restore the pre-update
 parameters. `trainer_state_t%value_clipped_steps` records the number of
-accepted updates in which at least one coordinate was clamped; the existing
+accepted updates in which at least one coordinate was clamped. The existing
 `clipped_steps` counter remains the independent global-norm diagnostic.
 
 The value bound and diagnostic counter are persisted in the formatted trainer
