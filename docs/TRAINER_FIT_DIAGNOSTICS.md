@@ -17,13 +17,13 @@ resumable state. A failed `fit` leaves the previous diagnostic snapshot in
 place. The bounded L-BFGS-B path still has no resumable quasi-Newton history,
 so `save_checkpoint` returns a typed domain error for that optimizer.
 
-The formatted trainer checkpoint is schema 7. Loading validates all four
+The formatted trainer checkpoint is schema 8. Loading validates all four
 integer counters as non-negative before replacing the destination, preserving
 the existing transactional load contract. Unknown or older schemas are
 rejected rather than silently discarding diagnostics.
 
 The independent `test_trainer_fit_diagnostics` quadratic fixture checks the
 FortOpt iteration, line-search, and curvature counters against the analytic
-minimum, then checks schema-7 persistence of the streaming fit counters.
+minimum, then checks schema-8 persistence of the streaming fit counters.
 CUDA remains a typed refusal for the generic trainer because the objective and
 optimizer state are host-owned.

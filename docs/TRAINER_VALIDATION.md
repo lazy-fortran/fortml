@@ -17,7 +17,7 @@ non-improving evaluations. With
 to the best validation point before the step reports the stop. A patience of
 zero records diagnostics without early stopping.
 
-Validation state is part of the schema-7 formatted trainer checkpoint. The
+Validation state is part of the schema-8 formatted trainer checkpoint. The
 checkpoint stores options, metric history, best parameters, counters, and
 stop flags. Callback procedures are process-local and are never serialized.
 Loading a checkpoint that contains validation state therefore requires the
