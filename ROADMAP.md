@@ -21,7 +21,7 @@ boosted-tree partial-dependence/ICE, learned basis fan-in, fixed-full-batch
 SGD clipping hypergradient, and fixed-shape Gamma-GP likelihood slices.
 The broad parity
 gate is still open, so this work does not move or recreate that tag.
-The checklist currently records 406 completed and 149 open items. Open rows are
+The checklist currently records 409 completed and 149 open items. Open rows are
 retained until their implementation, independent oracle, device/refusal
 behavior, and benchmark evidence land together.
 
@@ -180,6 +180,11 @@ it is checked off.
   `test_logistic_regression` and `test_softmax_regression` gates cover
   normalization, central differences, and the binary adjoint identity; the
   resident CUDA reduction boundary remains a typed refusal.
+- [x] Add transactional OVR logistic `partial_fit` and `warm_start` state:
+  sorted arbitrary labels, deferred class completion, sample/batch history,
+  fixed-state parameter/input products, malformed-batch rollback, and typed
+  CUDA refusal. The independent replay and release evidence is pinned in
+  `fortml-bench/results/OVR_LOGISTIC_PARTIAL_FIT.md`.
 - [ ] Add a common calibration wrapper for sigmoid, temperature, isotonic, and
   Platt policies with leakage-safe cross-validation, weighted OOF state,
   calibration curves, and calibration-aware parameter products.
@@ -212,6 +217,11 @@ it is checked off.
   transactional FortOpt L-BFGS-B fitting, and typed CUDA refusal. The
   independent SciPy/NumPy lane is
   `fortml-bench/results/GP_GAMMA_LIKELIHOOD.md`.
+- [x] Add exact ICM multi-output GP likelihood value/JVP/VJP, hyperparameter
+  gradient, and HVP products over kernel, log-noise, coregionalization, and
+  independent-variance coordinates, with transactional parameter updates,
+  shape metadata, and typed CUDA refusal. The dense NumPy finite-difference
+  lane is pinned in `fortml-bench/results/MULTI_OUTPUT_GP_HYPERGRADIENTS.md`.
 - [ ] Finish the likelihood catalog: Gaussian, Bernoulli/probit, categorical,
   multinomial, Poisson/count, Gamma, Student-t, heteroskedastic, censored,
   ordinal, and warped links with constraints, stable tails, batch shapes, and
@@ -258,6 +268,11 @@ it is checked off.
   branch JVP/VJP products, FortOpt L-BFGS-B callbacks, transactional state,
   and typed kink/HVP/CUDA boundaries. Evidence is pinned in
   `fortml-bench/results/MLP_CLIP_HYPERGRADIENT.md`.
+- [x] Add weighted RMSprop trajectory hypergradients for non-uniform training
+  and validation measures, including value/gradient/JVP/VJP, affine outer HVP,
+  FortOpt L-BFGS-B callbacks, transactional state, and typed CUDA refusal. The
+  independent recurrence lane is pinned in
+  `fortml-bench/results/MLP_RMSPROP_WEIGHTED_HYPERGRADIENT.md`.
 - [ ] Make every supported optimizer expose exact trajectory products through
   learning rate, decay, momentum, betas, schedules, batch cursor, clipping,
   validation, and early-stopping coordinates, with FortOpt L-BFGS-B using the
