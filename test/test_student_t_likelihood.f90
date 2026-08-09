@@ -146,6 +146,7 @@ contains
         type(student_t_likelihood_t) :: model
         type(fortnum_status_t) :: status
         real(dp) :: observations(7), locations(7), parameters(2), short_parameters(1)
+        real(dp) :: overflowing_parameters(2)
 
         call fixture(observations, locations, parameters)
         call model%initialize(observations, locations, status, parameters, FORTML_DEVICE_CUDA)
@@ -157,6 +158,12 @@ contains
         call model%set_parameters(short_parameters, status)
         call check(status%code == FORTNUM_DOMAIN_ERROR, &
             "parameter count refusal", failures)
+        overflowing_parameters = [parameters(1), 1000.0_dp]
+        call model%set_parameters(overflowing_parameters, status)
+        call check(status%code == FORTNUM_DOMAIN_ERROR, &
+            "exponent overflow refusal", failures)
+        call check(maxval(abs(model%parameters() - parameters)) < 1.0e-14_dp, &
+            "exponent overflow update is transactional", failures)
     end subroutine test_refusals
 
     real(dp) function oracle_value(observations, locations, parameters) result(value)

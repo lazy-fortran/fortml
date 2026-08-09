@@ -99,7 +99,9 @@ contains
             end if
             candidate = parameters
         end if
-        if (any(.not. ieee_is_finite(candidate))) then
+        if (any(.not. ieee_is_finite(candidate)) .or. &
+            .not. valid_log_positive(candidate(1)) .or. &
+            .not. valid_log_positive(candidate(2))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "Student-t likelihood: transformed parameters must be finite")
             return
@@ -160,8 +162,18 @@ contains
                 "Student-t likelihood: set before initialize")
             return
         end if
-        if (size(parameters) /= STUDENT_T_LIKELIHOOD_N_PARAMETERS .or. &
-            any(.not. ieee_is_finite(parameters))) then
+        if (size(parameters) /= STUDENT_T_LIKELIHOOD_N_PARAMETERS) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "Student-t likelihood: parameter shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(parameters))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "Student-t likelihood: transformed parameters must be finite")
+            return
+        end if
+        if (.not. valid_log_positive(parameters(1)) .or. &
+            .not. valid_log_positive(parameters(2))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "Student-t likelihood: parameter shape or values are invalid")
             return
@@ -565,5 +577,13 @@ contains
             value = log(1.0_dp + argument)
         end if
     end function log_one_plus_nonnegative
+
+    pure logical function valid_log_positive(argument) result(valid)
+        real(dp), intent(in) :: argument
+
+        valid = ieee_is_finite(argument)
+        if (.not. valid) return
+        valid = ieee_is_finite(exp(argument))
+    end function valid_log_positive
 
 end module fortml_student_t_likelihood
