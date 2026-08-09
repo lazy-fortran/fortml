@@ -1731,8 +1731,8 @@ only listed as gaps:
   resident execution remains open.
 
 The FortBO and FortMC companion pins were rechecked against their remote
-`main` branches on 2026-08-08: FortBO
-`b62a1a0bae1c0766fb35a3127957a39758705160` and FortMC
+`main` branches on 2026-08-09: FortBO
+`9197d89b736535dea905ae0d11d0a80515721149` and FortMC
 `e5e42a0ac1d4a4d92fa6b2ee2750b50723342a48`. Their roadmaps remain authoritative
 for acquisition and sampling algorithms; FortML owns the posterior/log-density
 protocols and does not embed sampler or acquisition state. FortBO additionally
@@ -1852,10 +1852,11 @@ the complete operation graph resident or return a typed refusal; OpenACC is the
 first choice when it preserves semantics, and native CUDA is reserved for
 fixed no-autodiff hot loops where OpenACC cannot.
 
-The dependency pins used by the current GNU verification are FortAD `7c65a88`,
-FortFront `0bce426`, FortSym `26250ce`, FortOpt `883aa7e`
-(`release/context-objective`), and FortNum `7ced2f7`, all checked against
-their corresponding remote branches on 2026-08-08. Generated derivatives
+The dependency pins used by the current GNU verification are FortAD
+`665894d376e48dcdd68688f7e11fe8f4893176c5`, FortFront
+`3004278ed52a38b9ca51fc645170f339931359c8`, FortSym `26250ce`, FortOpt `883aa7e`, and
+FortNum `7ced2f7`, all checked against their corresponding remote branches on
+2026-08-09. Generated derivatives
 record the exact FortSym revision and source hash; model-level autodiff uses
 the same FortAD `main` pin.
 
@@ -1865,9 +1866,9 @@ acquisition work packages:
 - [`fortmc/ROADMAP.md`](https://github.com/lazy-fortran/fortmc/blob/main/ROADMAP.md)
 - [`fortbo/ROADMAP.md`](https://github.com/lazy-fortran/fortbo/blob/main/ROADMAP.md)
 
-The companion repositories were checked on 2026-08-08 at FortMC
+The companion repositories were checked on 2026-08-09 at FortMC
 `e5e42a0ac1d4a4d92fa6b2ee2750b50723342a48` and FortBO
-`b62a1a0bae1c0766fb35a3127957a39758705160`, both on their `main` branches. The
+`9197d89b736535dea905ae0d11d0a80515721149`, both on their `main` branches. The
 FortBO pin now includes a versioned capability-gated posterior contract,
 gradient-aware observation history/checkpointing, normalized continuous/integer/
 categorical/mixed/conditional search spaces, a differentiable-coordinate mask,
@@ -1903,7 +1904,7 @@ The FortBO pin includes a standalone OpenACC hardware probe and an
 acquisition-level wall-clock benchmark; these are separate from the
 auto-discovered test tree and require a dependency-complete GPU host before
 publishing device timings. The 14D ordering harness is a separate slow fixture
-and remains limited to the pushing arm. Against the current b62a1a0 tip,
+and remains limited to the pushing arm. Against the current 9197d89 tip,
 `fo check --json=compact` stops at the build stage because the generated
 `fortbo_generated_acquisition_leaf_` symbol is not linked; this is a FortBO
 boundary failure, not FortML verification evidence.
@@ -1912,7 +1913,7 @@ slice-sampler test (normal and correlated moments, bounded support,
 reproducibility, and refusal cases); the remaining samplers, diagnostics, and
 checkpoint claims remain roadmap items rather than FortML verification evidence.
 
-This companion check was repeated from clean source trees on 2026-08-08:
+This companion check was repeated from clean source trees on 2026-08-09:
 `origin/main` resolves exactly to the two pins above, and neither repository
 has a runtime dependency on the FortSym executable. FortMC's artifact-cleanup
 tip does not expand its sampler catalog: its slice sampler remains the only
