@@ -116,6 +116,26 @@ workspace, transfer, and refusal behavior are measured.
 | Boosted trees | Exact and histogram growth, missing defaults, categorical policies, monotonic and interaction constraints, ranking, DART, GOSS, EFB, staged predictions, contributions, SHAP-compatible values, validation stopping, warm starts, slicing, serialization, and fixed-topology products share one tree-state contract. | Independent split and leaf-walk references, boundary refusals, validation history, continuation replay, schema round trips, XGBoost and LightGBM matched options, and resident histogram measurements. |
 | Devices and scale | CPU, OpenACC, and CUDA capability is recorded per operation. Resident state includes parameters, batches, workspaces, accumulators, derivative buffers, and transfer counters. FortSym-generated no-autodiff CUDA is allowed when its proof and oracle are retained. | Device value and product oracles, output-preserving typed refusals, transfer and memory accounting, deterministic reductions, compiler and architecture provenance, and a result schema that separates compile, warmup, transfer, and steady-state time. |
 
+## External parity feature ledger
+
+The implementation target includes the user-visible surfaces that make the
+reference libraries useful in production. This ledger prevents parity from
+being reduced to a list of model names.
+
+| Reference surface | Required FortML contract | Evidence still required |
+| --- | --- | --- |
+| scikit-learn estimators and meta-estimators | `fit`, `predict`, `decision_function`, `predict_proba`, `predict_log_proba`, `score`, `partial_fit`, `warm_start`, `get_params`, `set_params`, `clone`, sample/class weights, sparse and categorical policies, pipelines, cross-validation, and model persistence | Matched small fixtures, arbitrary labels, malformed-input rollback, leakage-safe folds, parameter routing, and schema replay |
+| PyTorch and JAX modules | Named module trees, buffers, aliases, train/eval state, deterministic flattening, forward/reverse products, higher products, compiled static plans, mixed precision, checkpointing, and distributed state | PyTorch/JAX value and update trajectories, gradient and HVP checks, compile and transfer timings, overflow recovery, and restart checks |
+| Flux and Lux parameter trees | Immutable or explicitly mutable parameter/state separation, composable layers, optimizers, callbacks, and AD-compatible parameter paths | Julia reference values, tree-path round trips, optimizer-state replay, and a declared FortAD/FortSym product mode |
+| GPyTorch and GPflow | Lazy and dense operators, batch and multitask shapes, exact/CG/Cholesky/Laplace/SVGP inference, likelihoods, priors and constraints, fantasy updates, derivative observations, and natural-gradient or FortOpt fitting | Dense and matrix-free oracle solves, derivative-observation products, implicit-fit checks, variational ELBO trajectories, and resident-memory measurements |
+| XGBoost and LightGBM | Exact, histogram, quantile, categorical, ranking, survival, DART, GOSS, EFB, constraints, staged/warm-start state, JSON/text persistence, contributions, SHAP-compatible products, and resident prediction/growth plans | Split and leaf replay, group metrics, continuation, explanation checks, external option parity, GPU throughput, and transfer/workspace accounting |
+| Cross-library operations | One parameter registry and objective protocol for basis maps, preprocessing, models, losses, validation, HPO, and deployment state | Value, gradient, JVP, VJP, HVP, persistence, refusal, device, and benchmark rows for every exposed coordinate |
+
+The ledger is a production requirement rather than a compatibility promise for
+older FortML signatures. The pre-1.0 clean break may replace an ambiguous API
+when that is necessary to make state ownership, parameter paths, derivative
+coverage, or device residency explicit.
+
 The implementation order is deliberate. First close shared state, parameter
 registries, losses, and derivative contracts. Then add model-specific trainers
 and FortOpt adapters. Then lower the same operators to resident devices. A
