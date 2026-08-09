@@ -41,7 +41,7 @@ program fortml_bench_trainer_schedule
     elapsed = real(tick_end-tick_start, dp)/real(ticks_per_second, dp)
     state = trainer%state_copy()
     write (*, '(a,",",i0,",",es24.16,",",es24.16,",",es24.16,",",es24.16,",",es24.16)') &
-        "trainer_schedule,4", state%steps, state%learning_rate_history(2), &
+        "trainer_schedule", state%steps, state%learning_rate_history(2), &
         state%learning_rate_history(3), state%learning_rate_history(4), &
         state%learning_rate_history(5), elapsed
     write (*, '(a,",",es24.16,",",es24.16)') "trainer_schedule_parameters", &
