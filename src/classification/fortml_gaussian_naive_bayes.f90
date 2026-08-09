@@ -298,7 +298,7 @@ contains
         type(fortnum_status_t) :: candidate_status
         real(dp) :: requested_smoothing
         integer :: n_samples, n_features, n_old, n_classes, i, c
-        logical :: complete
+        logical :: complete, first_call
 
         n_samples = size(x, 1)
         n_features = size(x, 2)
@@ -340,7 +340,8 @@ contains
             return
         end if
 
-        if (.not. self%partial_initialized) then
+        first_call = .not. self%partial_initialized
+        if (first_call) then
             if (self%is_fitted) then
                 call status_set(status, FORTNUM_DOMAIN_ERROR, &
                     "GaussianNB partial_fit: call partial_fit on a fresh model")
@@ -365,7 +366,6 @@ contains
             end do
             allocate(candidate_classes(size(classes)))
             candidate_classes = classes
-            self%partial_var_smoothing = requested_smoothing
         else
             if (n_features /= self%feature_count()) then
                 call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -428,6 +428,7 @@ contains
 
         ! Commit only after all validation and (when possible) fitting succeed.
         self%partial_initialized = .true.
+        if (first_call) self%partial_var_smoothing = requested_smoothing
         self%partial_sample_count = n_old + n_samples
         self%partial_batch_count = self%partial_batch_count + 1
         if (allocated(self%partial_x)) deallocate(self%partial_x)
