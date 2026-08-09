@@ -3689,6 +3689,10 @@ and the logistic prediction applies the same stable sigmoid after the margin.
 Categorical partitions, missing-value policies, ranking, DART, robust and
 other unsupported objectives, unavailable native plans, nonfinite queries, and
 split-boundary products return typed statuses before changing caller output.
+For repeated batches, call `create_device_plan(device,plan,status)` once and
+retain the returned `cuda_boosted_tree_plan_t`; the plan owns the immutable
+fitted topology until `destroy` and therefore makes the query-only transfer
+contract explicit at the XGBoost API boundary.
 `test_xgboost_cuda_dispatch` covers CPU/CUDA value parity and refusal
 sentinels, while `test_cuda_boosted_tree_api` covers the resident ABI and
 transfer accounting.  The release evidence is
