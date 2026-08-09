@@ -207,6 +207,7 @@ repeated resident-batch evidence.
 | `xgboost_t` | Squared/squared-log (RMSLE)/logistic/Poisson/fixed-shape Gamma/Tweedie/Huber/quantile/absolute/rank:pairwise margins, predictions, additive tree contributions, fitted-prefix slicing, bounded ordered-gradient integer categorical partitions, and packed fixed-structure base/leaf coordinates | Fixed-tree input JVP away from split boundaries; categorical models refuse discrete tangents; raw-margin leaf-coordinate JVP | Fixed-tree input VJP away from split boundaries; categorical models refuse discrete cotangents; raw-margin leaf-coordinate VJP | No |
 | `xgboost_classifier_t` | Binary integer labels, logistic `(n,2)` probabilities and stable log probabilities, staged margins, feature diagnostics, and categorical/interaction metadata | Fixed-tree probability/log-probability/input JVP away from split boundaries | Fixed-tree probability/log-probability/input VJP away from split boundaries | No |
 | `lightgbm_t` | Weighted numeric regression/binary logistic histogram boosting with deterministic globally best-leaf growth, GOSS top/other-rate gradient/Hessian sampling, seeded DART/dropout with persisted tree-normalisation scales, and packed fixed-structure base/leaf coordinates | Fixed-tree input JVP away from split boundaries; raw-margin leaf-coordinate JVP | Fixed-tree input VJP away from split boundaries; raw-margin leaf-coordinate VJP | No |
+| `lightgbm_multiclass_t` | Sorted-integer-label one-vs-rest LightGBM-style binary logistic children with normalized final/staged probabilities, raw margins, weighted validation best-prefix metadata, and transactional fit | Fixed-tree normalized probability/input JVP away from split boundaries | Fixed-tree normalized probability/input VJP away from split boundaries | No |
 | `random_forest_classifier_t` | Bootstrap-ensemble probabilities/labels plus transactional OOB decision probabilities, OOB accuracy, coverage, bootstrap-inclusion audit state, and deterministic fixed-state accuracy permutation importance | Refused: split routing and permutation membership are discrete | Refused: split routing and permutation membership are discrete | CPU OOB/permutation diagnostics; CUDA returns typed `FORTNUM_NOT_IMPLEMENTED` |
 | `extra_trees_classifier_t` | Randomized-threshold ensemble probabilities and labels | Refused: split routing is discrete | Refused: split routing is discrete | No |
 | `bagging_classifier_t` | Seeded bootstrap or without-replacement CART probabilities and labels | Refused: split routing is discrete | Refused: split routing is discrete | No |
@@ -4407,6 +4408,35 @@ are `test_lightgbm`, `test_lightgbm_staged_slice`, `test_lightgbm_persistence`,
 `test_lightgbm_goss`, and `test_lightgbm_dart`; the release benchmarks are
 `lightgbm_leafwise.csv`, `lightgbm_goss.csv`, and `lightgbm_dart.csv` in
 `../fortml-bench`.
+
+### `fortml_lightgbm_multiclass`
+
+`lightgbm_multiclass_t` is the classifier adapter for the LightGBM-style
+leaf-wise binary path. `fit(x,labels,status,options[,sample_weight,
+validation_x,validation_labels,validation_weight])` sorts arbitrary integer
+labels, fits one binary child per class, and commits the complete ensemble only
+after all children and validation checks succeed. Child early stopping is
+disabled during the fit. The normalized multiclass weighted log loss selects a
+common best prefix, preserving equal stage counts across classes. `classes`,
+`class_count`, `feature_count`, `estimator_count`,
+`requested_estimator_count`, `best_iteration`, `best_validation_loss`,
+`early_stopped`, `boosting_type`, and `num_leaves` expose fitted metadata.
+
+`predict_proba` returns a row-normalized `(n_samples,n_classes)` matrix and
+`predict` returns the original sorted integer labels. `predict_proba_staged`
+returns `(n_samples,n_classes,n_estimators)` normalized probabilities after
+each common tree prefix. `decision_function` and
+`decision_function_staged` return the corresponding unnormalized binary raw
+margins.
+
+`predict_proba_jvp` and `predict_proba_vjp` apply the sigmoid and normalization
+chain rule while holding split routing fixed. The wrapped LightGBM child returns
+a typed boundary error on a split surface. Away from a boundary the tree map is
+locally constant, so the input products are zero. CPU device dispatch is
+explicit. Selected CUDA probability and label requests return
+`FORTNUM_NOT_IMPLEMENTED` until a resident LightGBM histogram kernel exists.
+The independent oracle is `test_lightgbm_multiclass`; the release workload is
+`lightgbm_multiclass.csv` in `../fortml-bench`.
 
 ### `fortml_xgboost_multioutput`
 
