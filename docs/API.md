@@ -4245,8 +4245,12 @@ how surprising the observed values were. `posterior_dof`, `covariance_scale`,
 and `log_marginal_likelihood` expose the fitted state. The large-`nu` GP limit,
 data-dependent variance contrast, and invalid-input refusals are checked by
 `test_student_t_process`; see [`docs/GP_STUDENT_T_PROCESS.md`](GP_STUDENT_T_PROCESS.md).
-This is a CPU dense reference path: derivative products, sparse/variational
-inference, and resident CUDA execution remain open.
+`likelihood_parameters` exposes `[log(nu - 2)]`; the fixed-state likelihood
+JVP/VJP/HVP methods differentiate that coordinate without differentiating the
+fit. CPU device dispatch is supported and CUDA methods return the typed
+`FORTNUM_NOT_IMPLEMENTED` refusal until resident factorization is linked. This
+does not provide likelihood fitting, cross-products through kernel/noise, or
+derivatives through refitting; sparse/variational inference remains open.
 
 ### `fortml_heteroskedastic_gp`
 

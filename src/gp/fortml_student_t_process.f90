@@ -38,8 +38,9 @@ module fortml_student_t_process
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
-        FORTNUM_DOMAIN_ERROR
+        FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED
     use fortnum_cholesky, only: cholesky_factorization_t
+    use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU, FORTML_DEVICE_CUDA
     use fortml_kernels, only: kernel_t, clone_kernel_into
     implicit none
     private
@@ -73,6 +74,21 @@ module fortml_student_t_process
         procedure, public :: posterior_dof => student_t_posterior_dof
         procedure, public :: covariance_scale => student_t_covariance_scale
         procedure, public :: log_marginal_likelihood => student_t_lml
+        procedure, public :: likelihood_parameter_count => student_t_likelihood_parameter_count
+        procedure, public :: likelihood_parameters => student_t_likelihood_parameters
+        procedure, public :: set_likelihood_parameters => student_t_set_likelihood_parameters
+        procedure, public :: log_marginal_likelihood_likelihood_parameter_jvp => &
+            student_t_likelihood_parameter_jvp
+        procedure, public :: log_marginal_likelihood_likelihood_parameter_vjp => &
+            student_t_likelihood_parameter_vjp
+        procedure, public :: log_marginal_likelihood_likelihood_parameter_hvp => &
+            student_t_likelihood_parameter_hvp
+        procedure, public :: log_marginal_likelihood_likelihood_parameter_jvp_device => &
+            student_t_likelihood_parameter_jvp_device
+        procedure, public :: log_marginal_likelihood_likelihood_parameter_vjp_device => &
+            student_t_likelihood_parameter_vjp_device
+        procedure, public :: log_marginal_likelihood_likelihood_parameter_hvp_device => &
+            student_t_likelihood_parameter_hvp_device
     end type student_t_process_t
 
 contains
@@ -223,6 +239,45 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine student_t_predict
 
+    pure integer function student_t_likelihood_parameter_count(self) result(count)
+        !! One transformed likelihood coordinate: `log(nu - 2)`.
+        class(student_t_process_t), intent(in) :: self
+
+        count = 1
+    end function student_t_likelihood_parameter_count
+
+    function student_t_likelihood_parameters(self) result(parameters)
+        !! The log offset keeps `nu > 2` by construction.
+        class(student_t_process_t), intent(in) :: self
+        real(dp), allocatable :: parameters(:)
+
+        allocate (parameters(1))
+        parameters(1) = log(self%nu - STUDENT_T_MIN_DOF)
+    end function student_t_likelihood_parameters
+
+    subroutine student_t_set_likelihood_parameters(self, parameters, status)
+        !! Transactionally update the Student-t likelihood degrees of freedom.
+        class(student_t_process_t), intent(inout) :: self
+        real(dp), intent(in) :: parameters(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: candidate_nu
+
+        if (size(parameters) /= 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "student-t process: likelihood parameter count must be one")
+            return
+        end if
+        candidate_nu = STUDENT_T_MIN_DOF + exp(parameters(1))
+        if (.not. ieee_is_finite(candidate_nu) .or. &
+            candidate_nu <= STUDENT_T_MIN_DOF) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "student-t process: likelihood degrees of freedom are invalid")
+            return
+        end if
+        self%nu = candidate_nu
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine student_t_set_likelihood_parameters
+
     !! Log marginal likelihood of the multivariate-t marginal.
     !!
     !! The `(nu - 2)` factors are the paper's parameterization showing through:
@@ -233,7 +288,7 @@ contains
         real(dp), intent(in) :: y(:)
         real(dp), intent(out) :: value
         type(fortnum_status_t), intent(out) :: status
-        real(dp) :: log_det, n_real, pi_value
+        real(dp) :: gradient, hessian
 
         value = 0.0_dp
         if (.not. self%fitted) then
@@ -247,18 +302,241 @@ contains
             return
         end if
 
+        call student_t_likelihood_terms(self, value, gradient, hessian, status)
+    end subroutine student_t_lml
+
+    subroutine student_t_likelihood_parameter_jvp(self, y, direction, value, tangent, status)
+        !! Fixed-state JVP for `log(nu - 2)`.
+        class(student_t_process_t), intent(in) :: self
+        real(dp), intent(in) :: y(:), direction(:)
+        real(dp), intent(out) :: value, tangent
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: gradient, hessian
+
+        value = 0.0_dp
+        tangent = 0.0_dp
+        if (size(direction) /= 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "student-t process: likelihood JVP direction count must be one")
+            return
+        end if
+        if (size(y) /= self%n_samples) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "student-t process: target length does not match the fit")
+            return
+        end if
+        call student_t_likelihood_terms(self, value, gradient, hessian, status)
+        if (status%code /= FORTNUM_OK) return
+        tangent = gradient*direction(1)
+    end subroutine student_t_likelihood_parameter_jvp
+
+    subroutine student_t_likelihood_parameter_vjp(self, y, value_bar, parameter_bar, status)
+        !! Fixed-state VJP for `log(nu - 2)`.
+        class(student_t_process_t), intent(in) :: self
+        real(dp), intent(in) :: y(:), value_bar
+        real(dp), intent(out) :: parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: value, gradient, hessian
+
+        parameter_bar = 0.0_dp
+        if (size(parameter_bar) /= 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "student-t process: likelihood VJP parameter count must be one")
+            return
+        end if
+        if (size(y) /= self%n_samples) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "student-t process: target length does not match the fit")
+            return
+        end if
+        call student_t_likelihood_terms(self, value, gradient, hessian, status)
+        if (status%code /= FORTNUM_OK) return
+        parameter_bar(1) = value_bar*gradient
+    end subroutine student_t_likelihood_parameter_vjp
+
+    subroutine student_t_likelihood_parameter_hvp(self, y, direction, parameter_hvp, status)
+        !! Fixed-state HVP for `log(nu - 2)`.
+        class(student_t_process_t), intent(in) :: self
+        real(dp), intent(in) :: y(:), direction(:)
+        real(dp), intent(out) :: parameter_hvp(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: value, gradient, hessian
+
+        parameter_hvp = 0.0_dp
+        if (size(direction) /= 1 .or. size(parameter_hvp) /= 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "student-t process: likelihood HVP coordinate count must be one")
+            return
+        end if
+        if (size(y) /= self%n_samples) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "student-t process: target length does not match the fit")
+            return
+        end if
+        call student_t_likelihood_terms(self, value, gradient, hessian, status)
+        if (status%code /= FORTNUM_OK) return
+        parameter_hvp(1) = hessian*direction(1)
+    end subroutine student_t_likelihood_parameter_hvp
+
+    subroutine student_t_likelihood_parameter_jvp_device(self, device, y, direction, &
+            value, tangent, status)
+        class(student_t_process_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: y(:), direction(:)
+        real(dp), intent(out) :: value, tangent
+        type(fortnum_status_t), intent(out) :: status
+
+        value = 0.0_dp
+        tangent = 0.0_dp
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "student-t process likelihood JVP device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%log_marginal_likelihood_likelihood_parameter_jvp( &
+                y, direction, value, tangent, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "student-t process likelihood JVP device: resident CUDA factorization is not linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "student-t process likelihood JVP device: device kind is invalid")
+        end select
+    end subroutine student_t_likelihood_parameter_jvp_device
+
+    subroutine student_t_likelihood_parameter_vjp_device(self, device, y, value_bar, &
+            parameter_bar, status)
+        class(student_t_process_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: y(:), value_bar
+        real(dp), intent(out) :: parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        parameter_bar = 0.0_dp
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "student-t process likelihood VJP device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%log_marginal_likelihood_likelihood_parameter_vjp( &
+                y, value_bar, parameter_bar, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "student-t process likelihood VJP device: resident CUDA factorization is not linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "student-t process likelihood VJP device: device kind is invalid")
+        end select
+    end subroutine student_t_likelihood_parameter_vjp_device
+
+    subroutine student_t_likelihood_parameter_hvp_device(self, device, y, direction, &
+            parameter_hvp, status)
+        class(student_t_process_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: y(:), direction(:)
+        real(dp), intent(out) :: parameter_hvp(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        parameter_hvp = 0.0_dp
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "student-t process likelihood HVP device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%log_marginal_likelihood_likelihood_parameter_hvp( &
+                y, direction, parameter_hvp, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "student-t process likelihood HVP device: resident CUDA factorization is not linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "student-t process likelihood HVP device: device kind is invalid")
+        end select
+    end subroutine student_t_likelihood_parameter_hvp_device
+
+    subroutine student_t_likelihood_terms(self, value, gradient, hessian, status)
+        !! Value and first two derivatives in `log(nu - 2)`, with the fitted
+        !! covariance and Mahalanobis statistic held fixed.
+        class(student_t_process_t), intent(in) :: self
+        real(dp), intent(out) :: value, gradient, hessian
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: log_det, n_real, pi_value, offset, denominator, dof_gradient, &
+            dof_hessian, log_ratio, numerator
+
+        value = 0.0_dp
+        gradient = 0.0_dp
+        hessian = 0.0_dp
+        if (.not. self%fitted) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "student-t process: likelihood before fit")
+            return
+        end if
+        offset = self%nu - STUDENT_T_MIN_DOF
+        if (.not. ieee_is_finite(offset) .or. offset <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "student-t process: likelihood degrees of freedom are invalid")
+            return
+        end if
         call self%factorization%log_determinant(log_det, status)
         if (status%code /= FORTNUM_OK) return
         n_real = real(self%n_samples, dp)
         pi_value = 4.0_dp*atan(1.0_dp)
-
-        value = log_gamma(0.5_dp*(self%nu + n_real)) &
-            - log_gamma(0.5_dp*self%nu) &
-            - 0.5_dp*n_real*log((self%nu - 2.0_dp)*pi_value) &
-            - 0.5_dp*log_det &
-            - 0.5_dp*(self%nu + n_real) &
-            *log(1.0_dp + self%beta/(self%nu - 2.0_dp))
+        denominator = offset*(offset + self%beta)
+        log_ratio = log(1.0_dp + self%beta/offset)
+        numerator = self%nu + n_real
+        value = log_gamma(0.5_dp*numerator) - log_gamma(0.5_dp*self%nu) &
+            - 0.5_dp*n_real*log(offset*pi_value) - 0.5_dp*log_det &
+            - 0.5_dp*numerator*log_ratio
+        dof_gradient = 0.5_dp*digamma_positive(0.5_dp*numerator) &
+            - 0.5_dp*digamma_positive(0.5_dp*self%nu) - 0.5_dp*n_real/offset &
+            - 0.5_dp*log_ratio + 0.5_dp*numerator*self%beta/denominator
+        dof_hessian = 0.25_dp*trigamma_positive(0.5_dp*numerator) &
+            - 0.25_dp*trigamma_positive(0.5_dp*self%nu) + 0.5_dp*n_real/(offset*offset) &
+            + 0.5_dp*self%beta*(2.0_dp*denominator - numerator*(2.0_dp*offset + self%beta)) &
+            /(denominator*denominator)
+        gradient = offset*dof_gradient
+        hessian = offset*dof_gradient + offset*offset*dof_hessian
         call status_set(status, FORTNUM_OK, "")
-    end subroutine student_t_lml
+    end subroutine student_t_likelihood_terms
+
+    pure real(dp) function digamma_positive(argument) result(value)
+        real(dp), intent(in) :: argument
+        real(dp) :: x, inverse, inverse_square
+
+        x = argument
+        value = 0.0_dp
+        do while (x < 8.0_dp)
+            value = value - 1.0_dp/x
+            x = x + 1.0_dp
+        end do
+        inverse = 1.0_dp/x
+        inverse_square = inverse*inverse
+        value = value + log(x) - 0.5_dp*inverse - inverse_square*(1.0_dp/12.0_dp &
+            - inverse_square*(1.0_dp/120.0_dp - inverse_square*(1.0_dp/252.0_dp &
+            - inverse_square*(1.0_dp/240.0_dp - inverse_square*5.0_dp/660.0_dp))))
+    end function digamma_positive
+
+    pure real(dp) function trigamma_positive(argument) result(value)
+        real(dp), intent(in) :: argument
+        real(dp) :: x, inverse, inverse_square
+
+        x = argument
+        value = 0.0_dp
+        do while (x < 8.0_dp)
+            value = value + 1.0_dp/(x*x)
+            x = x + 1.0_dp
+        end do
+        inverse = 1.0_dp/x
+        inverse_square = inverse*inverse
+        value = value + inverse + 0.5_dp*inverse_square + inverse_square*inverse/6.0_dp &
+            - inverse_square**2*inverse/30.0_dp + inverse_square**3*inverse/42.0_dp &
+            - inverse_square**4*inverse/30.0_dp + 5.0_dp*inverse_square**5*inverse/66.0_dp
+    end function trigamma_positive
 
 end module fortml_student_t_process

@@ -18,13 +18,26 @@ the posterior mean and marginal variance; `posterior_dof` and
 `covariance_scale` expose `nu+n` and the data-dependent scale. The fitted
 state also provides `log_marginal_likelihood`.
 
+The one-coordinate fixed-state likelihood contract uses
+`theta = log(nu - 2)`. `likelihood_parameters` and
+`set_likelihood_parameters` expose that positive-offset coordinate, while
+`log_marginal_likelihood_likelihood_parameter_jvp`, `..._vjp`, and `..._hvp`
+differentiate the fitted Student-t marginal density with the covariance,
+factorization, and observed Mahalanobis statistic fixed. The products are
+analytic in `theta`; the test independently checks them with central finite
+differences of the public likelihood and the VJP/JVP adjoint identity.
+Likelihood-only optimization, kernel/noise cross-products, and derivatives
+through refitting are not implied by this fixed-state contract.
+
 The independent `test_student_t_process` oracle checks the large-`nu` limit
 against `gp_regression_t`, exact equality of the predictive mean across
 degrees of freedom, variance widening for surprising observations, the
 posterior degrees-of-freedom formula, and typed refusals for invalid `nu`,
-shapes, and prediction before fitting. This is a CPU dense reference path:
-derivatives, sparse/variational inference, derivative observations, and
-resident CUDA execution remain explicit roadmap work.
+shapes, and prediction before fitting. This is a CPU dense reference path.
+The likelihood products have explicit CPU dispatch; CUDA JVP/VJP/HVP calls
+return `FORTNUM_NOT_IMPLEMENTED` until a resident factorization is linked.
+Sparse/variational inference, derivative observations, likelihood-only
+optimization, and derivatives through fitting remain explicit roadmap work.
 
 The implementation follows *Student-t Processes as Alternatives to Gaussian
 Processes* (Shah, Wilson, and Ghahramani, arXiv:1402.4306); the companion

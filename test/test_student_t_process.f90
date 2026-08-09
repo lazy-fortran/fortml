@@ -17,8 +17,11 @@ program test_student_t_process
     !!     Two fits on the same inputs with differently surprising outputs must
     !!     give different predictive variances — something a GP cannot do.
 
+    use, intrinsic :: ieee_arithmetic, only: ieee_quiet_nan, ieee_value
     use, intrinsic :: iso_fortran_env, only: dp => real64, error_unit
-    use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_DOMAIN_ERROR
+    use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU, FORTML_DEVICE_CUDA
+    use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_DOMAIN_ERROR, &
+        FORTNUM_NOT_IMPLEMENTED
     use fortml_kernels, only: kernel_t, make_rbf_kernel
     use fortml_gaussian_process, only: gp_regression_t
     use fortml_student_t_process, only: student_t_process_t
@@ -31,6 +34,7 @@ program test_student_t_process
     call test_mean_is_the_gaussian_process_mean(failures)
     call test_covariance_responds_to_the_data(failures)
     call test_posterior_dof_and_scale(failures)
+    call test_likelihood_parameter_products(failures)
     call test_refusals(failures)
 
     if (failures /= 0) then
@@ -189,6 +193,96 @@ contains
         call check(process%covariance_scale() > 0.0_dp, &
             "the covariance scale is positive", failures)
     end subroutine test_posterior_dof_and_scale
+
+    !! This is deliberately a numerical oracle rather than a replay of the
+    !! analytic implementation: it perturbs the public transformed coordinate
+    !! and evaluates the public Student-t density on either side.
+    subroutine test_likelihood_parameter_products(failures)
+        integer, intent(inout) :: failures
+        type(student_t_process_t) :: process
+        type(kernel_t) :: kernel
+        type(fortnum_status_t) :: status
+        type(fortml_device_t) :: device
+        real(dp) :: x(7, 1), y(7), theta(1), plus(1), minus(1), malformed(2)
+        real(dp) :: value, plus_value, minus_value, tangent, h
+        real(dp) :: vjp(1), hvp(1), plus_gradient(1), minus_gradient(1)
+
+        call training_set(x, y)
+        kernel = make_rbf_kernel(1, 1.0_dp, 0.8_dp, status)
+        call process%fit(x, y, kernel, 4.7_dp, 0.01_dp, status)
+        call check(status_ok(status), "Student-t likelihood fixture fits", failures)
+        call check(process%likelihood_parameter_count() == 1, &
+            "one transformed Student-t likelihood coordinate", failures)
+
+        theta = process%likelihood_parameters()
+        call check(abs(theta(1) - log(2.7_dp)) < 1.0e-14_dp, &
+            "Student-t likelihood accessor is log(nu - 2)", failures)
+        h = 2.0e-5_dp
+        call process%log_marginal_likelihood_likelihood_parameter_jvp( &
+            y, [1.0_dp], value, tangent, status)
+        call check(status_ok(status), "Student-t likelihood JVP status", failures)
+        plus = theta + h
+        call process%set_likelihood_parameters(plus, status)
+        call process%log_marginal_likelihood(y, plus_value, status)
+        minus = theta - h
+        call process%set_likelihood_parameters(minus, status)
+        call process%log_marginal_likelihood(y, minus_value, status)
+        call process%set_likelihood_parameters(theta, status)
+        call check(status_ok(status), "Student-t finite difference restores state", failures)
+        call check(abs(tangent - (plus_value - minus_value)/(2.0_dp*h)) < 2.0e-8_dp, &
+            "Student-t likelihood JVP finite difference", failures)
+
+        call process%log_marginal_likelihood_likelihood_parameter_vjp( &
+            y, -1.7_dp, vjp, status)
+        call check(status_ok(status), "Student-t likelihood VJP status", failures)
+        call check(abs(vjp(1) + 1.7_dp*tangent) < 2.0e-12_dp, &
+            "Student-t likelihood VJP/JVP adjoint identity", failures)
+
+        call process%log_marginal_likelihood_likelihood_parameter_hvp( &
+            y, [1.0_dp], hvp, status)
+        call check(status_ok(status), "Student-t likelihood HVP status", failures)
+        call process%set_likelihood_parameters(plus, status)
+        call process%log_marginal_likelihood_likelihood_parameter_vjp( &
+            y, 1.0_dp, plus_gradient, status)
+        call process%set_likelihood_parameters(minus, status)
+        call process%log_marginal_likelihood_likelihood_parameter_vjp( &
+            y, 1.0_dp, minus_gradient, status)
+        call process%set_likelihood_parameters(theta, status)
+        call check(abs(hvp(1) - (plus_gradient(1) - minus_gradient(1))/(2.0_dp*h)) &
+            < 2.0e-8_dp, "Student-t likelihood HVP finite difference", failures)
+
+        malformed = [theta(1), theta(1)]
+        call process%set_likelihood_parameters(malformed, status)
+        call check(status%code == FORTNUM_DOMAIN_ERROR, &
+            "malformed Student-t likelihood update is refused", failures)
+        call check(maxval(abs(process%likelihood_parameters() - theta)) < 1.0e-14_dp, &
+            "malformed Student-t likelihood update preserves state", failures)
+        call process%set_likelihood_parameters([ieee_value(0.0_dp, ieee_quiet_nan)], status)
+        call check(status%code == FORTNUM_DOMAIN_ERROR, &
+            "nonfinite Student-t likelihood update is refused", failures)
+        call check(maxval(abs(process%likelihood_parameters() - theta)) < 1.0e-14_dp, &
+            "nonfinite Student-t likelihood update preserves state", failures)
+
+        device%kind = FORTML_DEVICE_CPU
+        device%selected = .true.
+        device%available = .true.
+        call process%log_marginal_likelihood_likelihood_parameter_jvp_device( &
+            device, y, [1.0_dp], value, tangent, status)
+        call check(status_ok(status), "Student-t CPU likelihood JVP dispatch", failures)
+        device%kind = FORTML_DEVICE_CUDA
+        call process%log_marginal_likelihood_likelihood_parameter_jvp_device( &
+            device, y, [1.0_dp], value, tangent, status)
+        call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
+            "Student-t CUDA likelihood JVP refusal", failures)
+        call process%log_marginal_likelihood_likelihood_parameter_vjp_device( &
+            device, y, 1.0_dp, vjp, status)
+        call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
+            "Student-t CUDA likelihood VJP refusal", failures)
+        call process%log_marginal_likelihood_likelihood_parameter_hvp_device( &
+            device, y, [1.0_dp], hvp, status)
+        call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
+            "Student-t CUDA likelihood HVP refusal", failures)
+    end subroutine test_likelihood_parameter_products
 
     subroutine test_refusals(failures)
         integer, intent(inout) :: failures

@@ -1787,6 +1787,11 @@ when a lower-level primitive already exists.
   large-`nu` Gaussian limit, data-dependent variance contrast, and typed
   `nu<=2` refusal in `test_student_t_process` and
   `fortml-bench/results/STUDENT_T_PROCESS.md`. The
+  fixed-state Student-t likelihood now exposes its transformed
+  `[log(nu - 2)]` coordinate plus analytic JVP/VJP/HVP products; the same test
+  checks independent central differences, the adjoint identity, transactional
+  update refusal, CPU dispatch, and typed CUDA refusal. This is not a
+  likelihood-only fit or a derivative through the covariance fit. The
   `heteroskedastic_gp_t` contract accepts known positive per-row noise,
   interpolates log-noise with a second kernel, reduces exactly to an ordinary
   GP for constant noise, and has the independent
