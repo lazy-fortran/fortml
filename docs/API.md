@@ -360,7 +360,7 @@ SGD/Adam/AdamW/Adagrad/RMSprop/Adafactor/Lion recurrence. `load_checkpoint(path,
 transactional: it requires an initialized destination with the same packed
 dimension, validates schema/order/counts/finite values, and refuses truncated,
 unknown, extra, or incompatible records without changing the destination.
-Schema version 7 is a deliberate clean break that records the typed schedule
+Schema version 8 is a deliberate clean break that records the typed schedule
 configuration, validation direction, and fit diagnostics, and rejects older or newer trainer
 snapshots rather than
 silently changing a trajectory.
