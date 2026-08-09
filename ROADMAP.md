@@ -335,18 +335,19 @@ open; see [`docs/CONTRASTIVE_LOSS.md`](docs/CONTRASTIVE_LOSS.md).
 
 | Compiler | Command | Result |
 | --- | --- | --- |
-| GNU Fortran | `fo` | Static build, all 274 behavioral tests, and lint passed at the current integrated FortML/FortAD-main revisions (612 modules, 931 build units). The compiler still emits non-fatal array-temporary warnings; see [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
-| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded older compiler lane. The checked-in NVIDIA log predates the current 273-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
+| GNU Fortran | `fo` | Static build, all 277 behavioral tests, and lint passed at the current integrated FortML/FortAD-main revisions (621 modules, 937 build units). The compiler still emits non-fatal array-temporary warnings; see [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
+| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded older compiler lane. The checked-in NVIDIA log predates the current 277-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
-The weighted OLS and deterministic linear-SGD slices landed after the recorded
-full gate. Their focused independent tests and release applications pass; a
-fresh whole-repository gate is pending while the active FortFront owned-array
-branch is being completed, because that dirty dependency checkout currently
-does not compile as a self-consistent revision.
+The weighted OLS, deterministic linear-SGD, and scalar Lagrangian-MLP slices
+are now included in the fresh whole-repository gate below. Their focused
+independent tests and release applications pass; the Lagrangian lane adds
+analytic state Hessians, a mass-matrix singularity refusal, and an explicit
+CUDA boundary.
 
 The checked-in GNU compiler log is the fresh 2026-08-09 run against FortML code
-revision `6051b2b` (including weighted Bayesian ridge posterior, classifier-chain, weighted Huber, rational-
+revision `497f0e8` (including scalar Lagrangian MLP, deterministic linear SGD,
+weighted OLS, weighted Bayesian ridge posterior, classifier-chain, weighted Huber, rational-
 quadratic and cosine derivative-GP, cubic-spline basis, and
 structure-aware MLP-GP
 rational-quadratic GP products plus the earlier chronological validation metadata, multiclass
@@ -363,7 +364,7 @@ learning-rate schedules, and fixed-topology boosted-tree objectives, in addition
 calibrated-softmax OOF policies, affine schedule
 outer HVPs, and seeded XGBoost DART), FortAD `origin/main` at
 `d71cdf724cd8c4f10d849493beaa7c459cd3a96a`, FortFront at
-`86eb2ba8b5b842bc1aebf9ee8bb00053f12de2f8` (not a direct fpm dependency), and FortNum at
+`8908af33` (not a direct fpm dependency), and FortNum at
 `7ced2f7aa272920916789fa82a35bfcb2e792d45`, run from the clean checkout
 in the clean canonical checkout under `/mnt/storage/code/lazy-fortran/fortml`;
 transient checkpoint outputs were moved to the recoverable Trash after
@@ -397,7 +398,7 @@ attributions, and model-agnostic trainer validation diagnostics.
 The build emits non-fatal GNU
 array-temporary warnings in FortFront query/generator calls, existing GP
 benchmark boundaries, variational-GP batch conversions, and basis-pipeline
-shape conversions. They are isolated to array construction; all 274 behavioral
+shape conversions. They are isolated to array construction; all 277 behavioral
 tests pass. Lint has zero unused-import findings and the full `fo` lint stage
 passes despite the non-fatal compiler warning corpus. The independent CUDA gate additionally covers the
 resident dense-affine value/JVP/VJP path and its single-layer MSE update with
