@@ -15,7 +15,7 @@ attribution, binary-GP log-probability, fixed-leaf-product, plateau-trainer,
 and CUDA VJP closure slices documented below are post-tag additions.
 The broad parity
 gate is still open, so this work does not move or recreate that tag.
-The checklist currently records 355 completed and 126 open items; open rows are
+The checklist currently records 356 completed and 125 open items; open rows are
 retained until their implementation, independent oracle, device/refusal
 behavior, and benchmark evidence land together.
 
@@ -1034,6 +1034,18 @@ CUDA no-fallback boundary are in `test_hamiltonian_structure_gp` and
 This closes only a finite-width warm start for the existing separable model.
 NNGP covariance propagation, symplectic-GP priors, nonseparable HNN maps,
 PINN residual initialization, and resident GPU application remain open.
+
+### 2026-08-09 scalar Lagrangian MLP slice
+
+`fortml_lagrangian_mlp` adds `lagrangian_mlp_t` for a scalar time-independent
+`L(q,v)`. It exposes analytic value/state gradients, pure input Hessian-derived
+velocity mass matrices, and Euler--Lagrange residuals
+`L_vq*v + L_vv*a - L_q`. A rank-aware pivot check refuses singular velocity
+Hessians, while CUDA initialization and selection return typed refusals. The
+independent finite-difference/adjoint and singular-state fixture is
+`test_lagrangian_mlp`; the release evidence is the matching
+`fortml-bench` `LINEAR_LAGRANGIAN` lane. Gauge terms, explicit time dependence,
+and differentiable integrators remain open.
 
 ### 2026-08-07 closure slice
 
@@ -4460,9 +4472,12 @@ checkouts before deciding that a product is unavailable.
   method returns `FORTNUM_NOT_IMPLEMENTED` in general mode; an implicit
   symplectic integrator is still required. Learned skew/Poisson structures
   remain open and require independent skew-symmetry and Jacobi tests.
-- [ ] Add `lagrangian_mlp_t` with Euler-Lagrange residuals, mass-matrix checks,
+- [x] Add `lagrangian_mlp_t` with Euler-Lagrange residuals, mass-matrix checks,
   and a refusal for a singular velocity Hessian. Positive definiteness is an
-  additional requirement only for a separable mechanical mass metric.
+  additional requirement only for a separable mechanical mass metric. The
+  scalar MLP, analytic reverse-over-forward Hessian path, independent
+  finite-difference/adjoint oracle, and typed CUDA refusal are documented in
+  `docs/LAGRANGIAN_MLP.md` and `test_lagrangian_mlp`.
 - [ ] Add SympNet and symplectic recurrent map variants with architecture-
   specific composition certificates and a testable symplectic Jacobian. A
   generating-function certificate is required only for an architecture that

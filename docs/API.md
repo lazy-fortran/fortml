@@ -2006,6 +2006,20 @@ The explicit leapfrog method refuses general mode with
 implicit symplectic integrator. Both modes refuse nonfinite states/directions
 and malformed layer or output shapes; no finite-difference fallback is used.
 
+### `fortml_lagrangian_mlp`
+
+`lagrangian_mlp_t%initialize(n_coordinates,layers,status[,hidden_activation,
+initialization_seed,device_kind])` prepends the `[q,v]` input width to a scalar
+MLP. `lagrangian` returns `L(q,v)` and `lagrangian_gradient` returns the
+analytic gradient with respect to the concatenated state. `mass_matrix` uses
+the pure input Hessian of `L` to return `L_vv` and refuses a numerically
+singular velocity Hessian. `euler_lagrange_residual(q,v,acceleration,residual,
+status)` evaluates `L_vq*v + L_vv*a - L_q` for each row. The Hessian products
+reuse the MLP reverse-over-forward HVP with a zero parameter tangent, so no
+finite-difference fallback is hidden in production. The CPU path is the
+reference; CUDA initialization/selection returns `FORTNUM_NOT_IMPLEMENTED`.
+See [`LAGRANGIAN_MLP.md`](LAGRANGIAN_MLP.md).
+
 ### `fortml_hamiltonian_structure_gp`
 
 `hamiltonian_structure_gp_initializer_t` fits independent finite-feature
