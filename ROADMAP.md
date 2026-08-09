@@ -15,7 +15,7 @@ attribution, binary-GP log-probability, fixed-leaf-product, plateau-trainer,
 and CUDA VJP closure slices documented below are post-tag additions.
 The broad parity
 gate is still open, so this work does not move or recreate that tag.
-The checklist currently records 354 completed and 127 open items; open rows are
+The checklist currently records 355 completed and 126 open items; open rows are
 retained until their implementation, independent oracle, device/refusal
 behavior, and benchmark evidence land together.
 
@@ -56,6 +56,19 @@ residual branch and returns `FORTNUM_NOT_IMPLEMENTED` at the Huber kink.
 `fortml-bench` release record provide the independent finite-difference,
 adjoint, convergence, and typed CUDA-refusal evidence. Resident CUDA Huber
 kernels, quantile fitting, and derivative-through-fit remain separate gaps.
+
+The deterministic linear-SGD slice adds `linear_sgd_regression_t` and
+`linear_sgd_classifier_t`. Both consume explicit mini-batch epochs with a
+constant or inverse-scaling learning-rate schedule, nonnegative sample weights,
+L1 proximal and L2 penalties, optional Polyak averaging, and reproducible
+Fisher-Yates order streams. `partial_fit` consumes exactly one epoch while
+retaining parameters, update count, and shuffle state; the classifier requires
+two sorted labels and exposes decision/probability predictions. The stochastic
+objective is intentionally separate from the exact logistic/softmax estimators.
+`test_linear_sgd` compares both update recurrences against independent hand
+oracles and covers streaming continuation, averaging, malformed labels, and
+the typed CUDA refusal. A resident accelerator trainer and stochastic
+hypergradients remain open.
 
 ## Next production parity wave
 
@@ -3177,9 +3190,13 @@ state, scoring, and refusal rules.
   complete and a selected CUDA context returns `FORTNUM_NOT_IMPLEMENTED` until
   a resident positive-link kernel is available; release evidence is recorded by
   `fortml_bench_glm_regression` and the sibling NumPy lane.
-- [ ] Add linear SGD/regression and classification with deterministic minibatch
+- [x] Add linear SGD/regression and classification with deterministic minibatch
   schedules, averaging, penalties, and `partial_fit` semantics. Keep its
   stochastic objective separate from the exact logistic/softmax objective.
+  `linear_sgd_regression_t` and `linear_sgd_classifier_t` provide constant or
+  inverse-scaling rates, weighted L1/L2 updates, reproducible mini-batch order,
+  Polyak averaging, one-epoch `partial_fit` continuation, and typed CUDA
+  refusals; the independent recurrence oracle is `test_linear_sgd`.
 - [x] Add dense closed-radius nearest-neighbor scalar regression with uniform
   or inverse-distance averaging, nonnegative sample weights, an explicit
   empty-neighborhood value, deterministic distance boundaries, independent

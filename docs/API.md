@@ -119,6 +119,22 @@ through-fit, sparse solvers, and GPU execution remain separate open contracts.
 The derivative surface is model-specific. A method absent from this table is
 not supplied through a hidden generic interface.
 
+### `fortml_linear_sgd`
+
+`linear_sgd_options_t` controls deterministic mini-batch epochs, seeded
+Fisher-Yates shuffling, constant or inverse-scaling rates, nonnegative sample
+weights, L1/L2 penalties, and optional Polyak averaging. `linear_sgd_regression_t`
+implements vector and multi-output least-squares updates. `fit` resets to zero
+and runs the requested epochs; `partial_fit` runs one epoch and retains the
+parameters, update count, average sums, and shuffle stream. The binary
+`linear_sgd_classifier_t` has the same state contract for logistic updates and
+requires two sorted integer classes. Both expose `predict`, parameter accessors,
+metadata, and a `predict_device` method whose CUDA branch returns
+`FORTNUM_NOT_IMPLEMENTED` until resident stochastic state exists. These
+estimators intentionally do not reuse the exact logistic/softmax objectives
+or claim stochastic-path derivatives. See
+[`LINEAR_SGD.md`](LINEAR_SGD.md) for the recurrence and refusal matrix.
+
 ### `fortml_cuda_dense_api`
 
 `cuda_dense_plan_t` is the typed Fortran wrapper for the resident, no-autodiff
