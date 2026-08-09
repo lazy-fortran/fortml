@@ -2234,6 +2234,16 @@ when a lower-level primitive already exists.
   are independently certified. `test_mlp_weighted_validation_hypergradient`
   provides central-difference, adjoint, uniform-HVP, malformed-weight, and
   CUDA refusal oracles; see `docs/MLP_WEIGHTED_VALIDATION_HYPERGRADIENT.md`.
+- [x] Add deterministic microbatch accumulation to the fixed SGD
+  momentum/Nesterov trajectory adapter. `microbatch_size` and
+  `accumulation_steps` are validated transactionally and must cover every
+  training row exactly once; each short final batch contributes by row mass
+  before the shared velocity state is updated. The same accumulated objective
+  feeds value/gradient, JVP, VJP, affine one-layer HVP, and the FortOpt
+  L-BFGS-B callback. `test_mlp_sgd_momentum_hypergradient` checks the 2-by-3
+  layout, malformed coverage, central-difference products, and CUDA refusal;
+  `fortml-bench/results/sgd_momentum_hypergradient_accumulation.csv` pins an
+  independent NumPy recurrence with maximum CPU oracle error below `2e-8`.
 - [x] Close the first exact outer-HVP slice for scheduled MLP trajectories.
   A single affine dense layer with a constant typed learning-rate schedule now
   propagates mixed second tangents through the fixed full-batch recurrence and
