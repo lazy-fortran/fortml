@@ -299,6 +299,16 @@ also closes finite-feature GP posterior variance/regularization JVP products
 and named PINN per-term gradient/HVP diagnostics. The broad parity gate remains
 open for the explicit rows below.
 
+The current production wave adds exact latent-GP posterior covariance
+hyperparameter JVP/VJP products through the fitted solve state, a resumable
+generic trainer `partial_fit` contract that preserves optimizer and checkpoint
+state across chunks, and a resident fixed-topology CUDA additive-tree plan with
+NaN routing, split-boundary JVP refusals, and model-resident value/JVP kernels.
+The independent lanes are recorded in `fortml-bench` with clean provenance.
+The source gate reaches 692 modules, 979 build units, and 306/306 tests with
+lint clean. The native CUDA tree lane passes compute-sanitizer with zero memory
+errors on the available GPU.
+
 The 2026-08-09 verification wave adds three release slices. The multilabel
 Laplace-GP adapter now exposes stable log probabilities and fixed-state input,
 per-label, and shared-kernel products. The affine RMSprop trajectory exposes an
