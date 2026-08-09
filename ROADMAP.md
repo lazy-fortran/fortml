@@ -19,7 +19,7 @@ The checklist currently records 345 completed and 127 open items; open rows are
 retained until their implementation, independent oracle, device/refusal
 behavior, and benchmark evidence land together.
 
-The current parity wave closes sixteen bounded contracts: chronological
+The current parity wave closes seventeen bounded contracts: chronological
 expanding/rolling validation with scorer and clone/reset metadata,
 multiclass focal-softmax value/JVP/VJP/HVP products wired through MLP and
 FortOpt objectives, RBF order-three derivative observations, implicit binary
@@ -31,9 +31,10 @@ multiclass OVR adapter, exact ordinal-GP evidence gradients/HVPs with bounded
 FortOpt optimization, and weighted multilabel MLP FortOpt objectives with
 direct or positive log-L2 coordinates, multiclass Laplace-GP hyperparameter
 HVPs, the shared trainer learning-rate schedule seam, and fixed-topology
-boosted-tree leaf objectives, and mixed-observation Matérn 3/2 and 5/2
-derivative-GP hyperparameter HVPs. Each has an independent CPU oracle, a typed
-CUDA boundary, and a pinned `fortml-bench` record. The broad parity gate remains
+boosted-tree leaf objectives, mixed-observation Matérn 3/2 and 5/2 derivative-GP
+hyperparameter HVPs, and Hamiltonian vector-field VJPs. Each has an independent
+CPU oracle, a typed CUDA boundary, and a pinned `fortml-bench` record. The broad
+parity gate remains
 open for the explicit rows below.
 
 ## Production-parity execution contract
@@ -240,7 +241,7 @@ open; see [`docs/CONTRASTIVE_LOSS.md`](docs/CONTRASTIVE_LOSS.md).
 
 | Compiler | Command | Result |
 | --- | --- | --- |
-| GNU Fortran | `fo` | Static build, all 269 behavioral tests, and lint passed at the current integrated FortML/FortAD-main revisions. The compiler still emits non-fatal array-temporary warnings; see [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
+| GNU Fortran | `fo` | Static build, all 269 behavioral tests, and lint passed at the current integrated FortML/FortAD-main revisions (593 modules, 917 build units). The compiler still emits non-fatal array-temporary warnings; see [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
 | NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded older compiler lane. The checked-in NVIDIA log predates the current 269-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
