@@ -243,6 +243,7 @@ repeated resident-batch evidence.
 | `lightgbm_t` | Weighted numeric regression/binary logistic histogram boosting with deterministic globally best-leaf growth, GOSS top/other-rate gradient/Hessian sampling, seeded DART/dropout with persisted tree-normalisation scales, and packed fixed-structure base/leaf coordinates | Fixed-tree input JVP away from split boundaries; raw-margin leaf-coordinate JVP | Fixed-tree input VJP away from split boundaries; raw-margin leaf-coordinate VJP | No |
 | `lightgbm_multiclass_t` | Sorted-integer-label one-vs-rest LightGBM-style binary logistic children with normalized final/staged probabilities, raw margins, weighted validation best-prefix metadata, and transactional fit | Fixed-tree normalized probability/input JVP away from split boundaries | Fixed-tree normalized probability/input VJP away from split boundaries | No |
 | `random_forest_classifier_t` | Bootstrap-ensemble probabilities/labels plus transactional OOB decision probabilities, OOB accuracy, coverage, bootstrap-inclusion audit state, and deterministic fixed-state accuracy permutation importance | Refused: split routing and permutation membership are discrete | Refused: split routing and permutation membership are discrete | CPU OOB/permutation diagnostics; CUDA returns typed `FORTNUM_NOT_IMPLEMENTED` |
+| `random_forest_regressor_t` | Seeded weighted bootstrap CART ensemble with scalar/multi-output predictions, staged prefix averages, bootstrap-inclusion audit state, schema metadata, and normalized split-frequency feature importance | Fixed-state input JVP is exact zero away from split boundaries; exact boundary returns `FORTNUM_DOMAIN_ERROR` | Fixed-state input VJP is exact zero away from split boundaries; exact boundary returns `FORTNUM_DOMAIN_ERROR` | CPU only; selected CUDA returns typed `FORTNUM_NOT_IMPLEMENTED` without host fallback |
 | `extra_trees_classifier_t` | Randomized-threshold ensemble probabilities and labels | Refused: split routing is discrete | Refused: split routing is discrete | No |
 | `bagging_classifier_t` | Seeded bootstrap or without-replacement CART probabilities and labels | Refused: split routing is discrete | Refused: split routing is discrete | No |
 | `gp_regression_t` | Mean, variance, LML | Prediction and LML parameters | Prediction and LML parameters | Mean and LML parameters |
@@ -3207,6 +3208,32 @@ typed unavailable stub, while the native C ABI in
 `src/classification/fortml_cuda_forest.{h,cu}` supplies the device kernel.
 This wrapper intentionally does not expose or copy private CART storage, and
 it provides no autodiff path or hidden CPU fallback.
+
+### `fortml_random_forest_regressor`
+
+`random_forest_regressor_t%fit(x,targets,status[,n_trees,max_depth,
+min_samples_leaf,seed,sample_weight])` builds one weighted depth-limited CART
+tree per target column and tree index from a deterministic Park--Miller
+bootstrap stream. The destination is changed only after every child tree
+fits successfully; invalid dimensions, non-finite values, non-positive
+weights, and unsupported hyperparameters leave an existing model untouched.
+`predict` averages the tree outputs and `predict_staged` returns every prefix
+average with shape `(n_query,n_trees,n_outputs)`. `bootstrap_inclusion()` keeps
+the sample-by-tree draw audit matrix. `feature_importances()` reports the
+normalized split-frequency diagnostic across all child trees; this is
+deliberately distinct from gain-based boosted-tree importance. Accessors
+expose feature/output/sample/tree counts, depth, minimum leaf size, seed, and
+schema version `RANDOM_FOREST_REGRESSION_MODEL_SCHEMA_VERSION`.
+
+The fixed fitted routing state is piecewise constant. `predict_jvp` and
+`predict_vjp` return exact zero input products away from visited split
+thresholds and return `FORTNUM_DOMAIN_ERROR` at an exact threshold. Bootstrap
+membership and split selection are discrete fit operations, so no derivative
+through fit is claimed. `predict_device` dispatches selected CPU contexts and
+returns `FORTNUM_NOT_IMPLEMENTED` for selected CUDA contexts while preserving
+the caller output; `device_supported(FORTML_DEVICE_CUDA)` is false until a
+resident regression-forest kernel is available. See
+`docs/RANDOM_FOREST_REGRESSION.md` and the independent benchmark report.
 
 ### `fortml_extra_trees_classifier`
 

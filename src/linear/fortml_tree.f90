@@ -84,6 +84,7 @@ module fortml_tree
         procedure, public :: predict_vector => cart_predict_vector
         generic, public :: predict => predict_matrix, predict_vector
         procedure, public :: predict_jvp => cart_predict_jvp
+        procedure, public :: feature_importances => cart_feature_importances
         procedure, public :: input_count => cart_input_count
         procedure, public :: node_count => cart_node_count
         procedure, public :: depth => cart_depth
@@ -620,6 +621,46 @@ contains
         class(cart_regressor_t), intent(in) :: self
         count = self%n_inputs
     end function cart_input_count
+
+    !> Return normalized split-frequency importances for a fitted tree.
+    !>
+    !> CART stores only the fixed routing structure.  This diagnostic counts
+    !> internal nodes by feature and normalizes by the total number of splits;
+    !> it is deliberately named separately from gain-based importances used by
+    !> boosted-tree estimators.  A stump with no split therefore returns all
+    !> zeros.  The operation is read-only and preserves the output on invalid
+    !> model or shape.
+    subroutine cart_feature_importances(self, importance, status)
+        class(cart_regressor_t), intent(in) :: self
+        real(dp), intent(inout) :: importance(:)
+        type(fortnum_status_t), intent(out) :: status
+        integer :: node, feature
+        integer :: n_splits
+        real(dp), allocatable :: candidate(:)
+
+        if (.not. self%initialized .or. size(importance) /= self%n_inputs) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "cart regression feature_importances: model or output shape is invalid")
+            return
+        end if
+        allocate(candidate(self%n_inputs))
+        candidate = 0.0_dp
+        n_splits = 0
+        do node = 1, self%n_nodes
+            if (self%leaf(node)) cycle
+            feature = self%feature(node)
+            if (feature < 1 .or. feature > self%n_inputs) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "cart regression feature_importances: invalid fitted feature")
+                return
+            end if
+            candidate(feature) = candidate(feature) + 1.0_dp
+            n_splits = n_splits + 1
+        end do
+        if (n_splits > 0) candidate = candidate/real(n_splits, dp)
+        importance = candidate
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine cart_feature_importances
 
     integer function cart_node_count(self) result(count)
         class(cart_regressor_t), intent(in) :: self
