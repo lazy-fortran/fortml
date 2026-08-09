@@ -36,6 +36,28 @@ the requested pair is smooth and finite. A refusal is a typed
 | Validated user formula | Yes for formulas with defined input derivatives | Variance and formula input products where defined; mixed HVP refusal | Not implemented | `push_distance` additionally refuses at coincident points |
 | White noise | Value-only | Value-only | Not a differentiable query covariance | Any derivative observation is refused as nonsmooth |
 
+## Registered linear differential operators
+
+`linear_differential_operator_registry_t` adds a named first-order operator
+layer above the row-wise component API. Each registry column is ordered as
+`[value, d/dx_1, ..., d/dx_d]`, so an observation can be any finite linear
+combination of a function value and coordinate derivatives. This covers
+directional and Robin operators as well as value-only and boundary rows
+without duplicating input locations. `gp_linear_operator_regression_t%fit`
+requires one registered operator per training row and assembles the exact
+bilinear covariance from the kernel value, input gradients, and mixed Hessian.
+
+`predict` and `joint_covariance` preserve query-operator order. The
+`predict_operator_jvp`/`predict_operator_vjp` pair differentiates posterior
+mean and variance with respect to the query coefficient matrix; the
+independent adjoint identity is checked by `test_gp_linear_operator`. Operator
+names are metadata and are retained by the fitted state. Kernel/noise
+hyperparameter products remain on `gp_derivative_regression_t` until the
+operator covariance receives the corresponding generated parameter jets.
+CUDA prediction, covariance, and coefficient products are explicit typed
+`FORTNUM_NOT_IMPLEMENTED` refusals until a resident operator graph is linked;
+there is no host fallback.
+
 The exact derivative-GP likelihood value, parameter gradient, JVP, and scalar
 VJP are analytic for every smooth built-in leaf listed above, including the
 four logarithmic polynomial parameters. `log_marginal_likelihood_vjp` and its

@@ -4474,6 +4474,36 @@ derivative stack and do not call a procedure pointer.
 L-BFGS-B options and result type as exact value GPs. Optimization consumes the
 analytic gradient. It does not silently substitute the finite-difference HVP.
 
+### `fortml_operator_gaussian_process`
+
+`linear_differential_operator_registry_t` is the named first-order operator
+registry. `initialize(input_dim,n_operators,status)` allocates one column per
+operator, and `set_operator(index,name,coefficients,status)` stores a finite
+coefficient vector ordered as `[value,d/dx_1,...,d/dx_d]`. Thus a row can
+represent a Robin, boundary, directional-derivative, or ordinary value
+observation without expanding it into separate component rows. Names are
+metadata retained by the fitted model; `operator_coefficients()` returns a
+copy for inspection.
+
+`gp_linear_operator_regression_t%fit(x,registry,y,kernel,noise_variance,status
+[,jitter])` fits an exact dense Gaussian process whose covariance is the
+bilinear application of the registered operators to the kernel. The registry
+operator count must equal the number of training rows. `predict` and
+`joint_covariance` accept a query registry, return posterior means/variances or
+the dense latent covariance, and preserve the query operator ordering.
+`predict_operator_jvp` differentiates those outputs with respect to query
+operator coefficients, while `predict_operator_vjp` is its adjoint over the
+same coefficient matrix. These products are exact linear covariance products;
+kernel and noise hyperparameter products remain the separate
+`gp_derivative_regression_t` contract and are an explicit next extension.
+
+`predict_device`, `joint_covariance_device`, and the operator JVP/VJP device
+wrappers dispatch selected CPU contexts to the reference implementation. CUDA
+is reported unsupported and returns `FORTNUM_NOT_IMPLEMENTED` before touching
+outputs until a resident operator covariance and factorization graph is linked.
+Nonsmooth kernels or derivative coefficients are returned through the kernel's
+typed input-derivative refusal rather than finite differences.
+
 ### `fortml_multi_output_gp`
 
 `multi_output_gp_t` implements intrinsic coregionalization with
