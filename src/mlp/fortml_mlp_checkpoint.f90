@@ -190,6 +190,8 @@ contains
             checkpoint%best_validation_epoch, ios)
 
         if (ios == 0) call write_r_array(unit, "parameters", checkpoint%parameters, ios)
+        if (ios == 0) call write_optional_c_array(unit, "optimizer_group_name", &
+            checkpoint%optimizer_group_name, ios)
         if (ios == 0) call write_optional_i_array(unit, "optimizer_group_first", &
             checkpoint%optimizer_group_first, ios)
         if (ios == 0) call write_optional_i_array(unit, "optimizer_group_last", &
@@ -411,6 +413,9 @@ contains
 
         call read_r_array(unit, "parameters_count", "parameters_item", &
             candidate%n_parameters, candidate%parameters, ios)
+        if (ios == 0) call read_optional_c_array(unit, "optimizer_group_name_present", &
+            "optimizer_group_name_count", "optimizer_group_name_item", &
+            candidate%n_optimizer_groups, candidate%optimizer_group_name, ios)
         if (ios == 0) call read_optional_i_array(unit, "optimizer_group_first_present", &
             "optimizer_group_first_count", "optimizer_group_first_item", &
             candidate%n_optimizer_groups, candidate%optimizer_group_first, ios)
@@ -537,6 +542,14 @@ contains
         write(unit, "(A,1X,ES26.17E3)", iostat=ios) trim(key), value
     end subroutine write_r
 
+    subroutine write_c(unit, key, value, ios)
+        integer, intent(in) :: unit
+        character(*), intent(in) :: key, value
+        integer, intent(out) :: ios
+
+        write(unit, '(A,1X,A)', iostat=ios) trim(key), '"' // trim(value) // '"'
+    end subroutine write_c
+
     subroutine write_r_array(unit, key, values, ios)
         integer, intent(in) :: unit
         real(dp), intent(in) :: values(:)
@@ -583,6 +596,24 @@ contains
         if (ios /= 0 .or. .not. allocated(values)) return
         call write_i_array(unit, key, values, ios)
     end subroutine write_optional_i_array
+
+    subroutine write_optional_c_array(unit, key, values, ios)
+        integer, intent(in) :: unit
+        character(len=64), allocatable, intent(in) :: values(:)
+        character(*), intent(in) :: key
+        integer, intent(out) :: ios
+        character(len=80) :: present_key
+        integer :: i
+
+        write(present_key, '(A,"_present")') trim(key)
+        call write_l(unit, trim(present_key), allocated(values), ios)
+        if (ios /= 0 .or. .not. allocated(values)) return
+        call write_i(unit, trim(key)//"_count", size(values), ios)
+        do i = 1, size(values)
+            if (ios /= 0) return
+            call write_c(unit, trim(key)//"_item", values(i), ios)
+        end do
+    end subroutine write_optional_c_array
 
     subroutine write_optional_r_array(unit, key, values, ios)
         integer, intent(in) :: unit
@@ -645,6 +676,17 @@ contains
         read(unit, *, iostat=ios) key, value
         if (ios == 0 .and. trim(key) /= trim(expected)) ios = 1
     end subroutine read_r
+
+    subroutine read_c(unit, expected, value, ios)
+        integer, intent(in) :: unit
+        character(*), intent(in) :: expected
+        character(*), intent(out) :: value
+        integer, intent(out) :: ios
+        character(len=80) :: key
+
+        read(unit, *, iostat=ios) key, value
+        if (ios == 0 .and. trim(key) /= trim(expected)) ios = 1
+    end subroutine read_c
 
     subroutine read_r_array(unit, count_key, item_key, expected_count, values, ios)
         integer, intent(in) :: unit, expected_count
@@ -710,6 +752,38 @@ contains
         end if
         call read_i_array(unit, count_key, item_key, expected_count, values, ios)
     end subroutine read_optional_i_array
+
+    subroutine read_optional_c_array(unit, present_key, count_key, item_key, &
+            expected_count, values, ios)
+        integer, intent(in) :: unit, expected_count
+        character(*), intent(in) :: present_key, count_key, item_key
+        character(len=64), allocatable, intent(out) :: values(:)
+        integer, intent(out) :: ios
+        logical :: present
+        integer :: count, i, alloc_status
+
+        call read_l(unit, present_key, present, ios)
+        if (ios /= 0) return
+        if (.not. present) then
+            if (allocated(values)) deallocate(values)
+            return
+        end if
+        call read_i(unit, count_key, count, ios)
+        if (ios /= 0 .or. count < 0 .or. &
+            (expected_count >= 0 .and. count /= expected_count)) then
+            ios = 1
+            return
+        end if
+        allocate(values(count), stat=alloc_status)
+        if (alloc_status /= 0) then
+            ios = 1
+            return
+        end if
+        do i = 1, count
+            call read_c(unit, item_key, values(i), ios)
+            if (ios /= 0) return
+        end do
+    end subroutine read_optional_c_array
 
     subroutine read_optional_r_array(unit, present_key, count_key, item_key, &
             expected_count, values, ios)

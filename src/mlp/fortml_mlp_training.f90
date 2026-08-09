@@ -236,7 +236,7 @@ module fortml_mlp_training
         !! with its structural and continuous fields. Procedure pointers
         !! (custom schedules and callbacks) are intentionally not copied: the
         !! caller must install deterministic procedures again on resumed options.
-        integer :: format_version = 10
+        integer :: format_version = 11
         logical :: initialized = .false.
         logical :: resume_safe = .true.
         integer :: n_samples = 0
@@ -307,6 +307,7 @@ module fortml_mlp_training
         integer :: best_epoch = 0
         integer :: best_validation_epoch = 0
         real(dp), allocatable :: parameters(:)
+        character(len=64), allocatable :: optimizer_group_name(:)
         integer, allocatable :: optimizer_group_first(:)
         integer, allocatable :: optimizer_group_last(:)
         real(dp), allocatable :: optimizer_group_learning_rate_multiplier(:)
@@ -657,6 +658,7 @@ contains
         self%last = -1
         self%learning_rate_multiplier = 1.0_dp
         if (len_trim(name) == 0 .or. len_trim(name) > len(self%name) .or. &
+            index(name, '"') > 0 .or. &
             first < 1 .or. last < first .or. &
             .not. ieee_is_finite(learning_rate_multiplier) .or. &
             learning_rate_multiplier <= 0.0_dp) then
@@ -812,6 +814,7 @@ contains
         type(mlp_loss_scale_state_t) :: mlp_loss_scale_state_t_default
 
         if (allocated(self%parameters)) deallocate(self%parameters)
+        if (allocated(self%optimizer_group_name)) deallocate(self%optimizer_group_name)
         if (allocated(self%optimizer_group_first)) deallocate(self%optimizer_group_first)
         if (allocated(self%optimizer_group_last)) deallocate(self%optimizer_group_last)
         if (allocated(self%optimizer_group_learning_rate_multiplier)) then
@@ -842,7 +845,7 @@ contains
         if (allocated(self%validation_loss_history)) then
             deallocate(self%validation_loss_history)
         end if
-        self%format_version = 10
+        self%format_version = 11
         self%initialized = .false.
         self%resume_safe = .true.
         self%n_samples = 0
@@ -918,7 +921,7 @@ contains
     logical function mlp_checkpoint_valid(self) result(valid)
         class(mlp_training_checkpoint_t), intent(in) :: self
 
-        valid = self%initialized .and. self%format_version == 10 .and. &
+        valid = self%initialized .and. self%format_version == 11 .and. &
             self%n_samples > 0 .and. self%n_features > 0 .and. &
             self%n_outputs > 0 .and. self%n_parameters > 0 .and. &
             self%epoch >= 0 .and. self%updates >= 0 .and. &
@@ -1121,19 +1124,23 @@ contains
         if (self%n_optimizer_groups < 0) then
             valid = .false.
         else if (self%n_optimizer_groups == 0) then
-            valid = valid .and. .not. allocated(self%optimizer_group_first) .and. &
+            valid = valid .and. .not. allocated(self%optimizer_group_name) .and. &
+                .not. allocated(self%optimizer_group_first) .and. &
                 .not. allocated(self%optimizer_group_last) .and. &
                 .not. allocated(self%optimizer_group_learning_rate_multiplier)
         else
-            valid = valid .and. allocated(self%optimizer_group_first) .and. &
+            valid = valid .and. allocated(self%optimizer_group_name) .and. &
+                allocated(self%optimizer_group_first) .and. &
                 allocated(self%optimizer_group_last) .and. &
                 allocated(self%optimizer_group_learning_rate_multiplier)
             if (.not. valid) return
-            valid = size(self%optimizer_group_first) == self%n_optimizer_groups .and. &
+            valid = size(self%optimizer_group_name) == self%n_optimizer_groups .and. &
+                size(self%optimizer_group_first) == self%n_optimizer_groups .and. &
                 size(self%optimizer_group_last) == self%n_optimizer_groups .and. &
                 size(self%optimizer_group_learning_rate_multiplier) == self%n_optimizer_groups
             if (.not. valid) return
-            valid = all(self%optimizer_group_first >= 1) .and. &
+            valid = all(len_trim(self%optimizer_group_name) > 0) .and. &
+                all(self%optimizer_group_first >= 1) .and. &
                 all(self%optimizer_group_last >= self%optimizer_group_first) .and. &
                 all(ieee_is_finite(self%optimizer_group_learning_rate_multiplier)) .and. &
                 all(self%optimizer_group_learning_rate_multiplier > 0.0_dp)
@@ -3007,7 +3014,7 @@ contains
             return
         end if
         call checkpoint%clear()
-        checkpoint%format_version = 10
+        checkpoint%format_version = 11
         checkpoint%initialized = .true.
         checkpoint%resume_safe = .true.
         checkpoint%n_samples = size(x, 1)
@@ -3017,10 +3024,13 @@ contains
         if (allocated(config%optimizer_groups)) then
             checkpoint%n_optimizer_groups = size(config%optimizer_groups)
             if (checkpoint%n_optimizer_groups > 0) then
-                allocate(checkpoint%optimizer_group_first(checkpoint%n_optimizer_groups), &
+                allocate(checkpoint%optimizer_group_name(checkpoint%n_optimizer_groups), &
+                    checkpoint%optimizer_group_first(checkpoint%n_optimizer_groups), &
                     checkpoint%optimizer_group_last(checkpoint%n_optimizer_groups), &
                     checkpoint%optimizer_group_learning_rate_multiplier( &
                     checkpoint%n_optimizer_groups))
+                checkpoint%optimizer_group_name = [(config%optimizer_groups(n)%name, &
+                    n=1, checkpoint%n_optimizer_groups)]
                 checkpoint%optimizer_group_first = [(config%optimizer_groups(n)%first, &
                     n=1, checkpoint%n_optimizer_groups)]
                 checkpoint%optimizer_group_last = [(config%optimizer_groups(n)%last, &
@@ -3329,14 +3339,16 @@ contains
         equal = checkpoint%n_optimizer_groups == size(groups)
         if (.not. equal) return
         if (size(groups) == 0) return
-        if (.not. allocated(checkpoint%optimizer_group_first) .or. &
+        if (.not. allocated(checkpoint%optimizer_group_name) .or. &
+            .not. allocated(checkpoint%optimizer_group_first) .or. &
             .not. allocated(checkpoint%optimizer_group_last) .or. &
             .not. allocated(checkpoint%optimizer_group_learning_rate_multiplier)) then
             equal = .false.
             return
         end if
         do i = 1, size(groups)
-            equal = checkpoint%optimizer_group_first(i) == groups(i)%first .and. &
+            equal = trim(checkpoint%optimizer_group_name(i)) == trim(groups(i)%name) .and. &
+                checkpoint%optimizer_group_first(i) == groups(i)%first .and. &
                 checkpoint%optimizer_group_last(i) == groups(i)%last .and. &
                 checkpoint%optimizer_group_learning_rate_multiplier(i) == &
                 groups(i)%learning_rate_multiplier

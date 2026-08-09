@@ -113,10 +113,18 @@ contains
         call mlp_checkpoint_load(loaded, path, status)
         call check(status_ok(status) .and. loaded%valid() .and. &
             loaded%n_optimizer_groups == 1 .and. &
+            trim(loaded%optimizer_group_name(1)) == "bias" .and. &
             loaded%optimizer_group_first(1) == 2 .and. &
             loaded%optimizer_group_last(1) == 2 .and. &
             loaded%optimizer_group_learning_rate_multiplier(1) == 0.5_dp, &
             "group metadata round-trips", failures)
+        call group%initialize("renamed", 2, 2, 0.5_dp, status)
+        options%optimizer_groups(1) = group
+        options%max_epochs = 2
+        call mlp_train(model, reshape([1.0_dp], [1, 1]), reshape([2.0_dp], [1, 1]), &
+            status, options, checkpoint=loaded)
+        call check(.not. status_ok(status), &
+            "checkpoint refuses optimizer-group name drift", failures)
         open(newunit=unit, file=path, status="old", action="read")
         close(unit, status="delete")
     end subroutine test_checkpoint_roundtrip
