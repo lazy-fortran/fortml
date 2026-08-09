@@ -10,7 +10,8 @@ module fortml_mlp_multilabel_classifier
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, status_ok, &
-        FORTNUM_OK, FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED
+        FORTNUM_OK, FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED, &
+        FORTNUM_CONVERGENCE_ERROR
     use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU, &
         FORTML_DEVICE_CUDA
     use fortml_losses, only: stable_sigmoid, &
@@ -19,6 +20,8 @@ module fortml_mlp_multilabel_classifier
         multilabel_binary_cross_entropy_with_logits_hvp
     use fortml_mlp, only: mlp_t, MLP_TANH
     use fortopt_adam, only: adam_t
+    use fortopt_objective, only: objective_t
+    use fortopt_lbfgsb, only: lbfgsb_t, lbfgsb_options_t, lbfgsb_result_t
     implicit none
     private
 
@@ -48,6 +51,62 @@ module fortml_mlp_multilabel_classifier
         real(dp) :: gradient_norm = huge(1.0_dp)
         real(dp), allocatable :: loss_history(:)
     end type mlp_multilabel_classifier_state_t
+
+    type, public :: mlp_multilabel_training_objective_t
+        !! Weighted multilabel BCE objective around a fitted shared MLP.
+        !!
+        !! The packed variable is the network parameter vector.  An optional
+        !! final coordinate is either the non-negative L2 coefficient or its
+        !! logarithm; the latter gives positive support without a singular
+        !! lower bound.  Value, gradient, JVP, VJP, and HVP products all use
+        !! the same weighted loss graph as the classifier diagnostics.
+        private
+        type(mlp_t), pointer :: model => null()
+        real(dp), allocatable :: features(:, :), targets(:, :), weights(:, :)
+        real(dp) :: l2 = 0.0_dp
+        logical :: optimize_l2 = .false.
+        logical :: optimize_log_l2 = .false.
+    contains
+        procedure, public :: initialize => mlp_multilabel_objective_initialize
+        procedure, public :: parameter_count => &
+            mlp_multilabel_objective_parameter_count
+        procedure, public :: parameters => mlp_multilabel_objective_parameters
+        procedure, public :: value_gradient => &
+            mlp_multilabel_objective_value_gradient
+        procedure, public :: jvp => mlp_multilabel_objective_jvp
+        procedure, public :: vjp => mlp_multilabel_objective_vjp
+        procedure, public :: hvp => mlp_multilabel_objective_hvp
+        procedure, public :: fortopt => mlp_multilabel_objective_fortopt
+    end type mlp_multilabel_training_objective_t
+
+    type, public :: mlp_multilabel_lbfgsb_options_t
+        !! Bounds and convergence controls for multilabel MLP L-BFGS-B.
+        integer :: memory = 10
+        integer :: max_iterations = 100
+        integer :: max_line_search = 40
+        real(dp) :: gradient_tolerance = 1.0e-8_dp
+        real(dp) :: step_tolerance = 1.0e-12_dp
+        real(dp) :: objective_tolerance = 1.0e-12_dp
+        real(dp) :: lower_bound = -20.0_dp
+        real(dp) :: upper_bound = 20.0_dp
+        real(dp) :: l2 = 0.0_dp
+        real(dp) :: l2_lower_bound = 0.0_dp
+        real(dp) :: l2_upper_bound = 20.0_dp
+        real(dp) :: log_l2_lower_bound = -12.0_dp
+        real(dp) :: log_l2_upper_bound = 3.0_dp
+        logical :: optimize_l2 = .false.
+        logical :: optimize_log_l2 = .false.
+    end type mlp_multilabel_lbfgsb_options_t
+
+    type, public :: mlp_multilabel_lbfgsb_result_t
+        !! Diagnostics returned by `mlp_multilabel_optimize_lbfgsb`.
+        logical :: converged = .false.
+        integer :: iterations = 0
+        integer :: line_search_evaluations = 0
+        real(dp) :: objective = huge(1.0_dp)
+        real(dp) :: gradient_norm = huge(1.0_dp)
+        real(dp) :: l2 = 0.0_dp
+    end type mlp_multilabel_lbfgsb_result_t
 
     type, public :: mlp_multilabel_classifier_t
         private
@@ -95,8 +154,421 @@ module fortml_mlp_multilabel_classifier
     public :: mlp_multilabel_predict_proba_vjp
     public :: mlp_multilabel_predict
     public :: mlp_multilabel_predict_device
+    public :: mlp_multilabel_optimize_lbfgsb
 
 contains
+
+    subroutine mlp_multilabel_objective_initialize(self, classifier, x, indicators, &
+            l2, status, optimize_l2, sample_weight, class_weight, optimize_log_l2)
+        !! Initialize a weighted multilabel objective around a fitted head.
+        class(mlp_multilabel_training_objective_t), intent(out) :: self
+        class(mlp_multilabel_classifier_t), target, intent(inout) :: classifier
+        real(dp), intent(in) :: x(:, :), l2
+        integer, intent(in) :: indicators(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        logical, intent(in), optional :: optimize_l2, optimize_log_l2
+        real(dp), intent(in), optional :: sample_weight(:), class_weight(:, :)
+        real(dp), allocatable :: copied_targets(:, :), effective_weights(:, :)
+        real(dp), allocatable :: row_weight(:), class_factors(:, :)
+        integer :: i, j, n_samples, n_labels
+
+        if (.not. classifier%fitted()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP multilabel objective: model is not fitted")
+            return
+        end if
+        if (present(optimize_l2)) self%optimize_l2 = optimize_l2
+        if (present(optimize_log_l2)) self%optimize_log_l2 = optimize_log_l2
+        if (self%optimize_l2 .and. self%optimize_log_l2) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP multilabel objective: choose direct or log L2 optimization")
+            return
+        end if
+        if (.not. ieee_is_finite(l2) .or. l2 < 0.0_dp .or. &
+            (self%optimize_log_l2 .and. l2 <= 0.0_dp) .or. &
+            size(x, 1) < 1 .or. size(x, 2) /= classifier%feature_count() .or. &
+            size(indicators, 1) /= size(x, 1) .or. &
+            size(indicators, 2) /= classifier%label_count() .or. &
+            any(.not. ieee_is_finite(x)) .or. &
+            any((indicators /= 0) .and. (indicators /= 1))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP multilabel objective: model, data, or L2 value is invalid")
+            return
+        end if
+        n_samples = size(x, 1)
+        n_labels = size(indicators, 2)
+        allocate(row_weight(n_samples), class_factors(2, n_labels))
+        row_weight = 1.0_dp
+        class_factors = 1.0_dp
+        if (present(sample_weight)) then
+            if (size(sample_weight) /= n_samples .or. &
+                any(.not. ieee_is_finite(sample_weight)) .or. &
+                any(sample_weight < 0.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP multilabel objective: sample weights are invalid")
+                return
+            end if
+            row_weight = sample_weight
+        end if
+        if (present(class_weight)) then
+            if (any(shape(class_weight) /= [2, n_labels]) .or. &
+                any(.not. ieee_is_finite(class_weight)) .or. &
+                any(class_weight <= 0.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP multilabel objective: class weights are invalid")
+                return
+            end if
+            class_factors = class_weight
+        end if
+        if (.not. ieee_is_finite(sum(row_weight)) .or. sum(row_weight) <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP multilabel objective: sample weights have no positive mass")
+            return
+        end if
+        allocate(copied_targets(n_samples, n_labels), &
+            effective_weights(n_samples, n_labels))
+        copied_targets = real(indicators, dp)
+        do j = 1, n_labels
+            do i = 1, n_samples
+                effective_weights(i, j) = row_weight(i)* &
+                    class_factors(indicators(i, j) + 1, j)
+            end do
+            if (.not. ieee_is_finite(sum(effective_weights(:, j))) .or. &
+                sum(effective_weights(:, j)) <= 0.0_dp) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP multilabel objective: effective weights have no positive mass")
+                return
+            end if
+        end do
+
+        ! Install the pointer and copies only after every validation succeeds.
+        self%model => classifier%logits
+        allocate(self%features, source=x)
+        allocate(self%targets, source=copied_targets)
+        allocate(self%weights, source=effective_weights)
+        self%l2 = l2
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine mlp_multilabel_objective_initialize
+
+    integer function mlp_multilabel_objective_parameter_count(self) result(count)
+        class(mlp_multilabel_training_objective_t), intent(in) :: self
+
+        count = 0
+        if (.not. associated(self%model)) return
+        count = self%model%parameter_count()
+        if (self%optimize_l2 .or. self%optimize_log_l2) count = count + 1
+    end function mlp_multilabel_objective_parameter_count
+
+    function mlp_multilabel_objective_parameters(self) result(parameters)
+        class(mlp_multilabel_training_objective_t), intent(in) :: self
+        real(dp), allocatable :: parameters(:)
+        integer :: n_model
+
+        allocate(parameters(self%parameter_count()))
+        parameters = 0.0_dp
+        if (.not. associated(self%model)) return
+        n_model = self%model%parameter_count()
+        parameters(:n_model) = self%model%parameters()
+        if (self%optimize_l2) parameters(n_model + 1) = self%l2
+        if (self%optimize_log_l2) parameters(n_model + 1) = log(self%l2)
+    end function mlp_multilabel_objective_parameters
+
+    subroutine mlp_multilabel_objective_value_gradient(self, parameters, value, &
+            gradient, status)
+        class(mlp_multilabel_training_objective_t), intent(inout) :: self
+        real(dp), intent(in) :: parameters(:)
+        real(dp), intent(out) :: value, gradient(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: l2, log_l2
+        integer :: n_model
+
+        value = huge(1.0_dp)
+        gradient = 0.0_dp
+        if (.not. associated(self%model)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP multilabel objective: adapter is not initialized")
+            return
+        end if
+        n_model = self%model%parameter_count()
+        if (size(parameters) /= self%parameter_count() .or. &
+            size(gradient) /= size(parameters) .or. &
+            any(.not. ieee_is_finite(parameters))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP multilabel objective: parameter or gradient shape is invalid")
+            return
+        end if
+        l2 = self%l2
+        log_l2 = 0.0_dp
+        if (self%optimize_l2 .or. self%optimize_log_l2) then
+            l2 = parameters(n_model + 1)
+            if (self%optimize_log_l2) then
+                log_l2 = l2
+                if (log_l2 < -700.0_dp .or. log_l2 > 700.0_dp) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "MLP multilabel objective: log L2 coefficient is invalid")
+                    return
+                end if
+                l2 = exp(log_l2)
+            end if
+            if (.not. ieee_is_finite(l2) .or. l2 < 0.0_dp .or. &
+                (self%optimize_log_l2 .and. l2 <= 0.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP multilabel objective: optimized L2 coefficient is invalid")
+                return
+            end if
+        end if
+        call self%model%set_parameters(parameters(:n_model), status)
+        if (.not. status_ok(status)) return
+        call mlp_multilabel_loss_gradient(self%model, self%features, self%targets, l2, &
+            value, gradient(:n_model), status, label_weight=self%weights)
+        if (.not. status_ok(status)) return
+        if (self%optimize_l2) gradient(n_model + 1) = &
+            0.5_dp*sum(parameters(:n_model)*parameters(:n_model))
+        if (self%optimize_log_l2) gradient(n_model + 1) = &
+            0.5_dp*l2*sum(parameters(:n_model)*parameters(:n_model))
+        if (.not. ieee_is_finite(value) .or. any(.not. ieee_is_finite(gradient))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP multilabel objective: value or gradient is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine mlp_multilabel_objective_value_gradient
+
+    subroutine mlp_multilabel_objective_jvp(self, parameters, direction, value, &
+            tangent, status)
+        class(mlp_multilabel_training_objective_t), intent(inout) :: self
+        real(dp), intent(in) :: parameters(:), direction(:)
+        real(dp), intent(out) :: value, tangent
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: gradient(:)
+
+        value = huge(1.0_dp)
+        tangent = 0.0_dp
+        if (size(direction) /= size(parameters) .or. &
+            any(.not. ieee_is_finite(direction))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP multilabel objective JVP: direction shape or values are invalid")
+            return
+        end if
+        allocate(gradient(size(parameters)))
+        call self%value_gradient(parameters, value, gradient, status)
+        if (.not. status_ok(status)) return
+        tangent = dot_product(gradient, direction)
+        if (.not. ieee_is_finite(tangent)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP multilabel objective JVP: product is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine mlp_multilabel_objective_jvp
+
+    subroutine mlp_multilabel_objective_vjp(self, parameters, output_bar, gradient, &
+            status)
+        class(mlp_multilabel_training_objective_t), intent(inout) :: self
+        real(dp), intent(in) :: parameters(:), output_bar
+        real(dp), intent(out) :: gradient(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: value
+
+        gradient = 0.0_dp
+        if (.not. ieee_is_finite(output_bar)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP multilabel objective VJP: output cotangent is invalid")
+            return
+        end if
+        call self%value_gradient(parameters, value, gradient, status)
+        if (.not. status_ok(status)) return
+        gradient = output_bar*gradient
+        if (any(.not. ieee_is_finite(gradient))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP multilabel objective VJP: product is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine mlp_multilabel_objective_vjp
+
+    subroutine mlp_multilabel_objective_hvp(self, parameters, direction, product, &
+            status)
+        class(mlp_multilabel_training_objective_t), intent(inout) :: self
+        real(dp), intent(in) :: parameters(:), direction(:)
+        real(dp), intent(out) :: product(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: theta_hvp(:)
+        real(dp) :: l2, l2_direction, theta_norm2
+        integer :: n_model
+
+        product = 0.0_dp
+        if (.not. associated(self%model)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP multilabel objective HVP: adapter is not initialized")
+            return
+        end if
+        n_model = self%model%parameter_count()
+        if (size(parameters) /= self%parameter_count() .or. &
+            size(direction) /= size(parameters) .or. size(product) /= size(parameters) .or. &
+            any(.not. ieee_is_finite(parameters)) .or. &
+            any(.not. ieee_is_finite(direction))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP multilabel objective HVP: parameter or direction shape is invalid")
+            return
+        end if
+        l2 = self%l2
+        l2_direction = 0.0_dp
+        if (self%optimize_l2 .or. self%optimize_log_l2) then
+            l2_direction = direction(n_model + 1)
+            l2 = parameters(n_model + 1)
+            if (self%optimize_log_l2) then
+                if (l2 < -700.0_dp .or. l2 > 700.0_dp) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "MLP multilabel objective HVP: log L2 coefficient is invalid")
+                    return
+                end if
+                l2 = exp(l2)
+            end if
+            if (.not. ieee_is_finite(l2) .or. l2 < 0.0_dp .or. &
+                (self%optimize_log_l2 .and. l2 <= 0.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP multilabel objective HVP: optimized L2 coefficient is invalid")
+                return
+            end if
+        end if
+        call self%model%set_parameters(parameters(:n_model), status)
+        if (.not. status_ok(status)) return
+        allocate(theta_hvp(n_model))
+        call mlp_multilabel_loss_hvp(self%model, self%features, self%targets, l2, &
+            direction(:n_model), theta_hvp, status, label_weight=self%weights)
+        if (.not. status_ok(status)) return
+        product(:n_model) = theta_hvp
+        theta_norm2 = sum(parameters(:n_model)*parameters(:n_model))
+        if (self%optimize_l2) then
+            product(:n_model) = product(:n_model) + l2_direction*parameters(:n_model)
+            product(n_model + 1) = dot_product(parameters(:n_model), direction(:n_model))
+        else if (self%optimize_log_l2) then
+            product(:n_model) = product(:n_model) + &
+                l2*l2_direction*parameters(:n_model)
+            product(n_model + 1) = l2*dot_product(parameters(:n_model), &
+                direction(:n_model)) + 0.5_dp*l2*theta_norm2*l2_direction
+        end if
+        if (any(.not. ieee_is_finite(product))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP multilabel objective HVP: product is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine mlp_multilabel_objective_hvp
+
+    subroutine mlp_multilabel_objective_fortopt(self, objective, status)
+        class(mlp_multilabel_training_objective_t), target, intent(inout) :: self
+        type(objective_t), intent(out) :: objective
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. associated(self%model)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP multilabel objective: adapter is not initialized")
+            return
+        end if
+        call objective%initialize_context(self%parameter_count(), self, &
+            mlp_multilabel_objective_context_callback, status)
+    end subroutine mlp_multilabel_objective_fortopt
+
+    subroutine mlp_multilabel_objective_context_callback(context, parameters, value, &
+            gradient, status)
+        class(*), intent(inout) :: context
+        real(dp), intent(in) :: parameters(:)
+        real(dp), intent(out) :: value, gradient(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        select type (adapter => context)
+            type is (mlp_multilabel_training_objective_t)
+            call adapter%value_gradient(parameters, value, gradient, status)
+        class default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP multilabel objective: context has the wrong type")
+        end select
+    end subroutine mlp_multilabel_objective_context_callback
+
+    subroutine mlp_multilabel_optimize_lbfgsb(model, x, indicators, options, result, &
+            status, sample_weight, class_weight)
+        !! Optimize weighted multilabel BCE with bounded FortOpt L-BFGS-B.
+        class(mlp_multilabel_classifier_t), target, intent(inout) :: model
+        real(dp), intent(in) :: x(:, :)
+        integer, intent(in) :: indicators(:, :)
+        type(mlp_multilabel_lbfgsb_options_t), intent(in) :: options
+        type(mlp_multilabel_lbfgsb_result_t), intent(out) :: result
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), intent(in), optional :: sample_weight(:), class_weight(:, :)
+        type(mlp_multilabel_training_objective_t), target :: adapter
+        type(objective_t) :: objective
+        type(lbfgsb_t) :: optimizer
+        type(lbfgsb_options_t) :: optimizer_options
+        type(lbfgsb_result_t) :: optimizer_result
+        real(dp), allocatable :: parameters(:), lower(:), upper(:), gradient(:)
+        integer :: n_model, n_parameters
+        type(mlp_multilabel_lbfgsb_result_t) :: default_result
+
+        result = default_result
+        if (.not. valid_lbfgsb_options(options)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP multilabel L-BFGS-B: options are invalid")
+            return
+        end if
+        call adapter%initialize(model, x, indicators, options%l2, status, &
+            optimize_l2=options%optimize_l2, optimize_log_l2=options%optimize_log_l2, &
+            sample_weight=sample_weight, class_weight=class_weight)
+        if (.not. status_ok(status)) return
+        n_model = model%parameter_count()
+        n_parameters = adapter%parameter_count()
+        parameters = adapter%parameters()
+        allocate(lower(n_parameters), upper(n_parameters), gradient(n_parameters))
+        lower(:n_model) = options%lower_bound
+        upper(:n_model) = options%upper_bound
+        if (options%optimize_l2) then
+            lower(n_model + 1) = options%l2_lower_bound
+            upper(n_model + 1) = options%l2_upper_bound
+            parameters(n_model + 1) = min(max(options%l2, lower(n_model + 1)), &
+                upper(n_model + 1))
+        else if (options%optimize_log_l2) then
+            lower(n_model + 1) = options%log_l2_lower_bound
+            upper(n_model + 1) = options%log_l2_upper_bound
+            parameters(n_model + 1) = min(max(log(options%l2), lower(n_model + 1)), &
+                upper(n_model + 1))
+        end if
+        call adapter%fortopt(objective, status)
+        if (.not. status_ok(status)) return
+        optimizer_options%memory = options%memory
+        optimizer_options%max_iterations = options%max_iterations
+        optimizer_options%max_line_search = options%max_line_search
+        optimizer_options%gradient_tolerance = options%gradient_tolerance
+        optimizer_options%step_tolerance = options%step_tolerance
+        optimizer_options%objective_tolerance = options%objective_tolerance
+        call optimizer%minimize(objective, parameters, lower, upper, &
+            optimizer_options, optimizer_result, status)
+        if (.not. status_ok(status)) return
+        call model%set_parameters(parameters(:n_model), status)
+        if (.not. status_ok(status)) return
+        call adapter%value_gradient(parameters, result%objective, gradient, status)
+        if (.not. status_ok(status)) return
+        result%converged = optimizer_result%state%converged
+        result%iterations = optimizer_result%state%iteration
+        result%line_search_evaluations = optimizer_result%line_search_evaluations
+        result%gradient_norm = sqrt(sum(gradient*gradient))
+        result%l2 = options%l2
+        if (options%optimize_l2) result%l2 = parameters(n_model + 1)
+        if (options%optimize_log_l2) result%l2 = exp(parameters(n_model + 1))
+        if (.not. ieee_is_finite(result%objective) .or. &
+            .not. ieee_is_finite(result%gradient_norm) .or. &
+            .not. ieee_is_finite(result%l2)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP multilabel L-BFGS-B: result is not finite")
+            return
+        end if
+        if (.not. result%converged) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "MLP multilabel L-BFGS-B: iteration limit reached")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine mlp_multilabel_optimize_lbfgsb
 
     subroutine mlp_multilabel_classifier_fit(self, x, indicators, status, &
             hidden_layer_sizes, options, state, sample_weight, class_weight, &
@@ -301,12 +773,13 @@ contains
     end subroutine mlp_multilabel_classifier_fit
 
     subroutine mlp_multilabel_loss_gradient(model, x, targets, l2, value, gradient, &
-            status, sample_weight, class_weight)
+            status, sample_weight, class_weight, label_weight)
         class(mlp_t), intent(in) :: model
         real(dp), intent(in) :: x(:, :), targets(:, :), l2
         real(dp), intent(out) :: value, gradient(:)
         type(fortnum_status_t), intent(out) :: status
-        real(dp), intent(in), optional :: sample_weight(:), class_weight(:, :)
+        real(dp), intent(in), optional :: sample_weight(:), class_weight(:, :), &
+            label_weight(:, :)
         real(dp), allocatable :: logits(:, :), logits_bar(:, :), x_bar(:, :)
         real(dp), allocatable :: col_logits(:, :), col_targets(:, :), col_bar(:, :)
         real(dp), allocatable :: weights(:), theta(:)
@@ -332,6 +805,23 @@ contains
                 return
             end if
         end if
+        if (present(label_weight)) then
+            if (any(shape(label_weight) /= [size(x, 1), size(targets, 2)]) .or. &
+                any(.not. ieee_is_finite(label_weight)) .or. &
+                any(label_weight < 0.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP multilabel loss: label weights are invalid")
+                return
+            end if
+            do j = 1, size(targets, 2)
+                if (.not. ieee_is_finite(sum(label_weight(:, j))) .or. &
+                    sum(label_weight(:, j)) <= 0.0_dp) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "MLP multilabel loss: label weights have no positive mass")
+                    return
+                end if
+            end do
+        end if
         allocate(logits(size(x, 1), size(targets, 2)), &
             logits_bar(size(x, 1), size(targets, 2)), x_bar(size(x, 1), size(x, 2)), &
             col_logits(size(x, 1), 1), col_targets(size(x, 1), 1), &
@@ -342,8 +832,13 @@ contains
         do j = 1, size(targets, 2)
             col_logits(:, 1) = logits(:, j)
             col_targets(:, 1) = targets(:, j)
-            call make_column_weights(targets(:, j), j, sample_weight, class_weight, &
-                weights, status)
+            if (present(label_weight)) then
+                weights = label_weight(:, j)
+                call status_set(status, FORTNUM_OK, "")
+            else
+                call make_column_weights(targets(:, j), j, sample_weight, class_weight, &
+                    weights, status)
+            end if
             if (.not. status_ok(status)) return
             call multilabel_binary_cross_entropy_with_logits_value(col_logits, &
                 col_targets, column_value, status, sample_weight=weights)
@@ -370,12 +865,13 @@ contains
     end subroutine mlp_multilabel_loss_gradient
 
     subroutine mlp_multilabel_loss_hvp(model, x, targets, l2, theta_dot, hvp, &
-            status, sample_weight, class_weight)
+            status, sample_weight, class_weight, label_weight)
         class(mlp_t), intent(in) :: model
         real(dp), intent(in) :: x(:, :), targets(:, :), l2, theta_dot(:)
         real(dp), intent(out) :: hvp(:)
         type(fortnum_status_t), intent(out) :: status
-        real(dp), intent(in), optional :: sample_weight(:), class_weight(:, :)
+        real(dp), intent(in), optional :: sample_weight(:), class_weight(:, :), &
+            label_weight(:, :)
         real(dp), allocatable :: logits(:, :), logits_dot(:, :), logits_bar(:, :)
         real(dp), allocatable :: logits_hvp(:, :), x_zero(:, :), x_bar(:, :), x_hvp(:, :)
         real(dp), allocatable :: col_logits(:, :), col_targets(:, :), col_dot(:, :)
@@ -403,6 +899,23 @@ contains
                 return
             end if
         end if
+        if (present(label_weight)) then
+            if (any(shape(label_weight) /= [size(x, 1), size(targets, 2)]) .or. &
+                any(.not. ieee_is_finite(label_weight)) .or. &
+                any(label_weight < 0.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP multilabel HVP: label weights are invalid")
+                return
+            end if
+            do j = 1, size(targets, 2)
+                if (.not. ieee_is_finite(sum(label_weight(:, j))) .or. &
+                    sum(label_weight(:, j)) <= 0.0_dp) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "MLP multilabel HVP: label weights have no positive mass")
+                    return
+                end if
+            end do
+        end if
         allocate(logits(size(x, 1), size(targets, 2)), &
             logits_dot(size(x, 1), size(targets, 2)), &
             logits_bar(size(x, 1), size(targets, 2)), &
@@ -422,8 +935,13 @@ contains
             col_logits(:, 1) = logits(:, j)
             col_dot(:, 1) = logits_dot(:, j)
             col_targets(:, 1) = targets(:, j)
-            call make_column_weights(targets(:, j), j, sample_weight, class_weight, &
-                weights, status)
+            if (present(label_weight)) then
+                weights = label_weight(:, j)
+                call status_set(status, FORTNUM_OK, "")
+            else
+                call make_column_weights(targets(:, j), j, sample_weight, class_weight, &
+                    weights, status)
+            end if
             if (.not. status_ok(status)) return
             call multilabel_binary_cross_entropy_with_logits_vjp(col_logits, &
                 col_targets, 1.0_dp, col_bar, status, sample_weight=weights)
@@ -882,6 +1400,28 @@ contains
             ieee_is_finite(options%epsilon) .and. ieee_is_finite(options%l2) .and. &
             ieee_is_finite(options%tolerance) .and. ieee_is_finite(options%min_delta)
     end function valid_options
+
+    logical function valid_lbfgsb_options(options) result(value)
+        type(mlp_multilabel_lbfgsb_options_t), intent(in) :: options
+
+        value = options%memory >= 1 .and. options%max_iterations >= 1 .and. &
+            options%max_line_search >= 1 .and. options%gradient_tolerance > 0.0_dp .and. &
+            options%step_tolerance > 0.0_dp .and. options%objective_tolerance > 0.0_dp .and. &
+            options%lower_bound < options%upper_bound .and. &
+            options%l2 >= 0.0_dp .and. options%l2_lower_bound >= 0.0_dp .and. &
+            options%l2_lower_bound < options%l2_upper_bound .and. &
+            options%log_l2_lower_bound < options%log_l2_upper_bound .and. &
+            (.not. (options%optimize_l2 .and. options%optimize_log_l2)) .and. &
+            (.not. options%optimize_log_l2 .or. options%l2 > 0.0_dp) .and. &
+            ieee_is_finite(options%gradient_tolerance) .and. &
+            ieee_is_finite(options%step_tolerance) .and. &
+            ieee_is_finite(options%objective_tolerance) .and. &
+            ieee_is_finite(options%lower_bound) .and. ieee_is_finite(options%upper_bound) .and. &
+            ieee_is_finite(options%l2) .and. ieee_is_finite(options%l2_lower_bound) .and. &
+            ieee_is_finite(options%l2_upper_bound) .and. &
+            ieee_is_finite(options%log_l2_lower_bound) .and. &
+            ieee_is_finite(options%log_l2_upper_bound)
+    end function valid_lbfgsb_options
 
     subroutine make_column_weights(target, column, sample_weight, class_weight, weights, status)
         real(dp), intent(in) :: target(:)
