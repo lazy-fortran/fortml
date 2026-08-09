@@ -8,7 +8,7 @@ FortSym dependency: origin/main 26250ce24e3890711343a2f18d5feae2be832508
 FortOpt dependency: origin/main 883aa7ee0a3f2b3a508d0309b907adccc30a0f29
 FortNum dependency: origin/main 7ced2f7aa272920916789fa82a35bfcb2e792d45
 FortSparse dependency: origin/main 7ad20738b3f888a3bbec37324eff3117c630221d
-FortML-bench head: origin/main 889e8be (multilabel GP log-probability,
+FortML-bench head: origin/main 1a28c4e (multilabel GP log-probability,
 affine RMSprop HVP, multiclass XGBoost log-probability, and prior integrated
 lanes)
 The focused additions are covered by the same full code gate below. The
