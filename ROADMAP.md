@@ -21,7 +21,7 @@ boosted-tree partial-dependence/ICE, learned basis fan-in, fixed-full-batch
 SGD clipping hypergradient, and fixed-shape Gamma-GP likelihood slices.
 The broad parity
 gate is still open, so this work does not move or recreate that tag.
-The checklist currently records 416 completed and 147 open items. Open rows are
+The checklist currently records 419 completed and 144 open items. Open rows are
 retained until their implementation, independent oracle, device/refusal
 behavior, and benchmark evidence land together.
 
@@ -186,6 +186,26 @@ break. It must update all in-tree callers, examples, schemas, and benchmark
 fixtures in the same commit. A broad feature claim never promotes from a
 narrow happy-path test.
 
+### Wave 9 production closure contract
+
+The parity target is one model graph with family-specific mathematics. The
+following rows define the interfaces that every production adapter must share.
+
+| Contract | Required surface | Evidence before promotion |
+| --- | --- | --- |
+| Classification | Binary, multinomial, OVR, OVO, multilabel, classifier chains, ordinal, multioutput, Naive Bayes, LDA/QDA, SVM, neighbors, trees, forests, calibrated heads, GP heads, and neural heads expose sorted labels, weights, decisions, probabilities, log probabilities, scores, cloning, persistence, partial fitting, warm starts, and capability metadata. | Reference predictions and probabilities on arbitrary labels, weighted and malformed fixtures, probability normalization, replayed incremental state, topology and active-set refusals, parameter products where smooth, and a resident-device result. |
+| Gaussian processes | Kernels, means, likelihoods, observation operators, exact/Laplace/variational/lazy inference, batch and multitask state, inducing state, and derivative-through-fit products use one registry. | Dense or matrix-free oracle, input and hyperparameter JVP/VJP/HVP checks, solve-state boundaries, FortOpt convergence, persistence, GPyTorch/GPflow fixture, memory accounting, and typed CUDA behavior. |
+| Neural modules and training | Named module trees own parameters, buffers, aliases, train/eval state, losses, loaders, accumulation, clipping, schedules, optimizer groups, validation, early stopping, callbacks, EMA, mixed precision, checkpoints, distributed reductions, and HPO. | Interrupted replay, state checksums, weighted reduction oracle, optimizer and schedule products, overflow and loss-scale replay, FortOpt L-BFGS-B trajectory, PyTorch/JAX update comparison, and resident CPU/CUDA measurements. |
+| Boosted trees | XGBoost and LightGBM adapters cover exact, histogram, quantile, categorical, ranking, survival, DART, GOSS, EFB, constraints, staged predictions, explanations, warm starts, persistence, and fixed-topology products. | Split and leaf replay, pair and group metrics, staged continuation, explanation identities, external option fixtures, topology refusal, resident histogram or explicit typed boundary, and transfer-aware timing. |
+| Composition | Basis, preprocessing, PCA, autoencoder, GP/NNGP/NTK, physics, column, sequential, residual, fan-out, fan-in, and DAG nodes route named features and parameter offsets through one registry. | Manual composition, fold-local fitting, clone and persistence round trips, transform JVP/VJP/HVP, sparse and categorical schema checks, leakage guards, and device transfer counters. |
+| Device and differentiation | Every public value path has an explicit CPU reference and either a resident OpenACC/CUDA plan or a typed refusal. FortAD and FortSym products carry proof, source, operation-count, and smoothness provenance. | Output-preserving refusal tests, resident state checksums, deterministic reductions, compiler and architecture metadata, derivative capability rows, and separate compile, warmup, transfer, steady-state, and convergence measurements. |
+| Release evidence | The benchmark repository records the independent oracle, source and dependency revisions, compiler, precision, device, workload shape, repetitions, tolerances, timing phases, memory, and status for every promoted row. | Strict schema validation, clean revisions, reproducible commands, report prose checks, and a cross-library comparison against scikit-learn, PyTorch, JAX, GPyTorch, GPflow, XGBoost, and LightGBM. |
+
+The clean break permits replacing any pre-1.0 signature that cannot express
+these contracts. The migration must remove the old call sites in the same
+change. A parameter without a declared derivative or a device without a
+resident plan remains visible as a typed capability boundary.
+
 ## 2026-08 parity expansion backlog
 
 This backlog makes the requested scikit-learn/PyTorch/JAX/GPyTorch/XGBoost/
@@ -234,6 +254,12 @@ it is checked off.
 - [ ] Add `partial_fit` and warm-start contracts for linear, NB, SGD, MLP, GP
   approximation, tree ensembles, and classifier chains with deterministic
   replay, class expansion, sample-count state, and malformed-batch rollback.
+- [x] Add transactional GaussianNB `partial_fit` and `warm_start` state. The
+  first batch establishes sorted arbitrary integer labels and feature schema.
+  Later batches preserve class counts and sufficient statistics, reject class
+  expansion or malformed weights without mutation, and expose CPU dispatch plus
+  a typed CUDA refusal. Independent replay evidence is recorded in
+  `fortml-bench/results/GAUSSIAN_NB_PARTIAL_FIT.md`.
 
 ### Gaussian-process and likelihood parity
 
@@ -330,6 +356,12 @@ it is checked off.
 - [ ] Add FP16/BF16 storage and resident CUDA mixed-precision training around
   binary64 master weights, deterministic loss scaling, overflow recovery,
   reduction policy, checkpoint migration, and typed unsupported-device rows.
+- [x] Add the observable overflow transition for the current FP32 loss-scale
+  path. A non-finite scaled gradient skips the optimizer update, increments the
+  overflow and skip counters, emits `MLP_EVENT_UPDATE_SKIPPED`, and leaves model
+  parameters unchanged. The independent high-magnitude oracle and CPU release
+  row preserve the existing CUDA capability boundary. Full FP16/BF16 resident
+  training and recovery kernels remain open.
 - [ ] Add convolutional, recurrent/attention, graph, autoencoder, VAE, BNN,
   Hamiltonian/Lagrangian, symplectic, PINN, and physics-consistent trainer
   adapters with input/parameter JVP/VJP/HVP products and independent PyTorch,
@@ -403,6 +435,12 @@ it is checked off.
   and returning typed refusals for categorical or unavailable plans. The
   NumPy leaf-walk, CPU parity, and native resident rows are pinned in
   `fortml-bench/results/CUDA_BOOSTED_TREE.md`.
+- [x] Route numeric LightGBM predictions through the same resident additive-tree
+  CUDA plan. Plain numeric leaf-wise models retain CPU parity and return a
+  typed refusal for unsupported categorical, missing-default, ranking, DART,
+  GOSS, or unavailable resident plans. The independent CPU/CUDA dispatch gate
+  and transfer-aware release row are recorded in
+  `fortml-bench/results/LIGHTGBM_CUDA.md`.
 
 ### Derivatives, devices, and benchmark evidence
 
