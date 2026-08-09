@@ -5140,13 +5140,23 @@ typed refusal until resident leaf-wise state and transfer accounting exist.
 products on CPU and return `FORTNUM_NOT_IMPLEMENTED` for selected CUDA
 contexts without a host fallback.
 
+`predict_device` has a separate resident numeric path for fitted plain
+LightGBM models. It flattens the additive tree state into the resident CUDA
+tree plan and transfers only query rows. The CPU and resident CUDA margins use
+the same fixed routing contract. Categorical, missing-default, ranking, GOSS,
+DART, and unavailable-plan requests return a typed refusal before changing
+the output. `test_lightgbm_cuda_dispatch` and the
+`fortml-bench/results/LIGHTGBM_CUDA.md` release row cover the dispatch and
+refusal cases.
+
 The finite numeric contract is explicit: NaN and infinity inputs are refused,
 and categorical, missing-value-default, EFB, and distributed policies are not
 silently approximated. Fixed-tree input JVP/VJP products are zero away from
 learned split surfaces and return `FORTNUM_DOMAIN_ERROR` exactly on a split
-boundary. CPU dispatch is supported; `predict_device` on a selected CUDA
-device returns `FORTNUM_NOT_IMPLEMENTED` until resident leaf-wise histogram
-state is available. Independent hand, tree-walk, DART, persistence, and
+boundary. CPU dispatch is supported. Plain numeric `predict_device` uses the
+resident additive-tree plan when available. All other policies return the
+typed capability status described above. Independent hand, tree-walk, DART,
+persistence, and
 ranking oracles are `test_lightgbm`, `test_lightgbm_staged_slice`,
 `test_lightgbm_persistence`, `test_lightgbm_goss`, `test_lightgbm_dart`, and
 `test_lightgbm_ranking`; the release benchmarks are `lightgbm_leafwise.csv`,
