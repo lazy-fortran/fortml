@@ -14,13 +14,13 @@ and schedule coordinates, when active, are inserted before the group
 multipliers as described in
 [`MLP_OPTIMIZER_GROUP_HYPERGRADIENT.md`](MLP_OPTIMIZER_GROUP_HYPERGRADIENT.md).
 The Adam moment coefficients are explicit trajectory metadata rather than
-packed coordinates in this ABI; use `fortml_mlp_adam_hypergradient` when
+packed coordinates in this ABI. Use `fortml_mlp_adam_hypergradient` when
 optimizing `beta1` and `beta2` themselves.
 
 Each update computes the regularized MSE gradient, updates Adam's first and
 second moments with bias correction, and then applies the group's multiplier to
 the complete Adam delta.  The value, gradient, JVP, VJP, and FortOpt callback
-propagate exact tangents through the parameter and moment state; no numerical
+propagate exact tangents through the parameter and moment state. No numerical
 optimizer fallback is used.  A zero second-moment square-root is a typed
 `FORTNUM_NOT_IMPLEMENTED` boundary because its derivative is singular.
 Gradient clipping and stateless learning-rate schedules retain the existing
