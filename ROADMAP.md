@@ -13,10 +13,12 @@ The GitHub `v0.1.0` tag currently points to the earlier release-verification
 commit `a387cc5`; the trainer, calibration, variational-GP, transform, tree
 attribution, binary and multiclass GP log-probability, sequential basis-device,
 fixed-leaf-product, plateau-trainer, affine Adagrad HVP, and CUDA VJP closure
-slices documented below are post-tag additions.
+slices documented below are post-tag additions. The successive-halving search,
+resident CUDA dense trainer, and variational multiclass-GP log-probability
+slices are also post-tag additions.
 The broad parity
 gate is still open, so this work does not move or recreate that tag.
-The checklist currently records 393 completed and 150 open items. Open rows are
+The checklist currently records 396 completed and 150 open items. Open rows are
 retained until their implementation, independent oracle, device/refusal
 behavior, and benchmark evidence land together.
 
@@ -4942,6 +4944,19 @@ peak memory, and batch-size scaling with the same correctness gate as training.
   seeded bounded L-BFGS-B row. The independent quadratic oracle checks the
   retained best state, start count, evaluation budget, and typed CUDA refusal
   in [`results/HYPERPARAMETER_SEARCH.md`](../fortml-bench/results/HYPERPARAMETER_SEARCH.md).
+- [x] Add deterministic successive-halving resource search over a bounded
+  objective and a fixed-resource FortOpt L-BFGS-B refinement adapter. The
+  independent quadratic oracle checks seeded candidate generation, rung
+  pruning, evaluation accounting, and exact refinement; the CUDA row is a
+  typed refusal in [`results/HYPERPARAMETER_SUCCESSIVE_HALVING.md`](../fortml-bench/results/HYPERPARAMETER_SUCCESSIVE_HALVING.md).
+- [x] Add a resident CUDA dense MSE training primitive with device-resident
+  batches, gradients, moments, and SGD/Adam/AdamW updates. Native CUDA and
+  compute-sanitizer gates check the recurrence and leak boundary; ordinary
+  builds expose a typed refusal in [`results/CUDA_DENSE_TRAINING.md`](../fortml-bench/results/CUDA_DENSE_TRAINING.md).
+- [x] Add stable variational multiclass-GP log probabilities with logistic and
+  probit links, packed-state and fixed-state input JVP/VJP products, and
+  explicit CPU/CUDA dispatch. The independent NumPy log-sum-exp/JVP oracle and
+  release app are recorded in [`results/GP_VARIATIONAL_MULTICLASS_LOG_PROBA.md`](../fortml-bench/results/GP_VARIATIONAL_MULTICLASS_LOG_PROBA.md).
 - [ ] Define one versioned result schema for correctness, train time, predict
   time, peak host and device memory, compiler, flags, dependency revisions,
   hardware, seed, warmup, repetitions, and refusal reason.

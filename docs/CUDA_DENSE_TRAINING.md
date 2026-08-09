@@ -12,18 +12,18 @@ The workflow is explicit:
 2. Call `upload_batch(query_x, target)` once for a feature-major batch. The
    batch remains on the selected device until the next upload or destruction.
 3. Call `train_resident_mse(...)` for each update. The model, gradients, Adam
-   moments, and batch stay resident; only the scalar loss crosses the ABI.
+   moments, and batch stay resident. Only the scalar loss crosses the ABI.
 4. Call `parameters(...)` only when a host snapshot is needed.
 
 Three no-autodiff optimizers are supported:
 
-- `CUDA_DENSE_OPT_SGD` — plain gradient descent;
-- `CUDA_DENSE_OPT_ADAM` — bias-corrected Adam;
-- `CUDA_DENSE_OPT_ADAMW` — Adam with decoupled weight decay.
+- `CUDA_DENSE_OPT_SGD`: plain gradient descent.
+- `CUDA_DENSE_OPT_ADAM`: bias-corrected Adam.
+- `CUDA_DENSE_OPT_ADAMW`: Adam with decoupled weight decay.
 
 The loss is the mean `1/2 (f(x)-y)^2` over all output/query pairs. `beta1`,
 `beta2`, and `epsilon` are validated by the typed wrapper. SGD ignores the
-moment and decay options; Adam ignores `weight_decay`; AdamW applies
+moment and decay options. Adam ignores `weight_decay`. AdamW applies
 decoupled decay to both weights and bias. The optimizer step counter and
 moments survive repeated updates and batch uploads.
 
