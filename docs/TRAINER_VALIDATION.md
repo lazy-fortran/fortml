@@ -8,7 +8,7 @@ records the metric history, best value, best step, number of consecutive
 non-improving steps, and the parameter vector at the best step.
 
 `trainer_options_t%validation_min_delta` controls the smallest improvement
-that counts. By default the callback is a loss and lower values are better;
+that counts. By default the callback is a loss and lower values are better.
 set `trainer_options_t%validation_higher_is_better` for scores such as
 accuracy or R2, where larger values are better. A positive
 `validation_patience` stops training after that many consecutive
