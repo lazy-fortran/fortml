@@ -21,11 +21,14 @@ module fortml_mlp_checkpoint
     character(*), parameter, public :: MLP_CHECKPOINT_MAGIC = &
         "FORTML_MLP_CHECKPOINT_TEXT"
     integer, parameter, public :: MLP_CHECKPOINT_SCHEMA_VERSION = 12
+    integer(int64), parameter :: MLP_CHECKPOINT_FINGERPRINT_MODULUS = 2147483629_int64
+    integer(int64), parameter :: MLP_CHECKPOINT_FINGERPRINT_BASE = 131_int64
 
     public :: mlp_checkpoint_save
     public :: mlp_checkpoint_load
     public :: mlp_checkpoint_device_supported
     public :: mlp_checkpoint_require_device
+    public :: mlp_checkpoint_fingerprint
 
 contains
 
@@ -56,6 +59,186 @@ contains
                 "MLP checkpoint: invalid device kind")
         end if
     end subroutine mlp_checkpoint_require_device
+
+    integer(int64) function mlp_checkpoint_fingerprint(checkpoint) result(fingerprint)
+        !! Return a deterministic identity for a valid host checkpoint.
+        !!
+        !! The fingerprint covers the schema, continuation metadata, optimizer
+        !! hyperparameters, and every serialized state array.  It is a compact
+        !! integrity/identity token rather than a cryptographic checksum;
+        !! zero means that `checkpoint` is uninitialized or invalid.  The
+        !! decimal token stream matches the formatted checkpoint representation,
+        !! so the result is independent of compiler binary-layout choices.
+        type(mlp_training_checkpoint_t), intent(in) :: checkpoint
+        integer(int64) :: hash
+
+        fingerprint = 0_int64
+        if (.not. checkpoint%valid()) return
+
+        hash = 1_int64
+        call fingerprint_integer(hash, "schema_version", MLP_CHECKPOINT_SCHEMA_VERSION)
+        call fingerprint_integer(hash, "format_version", checkpoint%format_version)
+        call fingerprint_logical(hash, "initialized", checkpoint%initialized)
+        call fingerprint_logical(hash, "resume_safe", checkpoint%resume_safe)
+        call fingerprint_integer(hash, "n_samples", checkpoint%n_samples)
+        call fingerprint_integer(hash, "n_features", checkpoint%n_features)
+        call fingerprint_integer(hash, "n_outputs", checkpoint%n_outputs)
+        call fingerprint_integer(hash, "n_parameters", checkpoint%n_parameters)
+        call fingerprint_integer(hash, "n_optimizer_groups", checkpoint%n_optimizer_groups)
+        call fingerprint_integer(hash, "epoch", checkpoint%epoch)
+        call fingerprint_integer(hash, "updates", checkpoint%updates)
+        call fingerprint_integer(hash, "microbatches", checkpoint%microbatches)
+        call fingerprint_integer(hash, "microbatch_position", checkpoint%microbatch_position)
+        call fingerprint_integer(hash, "active_epoch", checkpoint%active_epoch)
+        call fingerprint_integer(hash, "active_microbatches", checkpoint%active_microbatches)
+        call fingerprint_integer(hash, "accumulated_samples", checkpoint%accumulated_samples)
+        call fingerprint_real(hash, "accumulated_weight_mass", &
+            checkpoint%accumulated_weight_mass)
+        call fingerprint_integer(hash, "iterator_epoch", checkpoint%iterator_epoch)
+        call fingerprint_integer(hash, "iterator_position", checkpoint%iterator_position)
+        call fingerprint_integer(hash, "batch_size", checkpoint%batch_size)
+        call fingerprint_integer(hash, "accumulation_steps", checkpoint%accumulation_steps)
+        call fingerprint_integer(hash, "shuffle_seed", checkpoint%shuffle_seed)
+        call fingerprint_integer(hash, "adam_step_count", checkpoint%adam_step_count)
+        call fingerprint_integer(hash, "optimizer", checkpoint%optimizer)
+        call fingerprint_integer(hash, "precision_kind", checkpoint%precision_kind)
+        call fingerprint_logical(hash, "loss_scale_enabled", checkpoint%loss_scale%enabled)
+        call fingerprint_real(hash, "loss_scale_scale", checkpoint%loss_scale%scale)
+        call fingerprint_real(hash, "loss_scale_initial_scale", &
+            checkpoint%loss_scale%initial_scale)
+        call fingerprint_real(hash, "loss_scale_growth_factor", &
+            checkpoint%loss_scale%growth_factor)
+        call fingerprint_real(hash, "loss_scale_backoff_factor", &
+            checkpoint%loss_scale%backoff_factor)
+        call fingerprint_real(hash, "loss_scale_minimum_scale", &
+            checkpoint%loss_scale%minimum_scale)
+        call fingerprint_real(hash, "loss_scale_maximum_scale", &
+            checkpoint%loss_scale%maximum_scale)
+        call fingerprint_integer(hash, "loss_scale_growth_interval", &
+            checkpoint%loss_scale%growth_interval)
+        call fingerprint_integer(hash, "loss_scale_good_steps", checkpoint%loss_scale%good_steps)
+        call fingerprint_integer(hash, "loss_scale_overflow_count", &
+            checkpoint%loss_scale%overflow_count)
+        call fingerprint_integer(hash, "loss_scale_skipped_updates", &
+            checkpoint%loss_scale%skipped_updates)
+        call fingerprint_integer(hash, "stale_epochs", checkpoint%stale_epochs)
+        call fingerprint_integer(hash, "schedule_bad_updates", checkpoint%schedule_bad_updates)
+        call fingerprint_integer(hash, "schedule_reductions", checkpoint%schedule_reductions)
+        call fingerprint_integer(hash, "gradient_clipped_updates", &
+            checkpoint%gradient_clipped_updates)
+        call fingerprint_integer(hash, "validation_interval", checkpoint%validation_interval)
+        call fingerprint_integer(hash, "patience", checkpoint%patience)
+        call fingerprint_logical(hash, "shuffle", checkpoint%shuffle)
+        call fingerprint_logical(hash, "has_validation", checkpoint%has_validation)
+        call fingerprint_logical(hash, "converged", checkpoint%converged)
+        call fingerprint_logical(hash, "early_stopped", checkpoint%early_stopped)
+        call fingerprint_logical(hash, "restore_best", checkpoint%restore_best)
+        call fingerprint_logical(hash, "has_typed_schedule", checkpoint%has_typed_schedule)
+        call fingerprint_logical(hash, "schedule_metric_initialized", &
+            checkpoint%schedule_metric_initialized)
+        call fingerprint_integer(hash, "typed_schedule_kind", checkpoint%typed_schedule%kind)
+        call fingerprint_integer(hash, "typed_schedule_warmup_updates", &
+            checkpoint%typed_schedule%warmup_updates)
+        call fingerprint_integer(hash, "typed_schedule_total_updates", &
+            checkpoint%typed_schedule%total_updates)
+        call fingerprint_real(hash, "typed_schedule_min_rate_fraction", &
+            checkpoint%typed_schedule%min_rate_fraction)
+        call fingerprint_real(hash, "typed_schedule_decay_factor", &
+            checkpoint%typed_schedule%decay_factor)
+        call fingerprint_real(hash, "typed_schedule_peak_rate_fraction", &
+            checkpoint%typed_schedule%peak_rate_fraction)
+        call fingerprint_real(hash, "typed_schedule_final_rate_fraction", &
+            checkpoint%typed_schedule%final_rate_fraction)
+        call fingerprint_integer(hash, "typed_schedule_metric_mode", &
+            checkpoint%typed_schedule%metric_mode)
+        call fingerprint_integer(hash, "typed_schedule_patience_updates", &
+            checkpoint%typed_schedule%patience_updates)
+        call fingerprint_real(hash, "typed_schedule_min_delta", &
+            checkpoint%typed_schedule%min_delta)
+        call fingerprint_real(hash, "typed_schedule_plateau_factor", &
+            checkpoint%typed_schedule%plateau_factor)
+        call fingerprint_int64(hash, "shuffle_state", checkpoint%shuffle_state)
+        call fingerprint_real(hash, "schedule_best_metric", checkpoint%schedule_best_metric)
+        call fingerprint_real(hash, "learning_rate", checkpoint%learning_rate)
+        call fingerprint_real(hash, "beta1", checkpoint%beta1)
+        call fingerprint_real(hash, "beta2", checkpoint%beta2)
+        call fingerprint_real(hash, "epsilon", checkpoint%epsilon)
+        call fingerprint_real(hash, "adafactor_decay", checkpoint%adafactor_decay)
+        call fingerprint_real(hash, "adafactor_clip_threshold", &
+            checkpoint%adafactor_clip_threshold)
+        call fingerprint_logical(hash, "adafactor_relative_step", &
+            checkpoint%adafactor_relative_step)
+        call fingerprint_logical(hash, "adafactor_scale_parameter", &
+            checkpoint%adafactor_scale_parameter)
+        call fingerprint_logical(hash, "adafactor_factored", checkpoint%adafactor_factored)
+        call fingerprint_integer(hash, "n_adafactor_blocks", checkpoint%n_adafactor_blocks)
+        call fingerprint_real(hash, "rmsprop_decay", checkpoint%rmsprop_decay)
+        call fingerprint_real(hash, "rmsprop_momentum", checkpoint%rmsprop_momentum)
+        call fingerprint_logical(hash, "rmsprop_centered", checkpoint%rmsprop_centered)
+        call fingerprint_real(hash, "momentum", checkpoint%momentum)
+        call fingerprint_logical(hash, "nesterov", checkpoint%nesterov)
+        call fingerprint_real(hash, "weight_decay", checkpoint%weight_decay)
+        call fingerprint_real(hash, "l2", checkpoint%l2)
+        call fingerprint_real(hash, "tolerance", checkpoint%tolerance)
+        call fingerprint_real(hash, "min_delta", checkpoint%min_delta)
+        call fingerprint_real(hash, "gradient_clip_norm", checkpoint%gradient_clip_norm)
+        call fingerprint_real(hash, "ema_decay", checkpoint%ema_decay)
+        call fingerprint_real(hash, "last_learning_rate", checkpoint%last_learning_rate)
+        call fingerprint_real(hash, "initial_loss", checkpoint%initial_loss)
+        call fingerprint_real(hash, "final_loss", checkpoint%final_loss)
+        call fingerprint_real(hash, "best_loss", checkpoint%best_loss)
+        call fingerprint_real(hash, "initial_validation_loss", &
+            checkpoint%initial_validation_loss)
+        call fingerprint_real(hash, "final_validation_loss", checkpoint%final_validation_loss)
+        call fingerprint_real(hash, "best_validation_loss", checkpoint%best_validation_loss)
+        call fingerprint_integer(hash, "best_epoch", checkpoint%best_epoch)
+        call fingerprint_integer(hash, "best_validation_epoch", checkpoint%best_validation_epoch)
+
+        call fingerprint_real_array(hash, "parameters", checkpoint%parameters)
+        call fingerprint_optional_character_array(hash, "optimizer_group_name", &
+            checkpoint%optimizer_group_name)
+        call fingerprint_optional_integer_array(hash, "optimizer_group_first", &
+            checkpoint%optimizer_group_first)
+        call fingerprint_optional_integer_array(hash, "optimizer_group_last", &
+            checkpoint%optimizer_group_last)
+        call fingerprint_optional_real_array(hash, &
+            "optimizer_group_learning_rate_multiplier", &
+            checkpoint%optimizer_group_learning_rate_multiplier)
+        call fingerprint_real_array(hash, "first_moment", checkpoint%first_moment)
+        call fingerprint_real_array(hash, "second_moment", checkpoint%second_moment)
+        call fingerprint_optional_integer_array(hash, "adafactor_block_first", &
+            checkpoint%adafactor_block_first)
+        call fingerprint_optional_integer_array(hash, "adafactor_block_last", &
+            checkpoint%adafactor_block_last)
+        call fingerprint_optional_integer_array(hash, "adafactor_block_rows", &
+            checkpoint%adafactor_block_rows)
+        call fingerprint_optional_integer_array(hash, "adafactor_block_columns", &
+            checkpoint%adafactor_block_columns)
+        call fingerprint_optional_integer_array(hash, "adafactor_block_factored", &
+            checkpoint%adafactor_block_factored)
+        call fingerprint_optional_real_array(hash, "adafactor_row_moment", &
+            checkpoint%adafactor_row_moment)
+        call fingerprint_optional_real_array(hash, "adafactor_column_moment", &
+            checkpoint%adafactor_column_moment)
+        call fingerprint_optional_real_array(hash, "adafactor_second_moment", &
+            checkpoint%adafactor_second_moment)
+        call fingerprint_optional_real_array(hash, "max_second_moment", &
+            checkpoint%max_second_moment)
+        call fingerprint_optional_real_array(hash, "rmsprop_buffer", &
+            checkpoint%rmsprop_buffer)
+        call fingerprint_real_array(hash, "best_parameters", checkpoint%best_parameters)
+        call fingerprint_real_array(hash, "accumulated_gradient", &
+            checkpoint%accumulated_gradient)
+        call fingerprint_integer_array(hash, "iterator_order", checkpoint%iterator_order)
+        call fingerprint_real_array(hash, "loss_history", checkpoint%loss_history)
+        call fingerprint_real_array(hash, "learning_rate_history", &
+            checkpoint%learning_rate_history)
+        call fingerprint_optional_real_array(hash, "validation_loss_history", &
+            checkpoint%validation_loss_history)
+        call fingerprint_optional_real_array(hash, "ema_parameters", checkpoint%ema_parameters)
+
+        fingerprint = hash
+    end function mlp_checkpoint_fingerprint
 
     subroutine mlp_checkpoint_save(checkpoint, path, status)
         !! Write a valid checkpoint to a portable formatted-text file.
@@ -541,6 +724,124 @@ contains
         call status_set(status, FORTNUM_DOMAIN_ERROR, &
             "MLP checkpoint load: malformed, truncated, or invalid snapshot")
     end subroutine mlp_checkpoint_load
+
+    subroutine fingerprint_integer(hash, label, value)
+        integer(int64), intent(inout) :: hash
+        character(*), intent(in) :: label
+        integer, intent(in) :: value
+        character(len=64) :: token
+
+        write(token, '(I0)') value
+        call fingerprint_token(hash, label)
+        call fingerprint_token(hash, trim(token))
+    end subroutine fingerprint_integer
+
+    subroutine fingerprint_int64(hash, label, value)
+        integer(int64), intent(inout) :: hash
+        character(*), intent(in) :: label
+        integer(int64), intent(in) :: value
+        character(len=64) :: token
+
+        write(token, '(I0)') value
+        call fingerprint_token(hash, label)
+        call fingerprint_token(hash, trim(token))
+    end subroutine fingerprint_int64
+
+    subroutine fingerprint_logical(hash, label, value)
+        integer(int64), intent(inout) :: hash
+        character(*), intent(in) :: label
+        logical, intent(in) :: value
+
+        call fingerprint_integer(hash, label, merge(1, 0, value))
+    end subroutine fingerprint_logical
+
+    subroutine fingerprint_real(hash, label, value)
+        integer(int64), intent(inout) :: hash
+        character(*), intent(in) :: label
+        real(dp), intent(in) :: value
+        character(len=64) :: token
+
+        write(token, '(ES26.17E3)') value
+        call fingerprint_token(hash, label)
+        call fingerprint_token(hash, trim(token))
+    end subroutine fingerprint_real
+
+    subroutine fingerprint_token(hash, value)
+        integer(int64), intent(inout) :: hash
+        character(*), intent(in) :: value
+        integer :: i
+
+        do i = 1, len_trim(value)
+            hash = modulo(MLP_CHECKPOINT_FINGERPRINT_BASE*hash + &
+                int(iachar(value(i:i)), int64), MLP_CHECKPOINT_FINGERPRINT_MODULUS)
+        end do
+        hash = modulo(MLP_CHECKPOINT_FINGERPRINT_BASE*hash + 10_int64, &
+            MLP_CHECKPOINT_FINGERPRINT_MODULUS)
+    end subroutine fingerprint_token
+
+    subroutine fingerprint_real_array(hash, label, values)
+        integer(int64), intent(inout) :: hash
+        character(*), intent(in) :: label
+        real(dp), intent(in) :: values(:)
+        integer :: i
+
+        call fingerprint_integer(hash, label//"_count", size(values))
+        do i = 1, size(values)
+            call fingerprint_real(hash, label//"_item", values(i))
+        end do
+    end subroutine fingerprint_real_array
+
+    subroutine fingerprint_integer_array(hash, label, values)
+        integer(int64), intent(inout) :: hash
+        character(*), intent(in) :: label
+        integer, intent(in) :: values(:)
+        integer :: i
+
+        call fingerprint_integer(hash, label//"_count", size(values))
+        do i = 1, size(values)
+            call fingerprint_integer(hash, label//"_item", values(i))
+        end do
+    end subroutine fingerprint_integer_array
+
+    subroutine fingerprint_character_array(hash, label, values)
+        integer(int64), intent(inout) :: hash
+        character(*), intent(in) :: label
+        character(len=64), intent(in) :: values(:)
+        integer :: i
+
+        call fingerprint_integer(hash, label//"_count", size(values))
+        do i = 1, size(values)
+            call fingerprint_token(hash, label//"_item")
+            call fingerprint_token(hash, trim(values(i)))
+        end do
+    end subroutine fingerprint_character_array
+
+    subroutine fingerprint_optional_integer_array(hash, label, values)
+        integer(int64), intent(inout) :: hash
+        character(*), intent(in) :: label
+        integer, allocatable, intent(in) :: values(:)
+
+        call fingerprint_logical(hash, label//"_present", allocated(values))
+        if (allocated(values)) call fingerprint_integer_array(hash, label, values)
+    end subroutine fingerprint_optional_integer_array
+
+    subroutine fingerprint_optional_real_array(hash, label, values)
+        integer(int64), intent(inout) :: hash
+        character(*), intent(in) :: label
+        real(dp), allocatable, intent(in) :: values(:)
+
+        call fingerprint_logical(hash, label//"_present", allocated(values))
+        if (allocated(values)) call fingerprint_real_array(hash, label, values)
+    end subroutine fingerprint_optional_real_array
+
+    subroutine fingerprint_optional_character_array(hash, label, values)
+        integer(int64), intent(inout) :: hash
+        character(*), intent(in) :: label
+        character(len=64), allocatable, intent(in) :: values(:)
+
+        call fingerprint_logical(hash, label//"_present", allocated(values))
+        if (allocated(values)) call fingerprint_character_array(hash, label, values)
+    end subroutine fingerprint_optional_character_array
 
     subroutine write_i(unit, key, value, ios)
         integer, intent(in) :: unit, value
