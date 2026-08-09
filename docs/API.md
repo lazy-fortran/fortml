@@ -991,6 +991,19 @@ JVP/VJP products. Products differentiate through the log-softmax normalization
 and the normalized prior block, and reject unfitted models, nonfinite values,
 invalid shapes, nonpositive variances, and nonsensical prior mass.
 
+`partial_fit(x,labels,status,classes[,var_smoothing,sample_weight])` and its
+`warm_start` alias implement a transactional streaming contract. The first
+call requires the complete sorted class vocabulary; a one-class prefix is
+accepted but remains unfitted until every declared class has positive weight.
+Each later batch must retain the feature count, class vocabulary, smoothing
+coordinate, and finite nonnegative weights. The implementation replays the
+validated history so its moments and global smoothing epsilon are identical to
+one-shot `fit`; malformed labels, weight mass, or option changes do not mutate
+the model. `partial_fit_initialized`, `sample_count`, and `batch_count` expose
+the stream metadata. `partial_fit_device` executes this CPU path for a selected
+CPU device and returns `FORTNUM_NOT_IMPLEMENTED` for CUDA until resident
+sufficient-statistic state is linked; it never falls back to the host.
+
 ### `fortml_bernoulli_naive_bayes`
 
 `bernoulli_naive_bayes_t%fit(x,labels,status[,alpha,priors,sample_weight,

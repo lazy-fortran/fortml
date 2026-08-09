@@ -11,7 +11,9 @@ module fortml_gaussian_naive_bayes
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
-        FORTNUM_DOMAIN_ERROR
+        FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED
+    use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU, &
+        FORTML_DEVICE_CUDA
     implicit none
     private
 
@@ -30,8 +32,21 @@ module fortml_gaussian_naive_bayes
         real(dp) :: var_smoothing = DEFAULT_VAR_SMOOTHING
         real(dp) :: epsilon = 0.0_dp
         logical :: is_fitted = .false.
+        ! ``partial_fit`` keeps a transactional replay buffer.  GaussianNB's
+        ! smoothing epsilon depends on the global variance, so replaying the
+        ! validated stream is the only way to preserve exact one-shot fit
+        ! semantics while still allowing a first batch to contain one class.
+        real(dp), allocatable :: partial_x(:, :), partial_weight(:)
+        integer, allocatable :: partial_labels(:), partial_classes(:)
+        real(dp) :: partial_var_smoothing = DEFAULT_VAR_SMOOTHING
+        integer :: partial_sample_count = 0
+        integer :: partial_batch_count = 0
+        logical :: partial_initialized = .false.
     contains
         procedure, public :: fit => gaussian_nb_fit
+        procedure, public :: partial_fit => gaussian_nb_partial_fit
+        procedure, public :: warm_start => gaussian_nb_partial_fit
+        procedure, public :: partial_fit_device => gaussian_nb_partial_fit_device
         procedure, public :: predict_log_proba => gaussian_nb_predict_log_proba
         procedure, public :: predict_proba => gaussian_nb_predict_proba
         procedure, public :: predict => gaussian_nb_predict
@@ -60,9 +75,15 @@ module fortml_gaussian_naive_bayes
         procedure, public :: parameters => gaussian_nb_parameters
         procedure, public :: set_parameters => gaussian_nb_set_parameters
         procedure, public :: fitted => gaussian_nb_fitted
+        procedure, public :: partial_fit_initialized => gaussian_nb_partial_initialized
+        procedure, public :: sample_count => gaussian_nb_sample_count
+        procedure, public :: batch_count => gaussian_nb_batch_count
+        procedure, public :: device_supported => gaussian_nb_device_supported
     end type gaussian_naive_bayes_t
 
     public :: gaussian_nb_fit
+    public :: gaussian_nb_partial_fit
+    public :: gaussian_nb_partial_fit_device
     public :: gaussian_nb_predict_log_proba
     public :: gaussian_nb_predict_proba
     public :: gaussian_nb_predict
@@ -252,6 +273,223 @@ contains
         self%is_fitted = .true.
         call status_set(status, FORTNUM_OK, "")
     end subroutine gaussian_nb_fit
+
+    subroutine gaussian_nb_partial_fit(self, x, labels, status, classes, &
+            var_smoothing, sample_weight)
+        !! Append one validated batch and replay the complete stream.
+        !!
+        !! The first call must provide the complete sorted class vocabulary,
+        !! matching scikit-learn's ``GaussianNB.partial_fit`` contract.  A
+        !! model remains unfitted until every declared class has positive
+        !! effective mass; this makes a one-class first batch useful without
+        !! inventing a degenerate density.  Candidate history and candidate
+        !! fitted parameters are built before committing, so malformed or
+        !! numerically invalid batches leave the previous state untouched.
+        class(gaussian_naive_bayes_t), intent(inout) :: self
+        real(dp), intent(in) :: x(:, :)
+        integer, intent(in) :: labels(:)
+        type(fortnum_status_t), intent(out) :: status
+        integer, intent(in), optional :: classes(:)
+        real(dp), intent(in), optional :: var_smoothing, sample_weight(:)
+        integer, allocatable :: candidate_classes(:), candidate_labels(:)
+        real(dp), allocatable :: candidate_x(:, :), candidate_weight(:)
+        real(dp), allocatable :: batch_weight(:)
+        type(gaussian_naive_bayes_t) :: candidate
+        type(fortnum_status_t) :: candidate_status
+        real(dp) :: requested_smoothing
+        integer :: n_samples, n_features, n_old, n_classes, i, c
+        logical :: complete
+
+        n_samples = size(x, 1)
+        n_features = size(x, 2)
+        if (n_samples < 1 .or. n_features < 1 .or. size(labels) /= n_samples) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GaussianNB partial_fit: input dimensions are invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(x))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GaussianNB partial_fit: inputs must be finite")
+            return
+        end if
+        allocate(batch_weight(n_samples))
+        batch_weight = 1.0_dp
+        if (present(sample_weight)) then
+            if (size(sample_weight) /= n_samples .or. &
+                any(.not. ieee_is_finite(sample_weight)) .or. &
+                any(sample_weight < 0.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "GaussianNB partial_fit: sample weights must be finite and nonnegative")
+                return
+            end if
+            batch_weight = sample_weight
+        end if
+        if (.not. ieee_is_finite(sum(batch_weight)) .or. &
+            sum(batch_weight) <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GaussianNB partial_fit: batch weight mass must be positive")
+            return
+        end if
+
+        requested_smoothing = DEFAULT_VAR_SMOOTHING
+        if (present(var_smoothing)) requested_smoothing = var_smoothing
+        if (.not. ieee_is_finite(requested_smoothing) .or. &
+            requested_smoothing < 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GaussianNB partial_fit: var_smoothing must be finite and nonnegative")
+            return
+        end if
+
+        if (.not. self%partial_initialized) then
+            if (self%is_fitted) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "GaussianNB partial_fit: call partial_fit on a fresh model")
+                return
+            end if
+            if (.not. present(classes)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "GaussianNB partial_fit: classes are required on first call")
+                return
+            end if
+            if (size(classes) < 2) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "GaussianNB partial_fit: at least two classes are required")
+                return
+            end if
+            do i = 2, size(classes)
+                if (classes(i) <= classes(i - 1)) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "GaussianNB partial_fit: classes must be strictly increasing")
+                    return
+                end if
+            end do
+            allocate(candidate_classes(size(classes)))
+            candidate_classes = classes
+            self%partial_var_smoothing = requested_smoothing
+        else
+            if (n_features /= self%feature_count()) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "GaussianNB partial_fit: feature count changed")
+                return
+            end if
+            if (present(classes)) then
+                if (size(classes) /= size(self%partial_classes) .or. &
+                    any(classes /= self%partial_classes)) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "GaussianNB partial_fit: class vocabulary changed")
+                    return
+                end if
+            end if
+            if (present(var_smoothing)) then
+                if (requested_smoothing /= self%partial_var_smoothing) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "GaussianNB partial_fit: var_smoothing cannot change")
+                    return
+                end if
+            end if
+            allocate(candidate_classes(size(self%partial_classes)))
+            candidate_classes = self%partial_classes
+        end if
+        n_classes = size(candidate_classes)
+        do i = 1, n_samples
+            if (.not. any(labels(i) == candidate_classes)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "GaussianNB partial_fit: batch contains an unseen class")
+                return
+            end if
+        end do
+
+        n_old = 0
+        if (allocated(self%partial_labels)) n_old = size(self%partial_labels)
+        allocate(candidate_x(n_old + n_samples, n_features), &
+            candidate_labels(n_old + n_samples), candidate_weight(n_old + n_samples))
+        if (n_old > 0) then
+            candidate_x(:n_old, :) = self%partial_x
+            candidate_labels(:n_old) = self%partial_labels
+            candidate_weight(:n_old) = self%partial_weight
+        end if
+        candidate_x(n_old + 1:, :) = x
+        candidate_labels(n_old + 1:) = labels
+        candidate_weight(n_old + 1:) = batch_weight
+
+        complete = .true.
+        do c = 1, n_classes
+            if (.not. any((candidate_labels == candidate_classes(c)) .and. &
+                    (candidate_weight > 0.0_dp))) complete = .false.
+        end do
+        if (complete) then
+            call candidate%fit(candidate_x, candidate_labels, candidate_status, &
+                var_smoothing=self%partial_var_smoothing, sample_weight=candidate_weight)
+            if (candidate_status%code /= FORTNUM_OK) then
+                call status_set(status, candidate_status%code, trim(candidate_status%msg))
+                return
+            end if
+        end if
+
+        ! Commit only after all validation and (when possible) fitting succeed.
+        self%partial_initialized = .true.
+        self%partial_sample_count = n_old + n_samples
+        self%partial_batch_count = self%partial_batch_count + 1
+        if (allocated(self%partial_x)) deallocate(self%partial_x)
+        if (allocated(self%partial_labels)) deallocate(self%partial_labels)
+        if (allocated(self%partial_weight)) deallocate(self%partial_weight)
+        if (allocated(self%partial_classes)) deallocate(self%partial_classes)
+        call move_alloc(candidate_x, self%partial_x)
+        call move_alloc(candidate_labels, self%partial_labels)
+        call move_alloc(candidate_weight, self%partial_weight)
+        call move_alloc(candidate_classes, self%partial_classes)
+        self%n_features = n_features
+        self%n_classes = n_classes
+        if (allocated(self%class_label)) deallocate(self%class_label)
+        allocate(self%class_label(n_classes))
+        self%class_label = self%partial_classes
+        if (complete) then
+            ! Preserve the stream metadata while replacing only the fitted
+            ! estimator state.  Intrinsic assignment copies all allocatables.
+            self%mean = candidate%mean
+            self%variance = candidate%variance
+            self%prior = candidate%prior
+            self%weighted_count = candidate%weighted_count
+            self%class_label = candidate%class_label
+            self%n_features = candidate%n_features
+            self%n_classes = candidate%n_classes
+            self%var_smoothing = candidate%var_smoothing
+            self%epsilon = candidate%epsilon
+            self%is_fitted = .true.
+        else
+            self%is_fitted = .false.
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gaussian_nb_partial_fit
+
+    subroutine gaussian_nb_partial_fit_device(self, device, x, labels, status, &
+            classes, var_smoothing, sample_weight)
+        !! CPU replay is exact; CUDA is a typed refusal until resident
+        !! sufficient-statistic state exists.  No hidden host fallback occurs.
+        class(gaussian_naive_bayes_t), intent(inout) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :)
+        integer, intent(in) :: labels(:)
+        type(fortnum_status_t), intent(out) :: status
+        integer, intent(in), optional :: classes(:)
+        real(dp), intent(in), optional :: var_smoothing, sample_weight(:)
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GaussianNB partial_fit device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%partial_fit(x, labels, status, classes, var_smoothing, sample_weight)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "GaussianNB partial_fit device: resident CUDA sufficient statistics are not implemented")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GaussianNB partial_fit device: device kind is invalid")
+        end select
+    end subroutine gaussian_nb_partial_fit_device
 
     subroutine gaussian_nb_predict_log_proba(self, x, log_probabilities, status)
         class(gaussian_naive_bayes_t), intent(in) :: self
@@ -737,6 +975,31 @@ contains
 
         is_fitted = self%is_fitted
     end function gaussian_nb_fitted
+
+    logical function gaussian_nb_partial_initialized(self) result(value)
+        class(gaussian_naive_bayes_t), intent(in) :: self
+
+        value = self%partial_initialized
+    end function gaussian_nb_partial_initialized
+
+    integer function gaussian_nb_sample_count(self) result(count)
+        class(gaussian_naive_bayes_t), intent(in) :: self
+
+        count = self%partial_sample_count
+    end function gaussian_nb_sample_count
+
+    integer function gaussian_nb_batch_count(self) result(count)
+        class(gaussian_naive_bayes_t), intent(in) :: self
+
+        count = self%partial_batch_count
+    end function gaussian_nb_batch_count
+
+    logical function gaussian_nb_device_supported(self, device_kind) result(value)
+        class(gaussian_naive_bayes_t), intent(in) :: self
+        integer, intent(in) :: device_kind
+
+        value = self%is_fitted .and. device_kind == FORTML_DEVICE_CPU
+    end function gaussian_nb_device_supported
 
     subroutine sorted_unique_labels(labels, classes)
         integer, intent(in) :: labels(:)
