@@ -116,6 +116,8 @@ contains
     subroutine test_validation_and_device_contract(failures)
         integer, intent(inout) :: failures
         real(dp) :: x(4, 1), y(4), weights(4), prediction(4, 1)
+        real(dp) :: vector_prediction(4)
+        real(dp), allocatable :: coefficients(:)
         type(weighted_ols_regression_t) :: model
         type(fortml_device_t) :: cuda
         type(fortnum_status_t) :: status
@@ -141,6 +143,15 @@ contains
         call check(model%device_supported(FORTML_DEVICE_CUDA) .eqv. .false. &
             .and. model%device_supported(FORTML_DEVICE_CPU), &
             "device capability metadata", failures)
+        call model%fit(x, y, status, fit_intercept=.false., &
+            sample_weight=weights)
+        coefficients = model%parameters()
+        call model%predict(x, vector_prediction, status)
+        call check(status_ok(status) .and. size(coefficients) == 1 .and. &
+            .not. model%fit_intercept(), "optional intercept disabled", failures)
+        call check(abs(coefficients(1) - sum(weights*x(:, 1)*y)/ &
+            sum(weights*x(:, 1)*x(:, 1))) < 3.0e-11_dp, &
+            "no-intercept weighted coefficient", failures)
     end subroutine test_validation_and_device_contract
 
     subroutine solve_reference(matrix, right, solution, solved)
