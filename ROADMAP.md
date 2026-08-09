@@ -19,6 +19,77 @@ The checklist currently records 360 completed and 124 open items; open rows are
 retained until their implementation, independent oracle, device/refusal
 behavior, and benchmark evidence land together.
 
+## 2026-08 clean-break target architecture
+
+The pre-1.0 implementation follows one estimator graph:
+
+```text
+data_view -> transform/basis graph -> named parameter registry
+          -> objective (value, gradient, JVP, VJP, HVP)
+          -> FortOpt search/trainer -> state dictionary -> device plan
+          -> independent oracle and benchmark record
+```
+
+Every public estimator is a transactional object with fitted topology,
+sorted-label or output metadata, named parameter blocks, a fixed-state product
+contract, a versioned execution state, and an explicit CPU/CUDA capability
+result. Fit-time choices that are discrete or nonsmooth, such as split
+topology, active sets, neighbor membership, calibration knots, random draws,
+and early stopping, are recorded as state boundaries. A product through such a
+boundary returns its typed refusal or its declared fixed-state result.
+
+The target classification inventory is binary and multinomial linear heads,
+OVR and OVO coupling, multilabel and classifier chains, ordinal cumulative
+logits, Gaussian/Bernoulli/Multinomial/Complement/Categorical Naive Bayes,
+LDA/QDA, linear/kernel/one-class SVM, exact and radius neighbors, CART,
+forests, Extra-Trees, bagging, AdaBoost, histogram boosting, XGBoost,
+LightGBM, Laplace/variational/categorical/ordinal GP classifiers, calibrated
+probabilities, and neural binary/multiclass/multilabel/ordinal heads. Each
+family shares labels, weights, decisions, probabilities, persistence,
+parameter products, and a resident-device row.
+
+The GP inventory covers RBF/ARD, Matérn, periodic/locally-periodic,
+rational-quadratic, cosine, polynomial, linear, constant, white-noise,
+spectral-mixture, change-point, sum/product, user, neural, graph,
+physics-consistent, and operator-valued kernels. It covers value, input
+derivative, registered linear-operator, Hessian, and vector-field observations
+with Gaussian, Bernoulli/probit, categorical/multinomial, Poisson/count,
+Student-t, heteroskedastic, censored, ordinal, and warped likelihoods across
+exact, Laplace, variational, sparse/inducing, SKI/lazy, local, multitask,
+matrix-free, and deep-kernel inference. Every smooth coordinate receives
+analytic or generated value/JVP/VJP/HVP products through the declared solve or
+fixed-state boundary, and FortOpt consumes those same callbacks.
+
+The neural inventory covers dense module trees, buffers and aliases,
+train/eval state, residual and normalization blocks, convolution/pooling,
+embeddings, attention/transformers, RNN/GRU/LSTM, temporal and graph modules,
+neural operators, BNN/VAE/HNN/LNN/SympNet/PINN/physics-consistent models, and
+composable basis encoders. Training owns deterministic loaders, weighted
+reductions, accumulation, clipping, validation, early stopping, callbacks,
+checkpoint/resume, RNG state, optimizer groups, schedules, mixed precision,
+and resident execution. Adam/AdamW/SGD/RMSprop/Adagrad/Adafactor/AMSGrad/RAdam/
+Lion and FortOpt L-BFGS-B use one registry. Hyperparameter optimization uses
+the same objective for optimizer, schedule, validation, basis, kernel,
+likelihood, and initialization coordinates.
+
+The composition inventory treats polynomial, interaction, spline, Fourier,
+random-Fourier, radial, Chebyshev, GP/NNP/NTK, PCA, autoencoder, imputation,
+encoding, and scaling maps as named graph nodes. Horizontal, sequential,
+conditional, residual, fan-out/fan-in, and future DAG pipelines preserve
+feature names, offsets, leakage guards, fit/transform state, sparse layouts,
+serialization, and products. Tree and boosting nodes keep missing/categorical
+policies, constraints, staged/contribution state, and split boundaries in the
+same graph.
+
+GPU closure requires a resident plan for parameters, batches, workspaces,
+optimizer state, derivative products, and transfer counters. Fixed
+no-autodiff algebra may use FortSym-generated CUDA. Autodiff-bearing paths use
+FortAD/FortSym products until their resident graph has an independent oracle.
+An unavailable resident kernel is a typed refusal, never a hidden host
+fallback. Each promoted row adds CPU correctness, device/refusal behavior,
+state replay, and matched scikit-learn, PyTorch, JAX, GPyTorch, GPflow,
+XGBoost, or LightGBM benchmark evidence where applicable.
+
 The current parity wave closes the following bounded contracts: chronological
 expanding/rolling validation with scorer and clone/reset metadata,
 multiclass focal-softmax value/JVP/VJP/HVP products wired through MLP and
