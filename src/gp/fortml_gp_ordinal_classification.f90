@@ -76,8 +76,22 @@ module fortml_gp_ordinal_classification
         procedure, public :: class_count => gp_ordinal_class_count
         procedure, public :: feature_count => gp_ordinal_feature_count
         procedure, public :: parameter_count => gp_ordinal_parameter_count
+        procedure, public :: hyperparameter_count => gp_ordinal_parameter_count
         procedure, public :: parameters => gp_ordinal_parameters
+        procedure, public :: hyperparameters => gp_ordinal_parameters
         procedure, public :: set_parameters => gp_ordinal_set_parameters
+        procedure, public :: set_hyperparameters => gp_ordinal_set_parameters
+        procedure, public :: log_marginal_likelihood => &
+            gp_ordinal_log_marginal_likelihood
+        procedure, public :: log_marginal_likelihood_jvp => &
+            gp_ordinal_log_marginal_likelihood_jvp
+        procedure, public :: hyperparameter_gradient => &
+            gp_ordinal_hyperparameter_gradient
+        procedure, public :: hyperparameter_hvp => gp_ordinal_hyperparameter_hvp
+        procedure, public :: hyperparameter_gradient_device => &
+            gp_ordinal_hyperparameter_gradient_device
+        procedure, public :: hyperparameter_hvp_device => &
+            gp_ordinal_hyperparameter_hvp_device
         procedure, public :: fitted => gp_ordinal_fitted
         procedure, public :: device_supported => gp_ordinal_device_supported
     end type gp_ordinal_classification_t
@@ -632,6 +646,130 @@ contains
         end if
         call self%latent%set_parameters(parameters, status)
     end subroutine gp_ordinal_set_parameters
+
+    subroutine gp_ordinal_log_marginal_likelihood(self, value, status)
+        !! Return the exact latent-Gaussian GP log marginal likelihood.
+        class(gp_ordinal_classification_t), intent(in) :: self
+        real(dp), intent(out) :: value
+        type(fortnum_status_t), intent(out) :: status
+
+        value = 0.0_dp
+        if (.not. self%is_fitted) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal GP log marginal likelihood: model is not fitted")
+            return
+        end if
+        call self%latent%log_marginal_likelihood(value, status)
+    end subroutine gp_ordinal_log_marginal_likelihood
+
+    subroutine gp_ordinal_log_marginal_likelihood_jvp(self, direction, value_dot, status)
+        !! Directional product of the exact latent-Gaussian GP evidence.
+        class(gp_ordinal_classification_t), intent(in) :: self
+        real(dp), intent(in) :: direction(:)
+        real(dp), intent(out) :: value_dot
+        type(fortnum_status_t), intent(out) :: status
+
+        value_dot = 0.0_dp
+        if (.not. self%is_fitted) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal GP log marginal likelihood JVP: model is not fitted")
+            return
+        end if
+        call self%latent%log_marginal_likelihood_jvp(direction, value_dot, status)
+    end subroutine gp_ordinal_log_marginal_likelihood_jvp
+
+    subroutine gp_ordinal_hyperparameter_gradient(self, gradient, status)
+        !! Exact gradient over packed kernel and log-noise hyperparameters.
+        class(gp_ordinal_classification_t), intent(in) :: self
+        real(dp), intent(out) :: gradient(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        gradient = 0.0_dp
+        if (.not. self%is_fitted) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal GP hyperparameter gradient: model is not fitted")
+            return
+        end if
+        if (size(gradient) /= self%hyperparameter_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal GP hyperparameter gradient: output shape is invalid")
+            return
+        end if
+        call self%latent%hyperparameter_gradient(gradient, status)
+    end subroutine gp_ordinal_hyperparameter_gradient
+
+    subroutine gp_ordinal_hyperparameter_hvp(self, direction, parameter_hvp, status)
+        !! Exact directional Hessian product over kernel and log-noise values.
+        class(gp_ordinal_classification_t), intent(in) :: self
+        real(dp), intent(in) :: direction(:)
+        real(dp), intent(out) :: parameter_hvp(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        parameter_hvp = 0.0_dp
+        if (.not. self%is_fitted) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal GP hyperparameter HVP: model is not fitted")
+            return
+        end if
+        if (size(direction) /= self%hyperparameter_count() .or. &
+                size(parameter_hvp) /= self%hyperparameter_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal GP hyperparameter HVP: parameter shape is invalid")
+            return
+        end if
+        call self%latent%hyperparameter_hvp(direction, parameter_hvp, status)
+    end subroutine gp_ordinal_hyperparameter_hvp
+
+    subroutine gp_ordinal_hyperparameter_gradient_device(self, device, gradient, status)
+        !! Device-dispatch wrapper; CUDA remains an explicit typed refusal.
+        class(gp_ordinal_classification_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(out) :: gradient(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        gradient = 0.0_dp
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal GP hyperparameter gradient device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%hyperparameter_gradient(gradient, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "ordinal GP hyperparameter gradient device: resident ordinal kernel is not linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal GP hyperparameter gradient device: device kind is invalid")
+        end select
+    end subroutine gp_ordinal_hyperparameter_gradient_device
+
+    subroutine gp_ordinal_hyperparameter_hvp_device(self, device, direction, parameter_hvp, status)
+        !! Device-dispatch wrapper; CUDA remains an explicit typed refusal.
+        class(gp_ordinal_classification_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: direction(:)
+        real(dp), intent(out) :: parameter_hvp(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        parameter_hvp = 0.0_dp
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal GP hyperparameter HVP device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%hyperparameter_hvp(direction, parameter_hvp, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "ordinal GP hyperparameter HVP device: resident ordinal kernel is not linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal GP hyperparameter HVP device: device kind is invalid")
+        end select
+    end subroutine gp_ordinal_hyperparameter_hvp_device
 
     logical function gp_ordinal_fitted(self) result(value)
         class(gp_ordinal_classification_t), intent(in) :: self
