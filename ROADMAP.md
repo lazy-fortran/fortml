@@ -128,6 +128,20 @@ residual branch and returns `FORTNUM_NOT_IMPLEMENTED` at the Huber kink.
 adjoint, convergence, and typed CUDA-refusal evidence. Resident CUDA Huber
 kernels, quantile fitting, and derivative-through-fit remain separate gaps.
 
+The weighted multi-output linear quantile slice adds
+`quantile_regression_t` and the registry-backed
+`quantile_training_objective_t`. It sorts unique quantile levels and target
+columns deterministically, supports positive-mass sample weights, optional
+intercepts and feature L2, packed coefficient state, exact fixed-fit
+prediction/input/parameter JVP/VJP products, and bounded FortOpt L-BFGS-B.
+The fit path records an explicit C1 pinball continuation width while the
+committed model and reported objective use exact pinball values. Objective
+HVPs return the L2 block away from residual zero and refuse exact positive-
+weight pinball kinks; CPU/CUDA dispatch is typed. The independent
+`test_quantile_regression`, release app, and NumPy/SciPy benchmark record this
+contract. Sample-weighted streaming, derivative-through-fit, and resident
+CUDA quantile kernels remain open.
+
 The deterministic linear-SGD slice adds `linear_sgd_regression_t` and
 `linear_sgd_classifier_t`. Both consume explicit mini-batch epochs with a
 constant or inverse-scaling learning-rate schedule, nonnegative sample weights,
@@ -1763,9 +1777,14 @@ when a lower-level primitive already exists.
   exact value/gradient/JVP/VJP products, fixed-branch mixed HVPs, bounded
   FortOpt L-BFGS-B fitting, positive-mass sample weights, independent kink and
   CUDA refusals, and release benchmark evidence.
-- [ ] Quantile, ordinal-GP, multilabel, multioutput partial-fit, and remaining
-  robust estimators with the shared parameter registry and sample-weight
-  contract.
+- [x] Weighted multi-output linear quantile regression with deterministic
+  sorted level metadata, target-column alignment, positive-mass sample
+  weights, optional intercept/L2, a registry-backed exact pinball objective,
+  explicit C1 continuation for FortOpt L-BFGS-B, packed fixed-fit
+  prediction/input/parameter JVP/VJP products, exact-kink HVP refusal, and
+  typed CUDA refusal with independent release evidence.
+- [ ] Ordinal-GP, multilabel, multioutput partial-fit, and remaining robust
+  estimators with the shared parameter registry and sample-weight contract.
 - [x] Dense k-nearest-neighbor classification with deterministic ties, uniform
   or inverse-distance voting, optional sample weights, and explicit
   nondifferentiable neighbor-selection boundaries.

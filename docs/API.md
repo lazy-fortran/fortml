@@ -449,6 +449,36 @@ mistake a branch boundary for a smooth second derivative. A selected CUDA
 context is refused with `FORTNUM_NOT_IMPLEMENTED` until resident robust-linear
 kernels are linked; CPU never masquerades as CUDA.
 
+### `fortml_quantile_regression`
+
+`quantile_regression_t%fit(x,y,status[,quantile_levels,l2,fit_intercept,
+sample_weight,max_iterations,tolerance])` fits a weighted multi-output affine
+model with one target column per quantile level. The vector overload accepts a
+single optional `quantile_level` (default `0.5`). Levels must be finite,
+strictly inside `(0,1)`, and unique; the estimator sorts them deterministically
+and reorders target columns before fitting. `sample_weight` is finite,
+nonnegative, and must have positive mass. The intercept is included by default
+and excluded from feature L2 regularization.
+
+`quantile_training_objective_t` is the shared parameter-registry adapter for
+the exact weighted pinball objective. Its packed vector is the coefficient
+matrix in Fortran column-major order. `value_gradient`, `jvp`, and `vjp` are
+analytic; `hvp` returns the feature-L2 curvature away from residual zero and a
+typed `FORTNUM_NOT_IMPLEMENTED` refusal at a positive-weight residual kink.
+The fit helper routes an explicit C1 continuation through FortOpt L-BFGS-B
+(`quantile_lbfgsb_options_t%fit_smoothing`, default `0.1`) and then reports the
+exact pinball objective and post-fit gradient. The result records both the
+continuation width and exact gradient norm.
+
+`predict` has vector and matrix forms. `predict_jvp`/`jvp` and
+`predict_vjp`/`vjp` provide fixed-fit products over packed coefficients and
+continuous input rows. `quantile_levels()`/`quantiles()`, `coefficients()`,
+`parameters()`, `set_parameters()`, and feature/output/intercept/regularizer
+metadata methods expose the deployment state. Prediction is CPU-only;
+`predict_device` and CUDA objective/optimizer requests return
+`FORTNUM_NOT_IMPLEMENTED` until resident kernels are linked rather than
+silently falling back to host execution.
+
 ### `fortml_elastic_net_regression`
 
 `elastic_net_regression_t%fit(x,y,status[,alpha,l1_ratio,fit_intercept,
