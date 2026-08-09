@@ -41,6 +41,9 @@ module fortml_xgboost_multioutput
         procedure, public :: feature_count => xgb_multi_feature_count
         procedure, public :: output_count => xgb_multi_output_count
         procedure, public :: estimator_count => xgb_multi_estimator_count
+        procedure, public :: best_iteration => xgb_multi_best_iteration
+        procedure, public :: best_validation_loss => xgb_multi_best_validation_loss
+        procedure, public :: early_stopped => xgb_multi_early_stopped
         procedure, public :: parameter_count => xgb_multi_parameter_count
         procedure, public :: leaf_parameter_count => xgb_multi_parameter_count
         procedure, public :: leaf_parameters => xgb_multi_leaf_parameters
@@ -71,6 +74,9 @@ module fortml_xgboost_multioutput
         procedure, public :: feature_count => lgbm_multi_feature_count
         procedure, public :: output_count => lgbm_multi_output_count
         procedure, public :: estimator_count => lgbm_multi_estimator_count
+        procedure, public :: best_iteration => lgbm_multi_best_iteration
+        procedure, public :: best_validation_loss => lgbm_multi_best_validation_loss
+        procedure, public :: early_stopped => lgbm_multi_early_stopped
         procedure, public :: parameter_count => lgbm_multi_parameter_count
         procedure, public :: leaf_parameter_count => lgbm_multi_parameter_count
         procedure, public :: leaf_parameters => lgbm_multi_leaf_parameters
@@ -92,14 +98,14 @@ contains
         integer :: j
 
         if (.not. valid_fit_shape(x, targets, sample_weight, validation_x, &
-                validation_targets, validation_weight)) then
+            validation_targets, validation_weight)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "xgboost multi-output fit: dimensions or weights are invalid")
             return
         end if
         if (present(validation_x)) then
             if (size(validation_x, 2) /= size(x, 2) .or. &
-                    size(validation_targets, 2) /= size(targets, 2)) then
+                size(validation_targets, 2) /= size(targets, 2)) then
                 call status_set(status, FORTNUM_DOMAIN_ERROR, &
                     "xgboost multi-output fit: validation feature/output shape is invalid")
                 return
@@ -197,7 +203,7 @@ contains
         integer :: j, n_estimators
 
         if (.not. self%initialized .or. size(x, 2) /= self%n_inputs .or. &
-                size(staged, 1) /= size(x, 1) .or. size(staged, 3) /= self%n_outputs) then
+            size(staged, 1) /= size(x, 1) .or. size(staged, 3) /= self%n_outputs) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "xgboost multi-output staged margin: model or output shape is invalid")
             return
@@ -235,7 +241,7 @@ contains
         integer :: j
 
         if (.not. valid_query(self%initialized, self%n_inputs, self%n_outputs, x, values) .or. &
-                any(shape(x_dot) /= shape(x)) .or. any(shape(values_dot) /= shape(values))) then
+            any(shape(x_dot) /= shape(x)) .or. any(shape(values_dot) /= shape(values))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "xgboost multi-output predict_jvp: shape is invalid")
             return
@@ -266,8 +272,8 @@ contains
         integer :: j
 
         if (.not. self%initialized .or. size(x, 2) /= self%n_inputs .or. &
-                size(output_bar, 1) /= size(x, 1) .or. size(output_bar, 2) /= self%n_outputs .or. &
-                any(shape(x_bar) /= shape(x))) then
+            size(output_bar, 1) /= size(x, 1) .or. size(output_bar, 2) /= self%n_outputs .or. &
+            any(shape(x_bar) /= shape(x))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "xgboost multi-output predict_vjp: shape is invalid")
             return
@@ -297,9 +303,9 @@ contains
         integer :: j, first, last, count
 
         if (.not. valid_query(self%initialized, self%n_inputs, self%n_outputs, x, values) .or. &
-                any(shape(values_dot) /= shape(values)) .or. &
-                size(parameter_dot) /= self%parameter_count() .or. &
-                any(.not. ieee_is_finite(parameter_dot))) then
+            any(shape(values_dot) /= shape(values)) .or. &
+            size(parameter_dot) /= self%parameter_count() .or. &
+            any(.not. ieee_is_finite(parameter_dot))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "xgboost multi-output predict_leaf_jvp: shape or values are invalid")
             return
@@ -332,9 +338,9 @@ contains
         integer :: j, first, last, count
 
         if (.not. self%initialized .or. size(x, 2) /= self%n_inputs .or. &
-                size(output_bar, 1) /= size(x, 1) .or. size(output_bar, 2) /= self%n_outputs .or. &
-                size(parameter_bar) /= self%parameter_count() .or. &
-                any(.not. ieee_is_finite(output_bar))) then
+            size(output_bar, 1) /= size(x, 1) .or. size(output_bar, 2) /= self%n_outputs .or. &
+            size(parameter_bar) /= self%parameter_count() .or. &
+            any(.not. ieee_is_finite(output_bar))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "xgboost multi-output predict_leaf_vjp: shape or values are invalid")
             return
@@ -490,6 +496,45 @@ contains
             allocated(self%models)
     end function xgb_multi_fitted
 
+    function xgb_multi_best_iteration(self) result(values)
+        class(xgboost_multioutput_t), intent(in) :: self
+        integer, allocatable :: values(:)
+        integer :: j
+
+        allocate(values(max(0, self%n_outputs)))
+        values = 0
+        if (.not. self%initialized .or. .not. allocated(self%models)) return
+        do j = 1, self%n_outputs
+            values(j) = self%models(j)%best_iteration()
+        end do
+    end function xgb_multi_best_iteration
+
+    function xgb_multi_best_validation_loss(self) result(values)
+        class(xgboost_multioutput_t), intent(in) :: self
+        real(dp), allocatable :: values(:)
+        integer :: j
+
+        allocate(values(max(0, self%n_outputs)))
+        values = huge(1.0_dp)
+        if (.not. self%initialized .or. .not. allocated(self%models)) return
+        do j = 1, self%n_outputs
+            values(j) = self%models(j)%best_validation_loss()
+        end do
+    end function xgb_multi_best_validation_loss
+
+    function xgb_multi_early_stopped(self) result(values)
+        class(xgboost_multioutput_t), intent(in) :: self
+        logical, allocatable :: values(:)
+        integer :: j
+
+        allocate(values(max(0, self%n_outputs)))
+        values = .false.
+        if (.not. self%initialized .or. .not. allocated(self%models)) return
+        do j = 1, self%n_outputs
+            values(j) = self%models(j)%early_stopped()
+        end do
+    end function xgb_multi_early_stopped
+
     subroutine lgbm_multi_fit(self, x, targets, status, options, sample_weight, &
             validation_x, validation_targets, validation_weight)
         class(lightgbm_multioutput_t), intent(inout) :: self
@@ -503,14 +548,14 @@ contains
         integer :: j
 
         if (.not. valid_fit_shape(x, targets, sample_weight, validation_x, &
-                validation_targets, validation_weight)) then
+            validation_targets, validation_weight)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "lightgbm multi-output fit: dimensions or weights are invalid")
             return
         end if
         if (present(validation_x)) then
             if (size(validation_x, 2) /= size(x, 2) .or. &
-                    size(validation_targets, 2) /= size(targets, 2)) then
+                size(validation_targets, 2) /= size(targets, 2)) then
                 call status_set(status, FORTNUM_DOMAIN_ERROR, &
                     "lightgbm multi-output fit: validation feature/output shape is invalid")
                 return
@@ -608,7 +653,7 @@ contains
         integer :: j, n_estimators
 
         if (.not. self%initialized .or. size(x, 2) /= self%n_inputs .or. &
-                size(staged, 1) /= size(x, 1) .or. size(staged, 3) /= self%n_outputs) then
+            size(staged, 1) /= size(x, 1) .or. size(staged, 3) /= self%n_outputs) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "lightgbm multi-output staged margin: model or output shape is invalid")
             return
@@ -646,7 +691,7 @@ contains
         integer :: j
 
         if (.not. valid_query(self%initialized, self%n_inputs, self%n_outputs, x, values) .or. &
-                any(shape(x_dot) /= shape(x)) .or. any(shape(values_dot) /= shape(values))) then
+            any(shape(x_dot) /= shape(x)) .or. any(shape(values_dot) /= shape(values))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "lightgbm multi-output predict_jvp: shape is invalid")
             return
@@ -677,8 +722,8 @@ contains
         integer :: j
 
         if (.not. self%initialized .or. size(x, 2) /= self%n_inputs .or. &
-                size(output_bar, 1) /= size(x, 1) .or. size(output_bar, 2) /= self%n_outputs .or. &
-                any(shape(x_bar) /= shape(x))) then
+            size(output_bar, 1) /= size(x, 1) .or. size(output_bar, 2) /= self%n_outputs .or. &
+            any(shape(x_bar) /= shape(x))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "lightgbm multi-output predict_vjp: shape is invalid")
             return
@@ -708,9 +753,9 @@ contains
         integer :: j, first, last, count
 
         if (.not. valid_query(self%initialized, self%n_inputs, self%n_outputs, x, values) .or. &
-                any(shape(values_dot) /= shape(values)) .or. &
-                size(parameter_dot) /= self%parameter_count() .or. &
-                any(.not. ieee_is_finite(parameter_dot))) then
+            any(shape(values_dot) /= shape(values)) .or. &
+            size(parameter_dot) /= self%parameter_count() .or. &
+            any(.not. ieee_is_finite(parameter_dot))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "lightgbm multi-output predict_leaf_jvp: shape or values are invalid")
             return
@@ -743,9 +788,9 @@ contains
         integer :: j, first, last, count
 
         if (.not. self%initialized .or. size(x, 2) /= self%n_inputs .or. &
-                size(output_bar, 1) /= size(x, 1) .or. size(output_bar, 2) /= self%n_outputs .or. &
-                size(parameter_bar) /= self%parameter_count() .or. &
-                any(.not. ieee_is_finite(output_bar))) then
+            size(output_bar, 1) /= size(x, 1) .or. size(output_bar, 2) /= self%n_outputs .or. &
+            size(parameter_bar) /= self%parameter_count() .or. &
+            any(.not. ieee_is_finite(output_bar))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "lightgbm multi-output predict_leaf_vjp: shape or values are invalid")
             return
@@ -860,6 +905,45 @@ contains
         value = 0
         if (self%initialized .and. allocated(self%models)) value = self%models(1)%estimator_count()
     end function lgbm_multi_estimator_count
+
+    function lgbm_multi_best_iteration(self) result(values)
+        class(lightgbm_multioutput_t), intent(in) :: self
+        integer, allocatable :: values(:)
+        integer :: j
+
+        allocate(values(max(0, self%n_outputs)))
+        values = 0
+        if (.not. self%initialized .or. .not. allocated(self%models)) return
+        do j = 1, self%n_outputs
+            values(j) = self%models(j)%best_iteration()
+        end do
+    end function lgbm_multi_best_iteration
+
+    function lgbm_multi_best_validation_loss(self) result(values)
+        class(lightgbm_multioutput_t), intent(in) :: self
+        real(dp), allocatable :: values(:)
+        integer :: j
+
+        allocate(values(max(0, self%n_outputs)))
+        values = huge(1.0_dp)
+        if (.not. self%initialized .or. .not. allocated(self%models)) return
+        do j = 1, self%n_outputs
+            values(j) = self%models(j)%best_validation_loss()
+        end do
+    end function lgbm_multi_best_validation_loss
+
+    function lgbm_multi_early_stopped(self) result(values)
+        class(lightgbm_multioutput_t), intent(in) :: self
+        logical, allocatable :: values(:)
+        integer :: j
+
+        allocate(values(max(0, self%n_outputs)))
+        values = .false.
+        if (.not. self%initialized .or. .not. allocated(self%models)) return
+        do j = 1, self%n_outputs
+            values(j) = self%models(j)%early_stopped()
+        end do
+    end function lgbm_multi_early_stopped
 
     integer function lgbm_multi_parameter_count(self) result(value)
         class(lightgbm_multioutput_t), intent(in) :: self
