@@ -4,7 +4,9 @@
 and individual conditional expectation (ICE) values for fitted `xgboost_t`
 and `lightgbm_t` models. The implementation replaces one input column with
 each supplied grid value, predicts every resulting row, and averages those
-predictions. Optional nonnegative sample weights define the average.
+predictions. Optional nonnegative sample weights define the average. Weight
+normalization by the largest value avoids overflow and leaves the weighted mean
+unchanged.
 
 ```fortran
 use fortml_boosted_partial_dependence, only: boosted_partial_dependence

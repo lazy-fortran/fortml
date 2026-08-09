@@ -60,6 +60,7 @@ contains
         if (present(individual)) allocate(pending_individual(size(x, 1), size(grid)))
         if (present(sample_weight)) then
             weight = sample_weight
+            weight = weight/maxval(weight)
         else
             weight = 1.0_dp
         end if
@@ -113,6 +114,7 @@ contains
         if (present(individual)) allocate(pending_individual(size(x, 1), size(grid)))
         if (present(sample_weight)) then
             weight = sample_weight
+            weight = weight/maxval(weight)
         else
             weight = 1.0_dp
         end if

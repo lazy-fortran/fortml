@@ -63,6 +63,13 @@ program test_boosted_partial_dependence
         "XGBoost weighted ICE replay", failures)
     call check(maxval(abs(average-55.0_dp/9.0_dp)) < tolerance, &
         "XGBoost weighted mean oracle", failures)
+    weight = huge(1.0_dp)
+    call boosted_partial_dependence(xgb, x, 2, grid, average, status, &
+        sample_weight=weight)
+    call check(status_ok(status), "XGBoost large-weight status", failures)
+    call check(maxval(abs(average-5.0_dp)) < tolerance, &
+        "XGBoost scale-invariant large weights", failures)
+    weight = [1.0_dp, 1.0_dp, 1.0_dp, 3.0_dp]
 
     lgb_options = lightgbm_options_t()
     lgb_options%n_estimators = 1
