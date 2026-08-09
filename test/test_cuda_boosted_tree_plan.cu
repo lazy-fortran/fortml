@@ -4,6 +4,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstdint>
 #include <limits>
 
 namespace {
@@ -98,7 +99,14 @@ int main() {
         fabs(margin_dot[i]) > 1.0e-13)
       return 9;
   }
-  if (fortml_cuda_boosted_tree_plan_destroy(plan) != 0) return 10;
+  std::uint64_t host_to_device = 0;
+  std::uint64_t device_to_host = 0;
+  std::uint64_t resident = 0;
+  if (fortml_cuda_boosted_tree_plan_transfer_stats(
+          plan, &host_to_device, &device_to_host, &resident) != 0 ||
+      resident != 220 || host_to_device < 220 + 80 || device_to_host < 40)
+    return 10;
+  if (fortml_cuda_boosted_tree_plan_destroy(plan) != 0) return 11;
   std::printf("PASS CUDA boosted tree resident value/JVP oracle max_error %.3e\n",
               max_error);
   return 0;

@@ -3677,6 +3677,23 @@ state and transfer accounting are available.
 explicit: CPU dispatches to the methods above, while selected CUDA contexts
 return `FORTNUM_NOT_IMPLEMENTED` without mutating caller buffers.
 
+`predict_device` has a separate resident path for fitted finite numeric
+`gbtree` models with squared or binary-logistic objectives.  The flattened
+split/leaf arrays are uploaded once to the resident additive-tree plan; every
+subsequent plan prediction transfers only the query matrix and requested
+margin.  `cuda_boosted_tree_plan_t%transfer_stats` reports cumulative
+host-to-device bytes, device-to-host bytes, and resident allocation bytes, so
+benchmark rows can distinguish query-only execution from a hidden host
+fallback.  CPU and resident CUDA margins use the same fixed routing contract,
+and the logistic prediction applies the same stable sigmoid after the margin.
+Categorical partitions, missing-value policies, ranking, DART, robust and
+other unsupported objectives, unavailable native plans, nonfinite queries, and
+split-boundary products return typed statuses before changing caller output.
+`test_xgboost_cuda_dispatch` covers CPU/CUDA value parity and refusal
+sentinels, while `test_cuda_boosted_tree_api` covers the resident ABI and
+transfer accounting.  The release evidence is
+`fortml-bench/results/XGBOOST_CUDA.md`.
+
 ### `fortml_boosted_leaf_objective`
 
 `boosted_leaf_objective_t` freezes a fitted XGBoost or LightGBM split topology

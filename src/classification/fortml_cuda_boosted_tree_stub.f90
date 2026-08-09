@@ -46,6 +46,21 @@ function fortml_cuda_boosted_tree_plan_predict_jvp( &
     value = 1_c_int
 end function fortml_cuda_boosted_tree_plan_predict_jvp
 
+function fortml_cuda_boosted_tree_plan_transfer_stats(opaque_plan, &
+        host_to_device_bytes, device_to_host_bytes, resident_bytes) bind(C, &
+        name="fortml_cuda_boosted_tree_plan_transfer_stats") result(value)
+    use, intrinsic :: iso_c_binding, only: c_int, c_int64_t, c_ptr
+    implicit none
+    type(c_ptr), value :: opaque_plan
+    integer(c_int64_t) :: host_to_device_bytes, device_to_host_bytes
+    integer(c_int64_t) :: resident_bytes
+    integer(c_int) :: value
+    host_to_device_bytes = 0_c_int64_t
+    device_to_host_bytes = 0_c_int64_t
+    resident_bytes = 0_c_int64_t
+    value = 1_c_int
+end function fortml_cuda_boosted_tree_plan_transfer_stats
+
 function fortml_cuda_boosted_tree_plan_destroy(opaque_plan) bind(C, &
         name="fortml_cuda_boosted_tree_plan_destroy") result(value)
     use, intrinsic :: iso_c_binding, only: c_int, c_ptr

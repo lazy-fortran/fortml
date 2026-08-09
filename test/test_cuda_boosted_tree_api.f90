@@ -1,7 +1,7 @@
 program test_cuda_boosted_tree_api
     !! Ordinary-build contract test for resident additive-tree dispatch.
     use, intrinsic :: ieee_arithmetic, only: ieee_is_nan, ieee_value, ieee_quiet_nan
-    use, intrinsic :: iso_fortran_env, only: real64, error_unit
+    use, intrinsic :: iso_fortran_env, only: real64, int64, error_unit
     use fortnum_status, only: fortnum_status_t, FORTNUM_DOMAIN_ERROR, &
         FORTNUM_NOT_IMPLEMENTED
     use fortml_cuda_boosted_tree_api, only: cuda_boosted_tree_plan_t
@@ -14,6 +14,7 @@ program test_cuda_boosted_tree_api
     real(real64) :: node_threshold(6), node_weight(6), tree_scale(2), &
         query_x(4, 2), query_dot(4, 2), margin(4), margin_dot(4), expected(4)
     real(real64) :: nan_value
+    integer(int64) :: host_to_device_bytes, device_to_host_bytes, resident_bytes
 
     failures = 0
     tree_offset = [0, 3, 6]
@@ -52,6 +53,11 @@ program test_cuda_boosted_tree_api
     call plan%predict_jvp(query_x, query_dot, margin, margin_dot, status)
     call check(status%code == FORTNUM_NOT_IMPLEMENTED .and. all(margin == -31.0_real64) .and. &
         all(margin_dot == -37.0_real64), "JVP refusal preserves outputs", failures)
+    call plan%transfer_stats(host_to_device_bytes, device_to_host_bytes, &
+        resident_bytes, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED .and. &
+        host_to_device_bytes == 0_int64 .and. device_to_host_bytes == 0_int64 .and. &
+        resident_bytes == 0_int64, "transfer statistics refusal is typed", failures)
 
     ! The independent scalar oracle documents the intended resident route and
     ! catches accidental changes to scale/base/learning-rate semantics even

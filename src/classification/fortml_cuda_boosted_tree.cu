@@ -4,6 +4,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <new>
 
 namespace {
@@ -26,7 +27,18 @@ struct BoostedTreePlan {
   double base_score = 0.0;
   double learning_rate = 0.0;
   int device_index = 0;
+  std::uint64_t host_to_device_bytes = 0;
+  std::uint64_t device_to_host_bytes = 0;
+  std::uint64_t resident_bytes = 0;
 };
+
+inline void add_h2d(BoostedTreePlan *plan, std::size_t bytes) {
+  plan->host_to_device_bytes += static_cast<std::uint64_t>(bytes);
+}
+
+inline void add_d2h(BoostedTreePlan *plan, std::size_t bytes) {
+  plan->device_to_host_bytes += static_cast<std::uint64_t>(bytes);
+}
 
 __device__ inline int route_query(const BoostedTreePlan &plan,
                                   const double *query_x, int n_query,
@@ -197,8 +209,11 @@ int predict_common(BoostedTreePlan *plan, const double *query_x,
   int *d_invalid = nullptr;
   const std::size_t query_count = static_cast<std::size_t>(n_query) * plan->n_inputs;
   cudaError_t error = copy_to_device(&d_query, query_x, query_count);
+  if (error == cudaSuccess) add_h2d(plan, sizeof(double) * query_count);
   if (error == cudaSuccess && query_x_dot != nullptr)
     error = copy_to_device(&d_query_dot, query_x_dot, query_count);
+  if (error == cudaSuccess && query_x_dot != nullptr)
+    add_h2d(plan, sizeof(double) * query_count);
   if (error == cudaSuccess) error = cudaMalloc(&d_margin, sizeof(double) * n_query);
   if (error == cudaSuccess && margin_dot != nullptr)
     error = cudaMalloc(&d_margin_dot, sizeof(double) * n_query);
@@ -219,9 +234,12 @@ int predict_common(BoostedTreePlan *plan, const double *query_x,
   if (error == cudaSuccess && invalid == 0) {
     error = cudaMemcpy(margin, d_margin, sizeof(double) * n_query,
                        cudaMemcpyDeviceToHost);
+    if (error == cudaSuccess) add_d2h(plan, sizeof(double) * n_query);
     if (error == cudaSuccess && margin_dot != nullptr)
       error = cudaMemcpy(margin_dot, d_margin_dot, sizeof(double) * n_query,
                          cudaMemcpyDeviceToHost);
+    if (error == cudaSuccess && margin_dot != nullptr)
+      add_d2h(plan, sizeof(double) * n_query);
   } else if (error == cudaSuccess) {
     error = cudaErrorInvalidValue;
   }
@@ -268,17 +286,29 @@ extern "C" int fortml_cuda_boosted_tree_plan_create(
   plan->learning_rate = learning_rate;
   plan->device_index = device_index;
   error = copy_to_device(&plan->tree_offset, tree_offset, n_trees + 1);
+  if (error == cudaSuccess)
+    add_h2d(plan, sizeof(int) * static_cast<std::size_t>(n_trees + 1));
   if (error == cudaSuccess) error = copy_to_device(&plan->node_feature, node_feature, n_nodes);
+  if (error == cudaSuccess) add_h2d(plan, sizeof(int) * static_cast<std::size_t>(n_nodes));
   if (error == cudaSuccess) error = copy_to_device(&plan->node_left, node_left, n_nodes);
+  if (error == cudaSuccess) add_h2d(plan, sizeof(int) * static_cast<std::size_t>(n_nodes));
   if (error == cudaSuccess) error = copy_to_device(&plan->node_right, node_right, n_nodes);
+  if (error == cudaSuccess) add_h2d(plan, sizeof(int) * static_cast<std::size_t>(n_nodes));
   if (error == cudaSuccess) error = copy_to_device(&plan->node_threshold, node_threshold, n_nodes);
+  if (error == cudaSuccess) add_h2d(plan, sizeof(double) * static_cast<std::size_t>(n_nodes));
   if (error == cudaSuccess) error = copy_to_device(&plan->node_weight, node_weight, n_nodes);
+  if (error == cudaSuccess) add_h2d(plan, sizeof(double) * static_cast<std::size_t>(n_nodes));
   if (error == cudaSuccess) error = copy_to_device(&plan->node_missing_left, node_missing_left, n_nodes);
+  if (error == cudaSuccess) add_h2d(plan, sizeof(int) * static_cast<std::size_t>(n_nodes));
   if (error == cudaSuccess) error = copy_to_device(&plan->tree_scale, tree_scale, n_trees);
+  if (error == cudaSuccess) add_h2d(plan, sizeof(double) * static_cast<std::size_t>(n_trees));
   if (error != cudaSuccess) {
     destroy_plan(plan);
     return static_cast<int>(error);
   }
+  plan->resident_bytes = sizeof(int) * static_cast<std::size_t>(n_trees + 1) +
+      sizeof(int) * static_cast<std::size_t>(4 * n_nodes) +
+      sizeof(double) * static_cast<std::size_t>(2 * n_nodes + n_trees);
   *opaque_plan = plan;
   return 0;
 }
@@ -296,6 +326,19 @@ extern "C" int fortml_cuda_boosted_tree_plan_predict_jvp(
     return static_cast<int>(cudaErrorInvalidValue);
   return predict_common(static_cast<BoostedTreePlan *>(opaque_plan), query_x,
                         query_x_dot, n_query, margin, margin_dot);
+}
+
+extern "C" int fortml_cuda_boosted_tree_plan_transfer_stats(
+    void *opaque_plan, std::uint64_t *host_to_device_bytes,
+    std::uint64_t *device_to_host_bytes, std::uint64_t *resident_bytes) {
+  BoostedTreePlan *plan = static_cast<BoostedTreePlan *>(opaque_plan);
+  if (plan == nullptr || host_to_device_bytes == nullptr ||
+      device_to_host_bytes == nullptr || resident_bytes == nullptr)
+    return static_cast<int>(cudaErrorInvalidValue);
+  *host_to_device_bytes = plan->host_to_device_bytes;
+  *device_to_host_bytes = plan->device_to_host_bytes;
+  *resident_bytes = plan->resident_bytes;
+  return 0;
 }
 
 extern "C" int fortml_cuda_boosted_tree_plan_destroy(void *opaque_plan) {

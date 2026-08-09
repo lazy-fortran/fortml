@@ -1,8 +1,8 @@
 !> Fortran control plane for a resident fixed-topology additive-tree CUDA ABI.
 module fortml_cuda_boosted_tree_api
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite, ieee_is_nan
-    use, intrinsic :: iso_c_binding, only: c_double, c_int, c_loc, c_null_ptr, &
-        c_ptr, c_associated
+    use, intrinsic :: iso_c_binding, only: c_double, c_int, c_int64_t, c_loc, &
+        c_null_ptr, c_ptr, c_associated
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
         FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED
@@ -55,6 +55,17 @@ module fortml_cuda_boosted_tree_api
             integer(c_int) :: value
         end function fortml_cuda_boosted_tree_plan_predict_jvp
 
+        function fortml_cuda_boosted_tree_plan_transfer_stats(opaque_plan, &
+                host_to_device_bytes, device_to_host_bytes, resident_bytes) &
+                bind(C, name="fortml_cuda_boosted_tree_plan_transfer_stats") &
+                result(value)
+            import :: c_int, c_int64_t, c_ptr
+            type(c_ptr), value :: opaque_plan
+            integer(c_int64_t) :: host_to_device_bytes, device_to_host_bytes
+            integer(c_int64_t) :: resident_bytes
+            integer(c_int) :: value
+        end function fortml_cuda_boosted_tree_plan_transfer_stats
+
         function fortml_cuda_boosted_tree_plan_destroy(opaque_plan) bind(C, &
                 name="fortml_cuda_boosted_tree_plan_destroy") result(value)
             import :: c_int, c_ptr
@@ -74,6 +85,7 @@ module fortml_cuda_boosted_tree_api
         procedure, public :: create => cuda_boosted_tree_plan_create
         procedure, public :: predict => cuda_boosted_tree_plan_predict
         procedure, public :: predict_jvp => cuda_boosted_tree_plan_predict_jvp
+        procedure, public :: transfer_stats => cuda_boosted_tree_plan_transfer_stats
         procedure, public :: destroy => cuda_boosted_tree_plan_destroy
         procedure, public :: fitted => cuda_boosted_tree_plan_fitted
         procedure, public :: feature_count => cuda_boosted_tree_plan_feature_count
@@ -251,6 +263,32 @@ contains
         margin_dot = candidate_dot
         call status_set(status, FORTNUM_OK, "")
     end subroutine cuda_boosted_tree_plan_predict_jvp
+
+    subroutine cuda_boosted_tree_plan_transfer_stats(self, host_to_device_bytes, &
+            device_to_host_bytes, resident_bytes, status)
+        class(cuda_boosted_tree_plan_t), intent(in) :: self
+        integer(c_int64_t), intent(out) :: host_to_device_bytes, device_to_host_bytes
+        integer(c_int64_t), intent(out) :: resident_bytes
+        type(fortnum_status_t), intent(out) :: status
+        integer(c_int) :: code
+
+        host_to_device_bytes = 0_c_int64_t
+        device_to_host_bytes = 0_c_int64_t
+        resident_bytes = 0_c_int64_t
+        if (.not. c_associated(self%handle)) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "CUDA boosted tree wrapper: plan is not fitted")
+            return
+        end if
+        code = fortml_cuda_boosted_tree_plan_transfer_stats(self%handle, &
+            host_to_device_bytes, device_to_host_bytes, resident_bytes)
+        if (code /= 0_c_int) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "CUDA boosted tree wrapper: transfer statistics failed")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine cuda_boosted_tree_plan_transfer_stats
 
     subroutine cuda_boosted_tree_plan_destroy(self, status)
         class(cuda_boosted_tree_plan_t), intent(inout) :: self

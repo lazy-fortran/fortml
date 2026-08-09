@@ -31,8 +31,19 @@ call plan%create(tree_offset, node_feature, node_left, node_right, &
     device_index=0, status=status, n_inputs=n_features)
 call plan%predict(query_x, margin, status)
 call plan%predict_jvp(query_x, query_x_dot, margin, margin_dot, status)
+call plan%transfer_stats(host_to_device_bytes, device_to_host_bytes, &
+    resident_bytes, status)
 call plan%destroy(status)
 ```
+
+`transfer_stats` is cumulative for the lifetime of a plan.  The immutable
+tree topology, weights, scales, base score, and learning rate contribute to
+`host_to_device_bytes` during `create` and to `resident_bytes` once.  A value
+prediction then adds exactly `8*n_query*n_inputs` host-to-device bytes for the
+Fortran-column-major query and `8*n_query` device-to-host bytes for the margin.
+A JVP adds the same query-sized tangent and second output transfer.  No model
+array is re-uploaded between repeated predictions, which makes the counters a
+direct guard against hidden host fallback or per-query model transfers.
 
 The ordinary build links a typed `FORTNUM_NOT_IMPLEMENTED` stub; it never
 silently routes a CUDA request through the host tree walker.  The native

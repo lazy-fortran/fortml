@@ -20,6 +20,8 @@
 extern "C" {
 #endif
 
+#include <stdint.h>
+
 int fortml_cuda_boosted_tree_available(void);
 
 int fortml_cuda_boosted_tree_plan_create(
@@ -36,6 +38,14 @@ int fortml_cuda_boosted_tree_plan_predict(
 int fortml_cuda_boosted_tree_plan_predict_jvp(
     void *opaque_plan, const double *query_x, const double *query_x_dot,
     int n_query, double *margin, double *margin_dot);
+
+/* Return cumulative copy counters for the resident plan.  Model arrays are
+ * uploaded exactly once by plan_create.  Each prediction adds only the query
+ * and requested output bytes, so callers can distinguish resident execution
+ * from a hidden host fallback. */
+int fortml_cuda_boosted_tree_plan_transfer_stats(
+    void *opaque_plan, uint64_t *host_to_device_bytes,
+    uint64_t *device_to_host_bytes, uint64_t *resident_bytes);
 
 int fortml_cuda_boosted_tree_plan_destroy(void *opaque_plan);
 

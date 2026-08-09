@@ -1979,14 +1979,14 @@ contains
                 "xgboost CUDA prediction: model or array shape is invalid")
             return
         end if
+        if (.not. xgb_cuda_numeric_model(self)) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "xgboost CUDA prediction: resident plan supports finite gbtree numeric models only")
+            return
+        end if
         if (.not. valid_query_values(self%missing_code, x)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "xgboost CUDA prediction: input has unsupported nonfinite values")
-            return
-        end if
-        if (.not. xgb_cuda_numeric_model(self)) then
-            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
-                "xgboost CUDA prediction: resident plan supports numeric trees only")
             return
         end if
         if (fortml_cuda_boosted_tree_available() == 0) then
@@ -2059,7 +2059,15 @@ contains
         class(xgboost_t), intent(in) :: self
         integer :: tree, node
 
-        numeric = self%initialized
+        ! The resident ABI deliberately has a narrow, auditable contract.  It
+        ! evaluates finite numeric gbtree ensembles only.  Missing-default
+        ! routing, categorical partitions, ranking reductions, and DART's
+        ! stochastic dropout state remain CPU paths with typed refusal rather
+        ! than silently falling back to host execution.
+        numeric = self%initialized .and. self%missing_code == XGB_MISSING_ERROR .and. &
+            self%booster_code == XGB_BOOSTER_GBTREE .and. &
+            (self%objective_code == XGB_OBJECTIVE_SQUARED .or. &
+             self%objective_code == XGB_OBJECTIVE_LOGISTIC)
         if (.not. numeric) return
         do tree = 1, size(self%estimators)
             do node = 1, self%estimators(tree)%n_nodes
