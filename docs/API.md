@@ -3142,6 +3142,23 @@ state and transfer accounting are available.
 explicit: CPU dispatches to the methods above, while selected CUDA contexts
 return `FORTNUM_NOT_IMPLEMENTED` without mutating caller buffers.
 
+### `fortml_boosted_leaf_objective`
+
+`boosted_leaf_objective_t` freezes a fitted XGBoost or LightGBM split topology
+and turns its continuous `[base_score, leaf weights]` coordinates into a
+FortOpt objective. `initialize_xgboost` and `initialize_lightgbm` accept
+weighted squared or binary-logistic targets and optional L2 regularization.
+The objective exposes exact value/gradient, scalar JVP, VJP, and HVP products;
+`fortml_boosted_leaf_objective` does not finite-difference tree coordinates.
+`boosted_leaf_optimize_lbfgsb` uses bounded L-BFGS-B over the same coordinates
+and reports the fitted objective, gradient norm, iterations, and line-search
+evaluations. Split thresholds, missing/categorical routes, tree sampling, and
+early stopping remain immutable discrete state. CPU is the reference plan and
+CUDA requests return `FORTNUM_NOT_IMPLEMENTED` until a resident tree objective
+is linked. The independent oracle and release record are
+`test_boosted_leaf_objective` and
+`fortml-bench/results/BOOSTED_LEAF_OBJECTIVE.md`.
+
 Every fit method also accepts an optional validation set through
 `validation_x`, `validation_y`, and `validation_weight`. Set
 `early_stopping_rounds` to a positive patience count and optionally set

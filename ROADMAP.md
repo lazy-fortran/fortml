@@ -203,6 +203,16 @@ graph is linked. `test_gp_multiclass_classification` checks the HVP against
 independent refit-gradient finite differences, and the release record is
 `fortml-bench/results/GP_MULTICLASS_HYPER_HVP.md`.
 
+The fixed-topology boosted-tree objective closure adds
+`boosted_leaf_objective_t` for XGBoost and LightGBM. It maps the existing
+`[base_score, leaf weights]` coordinates into weighted squared or logistic
+objectives with exact value/gradient/JVP/VJP/HVP products and bounded FortOpt
+L-BFGS-B fitting. Split routing, categorical partitions, sampling, and early
+stopping remain immutable discrete state; CPU is the reference and selected
+CUDA returns a typed refusal. `test_boosted_leaf_objective`, the release app,
+and `fortml-bench/results/BOOSTED_LEAF_OBJECTIVE.md` provide the independent
+oracle, optimizer, and provenance gate.
+
 The metric-learning loss slice adds a reusable weighted pairwise contrastive
 objective to `fortml_losses`: matching/non-matching Euclidean pairs expose
 value, JVP, VJP, and HVP products with mean/sum reductions.  Independent
