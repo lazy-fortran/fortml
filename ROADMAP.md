@@ -322,7 +322,7 @@ multilabel MLP FortOpt objectives, multiclass Laplace-GP HVPs, generic trainer
 learning-rate schedules, and fixed-topology boosted-tree objectives, in addition to scheduled AdamW trajectory hypergradients,
 calibrated-softmax OOF policies, affine schedule
 outer HVPs, and seeded XGBoost DART), FortAD `origin/main` at
-`8c513b581892f7b5f486785d092f39a2b7ac7568`, FortFront at
+`d71cdf724cd8c4f10d849493beaa7c459cd3a96a`, FortFront at
 `86eb2ba8b5b842bc1aebf9ee8bb00053f12de2f8` (not a direct fpm dependency), and FortNum at
 `7ced2f7aa272920916789fa82a35bfcb2e792d45`, run from the clean checkout
 in the clean canonical checkout under `/mnt/storage/code/lazy-fortran/fortml`;
