@@ -38,7 +38,7 @@ module fortml_trainer
     integer, parameter, public :: FORTML_TRAIN_LION = 8
     character(*), parameter, public :: FORTML_TRAINER_CHECKPOINT_MAGIC = &
         "FORTML_TRAINER_CHECKPOINT_TEXT"
-    integer, parameter, public :: FORTML_TRAINER_CHECKPOINT_SCHEMA_VERSION = 6
+    integer, parameter, public :: FORTML_TRAINER_CHECKPOINT_SCHEMA_VERSION = 7
 
     abstract interface
         subroutine trainer_step_callback_proc(step, value, gradient_norm, stop, status)
@@ -99,6 +99,15 @@ module fortml_trainer
     type, public :: trainer_state_t
         integer :: n_parameters = 0
         integer :: steps = 0
+        !! Number of public `fit` calls that have completed successfully.
+        integer :: fit_calls = 0
+        !! Iterations performed by the most recent fit call.  For streaming
+        !! optimizers this is the number of accepted parameter updates; for
+        !! L-BFGS-B it is FortOpt's convergence iteration counter.
+        integer :: optimizer_iterations = 0
+        !! FortOpt line-search diagnostics from the most recent L-BFGS-B fit.
+        integer :: line_search_evaluations = 0
+        integer :: curvature_updates = 0
         integer :: history_length = 0
         logical :: initialized = .false.
         logical :: converged = .false.
@@ -200,6 +209,10 @@ contains
         self%objective = objective
         self%options = settings
         self%state%n_parameters = n
+        self%state%fit_calls = 0
+        self%state%optimizer_iterations = 0
+        self%state%line_search_evaluations = 0
+        self%state%curvature_updates = 0
         self%state%initialized = .true.
         allocate(self%state%parameters(n), self%state%ema_parameters(n), &
             self%state%value_history(settings%max_steps + 1), &
@@ -426,13 +439,14 @@ contains
         type(lbfgsb_result_t) :: result
         real(dp), allocatable :: lower(:), upper(:), gradient(:)
         real(dp) :: value
-        integer :: i
+        integer :: i, start_steps
 
         if (.not. self%ready) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "trainer: state is not initialized")
             return
         end if
+        start_steps = self%state%steps
         if (self%options%optimizer == FORTML_TRAIN_LBFGSB) then
             allocate(lower(self%state%n_parameters), upper(self%state%n_parameters))
             if (self%options%use_bounds) then
@@ -446,6 +460,9 @@ contains
                 upper, self%options%lbfgsb, result, status)
             if (status%code /= FORTNUM_OK) return
             self%state%steps = result%state%iteration
+            self%state%optimizer_iterations = result%state%iteration
+            self%state%line_search_evaluations = result%line_search_evaluations
+            self%state%curvature_updates = result%curvature_updates
             self%state%converged = result%state%converged
             allocate(gradient(self%state%n_parameters))
             call self%objective%value_gradient(self%state%parameters, value, gradient, status)
@@ -457,6 +474,7 @@ contains
             call record_history(self, value, self%state%gradient_norm)
             if (self%options%ema_decay > 0.0_dp) self%state%ema_parameters = &
                 self%state%parameters
+            self%state%fit_calls = self%state%fit_calls + 1
             call status_set(status, FORTNUM_OK, "")
             return
         end if
@@ -474,6 +492,10 @@ contains
                 "trainer: maximum steps reached before convergence")
             return
         end if
+        self%state%optimizer_iterations = self%state%steps - start_steps
+        self%state%line_search_evaluations = 0
+        self%state%curvature_updates = 0
+        self%state%fit_calls = self%state%fit_calls + 1
         call status_set(status, FORTNUM_OK, "")
     end subroutine trainer_fit
 
@@ -699,6 +721,13 @@ contains
 
         if (ios == 0) call write_i(unit, "n_parameters", self%state%n_parameters, ios)
         if (ios == 0) call write_i(unit, "steps", self%state%steps, ios)
+        if (ios == 0) call write_i(unit, "fit_calls", self%state%fit_calls, ios)
+        if (ios == 0) call write_i(unit, "optimizer_iterations", &
+            self%state%optimizer_iterations, ios)
+        if (ios == 0) call write_i(unit, "line_search_evaluations", &
+            self%state%line_search_evaluations, ios)
+        if (ios == 0) call write_i(unit, "curvature_updates", &
+            self%state%curvature_updates, ios)
         if (ios == 0) call write_i(unit, "history_length", self%state%history_length, ios)
         if (ios == 0) call write_l(unit, "initialized", self%state%initialized, ios)
         if (ios == 0) call write_l(unit, "converged", self%state%converged, ios)
@@ -880,6 +909,13 @@ contains
         call read_i(unit, "n_parameters", n, ios)
         if (ios == 0 .and. n /= self%state%n_parameters) ios = 1
         call read_i(unit, "steps", state%steps, ios)
+        if (ios == 0) call read_i(unit, "fit_calls", state%fit_calls, ios)
+        if (ios == 0) call read_i(unit, "optimizer_iterations", &
+            state%optimizer_iterations, ios)
+        if (ios == 0) call read_i(unit, "line_search_evaluations", &
+            state%line_search_evaluations, ios)
+        if (ios == 0) call read_i(unit, "curvature_updates", &
+            state%curvature_updates, ios)
         if (ios == 0) call read_i(unit, "history_length", history_length, ios)
         if (ios == 0) state%history_length = history_length
         if (ios == 0) call read_l(unit, "initialized", state%initialized, ios)
@@ -907,6 +943,8 @@ contains
             state%best_validation_value, ios)
         if (ios /= 0 .or. .not. state%initialized .or. history_length < 1 .or. &
             history_length > options%max_steps + 1 .or. state%steps < 0 .or. &
+            state%fit_calls < 0 .or. state%optimizer_iterations < 0 .or. &
+            state%line_search_evaluations < 0 .or. state%curvature_updates < 0 .or. &
             validation_history_length < 0 .or. &
             validation_history_length > options%max_steps + 1 .or. &
             state%validation_bad_steps < 0 .or. state%validation_best_step < 0) goto 900
@@ -1051,6 +1089,8 @@ contains
             return
         end if
         if (n < 1 .or. self%state%steps < 0 .or. h < 1 .or. &
+            self%state%fit_calls < 0 .or. self%state%optimizer_iterations < 0 .or. &
+            self%state%line_search_evaluations < 0 .or. self%state%curvature_updates < 0 .or. &
             h > size(self%state%value_history) .or. h > self%options%max_steps + 1 .or. &
             self%state%validation_history_length < 0 .or. &
             self%state%validation_history_length > self%options%max_steps + 1 .or. &
@@ -1311,6 +1351,10 @@ contains
         class(trainer_state_t), intent(inout) :: self
         self%n_parameters = 0
         self%steps = 0
+        self%fit_calls = 0
+        self%optimizer_iterations = 0
+        self%line_search_evaluations = 0
+        self%curvature_updates = 0
         self%history_length = 0
         self%initialized = .false.
         self%converged = .false.
