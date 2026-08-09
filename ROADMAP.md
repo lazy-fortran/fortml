@@ -1033,8 +1033,8 @@ CUDA no-fallback boundary are in `test_hamiltonian_structure_gp` and
 `fortml-bench/results/hamiltonian_structure_gp.csv`.
 
 This closes only a finite-width warm start for the existing separable model.
-NNGP covariance propagation, symplectic-GP priors, nonseparable HNN maps,
-PINN residual initialization, and resident GPU application remain open.
+NNGP covariance propagation, symplectic-GP priors, nonseparable HNN maps, and
+resident GPU application remain open.
 
 ### 2026-08-09 scalar Lagrangian MLP slice
 
@@ -1045,8 +1045,20 @@ velocity mass matrices, and Euler--Lagrange residuals
 Hessians, while CUDA initialization and selection return typed refusals. The
 independent finite-difference/adjoint and singular-state fixture is
 `test_lagrangian_mlp`; the release evidence is the matching
-`fortml-bench` `LINEAR_LAGRANGIAN` lane. Gauge terms, explicit time dependence,
+`fortml-bench` `LAGRANGIAN_MLP` lane. Gauge terms, explicit time dependence,
 and differentiable integrators remain open.
+
+### 2026-08-09 PINN structure-aware GP initializer
+
+`fortml_pinn_structure_gp` adds a finite-feature posterior-mean warm start for
+an existing fixed-depth MLP and a named four-term `physics_objective_t`. It
+freezes and validates the hidden prefix and RMS scale, mutates only the final
+affine layer, and records data/residual/boundary/conservation diagnostics
+before and after application. The independent manufactured-PDE oracle is
+`test_pinn_structure_gp`; the release app and NumPy evidence are
+`fortml_bench_pinn_structure_gp` and
+`fortml-bench/results/PINN_STRUCTURE_GP.md`. This is not an NNGP or exact
+infinite-width claim; resident CUDA products remain typed refusals.
 
 ### 2026-08-07 closure slice
 
@@ -4549,11 +4561,16 @@ checkouts before deciding that a product is unavailable.
   boundary. The independent oracle and typed CUDA refusal are in
   `test_hamiltonian_structure_gp` and
   `fortml-bench/results/hamiltonian_structure_gp.csv`.
-- [ ] Extend structure-aware GP-posterior initialization to symplectic networks
-  and PINN residual networks. The mapping from the infinite-width GP or
-  NNGP/NTK feature representation to finite weights must record its mean,
-  covariance, and structure-defect error instead of claiming an exact
-  finite-width equivalence.
+- [x] Extend structure-aware GP-posterior initialization to PINN residual
+  networks with named physics diagnostics, hidden-state transaction checks,
+  and typed CUDA refusals. The finite-feature mapping records its mean,
+  finite-width boundary, and objective-term diagnostics without claiming an
+  exact infinite-width equivalence; see `test_pinn_structure_gp` and
+  `fortml-bench/results/PINN_STRUCTURE_GP.md`.
+- [ ] Extend structure-aware GP-posterior initialization to symplectic networks.
+  The mapping from the infinite-width GP or NNGP/NTK feature representation to
+  finite weights must record its mean, covariance, and structure-defect error
+  instead of claiming an exact finite-width equivalence.
 - [x] Add PCA initialization for linear autoencoders, following the exact
   Baldi--Hornik optimum above. The empirical [principal-component
   initialization proposal](https://doi.org/10.1007/978-3-030-30484-3_14)
