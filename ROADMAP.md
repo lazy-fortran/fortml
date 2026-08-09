@@ -15,7 +15,9 @@ attribution, binary and multiclass GP log-probability, sequential basis-device,
 fixed-leaf-product, plateau-trainer, affine Adagrad HVP, and CUDA VJP closure
 slices documented below are post-tag additions. The successive-halving search,
 resident CUDA dense trainer, and variational multiclass-GP log-probability
-slices are also post-tag additions.
+slices are also post-tag additions, as are the five-coordinate mini-batch Adam
+hypergradient, fixed-latent ordinal-GP cut-point calibration, and weighted
+boosted-tree partial-dependence/ICE slices.
 The broad parity
 gate is still open, so this work does not move or recreate that tag.
 The checklist currently records 402 completed and 150 open items. Open rows are
