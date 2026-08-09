@@ -101,7 +101,9 @@ program test_gp_ordinal_classification_hyperparameters
     call gp_ordinal_optimize_hyperparameters(model_opt, train_options, train_result, status)
     call check(status_ok(status) .and. train_result%converged .and. &
         train_result%negative_log_marginal_likelihood < huge(1.0_dp) .and. &
-        train_result%gradient_norm < 1.0e-3_dp, "FortOpt evidence training", failures)
+        train_result%gradient_norm < 1.0e-3_dp .and. &
+        train_result%negative_log_marginal_likelihood < -lml, &
+        "FortOpt evidence training improves the fitted evidence", failures)
 
     cuda%kind = FORTML_DEVICE_CUDA
     cuda%selected = .true.
