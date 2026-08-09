@@ -259,6 +259,14 @@ it is checked off.
 - [ ] Add resident CUDA/OpenACC histogram, quantile-sketch, categorical, and
   prediction kernels with transfer/memory accounting and deterministic
   float32/float64 reductions; distributed workers remain explicit state.
+- [x] Add a resident fixed-topology CUDA additive-tree plan for fitted
+  XGBoost/LightGBM-style ensembles. The flattened model keeps split nodes,
+  leaf weights, missing-default bits, per-tree scales, base score, and learning
+  rate on device; value prediction and fixed-routing input JVPs transfer only
+  query batches, reject exact split boundaries/NaNs for JVPs, and preserve
+  outputs on kernel refusal. The native CUDA oracle is
+  `test/run_cuda_boosted_tree_plan.sh`; GPU growth/histograms and
+  differentiation through split selection remain open.
 
 ### Derivatives, devices, and benchmark evidence
 
@@ -1492,6 +1500,13 @@ only listed as gaps:
   prediction, staged margins, missing routing, and validation diagnostics are
   covered by `test_xgboost_serialization`; distributed model state remains open.
   The release evidence is `results/XGBOOST_SERIALIZATION.md` in `fortml-bench`.
+- A resident fixed-topology CUDA additive-tree plan now keeps flattened
+  XGBoost/LightGBM-style split topology, leaf weights, missing defaults,
+  per-tree scales, base score, and learning rate on device. It exposes value
+  prediction and zero fixed-routing input JVPs, rejects NaN or exact split
+  boundaries for JVPs, and preserves outputs on native failure. The separate
+  CPU/CUDA leaf-walk oracle is `test_cuda_boosted_tree_plan`; tree growth,
+  histogram construction, and fit-through-topology derivatives remain open.
 
 - The resident CUDA dense-affine plan now exposes forward-mode `jvp` and
   reverse-mode `vjp` products for feature, weight, bias, and output cotangents.

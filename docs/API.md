@@ -3357,6 +3357,18 @@ typed unavailable stub, while the native C ABI in
 This wrapper intentionally does not expose or copy private CART storage, and
 it provides no autodiff path or hidden CPU fallback.
 
+For a fixed-topology XGBoost/LightGBM-style additive ensemble, the
+`fortml_cuda_boosted_tree_api` module exposes `cuda_boosted_tree_plan_t`.
+`create` accepts zero-based tree/node arrays, leaf weights, per-tree scales,
+base score, learning rate, and a missing-value default bit.  `predict` keeps
+the model resident and transfers only a query batch.  `predict_jvp` returns the
+zero tangent away from split surfaces, while NaN or exact-boundary queries are
+rejected as nondifferentiable.  The native C ABI is in
+`src/classification/fortml_cuda_boosted_tree.{h,cu}`; ordinary builds use the
+typed unavailable stub and preserve output buffers on refusal.  This is a
+prediction/fixed-topology product, not GPU tree growth or differentiation
+through split selection.  See `docs/CUDA_BOOSTED_TREE_PLAN.md`.
+
 ### `fortml_random_forest_regressor`
 
 `random_forest_regressor_t%fit(x,targets,status[,n_trees,max_depth,
