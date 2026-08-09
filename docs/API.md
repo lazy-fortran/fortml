@@ -1945,6 +1945,15 @@ dispatch the exact host products for a selected CPU device and return
 `device_supported` reports this fitted-CPU-only contract until a resident
 sequential executor is linked.
 
+`clone(copy,status)` now deep-copies a valid fitted sequential graph,
+including every stage map, packed parameter block, names, fitted state, and
+input schema. The copy is transactional: an invalid source leaves the
+destination unchanged. `clone_device` dispatches this operation for an
+explicit CPU context and returns `FORTNUM_NOT_IMPLEMENTED` for CUDA until a
+resident graph clone exists. The independent mutation and refusal oracle is
+`test_sequential_pipeline_clone`; the release benchmark is
+`SEQUENTIAL_PIPELINE_CLONE.md`.
+
 `column_basis_pipeline_t` provides the column-wise variant. Construct it with
 `make_column_basis_pipeline(n_inputs,status)`, then append a basis map and a
 one-based integer column list. A stage's input count must equal the list length.
