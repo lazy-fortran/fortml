@@ -21,6 +21,37 @@ module fortml_hyperparameter_search
     implicit none
     private
 
+    abstract interface
+        subroutine resource_objective_context_proc(context, parameters, resource, &
+                value, gradient, status)
+            import dp, fortnum_status_t
+            class(*), intent(inout) :: context
+            real(dp), intent(in) :: parameters(:)
+            integer, intent(in) :: resource
+            real(dp), intent(out) :: value
+            real(dp), intent(out) :: gradient(:)
+            type(fortnum_status_t), intent(out) :: status
+        end subroutine resource_objective_context_proc
+    end interface
+
+    !> Objective contract for multi-fidelity search.
+    !>
+    !> A resource is an integer fidelity level such as an epoch count, sample
+    !> budget, or tree count.  The callback returns the complete value and
+    !> gradient at that level, so a surviving configuration can be handed to
+    !> the same bounded FortOpt L-BFGS-B path at the final resource.
+    type, public :: hyperparameter_resource_objective_t
+        private
+        integer :: n_parameters = 0
+        class(*), pointer :: context => null()
+        procedure(resource_objective_context_proc), pointer, nopass :: callback => null()
+    contains
+        procedure, public :: initialize_context => resource_objective_initialize_context
+        procedure, public :: evaluate => resource_objective_evaluate
+        procedure, public :: parameter_count => resource_objective_parameter_count
+        procedure, public :: initialized => resource_objective_initialized
+    end type hyperparameter_resource_objective_t
+
     type, public :: hyperparameter_search_result_t
         real(dp), allocatable :: best_parameters(:)
         real(dp) :: best_value = huge(1.0_dp)
@@ -28,6 +59,10 @@ module fortml_hyperparameter_search
         integer :: method = 0
         integer :: start_count = 0
         integer :: successful_starts = 0
+        integer :: candidate_count = 0
+        integer :: surviving_count = 0
+        integer :: rung_count = 0
+        integer :: best_resource = 0
         logical :: converged = .false.
     end type hyperparameter_search_result_t
 
@@ -36,14 +71,22 @@ module fortml_hyperparameter_search
         type(lbfgsb_options_t) :: lbfgsb
     end type hyperparameter_search_options_t
 
+    type :: resource_lbfgsb_context_t
+        class(hyperparameter_resource_objective_t), pointer :: objective => null()
+        integer :: resource = 0
+    end type resource_lbfgsb_context_t
+
     integer, parameter, public :: HYPERPARAMETER_SEARCH_GRID = 1
     integer, parameter, public :: HYPERPARAMETER_SEARCH_LBFGSB = 2
     integer, parameter, public :: HYPERPARAMETER_SEARCH_RANDOM = 3
+    integer, parameter, public :: HYPERPARAMETER_SEARCH_SUCCESSIVE_HALVING = 4
 
     public :: hyperparameter_grid_search
     public :: hyperparameter_lbfgsb_search
     public :: hyperparameter_lbfgsb_multistart_search
     public :: hyperparameter_random_search
+    public :: hyperparameter_successive_halving_search
+    public :: hyperparameter_lbfgsb_resource_search
     public :: hyperparameter_search_device_supported
 
 contains
@@ -320,11 +363,289 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine hyperparameter_lbfgsb_multistart_search
 
+    subroutine hyperparameter_successive_halving_search(objective, lower, upper, &
+            candidates, min_resource, max_resource, reduction_factor, seed, &
+            result, status, options, device)
+        !! Deterministic multi-fidelity search with complete products.
+        !!
+        !! Candidates are sampled once in the closed parameter box.  At each
+        !! resource rung the worst configurations are pruned by the integer
+        !! reduction factor.  The callback still returns value and gradient at
+        !! every rung, which lets callers refine the survivor through the
+        !! fixed-resource L-BFGS-B adapter below without changing contracts.
+        type(hyperparameter_resource_objective_t), intent(inout) :: objective
+        real(dp), intent(in) :: lower(:), upper(:)
+        integer, intent(in) :: candidates, min_resource, max_resource
+        integer, intent(in) :: reduction_factor
+        integer(int64), intent(in) :: seed
+        type(hyperparameter_search_result_t), intent(out) :: result
+        type(fortnum_status_t), intent(out) :: status
+        type(hyperparameter_search_options_t), intent(in), optional :: options
+        type(fortml_device_t), intent(in), optional :: device
+
+        type(hyperparameter_search_options_t) :: settings
+        type(rng_t) :: generator
+        real(dp), allocatable :: candidate_parameters(:, :), values(:), gradients(:, :)
+        real(dp), allocatable :: candidate(:), gradient(:)
+        real(dp) :: uniform, value
+        integer, allocatable :: active(:)
+        integer :: n, active_count, resource, next_resource, keep
+        integer :: i, j, swap_index, swap_id
+        real(dp) :: swap_value
+        type(hyperparameter_search_options_t) :: hyperparameter_search_options_t_default
+        type(hyperparameter_search_result_t) :: hyperparameter_search_result_t_default
+
+        result = hyperparameter_search_result_t_default
+        result%method = HYPERPARAMETER_SEARCH_SUCCESSIVE_HALVING
+        result%candidate_count = candidates
+        result%surviving_count = candidates
+        settings = hyperparameter_search_options_t_default
+        if (present(options)) settings = options
+        call validate_resource_search_inputs(objective, lower, upper, min_resource, &
+            max_resource, reduction_factor, settings, status, device)
+        if (status%code /= FORTNUM_OK) return
+        n = size(lower)
+        allocate(candidate_parameters(n, candidates), values(candidates), &
+            gradients(n, candidates), active(candidates), candidate(n), gradient(n), &
+            result%best_parameters(n))
+        call rng_seed(generator, seed, status)
+        if (status%code /= FORTNUM_OK) return
+        do i = 1, candidates
+            active(i) = i
+            do j = 1, n
+                call rng_uniform(generator, uniform)
+                candidate_parameters(j, i) = lower(j) + (upper(j) - lower(j))*uniform
+            end do
+        end do
+        active_count = candidates
+        resource = min_resource
+        do
+            result%rung_count = result%rung_count + 1
+            do i = 1, active_count
+                if (result%evaluations >= int(settings%max_evaluations, int64)) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "hyperparameter successive halving: evaluation budget exceeded")
+                    return
+                end if
+                candidate = candidate_parameters(:, active(i))
+                call objective%evaluate(candidate, resource, value, gradient, status)
+                result%evaluations = result%evaluations + 1_int64
+                if (status%code /= FORTNUM_OK) return
+                if (.not. ieee_is_finite(value) .or. any(.not. ieee_is_finite(gradient))) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "hyperparameter successive halving: nonfinite objective product")
+                    return
+                end if
+                values(i) = value
+                gradients(:, i) = gradient
+                if (result%evaluations == 1_int64 .or. value < result%best_value) then
+                    result%best_value = value
+                    result%best_parameters = candidate
+                    result%best_resource = resource
+                end if
+            end do
+            if (resource == max_resource) exit
+
+            ! Stable insertion sort keeps seeded ties deterministic.
+            do i = 2, active_count
+                swap_index = i
+                do j = i - 1, 1, -1
+                    if (values(swap_index) < values(j)) then
+                        swap_value = values(swap_index)
+                        values(swap_index) = values(j)
+                        values(j) = swap_value
+                        swap_id = active(swap_index)
+                        active(swap_index) = active(j)
+                        active(j) = swap_id
+                        swap_index = j
+                    end if
+                end do
+            end do
+            keep = (active_count + reduction_factor - 1)/reduction_factor
+            if (keep < 1) keep = 1
+            active_count = keep
+            result%surviving_count = active_count
+            if (resource > max_resource/reduction_factor) then
+                next_resource = max_resource
+            else
+                next_resource = min(max_resource, resource*reduction_factor)
+            end if
+            resource = next_resource
+        end do
+        result%surviving_count = active_count
+        result%converged = .true.
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine hyperparameter_successive_halving_search
+
+    subroutine hyperparameter_lbfgsb_resource_search(objective, initial, lower, upper, &
+            resource, result, status, options, device)
+        !! Refine a configuration at a fixed resource using FortOpt L-BFGS-B.
+        type(hyperparameter_resource_objective_t), target, intent(inout) :: objective
+        real(dp), intent(in) :: initial(:), lower(:), upper(:)
+        integer, intent(in) :: resource
+        type(hyperparameter_search_result_t), intent(out) :: result
+        type(fortnum_status_t), intent(out) :: status
+        type(hyperparameter_search_options_t), intent(in), optional :: options
+        type(fortml_device_t), intent(in), optional :: device
+
+        type(resource_lbfgsb_context_t), target :: adapter
+        type(objective_t) :: fixed_objective
+        type(hyperparameter_search_result_t) :: hyperparameter_search_result_t_default
+
+        result = hyperparameter_search_result_t_default
+        result%method = HYPERPARAMETER_SEARCH_LBFGSB
+        result%best_resource = resource
+        if (resource < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "hyperparameter resource L-BFGS-B: resource must be positive")
+            return
+        end if
+        if (objective%parameter_count() < 1 .or. size(initial) /= size(lower) .or. &
+            size(lower) /= objective%parameter_count() .or. size(upper) /= size(lower)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "hyperparameter resource L-BFGS-B: parameter shapes are invalid")
+            return
+        end if
+        adapter%objective => objective
+        adapter%resource = resource
+        call fixed_objective%initialize_context(objective%parameter_count(), adapter, &
+            resource_lbfgsb_callback, status)
+        if (status%code /= FORTNUM_OK) return
+        call hyperparameter_lbfgsb_search(fixed_objective, initial, lower, upper, &
+            result, status, options, device)
+        if (status%code /= FORTNUM_OK) return
+        result%best_resource = resource
+    end subroutine hyperparameter_lbfgsb_resource_search
+
     logical function hyperparameter_search_device_supported(device_kind) result(supported)
         integer, intent(in) :: device_kind
 
         supported = device_kind == FORTML_DEVICE_CPU
     end function hyperparameter_search_device_supported
+
+    subroutine resource_objective_initialize_context(self, n_parameters, context, &
+            callback, status)
+        class(hyperparameter_resource_objective_t), intent(out) :: self
+        integer, intent(in) :: n_parameters
+        class(*), target, intent(inout) :: context
+        procedure(resource_objective_context_proc) :: callback
+        type(fortnum_status_t), intent(out) :: status
+
+        self%n_parameters = 0
+        nullify(self%context, self%callback)
+        if (n_parameters < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "resource objective: parameter count must be positive")
+            return
+        end if
+        self%n_parameters = n_parameters
+        self%context => context
+        self%callback => callback
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine resource_objective_initialize_context
+
+    subroutine resource_objective_evaluate(self, parameters, resource, value, gradient, &
+            status)
+        class(hyperparameter_resource_objective_t), intent(inout) :: self
+        real(dp), intent(in) :: parameters(:)
+        integer, intent(in) :: resource
+        real(dp), intent(out) :: value
+        real(dp), intent(out) :: gradient(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        value = huge(1.0_dp)
+        gradient = 0.0_dp
+        if (.not. self%initialized()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "resource objective: callback is not initialized")
+            return
+        end if
+        if (resource < 1 .or. size(parameters) /= self%n_parameters .or. &
+            size(gradient) /= size(parameters) .or. any(.not. ieee_is_finite(parameters))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "resource objective: resource or parameter shape is invalid")
+            return
+        end if
+        call self%callback(self%context, parameters, resource, value, gradient, status)
+    end subroutine resource_objective_evaluate
+
+    integer function resource_objective_parameter_count(self) result(count)
+        class(hyperparameter_resource_objective_t), intent(in) :: self
+
+        count = self%n_parameters
+    end function resource_objective_parameter_count
+
+    logical function resource_objective_initialized(self) result(initialized)
+        class(hyperparameter_resource_objective_t), intent(in) :: self
+
+        initialized = self%n_parameters > 0 .and. associated(self%context) .and. &
+            associated(self%callback)
+    end function resource_objective_initialized
+
+    subroutine resource_lbfgsb_callback(context, parameters, value, gradient, status)
+        class(*), intent(inout) :: context
+        real(dp), intent(in) :: parameters(:)
+        real(dp), intent(out) :: value
+        real(dp), intent(out) :: gradient(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        select type (adapter => context)
+            type is (resource_lbfgsb_context_t)
+                if (.not. associated(adapter%objective)) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "resource objective L-BFGS-B: missing objective")
+                    return
+                end if
+                call adapter%objective%evaluate(parameters, adapter%resource, value, &
+                    gradient, status)
+            class default
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "resource objective L-BFGS-B: context has wrong type")
+        end select
+    end subroutine resource_lbfgsb_callback
+
+    subroutine validate_resource_search_inputs(objective, lower, upper, min_resource, &
+            max_resource, reduction_factor, settings, status, device)
+        type(hyperparameter_resource_objective_t), intent(in) :: objective
+        real(dp), intent(in) :: lower(:), upper(:)
+        integer, intent(in) :: min_resource, max_resource, reduction_factor
+        type(hyperparameter_search_options_t), intent(in) :: settings
+        type(fortnum_status_t), intent(out) :: status
+        type(fortml_device_t), intent(in), optional :: device
+
+        if (present(device)) then
+            if (.not. device%selected .or. .not. device%available) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "hyperparameter successive halving: selected device is unavailable")
+                return
+            end if
+            if (device%kind == FORTML_DEVICE_CUDA) then
+                call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                    "hyperparameter successive halving: resident CUDA search state is unavailable")
+                return
+            end if
+            if (device%kind /= FORTML_DEVICE_CPU) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "hyperparameter successive halving: device kind is invalid")
+                return
+            end if
+        end if
+        if (.not. objective%initialized() .or. objective%parameter_count() < 1 .or. &
+            size(lower) /= objective%parameter_count() .or. size(upper) /= size(lower) .or. &
+            any(.not. ieee_is_finite(lower)) .or. any(.not. ieee_is_finite(upper)) .or. &
+            any(lower > upper)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "hyperparameter successive halving: objective or bounds are invalid")
+            return
+        end if
+        if (min_resource < 1 .or. max_resource < min_resource .or. &
+            reduction_factor < 2 .or. settings%max_evaluations < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "hyperparameter successive halving: resource schedule is invalid")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine validate_resource_search_inputs
 
     subroutine validate_search_inputs(objective, lower, upper, status, device)
         type(objective_t), intent(in) :: objective
