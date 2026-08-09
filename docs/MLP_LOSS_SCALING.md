@@ -29,6 +29,11 @@ bit-for-bit unchanged.  FP32, FP16, and BF16 training still return
 and device loss-scaling reductions are not claimed until independently gated.
 No CUDA path is inferred from the option.
 
+Growth and overflow branches are discrete policy decisions.  They are not
+advertised as smooth hyperparameter JVPs or HVPs, and an outer derivative
+objective must keep the same fixed branch or return its own typed active-set
+refusal.
+
 The dynamic state is captured in `mlp_training_checkpoint_t` and in the
 versioned formatted checkpoint schema 11.  Resume validates the static policy
 (`initial_scale`, bounds, factors, and interval) while restoring the dynamic
