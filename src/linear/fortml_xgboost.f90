@@ -1979,6 +1979,11 @@ contains
                 "xgboost CUDA prediction: model or array shape is invalid")
             return
         end if
+        if (.not. valid_query_values(self%missing_code, x)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "xgboost CUDA prediction: input has unsupported nonfinite values")
+            return
+        end if
         if (.not. xgb_cuda_numeric_model(self)) then
             call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
                 "xgboost CUDA prediction: resident plan supports numeric trees only")
