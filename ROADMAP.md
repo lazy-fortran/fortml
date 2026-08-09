@@ -2287,6 +2287,16 @@ when a lower-level primitive already exists.
   cover finite differences, HVPs, convergence, and typed CUDA refusals.
   Native cumulative likelihoods, optimized cut points, and resident GPU
   inference remain open.
+- [x] Add backend-independent native ordered-logit and ordered-probit GP
+  likelihood products. `gp_ordinal_log_likelihood_value` evaluates rank
+  probabilities from strictly increasing cut points, while its JVP, VJP, and
+  analytic HVP differentiate jointly through latent scores and cut points.
+  Malformed ranks, thresholds, tangents, non-finite values, and probability
+  underflow are transactional typed refusals; CPU capability is explicit and
+  CUDA reports unsupported until a resident likelihood reduction is linked.
+  The independent `test_gp_ordinal_likelihood` oracle and release benchmark
+  cover both likelihoods, adjoint/Hessian products, rollback, and the device
+  boundary. Native GP inference with optimized cut points remains separate.
 - [x] Add `gp_multilabel_classification_t`, an independent binary Laplace-GP
   wrapper for dense indicator targets. Each label owns a weighted logistic or
   probit head; probabilities remain independently calibrated rather than being

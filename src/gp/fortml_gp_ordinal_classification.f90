@@ -12,7 +12,8 @@ module fortml_gp_ordinal_classification
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, &
-        FORTNUM_OK, FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED
+        FORTNUM_OK, FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED, &
+        FORTNUM_CONVERGENCE_ERROR
     use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU, FORTML_DEVICE_CUDA
     use fortml_kernels, only: kernel_t
     use fortml_gaussian_process, only: gp_regression_t
@@ -22,6 +23,15 @@ module fortml_gp_ordinal_classification
     real(dp), parameter :: SQRT_TWO = 1.4142135623730950488016887242097_dp
     real(dp), parameter :: SQRT_TWO_PI = 2.506628274631000502415765284811_dp
     real(dp), parameter :: MIN_SCALE = 1.0e-12_dp
+
+    integer, parameter, public :: GP_ORDINAL_LIKELIHOOD_LOGISTIC = 1
+    integer, parameter, public :: GP_ORDINAL_LIKELIHOOD_PROBIT = 2
+
+    public :: gp_ordinal_log_likelihood_value
+    public :: gp_ordinal_log_likelihood_jvp
+    public :: gp_ordinal_log_likelihood_vjp
+    public :: gp_ordinal_log_likelihood_hvp
+    public :: gp_ordinal_likelihood_device_supported
 
     type, public :: gp_ordinal_classification_options_t
         !! Controls the latent Gaussian fit and predictive uncertainty.
@@ -97,6 +107,391 @@ module fortml_gp_ordinal_classification
     end type gp_ordinal_classification_t
 
 contains
+
+    !> Sum the ordered-logit or ordered-probit log likelihood.
+    !!
+    !! `eta` contains latent scores, `labels` are one-based ranks in
+    !! `1:size(thresholds)+1`, and `thresholds` are strictly increasing
+    !! finite cut points.  This primitive is independent of the latent GP
+    !! approximation used by `gp_ordinal_classification_t`; it is the
+    !! likelihood contract consumed by future native ordinal inference.
+    !! The CPU implementation is analytic and does not silently execute for
+    !! CUDA callers; use `gp_ordinal_likelihood_device_supported` to query the
+    !! explicit backend boundary.
+    subroutine gp_ordinal_log_likelihood_value(eta, labels, thresholds, likelihood, &
+            value, status)
+        real(dp), intent(in) :: eta(:), thresholds(:)
+        integer, intent(in) :: labels(:), likelihood
+        real(dp), intent(out) :: value
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: row_value
+        integer :: i
+
+        value = 0.0_dp
+        call validate_ordinal_likelihood_inputs(eta, labels, thresholds, likelihood, status)
+        if (status%code /= FORTNUM_OK) return
+        do i = 1, size(eta)
+            call ordinal_row_terms(eta(i), labels(i), thresholds, likelihood, row_value, &
+                status=status)
+            if (status%code /= FORTNUM_OK) return
+            value = value + row_value
+        end do
+        if (.not. ieee_is_finite(value)) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "ordinal GP likelihood: value is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_ordinal_log_likelihood_value
+
+    !> Forward directional product of the ordered likelihood.
+    subroutine gp_ordinal_log_likelihood_jvp(eta, labels, thresholds, likelihood, &
+            eta_dot, thresholds_dot, value, value_dot, status)
+        real(dp), intent(in) :: eta(:), thresholds(:), eta_dot(:), thresholds_dot(:)
+        integer, intent(in) :: labels(:), likelihood
+        real(dp), intent(out) :: value, value_dot
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: row_value, eta_gradient, thresholds_gradient(size(thresholds))
+        integer :: i
+
+        value = 0.0_dp
+        value_dot = 0.0_dp
+        call validate_ordinal_likelihood_inputs(eta, labels, thresholds, likelihood, status)
+        if (status%code /= FORTNUM_OK) return
+        if (size(eta_dot) /= size(eta) .or. size(thresholds_dot) /= size(thresholds)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal GP likelihood JVP: tangent shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(eta_dot)) .or. &
+                any(.not. ieee_is_finite(thresholds_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal GP likelihood JVP: tangent is not finite")
+            return
+        end if
+        do i = 1, size(eta)
+            call ordinal_row_terms(eta(i), labels(i), thresholds, likelihood, row_value, &
+                eta_gradient, thresholds_gradient, status)
+            if (status%code /= FORTNUM_OK) return
+            value = value + row_value
+            value_dot = value_dot + eta_gradient*eta_dot(i) + &
+                dot_product(thresholds_gradient, thresholds_dot)
+        end do
+        if (.not. ieee_is_finite(value) .or. .not. ieee_is_finite(value_dot)) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "ordinal GP likelihood JVP: result is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_ordinal_log_likelihood_jvp
+
+    !> Reverse product of the ordered likelihood.
+    subroutine gp_ordinal_log_likelihood_vjp(eta, labels, thresholds, likelihood, &
+            value_bar, eta_bar, thresholds_bar, status)
+        real(dp), intent(in) :: eta(:), thresholds(:), value_bar
+        integer, intent(in) :: labels(:), likelihood
+        real(dp), intent(out) :: eta_bar(:), thresholds_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: row_value, eta_gradient, local_threshold_bar(size(thresholds))
+        integer :: i
+
+        eta_bar = 0.0_dp
+        thresholds_bar = 0.0_dp
+        call validate_ordinal_likelihood_inputs(eta, labels, thresholds, likelihood, status)
+        if (status%code /= FORTNUM_OK) return
+        if (size(eta_bar) /= size(eta) .or. size(thresholds_bar) /= size(thresholds) .or. &
+                .not. ieee_is_finite(value_bar)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal GP likelihood VJP: cotangent shape is invalid")
+            return
+        end if
+        do i = 1, size(eta)
+            call ordinal_row_terms(eta(i), labels(i), thresholds, likelihood, row_value, &
+                eta_gradient, local_threshold_bar, status)
+            if (status%code /= FORTNUM_OK) return
+            eta_bar(i) = eta_bar(i) + value_bar*eta_gradient
+            thresholds_bar = thresholds_bar + value_bar*local_threshold_bar
+        end do
+        if (any(.not. ieee_is_finite(eta_bar)) .or. &
+                any(.not. ieee_is_finite(thresholds_bar))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "ordinal GP likelihood VJP: result is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_ordinal_log_likelihood_vjp
+
+    !> Directional Hessian product of the ordered likelihood gradient.
+    !!
+    !! The output is `value_bar * H*[eta_dot,thresholds_dot]`, where `H` is
+    !! the exact Hessian of the summed log likelihood.  Logistic and probit
+    !! density derivatives are analytic, so this product is suitable for
+    !! second-order hyperparameter objectives without finite differences.
+    subroutine gp_ordinal_log_likelihood_hvp(eta, labels, thresholds, likelihood, &
+            value_bar, eta_dot, thresholds_dot, eta_hvp, thresholds_hvp, status)
+        real(dp), intent(in) :: eta(:), thresholds(:), value_bar
+        real(dp), intent(in) :: eta_dot(:), thresholds_dot(:)
+        integer, intent(in) :: labels(:), likelihood
+        real(dp), intent(out) :: eta_hvp(:), thresholds_hvp(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: row_value, eta_gradient, eta_hessian_dot
+        real(dp) :: threshold_gradient(size(thresholds))
+        real(dp) :: threshold_hessian_dot(size(thresholds))
+        integer :: i
+
+        eta_hvp = 0.0_dp
+        thresholds_hvp = 0.0_dp
+        call validate_ordinal_likelihood_inputs(eta, labels, thresholds, likelihood, status)
+        if (status%code /= FORTNUM_OK) return
+        if (size(eta_hvp) /= size(eta) .or. size(thresholds_hvp) /= size(thresholds) .or. &
+                size(eta_dot) /= size(eta) .or. size(thresholds_dot) /= size(thresholds) .or. &
+                .not. ieee_is_finite(value_bar)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal GP likelihood HVP: tangent or output shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(eta_dot)) .or. &
+                any(.not. ieee_is_finite(thresholds_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal GP likelihood HVP: tangent is not finite")
+            return
+        end if
+        do i = 1, size(eta)
+            call ordinal_row_hessian_direction(eta(i), labels(i), thresholds, likelihood, &
+                eta_dot(i), thresholds_dot, row_value, eta_gradient, threshold_gradient, &
+                eta_hessian_dot, threshold_hessian_dot, status)
+            if (status%code /= FORTNUM_OK) return
+            eta_hvp(i) = value_bar*eta_hessian_dot
+            thresholds_hvp = thresholds_hvp + value_bar*threshold_hessian_dot
+        end do
+        if (any(.not. ieee_is_finite(eta_hvp)) .or. &
+                any(.not. ieee_is_finite(thresholds_hvp))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "ordinal GP likelihood HVP: result is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_ordinal_log_likelihood_hvp
+
+    logical function gp_ordinal_likelihood_device_supported(device_kind) result(supported)
+        !! Report the explicit device contract for the scalar primitive.
+        integer, intent(in) :: device_kind
+
+        supported = device_kind == FORTML_DEVICE_CPU
+    end function gp_ordinal_likelihood_device_supported
+
+    subroutine validate_ordinal_likelihood_inputs(eta, labels, thresholds, likelihood, status)
+        real(dp), intent(in) :: eta(:), thresholds(:)
+        integer, intent(in) :: labels(:), likelihood
+        type(fortnum_status_t), intent(out) :: status
+        integer :: i, class_count
+
+        if (size(eta) < 1 .or. size(labels) /= size(eta) .or. size(thresholds) < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal GP likelihood: input dimensions are invalid")
+            return
+        end if
+        if (likelihood /= GP_ORDINAL_LIKELIHOOD_LOGISTIC .and. &
+                likelihood /= GP_ORDINAL_LIKELIHOOD_PROBIT) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal GP likelihood: likelihood kind is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(eta)) .or. any(.not. ieee_is_finite(thresholds))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal GP likelihood: inputs must be finite")
+            return
+        end if
+        do i = 2, size(thresholds)
+            if (thresholds(i) <= thresholds(i - 1)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "ordinal GP likelihood: thresholds must be strictly increasing")
+                return
+            end if
+        end do
+        class_count = size(thresholds) + 1
+        do i = 1, size(labels)
+            if (labels(i) < 1 .or. labels(i) > class_count) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "ordinal GP likelihood: labels must be one-based ranks")
+                return
+            end if
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine validate_ordinal_likelihood_inputs
+
+    subroutine ordinal_row_terms(eta, label, thresholds, likelihood, row_value, eta_gradient, &
+            thresholds_gradient, status)
+        real(dp), intent(in) :: eta, thresholds(:)
+        integer, intent(in) :: label, likelihood
+        real(dp), intent(out) :: row_value
+        real(dp), intent(out), optional :: eta_gradient, thresholds_gradient(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: probability, upper_cdf, lower_cdf, upper_pdf, lower_pdf
+        real(dp) :: upper_z, lower_z
+        logical :: has_upper, has_lower
+
+        row_value = 0.0_dp
+        if (present(eta_gradient)) eta_gradient = 0.0_dp
+        if (present(thresholds_gradient)) thresholds_gradient = 0.0_dp
+        has_lower = label > 1
+        has_upper = label <= size(thresholds)
+        if (has_upper) then
+            upper_z = thresholds(label) - eta
+            call ordinal_cdf_pdf(upper_z, likelihood, upper_cdf, upper_pdf)
+        else
+            upper_cdf = 1.0_dp
+            upper_pdf = 0.0_dp
+        end if
+        if (has_lower) then
+            lower_z = thresholds(label - 1) - eta
+            call ordinal_cdf_pdf(lower_z, likelihood, lower_cdf, lower_pdf)
+        else
+            lower_cdf = 0.0_dp
+            lower_pdf = 0.0_dp
+        end if
+        probability = upper_cdf - lower_cdf
+        if (.not. ieee_is_finite(probability) .or. probability <= tiny(1.0_dp)) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "ordinal GP likelihood: category probability underflowed")
+            return
+        end if
+        row_value = log(probability)
+        if (present(eta_gradient)) eta_gradient = (lower_pdf - upper_pdf)/probability
+        if (present(thresholds_gradient)) then
+            if (size(thresholds_gradient) /= size(thresholds)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "ordinal GP likelihood: threshold gradient shape is invalid")
+                return
+            end if
+            if (has_upper) thresholds_gradient(label) = upper_pdf/probability
+            if (has_lower) thresholds_gradient(label - 1) = -lower_pdf/probability
+        end if
+        if (.not. ieee_is_finite(row_value)) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "ordinal GP likelihood: log probability is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine ordinal_row_terms
+
+    subroutine ordinal_row_hessian_direction(eta, label, thresholds, likelihood, eta_dot, &
+            thresholds_dot, row_value, eta_gradient, thresholds_gradient, eta_hessian_dot, &
+            thresholds_hessian_dot, status)
+        real(dp), intent(in) :: eta, thresholds(:), eta_dot, thresholds_dot(:)
+        integer, intent(in) :: label, likelihood
+        real(dp), intent(out) :: row_value, eta_gradient, thresholds_gradient(:)
+        real(dp), intent(out) :: eta_hessian_dot, thresholds_hessian_dot(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: probability, upper_cdf, lower_cdf, upper_pdf, lower_pdf
+        real(dp) :: upper_pdf_prime, lower_pdf_prime, probability_dot
+        real(dp) :: eta_first, upper_first, lower_first
+        real(dp) :: eta_first_dot, upper_first_dot, lower_first_dot
+        real(dp) :: upper_z_dot, lower_z_dot
+        logical :: has_upper, has_lower
+
+        row_value = 0.0_dp
+        eta_gradient = 0.0_dp
+        thresholds_gradient = 0.0_dp
+        eta_hessian_dot = 0.0_dp
+        thresholds_hessian_dot = 0.0_dp
+        if (size(thresholds_dot) /= size(thresholds)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal GP likelihood HVP: threshold tangent shape is invalid")
+            return
+        end if
+        has_lower = label > 1
+        has_upper = label <= size(thresholds)
+        if (has_upper) then
+            call ordinal_cdf_pdf_derivative(thresholds(label) - eta, likelihood, upper_cdf, &
+                upper_pdf, upper_pdf_prime)
+            upper_z_dot = thresholds_dot(label) - eta_dot
+        else
+            upper_cdf = 1.0_dp
+            upper_pdf = 0.0_dp
+            upper_pdf_prime = 0.0_dp
+            upper_z_dot = 0.0_dp
+        end if
+        if (has_lower) then
+            call ordinal_cdf_pdf_derivative(thresholds(label - 1) - eta, likelihood, lower_cdf, &
+                lower_pdf, lower_pdf_prime)
+            lower_z_dot = thresholds_dot(label - 1) - eta_dot
+        else
+            lower_cdf = 0.0_dp
+            lower_pdf = 0.0_dp
+            lower_pdf_prime = 0.0_dp
+            lower_z_dot = 0.0_dp
+        end if
+        probability = upper_cdf - lower_cdf
+        if (.not. ieee_is_finite(probability) .or. probability <= tiny(1.0_dp)) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "ordinal GP likelihood HVP: category probability underflowed")
+            return
+        end if
+        row_value = log(probability)
+        probability_dot = upper_pdf*upper_z_dot - lower_pdf*lower_z_dot
+        eta_first = (lower_pdf - upper_pdf)/probability
+        upper_first = upper_pdf/probability
+        lower_first = -lower_pdf/probability
+        eta_first_dot = (lower_pdf_prime*lower_z_dot - upper_pdf_prime*upper_z_dot)/probability - &
+            (lower_pdf - upper_pdf)*probability_dot/(probability*probability)
+        upper_first_dot = upper_pdf_prime*upper_z_dot/probability - &
+            upper_pdf*probability_dot/(probability*probability)
+        lower_first_dot = -lower_pdf_prime*lower_z_dot/probability + &
+            lower_pdf*probability_dot/(probability*probability)
+        eta_gradient = eta_first
+        if (has_upper) thresholds_gradient(label) = upper_first
+        if (has_lower) thresholds_gradient(label - 1) = lower_first
+        eta_hessian_dot = eta_first_dot
+        if (has_upper) thresholds_hessian_dot(label) = upper_first_dot
+        if (has_lower) thresholds_hessian_dot(label - 1) = lower_first_dot
+        if (any(.not. ieee_is_finite([row_value, eta_gradient, eta_hessian_dot]))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "ordinal GP likelihood HVP: result is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine ordinal_row_hessian_direction
+
+    subroutine ordinal_cdf_pdf(z, likelihood, cdf, pdf)
+        real(dp), intent(in) :: z
+        integer, intent(in) :: likelihood
+        real(dp), intent(out) :: cdf, pdf
+
+        if (likelihood == GP_ORDINAL_LIKELIHOOD_LOGISTIC) then
+            cdf = stable_ordinal_sigmoid(z)
+            pdf = cdf*(1.0_dp - cdf)
+        else
+            cdf = 0.5_dp*erfc(-z/SQRT_TWO)
+            cdf = min(1.0_dp, max(0.0_dp, cdf))
+            pdf = exp(-0.5_dp*z*z)/SQRT_TWO_PI
+        end if
+    end subroutine ordinal_cdf_pdf
+
+    subroutine ordinal_cdf_pdf_derivative(z, likelihood, cdf, pdf, pdf_prime)
+        real(dp), intent(in) :: z
+        integer, intent(in) :: likelihood
+        real(dp), intent(out) :: cdf, pdf, pdf_prime
+
+        call ordinal_cdf_pdf(z, likelihood, cdf, pdf)
+        if (likelihood == GP_ORDINAL_LIKELIHOOD_LOGISTIC) then
+            pdf_prime = pdf*(1.0_dp - 2.0_dp*cdf)
+        else
+            pdf_prime = -z*pdf
+        end if
+    end subroutine ordinal_cdf_pdf_derivative
+
+    real(dp) function stable_ordinal_sigmoid(value) result(cdf)
+        real(dp), intent(in) :: value
+        real(dp) :: exponential
+
+        if (value >= 0.0_dp) then
+            cdf = 1.0_dp/(1.0_dp + exp(-value))
+        else
+            exponential = exp(value)
+            cdf = exponential/(1.0_dp + exponential)
+        end if
+    end function stable_ordinal_sigmoid
 
     subroutine gp_ordinal_fit(self, x, labels, kernel, status, options, state)
         class(gp_ordinal_classification_t), intent(out) :: self

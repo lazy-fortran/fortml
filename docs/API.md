@@ -4572,6 +4572,23 @@ optimizer oracle is `test_gp_ordinal_classification_hyperparameters`, and the
 design note is
 [`docs/GP_ORDINAL_CLASSIFICATION.md`](GP_ORDINAL_CLASSIFICATION.md).
 
+The same module exposes the backend-independent native likelihood primitive
+`gp_ordinal_log_likelihood_value(eta,labels,thresholds,likelihood,value,status)`.
+Labels are one-based ranks, thresholds are finite and strictly increasing, and
+`likelihood` is either `GP_ORDINAL_LIKELIHOOD_LOGISTIC` or
+`GP_ORDINAL_LIKELIHOOD_PROBIT`. The result is the summed ordered-logit or
+ordered-probit log likelihood, with zero and one tails handled analytically.
+`gp_ordinal_log_likelihood_jvp` and `_vjp` differentiate jointly with respect
+to latent scores and cut points; `gp_ordinal_log_likelihood_hvp` returns the
+exact directional Hessian product of that gradient. Shape, rank, ordering,
+finite-value, and category-probability-underflow checks are transactional and
+return typed status codes. These are CPU reference products only:
+`gp_ordinal_likelihood_device_supported(FORTML_DEVICE_CUDA)` is false until a
+resident ordinal likelihood/reduction kernel is linked, so callers cannot
+mistake a host evaluation for GPU execution. The independent oracle is
+`test_gp_ordinal_likelihood`; see
+[`GP_ORDINAL_LIKELIHOOD.md`](GP_ORDINAL_LIKELIHOOD.md).
+
 ### `fortml_student_t_likelihood`
 
 `student_t_likelihood_t` is a fixed-latent Student-t observation likelihood
