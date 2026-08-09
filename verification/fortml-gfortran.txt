@@ -6,7 +6,7 @@ FortSym dependency: origin/main 26250ce24e3890711343a2f18d5feae2be832508
 FortOpt dependency: origin/main 883aa7ee0a3f2b3a508d0309b907adccc30a0f29
 FortNum dependency: origin/main 7ced2f7aa272920916789fa82a35bfcb2e792d45
 FortSparse dependency: origin/main 7ad20738b3f888a3bbec37324eff3117c630221d
-FortML-bench revision: origin/main 007c589 (linear SGD, weighted OLS, Bayesian ridge, and prior integrated lanes)
+FortML-bench revision: origin/main e2b711c (linear SGD, weighted OLS, Bayesian ridge, and prior integrated lanes)
 Command: FO_SCAN_FALLBACK=regex fo
 Worktree: clean canonical checkout at /mnt/storage/code/lazy-fortran/fortml;
 transient checkpoint outputs were moved to the recoverable Trash after verification
