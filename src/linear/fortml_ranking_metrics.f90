@@ -169,10 +169,28 @@ contains
                             sample_weight=sample_weight)
                     end if
                 else
-                    call ranking_ndcg(relevance, scores, group, value, status, k)
+                    if (present(gain_base)) then
+                        call ranking_ndcg(relevance, scores, group, value, status, k, &
+                            gain_base=gain_base)
+                    else
+                        call ranking_ndcg(relevance, scores, group, value, status, k)
+                    end if
                 end if
             else
-                call ranking_ndcg(relevance, scores, group, value, status)
+                if (present(sample_weight)) then
+                    if (present(gain_base)) then
+                        call ranking_ndcg(relevance, scores, group, value, status, &
+                            sample_weight=sample_weight, gain_base=gain_base)
+                    else
+                        call ranking_ndcg(relevance, scores, group, value, status, &
+                            sample_weight=sample_weight)
+                    end if
+                else if (present(gain_base)) then
+                    call ranking_ndcg(relevance, scores, group, value, status, &
+                        gain_base=gain_base)
+                else
+                    call ranking_ndcg(relevance, scores, group, value, status)
+                end if
             end if
         case (FORTML_DEVICE_CUDA)
             call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
