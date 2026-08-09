@@ -4533,11 +4533,15 @@ checkouts before deciding that a product is unavailable.
 
 #### WP9d: GP-limit, PCA, and linear-optimum initialization
 
-- [ ] Implement NNGP covariance propagation for the supported MLP depth,
-  activations, weight and bias priors, and widths, following the [deep-network
-  GP correspondence](https://arxiv.org/abs/1711.00165). On a user design set,
-  estimate covariance from a seeded finite-width ensemble and report its error,
-  mean, and variance calibration against the limiting kernel.
+- [x] Add the bounded analytic ReLU NNGP covariance contract
+  `fortml_relu_nngp`: configured input dimension, hidden depth, and Gaussian
+  weight/bias variances propagate through the exact arc-cosine recurrence.
+  Metadata explicitly distinguishes the exact infinite-width covariance from a
+  finite-MLP weight map, `test_relu_nngp` has an independent recurrence oracle,
+  and CUDA is a no-mutation typed refusal. The release lane is
+  `fortml-bench/results/relu_nngp.csv`. Other activations, finite-width
+  ensemble calibration, output priors, posterior draws, and finite weight maps
+  remain open.
 - [x] Add the finite-feature last-layer kernel-ridge initialization contract
   for an existing affine-output MLP. The initializer records dimensions,
   regularization, fixed-feature derivative scope, and its explicit

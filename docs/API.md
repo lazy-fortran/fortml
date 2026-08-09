@@ -1951,6 +1951,18 @@ this is not an exact NNGP, infinite-width NTK, or full GP-posterior weight map.
 feature-map and solve path exists. See
 [`MLP_LAST_LAYER_GP.md`](MLP_LAST_LAYER_GP.md).
 
+### `fortml_relu_nngp`
+
+`relu_nngp_t` is the analytic, exact-infinite-width ReLU covariance contract.
+Call `configure(input_dimension, hidden_layer_count, status[, weight_variance,
+bias_variance])`, then `covariance(x_left,x_right,value,status)`. It uses
+`W_ij ~ N(0, weight_variance/fan_in)` and the ReLU arc-cosine recurrence after
+each hidden layer. `metadata()` records the prior and
+`exact_infinite_width=.true.`. It intentionally reports
+`finite_mlp_weight_map_supported=.false.`: a covariance kernel is not a
+deterministic finite-MLP initialization. `covariance_cuda` returns a typed,
+no-mutation CUDA refusal. See [`RELU_NNGP.md`](RELU_NNGP.md).
+
 ### `fortml_mlp_chain`
 
 `mlp_chain_t` is the composable neural-module seam. Initialize it with the
