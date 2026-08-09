@@ -104,6 +104,14 @@ module fortml_gp_classification
             gp_classification_fixed_state_log_posterior_gradient
         procedure, public :: hyperparameter_gradient => &
             gp_classification_hyperparameter_gradient
+        procedure, public :: hyperparameter_jvp => &
+            gp_classification_hyperparameter_jvp
+        procedure, public :: hyperparameter_vjp => &
+            gp_classification_hyperparameter_vjp
+        procedure, public :: hyperparameter_jvp_device => &
+            gp_classification_hyperparameter_jvp_device
+        procedure, public :: hyperparameter_vjp_device => &
+            gp_classification_hyperparameter_vjp_device
         procedure, public :: hyperparameter_hvp => gp_classification_hyperparameter_hvp
         procedure, public :: hyperparameter_hvp_device => &
             gp_classification_hyperparameter_hvp_device
@@ -142,6 +150,10 @@ module fortml_gp_classification
     public :: gp_classification_log_likelihood_jvp
     public :: gp_classification_log_likelihood_vjp
     public :: gp_classification_hyperparameter_gradient
+    public :: gp_classification_hyperparameter_jvp
+    public :: gp_classification_hyperparameter_vjp
+    public :: gp_classification_hyperparameter_jvp_device
+    public :: gp_classification_hyperparameter_vjp_device
     public :: gp_classification_hyperparameter_hvp
     public :: gp_classification_hyperparameter_hvp_device
     public :: gp_classification_likelihood_device_supported
@@ -1581,6 +1593,145 @@ contains
         call self%kernel%parameter_vjp(self%x_train, self%x_train, matrix_bar, &
             gradient, status)
     end subroutine gp_classification_hyperparameter_gradient
+
+    !> Value and forward product of the converged mode-posterior envelope.
+    !!
+    !! The scalar value is evaluated at the currently fitted mode.  The
+    !! envelope gradient therefore needs no Newton-mode tangent: the
+    !! directional product is the contraction of `hyperparameter_gradient`
+    !! with the packed kernel-log direction.  A caller that needs the mode
+    !! tangent for predictions should use `predict_latent_hyperparameter_jvp`;
+    !! this objective product is the compact interface consumed by HPO and
+    !! objective-composition code.
+    subroutine gp_classification_hyperparameter_jvp(self, direction, value, tangent, status)
+        class(gp_classification_t), intent(in) :: self
+        real(dp), intent(in) :: direction(:)
+        real(dp), intent(out) :: value, tangent
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: gradient(:)
+
+        value = -huge(1.0_dp)
+        tangent = 0.0_dp
+        if (.not. self%fitted()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP classification hyperparameter JVP: model is not fitted")
+            return
+        end if
+        if (size(direction) /= self%parameter_count() .or. &
+            any(.not. ieee_is_finite(direction))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP classification hyperparameter JVP: direction shape or values are invalid")
+            return
+        end if
+        call self%fixed_state_log_posterior(value, status)
+        if (status%code /= FORTNUM_OK) return
+        allocate(gradient(self%parameter_count()))
+        call self%hyperparameter_gradient(gradient, status)
+        if (status%code /= FORTNUM_OK) return
+        tangent = dot_product(gradient, direction)
+        if (.not. ieee_is_finite(tangent)) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "GP classification hyperparameter JVP: result is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_classification_hyperparameter_jvp
+
+    !> Reverse product of the converged mode-posterior envelope.
+    !!
+    !! The objective is scalar, so this VJP is its scalar cotangent times the
+    !! analytic envelope gradient.  Keeping this entry point alongside the
+    !! JVP lets generic objective code switch between forward and reverse
+    !! products without reaching into classifier-specific gradient details.
+    subroutine gp_classification_hyperparameter_vjp(self, value_bar, parameter_bar, status)
+        class(gp_classification_t), intent(in) :: self
+        real(dp), intent(in) :: value_bar
+        real(dp), intent(out) :: parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: gradient(:)
+
+        parameter_bar = 0.0_dp
+        if (.not. self%fitted()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP classification hyperparameter VJP: model is not fitted")
+            return
+        end if
+        if (size(parameter_bar) /= self%parameter_count() .or. &
+            .not. ieee_is_finite(value_bar)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP classification hyperparameter VJP: cotangent or output shape is invalid")
+            return
+        end if
+        allocate(gradient(self%parameter_count()))
+        call self%hyperparameter_gradient(gradient, status)
+        if (status%code /= FORTNUM_OK) return
+        parameter_bar = value_bar*gradient
+        if (any(.not. ieee_is_finite(parameter_bar))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "GP classification hyperparameter VJP: result is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_classification_hyperparameter_vjp
+
+    !> Device dispatch for the scalar hyperparameter JVP.
+    !!
+    !! CUDA remains an explicit refusal until the Laplace factorization and
+    !! mode solve are resident.  This prevents an accidental host fallback
+    !! from being hidden behind a derivative API.
+    subroutine gp_classification_hyperparameter_jvp_device(self, device, direction, &
+            value, tangent, status)
+        class(gp_classification_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: direction(:)
+        real(dp), intent(out) :: value, tangent
+        type(fortnum_status_t), intent(out) :: status
+
+        value = -huge(1.0_dp)
+        tangent = 0.0_dp
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP classification hyperparameter JVP device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%hyperparameter_jvp(direction, value, tangent, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "GP classification hyperparameter JVP device: no resident CUDA Laplace graph is linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP classification hyperparameter JVP device: device kind is invalid")
+        end select
+    end subroutine gp_classification_hyperparameter_jvp_device
+
+    !> Device dispatch for the scalar hyperparameter VJP.
+    subroutine gp_classification_hyperparameter_vjp_device(self, device, value_bar, &
+            parameter_bar, status)
+        class(gp_classification_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: value_bar
+        real(dp), intent(out) :: parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        parameter_bar = 0.0_dp
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP classification hyperparameter VJP device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%hyperparameter_vjp(value_bar, parameter_bar, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "GP classification hyperparameter VJP device: no resident CUDA Laplace graph is linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP classification hyperparameter VJP device: device kind is invalid")
+        end select
+    end subroutine gp_classification_hyperparameter_vjp_device
 
     !> Directional hyperparameter Hessian product of the fitted Laplace
     !! mode-posterior envelope.  Unlike `set_parameters`, which is a
