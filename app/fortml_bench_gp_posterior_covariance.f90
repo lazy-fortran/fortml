@@ -1,0 +1,62 @@
+program fortml_bench_gp_posterior_covariance
+    !! Release benchmark for the exact GP posterior covariance contract.
+    use, intrinsic :: iso_fortran_env, only: real64
+    use fortnum_kinds, only: dp
+    use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_NOT_IMPLEMENTED
+    use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU, FORTML_DEVICE_CUDA
+    use fortml_kernels, only: kernel_t, make_rbf_kernel
+    use fortml_gaussian_process, only: gp_regression_t
+    implicit none
+
+    integer, parameter :: n = 32, m = 16, d = 1, p = 2, repetitions = 20
+    real(dp) :: x(n, d), y(n, p), query(m, d), covariance(m, m)
+    real(dp) :: mean(m, p), variance(m)
+    type(gp_regression_t) :: model
+    type(kernel_t) :: kernel
+    type(fortnum_status_t) :: status
+    type(fortml_device_t) :: cpu, cuda
+    real(real64) :: started, finished
+    real(dp) :: checksum, variance_checksum
+    integer :: i, repetition, cuda_code
+
+    do i = 1, n
+        x(i, 1) = -1.2_dp + 0.08_dp*real(i - 1, dp)
+        y(i, 1) = sin(1.3_dp*x(i, 1))
+        y(i, 2) = cos(0.7_dp*x(i, 1)) - 0.2_dp
+    end do
+    do i = 1, m
+        query(i, 1) = -1.0_dp + 0.13_dp*real(i - 1, dp)
+    end do
+    kernel = make_rbf_kernel(d, 1.2_dp, 0.55_dp, status)
+    call model%fit(x, y, kernel, 0.08_dp, status)
+    if (.not. status_ok(status)) error stop "GP covariance benchmark fit failed"
+
+    call cpu_time(started)
+    do repetition = 1, repetitions
+        call model%predict_covariance(query, covariance, status)
+        if (.not. status_ok(status)) error stop "GP covariance benchmark prediction failed"
+    end do
+    call cpu_time(finished)
+    checksum = sum(covariance)
+    call model%predict(query, mean, variance, status)
+    if (.not. status_ok(status)) error stop "GP covariance benchmark marginal failed"
+    variance_checksum = sum(variance)
+    write (*, '(a,",seconds,",es24.16,",checksum,",es24.16)') &
+        "gp_posterior_covariance", (finished - started)/real(repetitions, real64), checksum
+    write (*, '(a,",variance_checksum,",es24.16)') &
+        "gp_posterior_covariance", variance_checksum
+
+    cpu%kind = FORTML_DEVICE_CPU
+    cpu%selected = .true.
+    cpu%available = .true.
+    call model%predict_covariance_device(cpu, query, covariance, status)
+    write (*, '(a,",cpu,supported,",a1)') "gp_posterior_covariance_device", &
+        merge("T", "F", status_ok(status))
+    cuda%kind = FORTML_DEVICE_CUDA
+    cuda%selected = .true.
+    cuda%available = .true.
+    call model%predict_covariance_device(cuda, query, covariance, status)
+    cuda_code = status%code
+    write (*, '(a,",cuda,refused,",i0)') "gp_posterior_covariance_device", cuda_code
+    if (cuda_code /= FORTNUM_NOT_IMPLEMENTED) error stop "CUDA boundary changed"
+end program fortml_bench_gp_posterior_covariance

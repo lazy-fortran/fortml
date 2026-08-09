@@ -149,6 +149,10 @@ it is checked off.
 
 ### Gaussian-process and likelihood parity
 
+- [x] Expose the exact-GP dense latent posterior covariance for arbitrary
+  query sets, with Cholesky reuse, symmetry/round-off guards, and an explicit
+  CPU device dispatch plus typed CUDA refusal; retain an independent dense
+  oracle and pinned benchmark row.
 - [ ] Finish the likelihood catalog: Gaussian, Bernoulli/probit, categorical,
   multinomial, Poisson/count, Gamma, Student-t, heteroskedastic, censored,
   ordinal, and warped links with constraints, stable tails, batch shapes, and

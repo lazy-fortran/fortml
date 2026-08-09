@@ -4002,6 +4002,14 @@ predict_vjp(x, mean_bar, variance_bar, parameter_bar, status)
 predict_hvp(x, mean_bar, direction, parameter_hvp, status)
 ```
 
+`predict_covariance(x,covariance,status)` returns the dense latent posterior
+covariance for an arbitrary query set. It reuses the fitted Cholesky state,
+symmetrizes round-off, and clips only tiny negative diagonal round-off; the
+observation-noise variance is not added. `predict_covariance_device` dispatches
+the same reference calculation for an explicitly selected CPU context and
+returns `FORTNUM_NOT_IMPLEMENTED` for CUDA until a resident covariance and
+factorization kernel is linked. It never hides a host fallback.
+
 The HVP covers a weighted predictive mean. The LML methods are
 `log_marginal_likelihood`, `log_marginal_likelihood_jvp`,
 `hyperparameter_gradient`, and `hyperparameter_hvp`.

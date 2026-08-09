@@ -2,9 +2,10 @@ module fortml_gaussian_process
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
-        FORTNUM_DOMAIN_ERROR, FORTNUM_CONVERGENCE_ERROR
+        FORTNUM_DOMAIN_ERROR, FORTNUM_CONVERGENCE_ERROR, FORTNUM_NOT_IMPLEMENTED
     use fortnum_cholesky, only: cholesky_factorization_t
     use fortml_kernels, only: kernel_t
+    use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU, FORTML_DEVICE_CUDA
     use fortml_gp_mean, only: gp_mean_t, make_zero_mean
     implicit none
     private
@@ -32,6 +33,8 @@ module fortml_gaussian_process
         procedure, public :: mean_parameter_count => gp_mean_parameter_count
         procedure, public :: mean_parameters => gp_mean_parameters
         procedure, public :: predict => gp_predict
+        procedure, public :: predict_covariance => gp_predict_covariance
+        procedure, public :: predict_covariance_device => gp_predict_covariance_device
         procedure, public :: predict_jvp => gp_predict_jvp
         procedure, public :: predict_vjp => gp_predict_vjp
         procedure, public :: predict_hvp => gp_predict_hvp
@@ -43,6 +46,8 @@ module fortml_gaussian_process
 
     public :: gp_fit
     public :: gp_predict
+    public :: gp_predict_covariance
+    public :: gp_predict_covariance_device
     public :: gp_predict_jvp
     public :: gp_predict_vjp
     public :: gp_predict_hvp
@@ -237,6 +242,87 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine gp_predict
+
+    subroutine gp_predict_covariance(self, x, covariance, status)
+        !! Dense posterior covariance for a shared query set.
+        !!
+        !! The covariance is the latent covariance (observation noise is not
+        !! added) and is shared by all independent output columns.  Returning
+        !! the full matrix matches the exact-GP posterior contract used by
+        !! GPyTorch/GPflow and avoids callers reconstructing it from marginal
+        !! variances.  The Cholesky factor is reused, so the solve is the same
+        !! one used by `predict` and no host fallback is hidden here.
+        class(gp_regression_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: covariance(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: cross(:, :), prior(:, :), work(:, :)
+        integer :: m, i
+
+        covariance = 0.0_dp
+        if (.not. gp_fitted(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP predict_covariance: model is not fitted")
+            return
+        end if
+        m = size(x, 1)
+        if (m < 1 .or. size(x, 2) /= self%n_features .or. &
+            any(shape(covariance) /= [m, m])) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP predict_covariance: input or covariance shape is invalid")
+            return
+        end if
+        allocate(cross(self%n_samples, m), prior(m, m), work(self%n_samples, m))
+        call self%kernel%matrix(self%x_train, x, cross, status)
+        if (status%code /= FORTNUM_OK) return
+        call self%kernel%matrix(x, x, prior, status)
+        if (status%code /= FORTNUM_OK) return
+        work = cross
+        call self%factorization%solve_lower_matrix(work, status)
+        if (status%code /= FORTNUM_OK) return
+        covariance = prior - matmul(transpose(work), work)
+        covariance = 0.5_dp*(covariance + transpose(covariance))
+        do i = 1, m
+            if (covariance(i, i) < -1.0e-9_dp) then
+                call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                    "GP predict_covariance: posterior covariance is not positive")
+                covariance = 0.0_dp
+                return
+            end if
+            if (covariance(i, i) < 0.0_dp) covariance(i, i) = 0.0_dp
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_predict_covariance
+
+    subroutine gp_predict_covariance_device(self, device, x, covariance, status)
+        !! Device boundary for the exact posterior covariance.
+        !!
+        !! CPU dispatches to the reference dense implementation.  CUDA is a
+        !! typed refusal until a resident covariance/Cholesky plan is linked;
+        !! the routine never silently copies data back to the host.
+        class(gp_regression_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: covariance(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        covariance = 0.0_dp
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP covariance device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_covariance(x, covariance, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "GP covariance device: resident CUDA covariance or Cholesky kernel is not linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP covariance device: device kind is invalid")
+        end select
+    end subroutine gp_predict_covariance_device
 
     subroutine gp_predict_jvp(self, x, direction, mean, mean_dot, variance, &
             variance_dot, status)
