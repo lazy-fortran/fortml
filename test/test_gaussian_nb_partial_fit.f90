@@ -7,7 +7,7 @@ program test_gaussian_nb_partial_fit
         FORTNUM_NOT_IMPLEMENTED
     implicit none
 
-    type(gaussian_naive_bayes_t) :: streamed, reference, before, device_model
+    type(gaussian_naive_bayes_t) :: streamed, reference, before, device_model, invalid
     type(fortml_device_t) :: cpu, cuda
     type(fortnum_status_t) :: status
     real(dp) :: x(6, 2), first_x(3, 2), second_x(3, 2), query(2, 2)
@@ -17,6 +17,8 @@ program test_gaussian_nb_partial_fit
     real(dp) :: expected_prior(3), means(2, 3), variances(2, 3), prior(3)
     integer :: labels(6), first_labels(3), second_labels(3), classes(3)
     integer :: bad_labels(2), failures
+    integer :: invalid_labels(3)
+    real(dp) :: smoothing_before
 
     x(:, 1) = [8.0_dp, 0.0_dp, 10.0_dp, 2.0_dp, 4.0_dp, 6.0_dp]
     x(:, 2) = [4.0_dp, 0.0_dp, 6.0_dp, 2.0_dp, 1.0_dp, 3.0_dp]
@@ -29,6 +31,15 @@ program test_gaussian_nb_partial_fit
     query(1, :) = [1.0_dp, 1.0_dp]
     query(2, :) = [5.0_dp, 2.0_dp]
     failures = 0
+
+    smoothing_before = invalid%var_smoothing_value()
+    invalid_labels = [9, 999, 9]
+    call invalid%partial_fit(first_x, invalid_labels, status, classes=classes, &
+        var_smoothing=0.0_dp)
+    call check(status%code == FORTNUM_DOMAIN_ERROR .and. &
+        .not. invalid%partial_fit_initialized() .and. invalid%sample_count() == 0 .and. &
+        invalid%var_smoothing_value() == smoothing_before, &
+        "invalid first batch leaves stream configuration untouched", failures)
 
     call streamed%partial_fit(first_x, first_labels, status, classes=classes, &
         var_smoothing=0.0_dp)
