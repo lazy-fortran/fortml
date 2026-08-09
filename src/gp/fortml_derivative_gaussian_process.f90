@@ -34,6 +34,14 @@ module fortml_derivative_gaussian_process
         procedure, public :: fit => gp_derivative_fit
         procedure, public :: predict => gp_derivative_predict
         procedure, public :: predict_device => gp_derivative_predict_device
+        procedure, public :: predict_observation_jvp => &
+            gp_derivative_predict_observation_jvp
+        procedure, public :: predict_observation_vjp => &
+            gp_derivative_predict_observation_vjp
+        procedure, public :: predict_observation_jvp_device => &
+            gp_derivative_predict_observation_jvp_device
+        procedure, public :: predict_observation_vjp_device => &
+            gp_derivative_predict_observation_vjp_device
         procedure, public :: joint_covariance => gp_derivative_joint_covariance
         procedure, public :: joint_covariance_device => gp_derivative_joint_covariance_device
         procedure, public :: joint_covariance_jvp => gp_derivative_joint_covariance_jvp
@@ -68,6 +76,10 @@ module fortml_derivative_gaussian_process
     public :: gp_derivative_fit
     public :: gp_derivative_predict
     public :: gp_derivative_predict_device
+    public :: gp_derivative_predict_observation_jvp
+    public :: gp_derivative_predict_observation_vjp
+    public :: gp_derivative_predict_observation_jvp_device
+    public :: gp_derivative_predict_observation_vjp_device
     public :: gp_derivative_joint_covariance
     public :: gp_derivative_joint_covariance_device
     public :: gp_derivative_joint_covariance_jvp
@@ -190,6 +202,162 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine gp_derivative_predict
+
+    subroutine gp_derivative_predict_observation_jvp(self, x, components, &
+            observation_direction, mean, mean_dot, variance, variance_dot, status)
+        !! Prediction JVP through the fitted solve with respect to observations.
+        !! The training locations, components, kernel, and noise are fixed;
+        !! ``observation_direction`` has the same shape as ``y_train``.  Only
+        !! the posterior mean depends on the observations, so the latent
+        !! posterior variance tangent is identically zero.
+        class(gp_derivative_regression_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), observation_direction(:, :)
+        integer, intent(in) :: components(:)
+        real(dp), intent(out) :: mean(:, :), mean_dot(:, :), variance(:), variance_dot(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: cross(:, :), work(:, :)
+        integer :: i, j
+
+        call check_derivative_prediction_shapes(self, x, components, mean, variance, &
+            status)
+        if (status%code /= FORTNUM_OK) return
+        if (any(shape(mean_dot) /= shape(mean)) .or. size(variance_dot) /= size(variance) .or. &
+            any(shape(observation_direction) /= [self%n_observations, self%n_outputs]) .or. &
+            any(.not. ieee_is_finite(observation_direction))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "derivative GP predict_observation_jvp: direction or output shape is "// &
+                "invalid")
+            return
+        end if
+
+        call self%predict(x, components, mean, variance, status)
+        if (status%code /= FORTNUM_OK) return
+        allocate(cross(self%n_observations, size(x, 1)))
+        do j = 1, size(x, 1)
+            do i = 1, self%n_observations
+                call derivative_covariance(self%kernel, self%x_train(i, :), &
+                    self%components(i), x(j, :), components(j), cross(i, j), status)
+                if (status%code /= FORTNUM_OK) return
+            end do
+        end do
+        allocate(work, source=observation_direction)
+        call self%factorization%solve(work, status)
+        if (status%code /= FORTNUM_OK) return
+        mean_dot = matmul(transpose(cross), work)
+        variance_dot = 0.0_dp
+        if (any(.not. ieee_is_finite(mean_dot))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "derivative GP predict_observation_jvp: nonfinite product")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_derivative_predict_observation_jvp
+
+    subroutine gp_derivative_predict_observation_vjp(self, x, components, mean_bar, &
+            variance_bar, observation_bar, status)
+        !! Reverse product through the fitted solve with respect to y_train.
+        !! The posterior variance is independent of y_train, so its cotangent
+        !! is validated but contributes no observation pullback.
+        class(gp_derivative_regression_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), mean_bar(:, :), variance_bar(:)
+        integer, intent(in) :: components(:)
+        real(dp), intent(out) :: observation_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: cross(:, :), alpha_bar(:, :)
+        integer :: i, j
+
+        call check_derivative_prediction_shapes(self, x, components, mean_bar, variance_bar, &
+            status)
+        if (status%code /= FORTNUM_OK) return
+        if (any(shape(observation_bar) /= [self%n_observations, self%n_outputs]) .or. &
+            any(.not. ieee_is_finite(mean_bar)) .or. &
+            any(.not. ieee_is_finite(variance_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "derivative GP predict_observation_vjp: cotangent or output shape is "// &
+                "invalid")
+            return
+        end if
+
+        allocate(cross(self%n_observations, size(x, 1)))
+        do j = 1, size(x, 1)
+            do i = 1, self%n_observations
+                call derivative_covariance(self%kernel, self%x_train(i, :), &
+                    self%components(i), x(j, :), components(j), cross(i, j), status)
+                if (status%code /= FORTNUM_OK) return
+            end do
+        end do
+        allocate(alpha_bar, source=matmul(cross, mean_bar))
+        call self%factorization%solve(alpha_bar, status)
+        if (status%code /= FORTNUM_OK) return
+        observation_bar = alpha_bar
+        if (any(.not. ieee_is_finite(observation_bar))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "derivative GP predict_observation_vjp: nonfinite product")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_derivative_predict_observation_vjp
+
+    subroutine gp_derivative_predict_observation_jvp_device(self, device, x, components, &
+            observation_direction, mean, mean_dot, variance, variance_dot, status)
+        !! Explicit backend boundary for prediction products through y_train.
+        !! CUDA is refused until a resident derivative-GP solve graph exists;
+        !! no host fallback is permitted.
+        class(gp_derivative_regression_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :), observation_direction(:, :)
+        integer, intent(in) :: components(:)
+        real(dp), intent(out) :: mean(:, :), mean_dot(:, :), variance(:), variance_dot(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "derivative GP predict_observation_jvp device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_observation_jvp(x, components, observation_direction, mean, &
+                mean_dot, variance, variance_dot, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "derivative GP predict_observation_jvp device: no resident CUDA "// &
+                "solve graph is linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "derivative GP predict_observation_jvp device: device kind is invalid")
+        end select
+    end subroutine gp_derivative_predict_observation_jvp_device
+
+    subroutine gp_derivative_predict_observation_vjp_device(self, device, x, components, &
+            mean_bar, variance_bar, observation_bar, status)
+        !! Explicit backend boundary for reverse products through y_train.
+        !! Selected CUDA contexts return before touching observation_bar.
+        class(gp_derivative_regression_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :), mean_bar(:, :), variance_bar(:)
+        integer, intent(in) :: components(:)
+        real(dp), intent(out) :: observation_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "derivative GP predict_observation_vjp device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_observation_vjp(x, components, mean_bar, variance_bar, &
+                observation_bar, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "derivative GP predict_observation_vjp device: no resident CUDA "// &
+                "solve graph is linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "derivative GP predict_observation_vjp device: device kind is invalid")
+        end select
+    end subroutine gp_derivative_predict_observation_vjp_device
 
     subroutine gp_derivative_predict_device(self, device, x, components, mean, &
             variance, status)

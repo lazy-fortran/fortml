@@ -274,7 +274,7 @@ CUDA gate.
 | `extra_trees_classifier_t` | Randomized-threshold ensemble probabilities and labels | Refused: split routing is discrete | Refused: split routing is discrete | No |
 | `bagging_classifier_t` | Seeded bootstrap or without-replacement CART probabilities and labels | Refused: split routing is discrete | Refused: split routing is discrete | No |
 | `gp_regression_t` | Mean, variance, LML | Prediction and LML parameters | Prediction and LML parameters | Mean and LML parameters |
-| `gp_derivative_regression_t` | Mean, variance, and LML | Prediction and LML parameter JVP | Prediction parameter VJP and analytic LML hyperparameter gradient | Analytic mixed-observation HVPs for RBF, Matérn 3/2/5/2, periodic, local-periodic, rational-quadratic, cosine, linear, constant, polynomial, and supported composites; typed refusals for leaves without second input/parameter products |
+| `gp_derivative_regression_t` | Mean, variance, and LML; through-fit observation JVP/VJP | Prediction, LML-parameter, and training-target JVP | Prediction, LML-parameter, and training-target VJP; analytic LML hyperparameter gradient | Analytic mixed-observation HVPs for RBF, Matérn 3/2/5/2, periodic, local-periodic, rational-quadratic, cosine, linear, constant, polynomial, and supported composites; typed CUDA refusal for through-fit products |
 | `second_derivative_gp_t` | Exact scalar 1-D RBF/Matérn-5/2 GP over mixed value/first/second-derivative rows, plus RBF third-derivative rows; latent joint covariance and packed likelihood state | Query-coordinate JVP; RBF likelihood JVP; selected-CPU device dispatch | Query-coordinate VJP; likelihood VJP; selected-CPU device dispatch | RBF order >3, Matérn-5/2 order >2, Matérn-5/2 fifth derivative at coincidence, Matérn parameter products, and CUDA prediction/covariance/product requests are typed refusals |
 | `gp_classification_t` | Latent, observed, and log-observed probabilities; fixed-state kernel parameter setter; implicit-mode kernel hyperparameter HVP | Input and fixed-state kernel-parameter JVP for probabilities and log probabilities | Input and fixed-state kernel-parameter VJP for probabilities and log probabilities; Laplace-mode kernel hyperparameter gradient | Implicit-mode hyperparameter HVP on CPU; typed CUDA refusal |
 | `gp_multiclass_classification_t` | Latent one-vs-rest margins, normalized observed probabilities, and stable log probabilities | Input and packed fixed-state kernel-parameter JVPs for margins, probabilities, and log probabilities | Input and packed fixed-state kernel-parameter VJPs for margins, probabilities, and log probabilities, plus the packed one-vs-rest Laplace-mode kernel hyperparameter gradient | No |
@@ -4458,6 +4458,19 @@ query-input products while holding model parameters and training inputs fixed.
 `predict_input_hvp(x,components,direction,mean,mean_dot,variance,variance_dot,
 status)` provides the value-query Hessian-vector product with respect to the
 query coordinates (the fitted parameters and training inputs remain fixed).
+`predict_observation_jvp(x,components,observation_direction,mean,mean_dot,
+variance,variance_dot,status)` differentiates through the fitted Cholesky
+solve with respect to the training targets. `observation_direction` has the
+same `(n_observations,n_outputs)` shape as the fitted `y`; the posterior mean
+JVP is `C^T K^{-1} observation_direction`, while the latent variance tangent
+is zero. `predict_observation_vjp(x,components,mean_bar,variance_bar,
+observation_bar,status)` is its adjoint and returns the pullback in fitted
+target shape. These are through-fit observation products, not fixed-state
+kernel-parameter products.
+`predict_observation_jvp_device` and `predict_observation_vjp_device` dispatch
+selected CPU contexts to the same reference products. Selected CUDA contexts
+return `FORTNUM_NOT_IMPLEMENTED` before touching outputs until a resident
+derivative-GP solve graph is linked; no host fallback is used.
 The HVP is symmetric and linear in `direction`; derivative-observation query
 components are rejected with a typed `FORTNUM_NOT_IMPLEMENTED` boundary until
 the required fourth input derivatives are generated.

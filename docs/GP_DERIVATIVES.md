@@ -13,6 +13,20 @@ exact third-input covariance contractions and the quadratic-form solve.
 derivative-component queries are refused because they would require fourth
 input derivatives.
 
+The through-fit observation products `predict_observation_jvp` and
+`predict_observation_vjp` differentiate the same fitted solve with respect to
+the training target matrix `y_train`, while keeping locations, components,
+kernel, and noise fixed. The JVP solves `K alpha_dot = y_direction` and
+returns `C^T alpha_dot` for the posterior mean; posterior variance is
+independent of `y_train`, so its tangent is zero. The VJP solves the adjoint
+system for `C mean_bar` and returns a pullback in `y_train` shape. An
+independent refit finite-difference oracle checks both products, including
+their multi-output adjoint identity, in `test_derivative_gp_fit_products`.
+These products are CPU reference paths. Their selected-CPU device wrappers
+dispatch exactly, while selected CUDA requests return
+`FORTNUM_NOT_IMPLEMENTED` before touching output buffers because no resident
+derivative-GP solve graph is linked.
+
 The table is deliberately narrower than the full kernel catalog. “Mixed
 blocks” means value/first-derivative covariance blocks are available wherever
 the requested pair is smooth and finite. A refusal is a typed
