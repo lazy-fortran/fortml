@@ -212,6 +212,20 @@ resident plan remains visible as a typed capability boundary.
   suites are migrated. The 19-row release gate, report prose checks, and clean
   source and benchmark revisions are reproducible from `fortml-bench`.
 
+### Wave 10 parity closure contract
+
+The next implementation wave keeps the clean-break architecture explicit. A
+row is promotable only when its CPU oracle, derivative policy, device plan or
+typed refusal, state transaction, and release benchmark land together.
+
+| Surface | Wave 10 contract | Required evidence |
+| --- | --- | --- |
+| Naive Bayes variants | Bernoulli, Multinomial, Complement, and Categorical heads share the GaussianNB stream protocol, including arbitrary labels, class expansion policy, rollback, warm starts, and device metadata. | Independent sufficient-statistic replay, malformed-batch transaction tests, probability normalization, and CPU/CUDA capability rows. |
+| Neural training | Module trees, deterministic batches, optimizer state, mixed precision, checkpoints, and FortOpt L-BFGS-B expose exact trajectory derivatives over every declared optimizer hyperparameter. | NumPy recurrence oracle, JVP/VJP/HVP identities, interrupted replay, overflow/skip events, and matched PyTorch/JAX timing tiers. |
+| Gaussian processes | Derivative observations and predictions advertise a generated kernel/method capability matrix. Smooth kernels use analytic or FortSym products. Nonsmooth or unavailable device paths refuse before mutation. | Value/gradient/JVP/VJP/HVP observations, hyperparameter products through fitting, coincidence boundaries, and resident-device transfer accounting. |
+| Boosted trees | Numeric XGBoost and LightGBM prediction use the resident additive-tree ABI when available. Categorical, missing, ranking, DART, GOSS, histogram-growth, and unavailable plans remain typed capabilities. | CPU/resident parity, query-only transfer counts, binary/multiclass probabilities, topology refusal, and external XGBoost/LightGBM fixtures. |
+| Composition and release | Basis and pipeline nodes carry named feature/parameter paths through training, derivatives, cloning, and device planning. | Clone/persistence round trips, sparse/categorical schema tests, derivative capability rows, strict v1 provenance, and benchmark scaling tiers. |
+
 ## 2026-08 parity expansion backlog
 
 This backlog makes the requested scikit-learn/PyTorch/JAX/GPyTorch/XGBoost/
