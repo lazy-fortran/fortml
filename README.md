@@ -50,6 +50,11 @@ second-moment factors, vectors use the unfactored fallback, and checkpoint
 migration plus resident CUDA execution remain typed refusals. The independent
 lane is `fortml-bench/results/ADAFACTOR_FACTORED.md`.
 [ROADMAP.md](ROADMAP.md) records their acceptance criteria and delivery order.
+The model-agnostic `fortml_trainer` now applies typed constant, warmup, cosine,
+exponential, and one-cycle schedules across its streaming optimizers and
+persists the schedule in checkpoint schema 5. Multiclass Laplace-GP OVR models
+also expose block-packed implicit hyperparameter HVPs with an explicit CUDA
+boundary; both seams have independent release benchmark lanes.
 Fitted horizontal basis unions have a versioned, transactional host state
 dictionary and text round-trip in
 [`docs/PIPELINE_PERSISTENCE.md`](docs/PIPELINE_PERSISTENCE.md); resident CUDA
