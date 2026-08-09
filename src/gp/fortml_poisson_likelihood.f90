@@ -164,8 +164,12 @@ contains
                 "Poisson likelihood: set before initialize")
             return
         end if
-        if (size(parameters) /= POISSON_LIKELIHOOD_N_PARAMETERS .or. &
-            .not. valid_log_rate_offset(parameters(1))) then
+        if (size(parameters) /= POISSON_LIKELIHOOD_N_PARAMETERS) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "Poisson likelihood: parameter shape or offset is invalid")
+            return
+        end if
+        if (.not. valid_log_rate_offset(parameters(1))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "Poisson likelihood: parameter shape or offset is invalid")
             return
@@ -593,12 +597,17 @@ contains
             .and. ieee_is_finite(options%lower_log_rate_offset) &
             .and. ieee_is_finite(options%upper_log_rate_offset)
         if (.not. valid) return
-        valid = options%gradient_tolerance >= 0.0_dp &
-            .and. options%step_tolerance >= 0.0_dp &
-            .and. options%objective_tolerance >= 0.0_dp &
-            .and. options%lower_log_rate_offset < options%upper_log_rate_offset &
-            .and. valid_log_rate_offset(options%lower_log_rate_offset) &
-            .and. valid_log_rate_offset(options%upper_log_rate_offset)
+        valid = options%gradient_tolerance >= 0.0_dp
+        if (.not. valid) return
+        valid = options%step_tolerance >= 0.0_dp
+        if (.not. valid) return
+        valid = options%objective_tolerance >= 0.0_dp
+        if (.not. valid) return
+        valid = options%lower_log_rate_offset < options%upper_log_rate_offset
+        if (.not. valid) return
+        valid = valid_log_rate_offset(options%lower_log_rate_offset)
+        if (.not. valid) return
+        valid = valid_log_rate_offset(options%upper_log_rate_offset)
     end function valid_lbfgsb_options
 
 end module fortml_poisson_likelihood
