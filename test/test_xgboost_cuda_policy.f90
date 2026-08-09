@@ -54,8 +54,15 @@ program test_xgboost_cuda_policy
     options%categorical_policy = "ordered"
     allocate(options%categorical_features(1))
     options%categorical_features(1) = 1
+    options%categorical_max_categories = 4
+    options%n_estimators = 1
+    options%max_depth = 1
+    options%learning_rate = 1.0_real64
+    options%l2 = 0.0_real64
     do i = 1, 8
-        x(i, 1) = real(mod(i - 1, 3), real64)
+        x(i, 1) = real((i - 1) / 2, real64)
+        x(i, 2) = 0.0_real64
+        y(i) = merge(0.0_real64, 4.0_real64, i <= 4)
     end do
     prediction = -huge(1.0_real64)
     call model%fit(x, y, status, options)
