@@ -15,19 +15,20 @@ attribution, binary-GP log-probability, fixed-leaf-product, plateau-trainer,
 and CUDA VJP closure slices documented below are post-tag additions.
 The broad parity
 gate is still open, so this work does not move or recreate that tag.
-The checklist currently records 341 completed and 127 open items; open rows are
+The checklist currently records 343 completed and 127 open items; open rows are
 retained until their implementation, independent oracle, device/refusal
 behavior, and benchmark evidence land together.
 
-The current parity wave closes six bounded contracts: chronological
+The current parity wave closes nine bounded contracts: chronological
 expanding/rolling validation with scorer and clone/reset metadata,
 multiclass focal-softmax value/JVP/VJP/HVP products wired through MLP and
 FortOpt objectives, RBF order-three derivative observations, implicit binary
 GP-classification kernel hyperparameter HVPs, weighted contrastive loss
-products, and stable XGBoost classifier log-probability products with
-categorical metadata. Each has an independent CPU oracle, a typed CUDA
-boundary, and a pinned `fortml-bench` record. The broad parity gate remains
-open for the explicit rows below.
+products, stable XGBoost classifier log-probability products with categorical
+metadata, explicit MLP loss-scale state, interval-routed conditional feature
+unions, and differentiable cross-validation scoring. Each has an independent
+CPU oracle, a typed CUDA boundary, and a pinned `fortml-bench` record. The
+broad parity gate remains open for the explicit rows below.
 
 The 2026-08-09 multi-output boosting slice adds transactional
 `xgboost_multioutput_t` and `lightgbm_multioutput_t` adapters.  Each adapter
@@ -101,24 +102,25 @@ open; see [`docs/CONTRASTIVE_LOSS.md`](docs/CONTRASTIVE_LOSS.md).
 
 | Compiler | Command | Result |
 | --- | --- | --- |
-| GNU Fortran | `fo` | Static build, all 260 behavioral tests, and lint passed at the current integrated FortML/FortAD-main revisions. The compiler still emits non-fatal array-temporary warnings; see [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
-| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded older compiler lane. The checked-in NVIDIA log predates the current 260-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
+| GNU Fortran | `fo` | Static build, all 263 behavioral tests, and lint passed at the current integrated FortML/FortAD-main revisions. The compiler still emits non-fatal array-temporary warnings; see [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
+| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded older compiler lane. The checked-in NVIDIA log predates the current 263-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
 The checked-in GNU compiler log is the fresh 2026-08-09 run against FortML code
-revision `5df3982` (including chronological validation metadata, multiclass
+revision `e4fa86d` (including chronological validation metadata, multiclass
 focal-softmax products, RBF order-three derivative observations, implicit
 binary GP-classification HVPs, contrastive loss products, stable XGBoost
 classifier log probabilities, multiclass XGBoost validation/early stopping,
 pipeline persistence, affine schedule outer HVPs, SAMME.R probability updates,
 categorical likelihood temperature HVPs, and finite-feature GP/NTK last-layer
-initialization, in addition to scheduled AdamW trajectory hypergradients,
+initialization, explicit MLP loss scaling, conditional feature-union routing,
+and differentiable cross-validation scoring, in addition to scheduled AdamW trajectory hypergradients,
 calibrated-softmax OOF policies, affine schedule
 outer HVPs, and seeded XGBoost DART), FortAD `origin/main` at
-`8d76ec77fad87d83de035e6cfc1f646e54ddc60a`, FortFront at
-`4a34853c6db0a3b67b4788fe83c20ce510d66487`, and FortNum at
+`8c513b581892f7b5f486785d092f39a2b7ac7568`, FortFront at
+`86eb2ba8b5b842bc1aebf9ee8bb00053f12de2f8` (not a direct fpm dependency), and FortNum at
 `7ced2f7aa272920916789fa82a35bfcb2e792d45`, run from the clean checkout
-in a temporary isolated checkout under `/mnt/storage/worktrees/final-gate-wave4-latest`
+in a temporary isolated checkout under `/mnt/storage/worktrees/final-gate-wave5-latest`
 with clean sibling dependency worktrees; the gate worktrees were removed after
 verification.
 The run includes the
@@ -150,7 +152,7 @@ attributions, and model-agnostic trainer validation diagnostics.
 The build emits non-fatal GNU
 array-temporary warnings in FortFront query/generator calls, existing GP
 benchmark boundaries, variational-GP batch conversions, and basis-pipeline
-shape conversions. They are isolated to array construction; all 260 behavioral
+shape conversions. They are isolated to array construction; all 263 behavioral
 tests pass. Lint has zero unused-import findings and the full `fo` lint stage
 passes despite the non-fatal compiler warning corpus. The independent CUDA gate additionally covers the
 resident dense-affine value/JVP/VJP path and its single-layer MSE update with
@@ -159,7 +161,7 @@ compiler coverage remains an
 explicit older-build result.
 
 The checked-in evidence is maintained on the clean FortML-bench revision
-`7343f61`; each CSV records the exact clean benchmark revision used to produce
+`07df334`; each CSV records the exact clean benchmark revision used to produce
 its rows,
 the trainer-checkpoint, unfactored-Adafactor, binary-objective,
 multiclass-calibration, variational-multiclass-GP, PINN/physics-objective,
