@@ -33,6 +33,71 @@ direct or positive log-L2 coordinates. Each has an independent CPU oracle, a
 typed CUDA boundary, and a pinned `fortml-bench` record. The broad parity gate
 remains open for the explicit rows below.
 
+## Production-parity execution contract
+
+The remaining work is executed as one clean-break architecture rather than as
+isolated estimator additions. Every new implementation must land at the same
+five seams: a named parameter registry, a composable value/objective graph, a
+FortOpt derivative callback, a resident device plan, and a versioned state
+dictionary. The acceptance order for each family is:
+
+1. **Classification:** binary, multiclass, OVR/OVO, multilabel, chains,
+   ordinal, calibrated, Naive Bayes, discriminant, SVM, neighbors, trees,
+   forests, and boosted trees share labels, weights, class metadata,
+   probabilities, decisions, metrics, persistence, and typed nonsmooth
+   boundaries. Missing-value and categorical policies are part of the fitted
+   topology, never hidden preprocessing.
+2. **Gaussian processes:** exact, derivative-observation, Laplace,
+   variational, sparse, SKI/lazy, local, multi-output, deep-kernel, and
+   physics-aware models share kernel-expression registries, likelihood state,
+   observation layouts, solve plans, and input/parameter products. A kernel or
+   likelihood can enter FortOpt only when its gradient and directional HVP are
+   declared and independently checked; unsupported derivative orders return a
+   typed status.
+3. **Neural networks:** MLP, convolutional, recurrent, attention, graph,
+   autoencoder, VAE, BNN, PINN, HNN, and symplectic variants use one module
+   tree and flat named parameter layout. The trainer owns batches, schedules,
+   clipping, accumulation, mixed precision, checkpointing, validation, and
+   optimizer state. Training and outer hyperparameter search consume the same
+   objective, so FortOpt L-BFGS-B sees exact network, loss, and optimizer
+   hypergradients rather than a second approximation.
+4. **Boosted/tree models:** XGBoost and LightGBM objectives, histogram/exact
+   growth, DART/GOSS, ranking, categorical and missing-value routing,
+   monotonic/interaction constraints, warm starts, staged predictions, and
+   contributions use one immutable split-topology representation. Leaf/base
+   coordinates may be differentiated on a fixed topology; split selection,
+   sampling, active sets, and early stopping remain explicit discrete seams.
+5. **Basis and pipelines:** polynomial, spline, Fourier, Chebyshev, radial,
+   random-feature, GP, PCA, autoencoder, feature-union, conditional, and DAG
+   maps compose through named schemas and stable feature/parameter offsets.
+   Joint basis coefficients and transform hyperparameters are optimized by
+   the same objective and can be initialized from the best linear/PCA/GP
+   solution before nonlinear training.
+6. **Device and precision:** CPU is the independent behavioral oracle. CUDA
+   and OpenACC plans own resident data, workspaces, optimizer state, precision,
+   and transfer counters. No host fallback is allowed after device selection;
+   a missing resident kernel is a typed refusal. FortSym-generated CUDA is
+   preferred for fixed no-autodiff algebra, while FortAD/FortSym products are
+   retained for autodiff-bearing paths until resident tests pass.
+7. **State and interoperability:** every fitted estimator and trainer saves a
+   schema-versioned dictionary containing topology, named parameters and
+   transforms, optimizer/schedule/RNG state, validation history, precision,
+   device, dependency revisions, and checksums. Loading, cloning, warm-start,
+   and partial-fit operations are transactional and preserve prediction and
+   derivative oracles at the declared boundary.
+8. **Benchmark acceptance:** every completed row has a pinned source and
+   dependency revision, an independent NumPy/analytic/scikit-learn/PyTorch/
+   JAX/GPyTorch/XGBoost/LightGBM oracle where applicable, CPU and resident
+   device timings, memory and transfer counters, refusal rows, and a release
+   application. Correctness is promoted before performance comparisons, and
+   performance claims are made only for matching workload, precision, and
+   residency.
+
+This contract is the implementation filter for the open checklist below. A
+feature is not complete when a type exists; it is complete when its registry,
+derivatives, state, device behavior, independent oracle, and benchmark all
+agree.
+
 The multilabel neural-objective slice adds
 `mlp_multilabel_training_objective_t` and
 `mlp_multilabel_optimize_lbfgsb`. The objective copies indicator data and
