@@ -61,7 +61,7 @@ program fortml_bench_mlp_optimizer_group_schedule_hypergradient
     allocate(direction(size(parameters)), gradient(size(parameters)))
     call objective%value_gradient(parameters, value, gradient, status)
     if (.not. status_ok(status)) error stop "scheduled group product failed"
-    direction = [(0.07_dp*real(repetition, dp), repetition=1, size(parameters))]
+    direction = [0.11_dp, -0.07_dp, 0.09_dp, -0.05_dp, 0.13_dp, -0.17_dp]
     call objective%jvp(parameters, direction, value, tangent, status)
     if (.not. status_ok(status)) error stop "scheduled group JVP failed"
 
