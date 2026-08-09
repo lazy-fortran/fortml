@@ -6,7 +6,8 @@ program test_device_contract_new_features
     !! ensures that an available unrelated CUDA kernel cannot cause a hidden
     !! host fallback for a model that has no resident implementation.
     use, intrinsic :: iso_fortran_env, only: real64, error_unit
-    use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_NOT_IMPLEMENTED
+    use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_DOMAIN_ERROR, &
+        FORTNUM_NOT_IMPLEMENTED
     use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU, FORTML_DEVICE_CUDA
     use fortml_elastic_net_regression, only: elastic_net_regression_t
     use fortml_ovo_logistic_classifier, only: ovo_logistic_classifier_t
@@ -82,11 +83,11 @@ program test_device_contract_new_features
         "GP CUDA capability refusal", failures)
 
     call xgb%predict_device(cuda, x, xgb_prediction, status)
-    call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
-        "XGBoost CUDA vector refusal", failures)
+    call check(status%code == FORTNUM_DOMAIN_ERROR, &
+        "XGBoost CUDA vector invalid-model refusal", failures)
     call xgb%predict_device(cuda, x, xgb_matrix, status)
-    call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
-        "XGBoost CUDA matrix refusal", failures)
+    call check(status%code == FORTNUM_DOMAIN_ERROR, &
+        "XGBoost CUDA matrix invalid-model refusal", failures)
     call check(.not. xgb%device_supported(FORTML_DEVICE_CUDA), &
         "XGBoost CUDA capability refusal", failures)
 
