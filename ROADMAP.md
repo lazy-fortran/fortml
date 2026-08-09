@@ -50,6 +50,17 @@ CUDA refusals. `test_basis_residual_pipeline` and the independent NumPy lane in
 HVP, metadata, and refusal contracts. Conditional/cyclic graphs, sparse/device
 graphs, and resident GPU execution remain open.
 
+The conditional feature-union slice adds `conditional_basis_pipeline_t`, a
+parallel interval-routed layer over the existing column-basis primitive. Named
+branches retain stable feature/parameter offsets and route metadata; exact CPU
+value/JVP/VJP/HVP products preserve inactive rows and accumulate selected-column
+cotangents. Append, packed-parameter, and dense-schema updates are
+transactional, while interval-endpoint derivatives, malformed/nonfinite routes,
+and CUDA requests return typed status without touching caller state. The
+independent oracle is `test_conditional_pipeline`; release evidence is
+`results/CONDITIONAL_PIPELINE.md` in `fortml-bench`. Cyclic/DAG routing,
+resident route-mask GPU execution, and graph-wide persistence remain open.
+
 The current closure wave also adds transactional versioned persistence for
 preconfigured fitted basis pipelines, affine schedule outer HVPs consumable by
 FortOpt L-BFGS-B, and validation-aware multiclass XGBoost OVR training with
@@ -821,8 +832,9 @@ only listed as gaps:
   cotangents sum, and branch-local parameters retain stable packed names and
   offsets through exact CPU JVP/VJP/HVP products. The independent oracle is
   `test_basis_fanout_pipeline`; the benchmark records the same value and
-  derivative identities plus the typed CUDA refusal. Residual, conditional,
-  cyclic, and resident-GPU graph execution remain open.
+  derivative identities plus the typed CUDA refusal. Residual and conditional
+  contracts now have separate named APIs; cyclic and resident-GPU graph
+  execution remain open.
 - `gp_classification_t` now exposes fixed-state kernel-parameter JVP/VJP
   products for latent predictions and observed probabilities for both logistic
   and probit Laplace models. The covariance solve, cross-covariance, and prior
@@ -1789,6 +1801,11 @@ when a lower-level primitive already exists.
 - [ ] Implicit differentiation through linear solves, fixed points, Laplace
   modes, variational optima, constrained tree policies, and optimizer fixed
   points, with FortOpt L-BFGS-B consuming the same parameter registry.
+- [x] Add interval-routed `conditional_basis_pipeline_t` over selected-column
+  basis stages, with transactional configuration/schema updates, stable branch
+  offsets and route metadata, exact CPU value/JVP/VJP/HVP products, endpoint
+  derivative refusals, independent finite-difference/adjoint tests, and an
+  output-preserving typed CUDA boundary.
 - [ ] Basis and pipeline DAGs with named features, sparse views, missing-value
   policies, fit/transform leakage guards, cross-validation cloning, graph
   serialization, static device lowering, and parameter-group hypergradients.

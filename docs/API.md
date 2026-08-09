@@ -56,8 +56,8 @@ defaults, then set additional products supplied by a concrete model. Query
 with `has_role`, `supports_input`, `supports_derivative`, and
 `supports_device`; call `validate` before publishing a record. A requested
 record can be checked with `satisfies` or `require_estimator_capability`.
-The horizontal, sequential, column-selecting, and fan-out basis pipelines
-expose `%capabilities(report,status)` and report their fitted state, feature
+The horizontal, sequential, column-selecting, fan-out, and conditional basis
+pipelines expose `%capabilities(report,status)` and report their fitted state, feature
 shape, analytic input/parameter products, dense CPU support, and explicit
 sparse, missing, sample-weight, and CUDA refusals. `fortml_validation` re-exports
 `validate_estimator_capability` and its requirement check so split/search code
@@ -1596,6 +1596,37 @@ products, while CUDA returns `FORTNUM_NOT_IMPLEMENTED` without touching output
 arrays until a resident basis executor is linked. `device_supported` reports
 the same contract (fitted CPU unions only). This explicit boundary prevents a
 feature-union call from hiding host transfers behind an accelerator request.
+
+### `conditional_basis_pipeline_t`
+
+`conditional_basis_pipeline_t` is the bounded piecewise-routing feature-union
+layer. Construct it with `make_conditional_basis_pipeline(n_inputs,status)`;
+append a basis map, its selected original columns, a one-based route column,
+and finite ordered bounds with `append(stage,columns,route_column,lower,upper,
+status[,name])`. A branch is active on the half-open interval
+`[lower,upper)`. Branch outputs are concatenated in append order and inactive
+rows are zero, so overlapping and fallback intervals are representable without
+adding a second DAG scheduler. Each branch delegates selected-column value and
+derivative work to `column_basis_pipeline_t`.
+
+`branch_feature_offset` and `branch_parameter_offset` expose stable one-based
+packed offsets. `branch_name`, `feature_name`, `parameter_name`,
+`branch_route_column`, `branch_lower_bound`, and `branch_upper_bound` expose
+the corresponding routing metadata. `set_input_schema`,
+`input_schema_name`, and `validate_input_schema` provide the transactional
+dense schema contract. Duplicate names, malformed intervals, nonfinite data,
+shape errors, and invalid parameter packs are refused without committing a
+partial update.
+
+The CPU `transform`, `jvp`, `vjp`, and `hvp` methods are exact products. Value
+evaluation remains defined at an interval endpoint, but derivative requests
+there return `FORTNUM_DOMAIN_ERROR` because the route mask is discontinuous.
+The device methods delegate only to a selected available CPU; CUDA returns
+`FORTNUM_NOT_IMPLEMENTED` without modifying output arrays until a resident
+route-mask executor exists. See
+[`docs/CONDITIONAL_PIPELINE.md`](CONDITIONAL_PIPELINE.md) and
+`test_conditional_pipeline` for the finite-difference, adjoint, transaction,
+and endpoint-oracle contracts.
 
 `basis_fanout_pipeline_t` is a one-layer named DAG that composes arbitrary
 `sequential_basis_pipeline_t` branches. Construct it with
