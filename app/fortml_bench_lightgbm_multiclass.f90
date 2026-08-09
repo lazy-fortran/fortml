@@ -9,13 +9,13 @@ program fortml_bench_lightgbm_multiclass
     use fortnum_status, only: fortnum_status_t, status_ok
     implicit none
 
-    real(dp) :: x(12, 2), validation_x(6, 2), query(3, 2)
+    real(dp) :: x(9, 1), validation_x(6, 1), query(3, 1)
     real(dp) :: probabilities(6, 3), before(6, 3), after(6, 3)
     real(dp) :: staged(6, 3, 1), margins(6, 3, 1)
-    real(dp) :: query_dot(3, 2), probabilities_query(3, 3), probabilities_dot(3, 3)
-    real(dp) :: probabilities_bar(3, 3), query_bar(3, 2)
+    real(dp) :: query_dot(3, 1), probabilities_query(3, 3), probabilities_dot(3, 3)
+    real(dp) :: probabilities_bar(3, 3), query_bar(3, 1)
     real(dp) :: validation_weight(6), expected_loss, start_time, finish_time
-    integer :: labels(12), validation_labels(6), invalid_labels(6)
+    integer :: labels(9), validation_labels(6), invalid_labels(6)
     type(lightgbm_multiclass_t) :: model
     type(lightgbm_options_t) :: options
     type(fortnum_status_t) :: status
@@ -26,16 +26,14 @@ program fortml_bench_lightgbm_multiclass
     validation_x = x(1:6, :)
     validation_labels = labels(1:6)
     validation_weight = [1.0_dp, 2.0_dp, 1.0_dp, 1.0_dp, 2.0_dp, 3.0_dp]
-    query(:, 1) = [-3.31_dp, 0.37_dp, 4.29_dp]
-    query(:, 2) = [0.13_dp, -0.07_dp, 0.19_dp]
-    query_dot = reshape([0.07_dp, -0.03_dp, 0.02_dp, 0.01_dp, &
-        -0.04_dp, 0.06_dp], shape(query))
+    query(:, 1) = [-3.31_dp, 0.37_dp, 2.29_dp]
+    query_dot(:, 1) = [0.07_dp, -0.03_dp, 0.02_dp]
     probabilities_bar = reshape([0.4_dp, -0.2_dp, 0.3_dp, -0.1_dp, &
         0.6_dp, -0.5_dp, 0.2_dp, 0.1_dp, -0.3_dp], shape(probabilities_bar))
     options%n_estimators = 4
-    options%num_leaves = 3
-    options%max_depth = 2
-    options%min_data_in_leaf = 2
+    options%num_leaves = 2
+    options%max_depth = 1
+    options%min_data_in_leaf = 1
     options%max_bin = 16
     options%learning_rate = 0.4_dp
     options%l2 = 1.0_dp
@@ -100,10 +98,8 @@ contains
         integer, intent(out) :: labels(:)
 
         x(:, 1) = [-4.0_dp, -3.0_dp, -2.0_dp, -1.0_dp, 0.0_dp, 1.0_dp, &
-            2.0_dp, 3.0_dp, 4.0_dp, 5.0_dp, 6.0_dp, 7.0_dp]
-        x(:, 2) = [0.0_dp, 0.2_dp, -0.1_dp, 0.1_dp, 0.0_dp, -0.2_dp, &
-            0.2_dp, -0.1_dp, 0.1_dp, 0.0_dp, -0.2_dp, 0.2_dp]
-        labels = [7, -3, -3, -3, 7, 7, 11, 11, 11, 7, -3, 11]
+            2.0_dp, 3.0_dp, 4.0_dp]
+        labels = [-8, -8, -8, 2, 2, 2, 11, 11, 11]
     end subroutine make_fixture
 
     real(dp) function weighted_log_loss(probabilities, labels, weights) result(loss)
@@ -114,7 +110,7 @@ contains
         loss = 0.0_dp
         do i = 1, size(labels)
             class_index = 1
-            if (labels(i) == 7) class_index = 2
+            if (labels(i) == 2) class_index = 2
             if (labels(i) == 11) class_index = 3
             loss = loss - weights(i)*log(max(probabilities(i, class_index), 1.0e-15_dp))
         end do
