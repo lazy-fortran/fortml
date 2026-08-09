@@ -13,6 +13,20 @@ contain both indicator values.  `predict_proba` returns an
 `(n_query,n_labels)` matrix of positive probabilities; `predict` applies the
 stored thresholds and returns integer indicators.
 
+`predict_log_proba` returns the finite natural logarithm of each positive
+label probability in the same column order.  It validates finite probabilities
+in `(0,1]` before taking the logarithm, so an invalid Laplace result is reported
+as a typed convergence error rather than becoming a hidden NaN.  The
+`predict_log_proba_device` entry point dispatches CPU explicitly and returns
+`FORTNUM_NOT_IMPLEMENTED` for CUDA without changing caller-owned output arrays.
+
+The log-probability product surface mirrors `predict_proba`:
+`predict_log_proba_jvp`/`predict_log_proba_vjp` differentiate query features,
+and `predict_log_proba_parameter_jvp`/`predict_log_proba_parameter_vjp`
+differentiate the concatenated per-label fixed-state kernel-log vector.  These
+products are formed by composing the probability products with the exact
+`d log(p) = d p / p` rule and therefore share the fitted Newton-mode semantics.
+
 The fitted model concatenates each binary head's packed kernel log parameters
 in label order.  Latent and probability predictions expose query-input
 JVP/VJP products and fixed-state packed kernel-parameter JVP/VJP products.
@@ -54,3 +68,14 @@ convergence diagnostics live in `gp_multilabel_lbfgsb_options_t` and
 hyperparameter slice; call `fit` again when a fully recomputed Laplace mode is
 required. The optimizer and products are CPU-only and return typed CUDA
 refusals through the existing `device_supported` contract.
+
+For a common-kernel hyperparameter search that drives every label head with one
+direction, use `predict_log_proba_shared_parameter_jvp` and
+`predict_log_proba_shared_parameter_vjp` (the equivalent
+`*_kernel_parameter_*` aliases are also available).  The JVP accepts a vector
+of length `shared_parameter_count()` and applies it to every head.  The VJP
+sums each head's cotangent into that same packed vector.  Their device variants
+(`*_device`) dispatch CPU and preserve all output buffers on the typed CUDA
+refusal.  This is the prediction-side counterpart to the shared fixed-state
+FortOpt objective and is useful for differentiable outer HPO without silently
+expanding the common vector into independent label parameters.

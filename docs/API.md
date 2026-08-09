@@ -251,7 +251,7 @@ repeated resident-batch evidence.
 | `second_derivative_gp_t` | Exact scalar 1-D RBF/Matérn-5/2 GP over mixed value/first/second-derivative rows, plus RBF third-derivative rows; latent joint covariance and packed likelihood state | Query-coordinate JVP; RBF likelihood JVP; selected-CPU device dispatch | Query-coordinate VJP; likelihood VJP; selected-CPU device dispatch | RBF order >3, Matérn-5/2 order >2, Matérn-5/2 fifth derivative at coincidence, Matérn parameter products, and CUDA prediction/covariance/product requests are typed refusals |
 | `gp_classification_t` | Latent, observed, and log-observed probabilities; fixed-state kernel parameter setter; implicit-mode kernel hyperparameter HVP | Input and fixed-state kernel-parameter JVP for probabilities and log probabilities | Input and fixed-state kernel-parameter VJP for probabilities and log probabilities; Laplace-mode kernel hyperparameter gradient | Implicit-mode hyperparameter HVP on CPU; typed CUDA refusal |
 | `gp_multiclass_classification_t` | Latent one-vs-rest margins, normalized observed probabilities, and stable log probabilities | Input and packed fixed-state kernel-parameter JVPs for margins, probabilities, and log probabilities | Input and packed fixed-state kernel-parameter VJPs for margins, probabilities, and log probabilities, plus the packed one-vs-rest Laplace-mode kernel hyperparameter gradient | No |
-| `gp_multilabel_classification_t` | Independent binary Laplace-GP probabilities and indicator labels | Input and packed per-label fixed-state kernel-parameter JVPs for latent/probability outputs | Input and packed per-label fixed-state kernel-parameter VJPs; concatenated Laplace-mode kernel hyperparameter gradient | No |
+| `gp_multilabel_classification_t` | Independent binary Laplace-GP probabilities, finite `predict_log_proba`, and indicator labels | Input, packed per-label, and packed shared-kernel fixed-state JVPs for latent/probability/log-probability outputs | Input, packed per-label, and packed shared-kernel fixed-state VJPs; concatenated Laplace-mode kernel hyperparameter gradient; typed CUDA refusal preserves output buffers | No |
 | `multi_output_gp_t` | Correlated mean and LML; prior covariance; batched `(batch,query,output)` prediction | Packed kernel/log-noise/output-major W/independent posterior-mean and prior-covariance JVP; query-input and batch-query JVP | Fitted posterior-mean and prior-covariance parameter VJP; query-input and batch-query VJP | No |
 | Approximate GP types | Mean, variance, or ELBO as listed below | No | No | No |
 
@@ -4072,6 +4072,16 @@ state kernel-log parameter vector in label order.  `parameters()`,
 layout; the gradient is the concatenation of the binary Laplace envelope
 gradients for the independent mode posteriors.  `set_thresholds` updates only
 the prediction policy and validates every threshold in `(0,1)`.
+
+`predict_log_proba` returns `log(p)` for each finite positive label probability.
+`predict_log_proba_jvp` and `predict_log_proba_vjp` compose the probability
+products with `d log(p) = d p / p`; the parameter variants use the same fixed
+Laplace states.  `shared_parameter_count()` and `shared_parameters()` describe
+one common kernel-log vector used by all heads.  The matching
+`predict_log_proba_shared_parameter_jvp`/`_vjp` products apply or sum that
+vector across labels; `*_kernel_parameter_*` are explicit aliases.  Their
+device entry points dispatch CPU and return a typed CUDA refusal without
+modifying output arrays.
 
 Selected CPU device calls dispatch to the reference path.  CUDA latent,
 probability, and label requests return `FORTNUM_NOT_IMPLEMENTED` until resident binary

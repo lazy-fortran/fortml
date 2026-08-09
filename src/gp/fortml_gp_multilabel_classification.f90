@@ -58,12 +58,37 @@ module fortml_gp_multilabel_classification
         procedure, public :: predict_proba => gp_multilabel_predict_proba
         procedure, public :: predict_proba_device => &
             gp_multilabel_predict_proba_device
+        procedure, public :: predict_log_proba => gp_multilabel_predict_log_proba
+        procedure, public :: predict_log_proba_device => &
+            gp_multilabel_predict_log_proba_device
         procedure, public :: predict_proba_jvp => gp_multilabel_predict_proba_jvp
         procedure, public :: predict_proba_vjp => gp_multilabel_predict_proba_vjp
+        procedure, public :: predict_log_proba_jvp => gp_multilabel_predict_log_proba_jvp
+        procedure, public :: predict_log_proba_vjp => gp_multilabel_predict_log_proba_vjp
         procedure, public :: predict_proba_parameter_jvp => &
             gp_multilabel_predict_proba_parameter_jvp
         procedure, public :: predict_proba_parameter_vjp => &
             gp_multilabel_predict_proba_parameter_vjp
+        procedure, public :: predict_log_proba_parameter_jvp => &
+            gp_multilabel_predict_log_proba_parameter_jvp
+        procedure, public :: predict_log_proba_parameter_vjp => &
+            gp_multilabel_predict_log_proba_parameter_vjp
+        procedure, public :: predict_log_proba_shared_parameter_jvp => &
+            gp_multilabel_predict_log_proba_shared_parameter_jvp
+        procedure, public :: predict_log_proba_shared_parameter_vjp => &
+            gp_multilabel_predict_log_proba_shared_parameter_vjp
+        procedure, public :: predict_log_proba_shared_parameter_jvp_device => &
+            gp_multilabel_predict_log_proba_shared_parameter_jvp_device
+        procedure, public :: predict_log_proba_shared_parameter_vjp_device => &
+            gp_multilabel_predict_log_proba_shared_parameter_vjp_device
+        procedure, public :: predict_log_proba_kernel_parameter_jvp => &
+            gp_multilabel_predict_log_proba_shared_parameter_jvp
+        procedure, public :: predict_log_proba_kernel_parameter_vjp => &
+            gp_multilabel_predict_log_proba_shared_parameter_vjp
+        procedure, public :: predict_log_proba_kernel_parameter_jvp_device => &
+            gp_multilabel_predict_log_proba_shared_parameter_jvp_device
+        procedure, public :: predict_log_proba_kernel_parameter_vjp_device => &
+            gp_multilabel_predict_log_proba_shared_parameter_vjp_device
         procedure, public :: predict => gp_multilabel_predict
         procedure, public :: predict_device => gp_multilabel_predict_device
         procedure, public :: parameter_count => gp_multilabel_parameter_count
@@ -134,10 +159,20 @@ module fortml_gp_multilabel_classification
     public :: gp_multilabel_predict_latent_parameter_vjp
     public :: gp_multilabel_predict_proba
     public :: gp_multilabel_predict_proba_device
+    public :: gp_multilabel_predict_log_proba
+    public :: gp_multilabel_predict_log_proba_device
     public :: gp_multilabel_predict_proba_jvp
     public :: gp_multilabel_predict_proba_vjp
+    public :: gp_multilabel_predict_log_proba_jvp
+    public :: gp_multilabel_predict_log_proba_vjp
     public :: gp_multilabel_predict_proba_parameter_jvp
     public :: gp_multilabel_predict_proba_parameter_vjp
+    public :: gp_multilabel_predict_log_proba_parameter_jvp
+    public :: gp_multilabel_predict_log_proba_parameter_vjp
+    public :: gp_multilabel_predict_log_proba_shared_parameter_jvp
+    public :: gp_multilabel_predict_log_proba_shared_parameter_vjp
+    public :: gp_multilabel_predict_log_proba_shared_parameter_jvp_device
+    public :: gp_multilabel_predict_log_proba_shared_parameter_vjp_device
     public :: gp_multilabel_predict
     public :: gp_multilabel_predict_device
     public :: gp_multilabel_optimize_lbfgsb
@@ -341,6 +376,65 @@ contains
         end select
     end subroutine gp_multilabel_predict_proba_device
 
+    !> Return the natural logarithm of each independent label probability.
+    !!
+    !! The columns retain indicator order and are not normalized across labels.
+    !! The fitted Laplace modes and curvatures remain fixed, matching the
+    !! probability prediction and product contracts.  A finite positive
+    !! probability is required before taking its logarithm; this keeps the
+    !! result usable by downstream log-loss reductions without hidden NaNs.
+    subroutine gp_multilabel_predict_log_proba(self, x, log_probabilities, status)
+        class(gp_multilabel_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: log_probabilities(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: probabilities(:, :)
+
+        if (.not. valid_query(self, x, log_probabilities, status)) return
+        allocate(probabilities(size(x, 1), self%n_labels))
+        call self%predict_proba(x, probabilities, status)
+        if (status%code /= FORTNUM_OK) return
+        if (any(.not. ieee_is_finite(probabilities)) .or. &
+            any(probabilities <= 0.0_dp) .or. any(probabilities > 1.0_dp)) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "multilabel GP log probability: probabilities are not finite and positive")
+            return
+        end if
+        log_probabilities = log(probabilities)
+        if (any(.not. ieee_is_finite(log_probabilities))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "multilabel GP log probability: result is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_multilabel_predict_log_proba
+
+    !> Dispatch log-probability prediction without an implicit host fallback.
+    subroutine gp_multilabel_predict_log_proba_device(self, device, x, &
+            log_probabilities, status)
+        class(gp_multilabel_classification_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(inout) :: log_probabilities(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multilabel GP log probability device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_log_proba(x, log_probabilities, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "multilabel GP log probability device: no resident CUDA Laplace heads are linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multilabel GP log probability device: device kind is invalid")
+        end select
+    end subroutine gp_multilabel_predict_log_proba_device
+
     subroutine gp_multilabel_predict_latent_jvp(self, x, x_dot, mean, mean_dot, &
             variance, variance_dot, status)
         class(gp_multilabel_classification_t), intent(in) :: self
@@ -391,6 +485,44 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine gp_multilabel_predict_proba_jvp
 
+    !> Forward query-input product of independent label log probabilities.
+    subroutine gp_multilabel_predict_log_proba_jvp(self, x, x_dot, &
+            log_probabilities, log_probabilities_dot, status)
+        class(gp_multilabel_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), x_dot(:, :)
+        real(dp), intent(out) :: log_probabilities(:, :), log_probabilities_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: probabilities(:, :), probabilities_dot(:, :)
+
+        if (.not. valid_query(self, x, log_probabilities, status)) return
+        if (any(shape(x_dot) /= shape(x)) .or. &
+            any(.not. ieee_is_finite(x_dot)) .or. &
+            any(shape(log_probabilities_dot) /= shape(log_probabilities))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multilabel GP log probability JVP: input or output shape is invalid")
+            return
+        end if
+        allocate(probabilities(size(x, 1), self%n_labels), &
+            probabilities_dot(size(x, 1), self%n_labels))
+        call self%predict_proba_jvp(x, x_dot, probabilities, probabilities_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        if (any(.not. ieee_is_finite(probabilities)) .or. &
+            any(probabilities <= 0.0_dp) .or. any(probabilities > 1.0_dp)) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "multilabel GP log probability JVP: probabilities are not finite and positive")
+            return
+        end if
+        log_probabilities = log(probabilities)
+        log_probabilities_dot = probabilities_dot / probabilities
+        if (any(.not. ieee_is_finite(log_probabilities)) .or. &
+            any(.not. ieee_is_finite(log_probabilities_dot))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "multilabel GP log probability JVP: result is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_multilabel_predict_log_proba_jvp
+
     subroutine gp_multilabel_predict_latent_vjp(self, x, mean_bar, variance_bar, x_bar, status)
         class(gp_multilabel_classification_t), intent(in) :: self
         real(dp), intent(in) :: x(:, :), mean_bar(:, :), variance_bar(:, :)
@@ -439,6 +571,42 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine gp_multilabel_predict_proba_vjp
+
+    !> Reverse query-input product of independent label log probabilities.
+    subroutine gp_multilabel_predict_log_proba_vjp(self, x, log_probabilities_bar, &
+            x_bar, status)
+        class(gp_multilabel_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), log_probabilities_bar(:, :)
+        real(dp), intent(out) :: x_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: probabilities(:, :), probability_bar(:, :)
+
+        x_bar = 0.0_dp
+        if (.not. valid_query(self, x, log_probabilities_bar, status)) return
+        if (any(shape(x_bar) /= shape(x)) .or. &
+            any(.not. ieee_is_finite(log_probabilities_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multilabel GP log probability VJP: input or cotangent is invalid")
+            return
+        end if
+        allocate(probabilities(size(x, 1), self%n_labels), &
+            probability_bar(size(x, 1), self%n_labels))
+        call self%predict_proba(x, probabilities, status)
+        if (status%code /= FORTNUM_OK) return
+        if (any(.not. ieee_is_finite(probabilities)) .or. &
+            any(probabilities <= 0.0_dp) .or. any(probabilities > 1.0_dp)) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "multilabel GP log probability VJP: probabilities are not finite and positive")
+            return
+        end if
+        probability_bar = log_probabilities_bar / probabilities
+        if (any(.not. ieee_is_finite(probability_bar))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "multilabel GP log probability VJP: cotangent is not finite")
+            return
+        end if
+        call self%predict_proba_vjp(x, probability_bar, x_bar, status)
+    end subroutine gp_multilabel_predict_log_proba_vjp
 
     subroutine gp_multilabel_predict_latent_parameter_jvp(self, x, direction, mean, &
             mean_dot, variance, variance_dot, status)
@@ -498,6 +666,46 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine gp_multilabel_predict_proba_parameter_jvp
 
+    !> Forward fixed-state product of log probabilities with packed per-label
+    !! kernel-log parameters.  The direction is concatenated in label order.
+    subroutine gp_multilabel_predict_log_proba_parameter_jvp(self, x, direction, &
+            log_probabilities, log_probabilities_dot, status)
+        class(gp_multilabel_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), direction(:)
+        real(dp), intent(out) :: log_probabilities(:, :), log_probabilities_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: probabilities(:, :), probabilities_dot(:, :)
+
+        if (.not. valid_query(self, x, log_probabilities, status)) return
+        if (size(direction) /= self%parameter_count() .or. &
+            any(.not. ieee_is_finite(direction)) .or. &
+            any(shape(log_probabilities_dot) /= shape(log_probabilities))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multilabel GP log probability parameter JVP: direction or output shape is invalid")
+            return
+        end if
+        allocate(probabilities(size(x, 1), self%n_labels), &
+            probabilities_dot(size(x, 1), self%n_labels))
+        call self%predict_proba_parameter_jvp(x, direction, probabilities, &
+            probabilities_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        if (any(.not. ieee_is_finite(probabilities)) .or. &
+            any(probabilities <= 0.0_dp) .or. any(probabilities > 1.0_dp)) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "multilabel GP log probability parameter JVP: probabilities are not finite and positive")
+            return
+        end if
+        log_probabilities = log(probabilities)
+        log_probabilities_dot = probabilities_dot / probabilities
+        if (any(.not. ieee_is_finite(log_probabilities)) .or. &
+            any(.not. ieee_is_finite(log_probabilities_dot))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "multilabel GP log probability parameter JVP: result is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_multilabel_predict_log_proba_parameter_jvp
+
     subroutine gp_multilabel_predict_latent_parameter_vjp(self, x, mean_bar, variance_bar, &
             parameter_bar, status)
         class(gp_multilabel_classification_t), intent(in) :: self
@@ -554,6 +762,189 @@ contains
         end do
         call status_set(status, FORTNUM_OK, "")
     end subroutine gp_multilabel_predict_proba_parameter_vjp
+
+    !> Reverse fixed-state product of log probabilities with packed per-label
+    !! kernel-log parameters.  The returned cotangent uses label order.
+    subroutine gp_multilabel_predict_log_proba_parameter_vjp(self, x, &
+            log_probabilities_bar, parameter_bar, status)
+        class(gp_multilabel_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), log_probabilities_bar(:, :)
+        real(dp), intent(out) :: parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: probabilities(:, :), probability_bar(:, :)
+
+        parameter_bar = 0.0_dp
+        if (.not. valid_query(self, x, log_probabilities_bar, status)) return
+        if (size(parameter_bar) /= self%parameter_count() .or. &
+            any(.not. ieee_is_finite(log_probabilities_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multilabel GP log probability parameter VJP: input or cotangent is invalid")
+            return
+        end if
+        allocate(probabilities(size(x, 1), self%n_labels), &
+            probability_bar(size(x, 1), self%n_labels))
+        call self%predict_proba(x, probabilities, status)
+        if (status%code /= FORTNUM_OK) return
+        if (any(.not. ieee_is_finite(probabilities)) .or. &
+            any(probabilities <= 0.0_dp) .or. any(probabilities > 1.0_dp)) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "multilabel GP log probability parameter VJP: probabilities are not finite and positive")
+            return
+        end if
+        probability_bar = log_probabilities_bar / probabilities
+        if (any(.not. ieee_is_finite(probability_bar))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "multilabel GP log probability parameter VJP: cotangent is not finite")
+            return
+        end if
+        call self%predict_proba_parameter_vjp(x, probability_bar, parameter_bar, status)
+    end subroutine gp_multilabel_predict_log_proba_parameter_vjp
+
+    !> Forward fixed-state product of log probabilities with one packed kernel
+    !! direction shared by every independent label head.
+    subroutine gp_multilabel_predict_log_proba_shared_parameter_jvp(self, x, direction, &
+            log_probabilities, log_probabilities_dot, status)
+        class(gp_multilabel_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), direction(:)
+        real(dp), intent(out) :: log_probabilities(:, :), log_probabilities_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: local(:, :), local_dot(:, :)
+        integer :: i
+
+        if (.not. valid_query(self, x, log_probabilities, status)) return
+        if (size(direction) /= self%shared_parameter_count() .or. &
+            any(.not. ieee_is_finite(direction)) .or. &
+            any(shape(log_probabilities_dot) /= shape(log_probabilities))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multilabel GP log probability shared parameter JVP: direction or output shape is invalid")
+            return
+        end if
+        allocate(local(size(x, 1), 2), local_dot(size(x, 1), 2))
+        do i = 1, self%n_labels
+            call self%models(i)%predict_proba_parameter_jvp(x, direction, local, &
+                local_dot, status)
+            if (status%code /= FORTNUM_OK) return
+            if (any(.not. ieee_is_finite(local(:, 2))) .or. &
+                any(local(:, 2) <= 0.0_dp) .or. any(local(:, 2) > 1.0_dp)) then
+                call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                    "multilabel GP log probability shared parameter JVP: probabilities are not finite and positive")
+                return
+            end if
+            log_probabilities(:, i) = log(local(:, 2))
+            log_probabilities_dot(:, i) = local_dot(:, 2) / local(:, 2)
+        end do
+        if (any(.not. ieee_is_finite(log_probabilities)) .or. &
+            any(.not. ieee_is_finite(log_probabilities_dot))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "multilabel GP log probability shared parameter JVP: result is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_multilabel_predict_log_proba_shared_parameter_jvp
+
+    !> Reverse fixed-state product of log probabilities with one packed kernel
+    !! cotangent shared by every independent label head.  Head cotangents are
+    !! summed into the common kernel-log vector.
+    subroutine gp_multilabel_predict_log_proba_shared_parameter_vjp(self, x, &
+            log_probabilities_bar, parameter_bar, status)
+        class(gp_multilabel_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), log_probabilities_bar(:, :)
+        real(dp), intent(out) :: parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: probabilities(:, :), binary_bar(:, :), local_bar(:)
+        integer :: i
+
+        parameter_bar = 0.0_dp
+        if (.not. valid_query(self, x, log_probabilities_bar, status)) return
+        if (size(parameter_bar) /= self%shared_parameter_count() .or. &
+            any(.not. ieee_is_finite(log_probabilities_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multilabel GP log probability shared parameter VJP: input or cotangent is invalid")
+            return
+        end if
+        allocate(probabilities(size(x, 1), self%n_labels), &
+            binary_bar(size(x, 1), 2), local_bar(size(parameter_bar)))
+        call self%predict_proba(x, probabilities, status)
+        if (status%code /= FORTNUM_OK) return
+        if (any(.not. ieee_is_finite(probabilities)) .or. &
+            any(probabilities <= 0.0_dp) .or. any(probabilities > 1.0_dp)) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "multilabel GP log probability shared parameter VJP: probabilities are not finite and positive")
+            return
+        end if
+        binary_bar(:, 1) = 0.0_dp
+        do i = 1, self%n_labels
+            binary_bar(:, 2) = log_probabilities_bar(:, i) / probabilities(:, i)
+            if (any(.not. ieee_is_finite(binary_bar(:, 2)))) then
+                call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                    "multilabel GP log probability shared parameter VJP: cotangent is not finite")
+                return
+            end if
+            call self%models(i)%predict_proba_parameter_vjp(x, binary_bar, local_bar, status)
+            if (status%code /= FORTNUM_OK) return
+            parameter_bar = parameter_bar + local_bar
+        end do
+        if (any(.not. ieee_is_finite(parameter_bar))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "multilabel GP log probability shared parameter VJP: result is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_multilabel_predict_log_proba_shared_parameter_vjp
+
+    !> Device-dispatched shared-kernel log-probability parameter JVP.
+    subroutine gp_multilabel_predict_log_proba_shared_parameter_jvp_device(self, device, &
+            x, direction, log_probabilities, log_probabilities_dot, status)
+        class(gp_multilabel_classification_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :), direction(:)
+        real(dp), intent(inout) :: log_probabilities(:, :), log_probabilities_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multilabel GP log probability shared parameter JVP device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_log_proba_shared_parameter_jvp(x, direction, &
+                log_probabilities, log_probabilities_dot, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "multilabel GP log probability shared parameter JVP device: no resident CUDA Laplace heads are linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multilabel GP log probability shared parameter JVP device: device kind is invalid")
+        end select
+    end subroutine gp_multilabel_predict_log_proba_shared_parameter_jvp_device
+
+    !> Device-dispatched shared-kernel log-probability parameter VJP.
+    subroutine gp_multilabel_predict_log_proba_shared_parameter_vjp_device(self, device, &
+            x, log_probabilities_bar, parameter_bar, status)
+        class(gp_multilabel_classification_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :), log_probabilities_bar(:, :)
+        real(dp), intent(inout) :: parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multilabel GP log probability shared parameter VJP device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_log_proba_shared_parameter_vjp(x, log_probabilities_bar, &
+                parameter_bar, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "multilabel GP log probability shared parameter VJP device: no resident CUDA Laplace heads are linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multilabel GP log probability shared parameter VJP device: device kind is invalid")
+        end select
+    end subroutine gp_multilabel_predict_log_proba_shared_parameter_vjp_device
 
     subroutine gp_multilabel_predict(self, x, indicators, status)
         class(gp_multilabel_classification_t), intent(in) :: self
@@ -1022,8 +1413,24 @@ contains
 
     logical function gp_multilabel_fitted(self) result(fitted)
         class(gp_multilabel_classification_t), intent(in) :: self
-        fitted = self%is_fitted .and. allocated(self%models) .and. &
-            allocated(self%decision_threshold) .and. self%n_labels >= 1
+        fitted = self%is_fitted
+        if (.not. fitted) return
+        if (.not. allocated(self%models)) then
+            fitted = .false.
+            return
+        end if
+        if (.not. allocated(self%decision_threshold)) then
+            fitted = .false.
+            return
+        end if
+        if (self%n_labels < 1 .or. size(self%models) /= self%n_labels .or. &
+            size(self%decision_threshold) /= self%n_labels) then
+            fitted = .false.
+            return
+        end if
+        if (any(.not. ieee_is_finite(self%decision_threshold)) .or. &
+            any(self%decision_threshold <= 0.0_dp) .or. &
+            any(self%decision_threshold >= 1.0_dp)) fitted = .false.
     end function gp_multilabel_fitted
 
     logical function gp_multilabel_device_supported(self, device_kind) result(supported)
