@@ -469,10 +469,10 @@ contains
 
         product = 0.0_dp
         if (size(parameters) /= self%layout%parameter_count .or. &
-                size(direction) /= self%layout%parameter_count .or. &
-                size(product) /= self%layout%parameter_count .or. &
-                any(.not. ieee_is_finite(parameters)) .or. &
-                any(.not. ieee_is_finite(direction))) then
+            size(direction) /= self%layout%parameter_count .or. &
+            size(product) /= self%layout%parameter_count .or. &
+            any(.not. ieee_is_finite(parameters)) .or. &
+            any(.not. ieee_is_finite(direction))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "MLP optimizer-group hypergradient HVP: packed shape is invalid")
             return
@@ -521,7 +521,7 @@ contains
         n_model = size(self%initial_parameters)
         n_outer = self%layout%parameter_count
         if (size(parameters) /= n_outer .or. size(direction) /= n_outer .or. &
-                size(product) /= n_outer) then
+            size(product) /= n_outer) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "MLP optimizer-group affine HVP: packed shape is invalid")
             return
@@ -529,7 +529,7 @@ contains
         learning_rate = exp(parameters(MLP_OPTIMIZER_GROUP_LOG_LEARNING_RATE))
         l2 = exp(parameters(MLP_OPTIMIZER_GROUP_LOG_L2))
         if (.not. ieee_is_finite(learning_rate) .or. .not. ieee_is_finite(l2) .or. &
-                learning_rate <= 0.0_dp .or. l2 <= 0.0_dp) then
+            learning_rate <= 0.0_dp .or. l2 <= 0.0_dp) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "MLP optimizer-group affine HVP: physical parameters are invalid")
             return
@@ -608,14 +608,14 @@ contains
 
                 theta_ddot(:, j) = theta_ddot(:, j) - &
                     (learning_rate_jq*scale*raw_gradient + &
-                     learning_rate_j*scale_q*raw_gradient + &
-                     learning_rate_j*scale*gradient_q + &
-                     learning_rate_q*scale_j*raw_gradient + &
-                     learning_rate*scale_jq*raw_gradient + &
-                     learning_rate*scale_j*gradient_q + &
-                     learning_rate_q*scale*gradient_dot(:, j) + &
-                     learning_rate*scale_q*gradient_dot(:, j) + &
-                     learning_rate*scale*gradient_ddot)
+                    learning_rate_j*scale_q*raw_gradient + &
+                    learning_rate_j*scale*gradient_q + &
+                    learning_rate_q*scale_j*raw_gradient + &
+                    learning_rate*scale_jq*raw_gradient + &
+                    learning_rate*scale_j*gradient_q + &
+                    learning_rate_q*scale*gradient_dot(:, j) + &
+                    learning_rate*scale_q*gradient_dot(:, j) + &
+                    learning_rate*scale*gradient_ddot)
                 theta_dot(:, j) = theta_dot(:, j) - &
                     learning_rate_j*scale*raw_gradient - &
                     learning_rate*scale_j*raw_gradient - &
@@ -623,8 +623,8 @@ contains
             end do
             theta = theta-learning_rate*scale*raw_gradient
             if (any(.not. ieee_is_finite(theta)) .or. &
-                    any(.not. ieee_is_finite(theta_dot)) .or. &
-                    any(.not. ieee_is_finite(theta_ddot))) then
+                any(.not. ieee_is_finite(theta_dot)) .or. &
+                any(.not. ieee_is_finite(theta_ddot))) then
                 call status_set(status, FORTNUM_DOMAIN_ERROR, &
                     "MLP optimizer-group affine HVP: trajectory is not finite")
                 return
@@ -916,7 +916,7 @@ contains
                 gradient_dot(:, parameter_index) = hvp
             end do
             if (self%gradient_clip_norm > 0.0_dp .and. &
-                    raw_gradient_norm > self%gradient_clip_norm) then
+                raw_gradient_norm > self%gradient_clip_norm) then
                 clip_scale = self%gradient_clip_norm/raw_gradient_norm
                 do parameter_index = 1, n_outer
                     norm_dot = dot_product(raw_gradient, &
@@ -1138,7 +1138,7 @@ contains
                 log(options%schedule%final_rate_fraction) >= options%lower_logit_decay_factor .and. &
                 log(options%schedule%final_rate_fraction) <= options%upper_logit_decay_factor
         else if (options%schedule%kind == MLP_SCHEDULE_COSINE_DECAY .or. &
-            options%schedule%kind == MLP_SCHEDULE_WARMUP_COSINE) then
+                options%schedule%kind == MLP_SCHEDULE_WARMUP_COSINE) then
             valid = logit(interior_probability(options%schedule%min_rate_fraction)) >= &
                 options%lower_logit_min_fraction .and. &
                 logit(interior_probability(options%schedule%min_rate_fraction)) <= &
