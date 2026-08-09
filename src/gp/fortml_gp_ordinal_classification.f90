@@ -94,6 +94,14 @@ module fortml_gp_ordinal_classification
             gp_ordinal_predict_log_proba_input_jvp
         procedure, public :: predict_log_proba_input_vjp => &
             gp_ordinal_predict_log_proba_input_vjp
+        procedure, public :: predict_proba_threshold_jvp => &
+            gp_ordinal_predict_proba_threshold_jvp
+        procedure, public :: predict_proba_threshold_vjp => &
+            gp_ordinal_predict_proba_threshold_vjp
+        procedure, public :: predict_log_proba_threshold_jvp => &
+            gp_ordinal_predict_log_proba_threshold_jvp
+        procedure, public :: predict_log_proba_threshold_vjp => &
+            gp_ordinal_predict_log_proba_threshold_vjp
         procedure, public :: predict_proba_device => &
             gp_ordinal_predict_proba_device
         procedure, public :: predict_log_proba_device => &
@@ -102,8 +110,13 @@ module fortml_gp_ordinal_classification
             gp_ordinal_predict_proba_parameter_vjp_device
         procedure, public :: predict_proba_input_vjp_device => &
             gp_ordinal_predict_proba_input_vjp_device
+        procedure, public :: predict_proba_threshold_jvp_device => &
+            gp_ordinal_predict_proba_threshold_jvp_device
+        procedure, public :: predict_proba_threshold_vjp_device => &
+            gp_ordinal_predict_proba_threshold_vjp_device
         procedure, public :: classes => gp_ordinal_classes
         procedure, public :: thresholds => gp_ordinal_thresholds
+        procedure, public :: set_thresholds => gp_ordinal_set_thresholds
         procedure, public :: class_count => gp_ordinal_class_count
         procedure, public :: feature_count => gp_ordinal_feature_count
         procedure, public :: parameter_count => gp_ordinal_parameter_count
@@ -185,7 +198,7 @@ contains
             return
         end if
         if (any(.not. ieee_is_finite(eta_dot)) .or. &
-                any(.not. ieee_is_finite(thresholds_dot))) then
+            any(.not. ieee_is_finite(thresholds_dot))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "ordinal GP likelihood JVP: tangent is not finite")
             return
@@ -221,7 +234,7 @@ contains
         call validate_ordinal_likelihood_inputs(eta, labels, thresholds, likelihood, status)
         if (status%code /= FORTNUM_OK) return
         if (size(eta_bar) /= size(eta) .or. size(thresholds_bar) /= size(thresholds) .or. &
-                .not. ieee_is_finite(value_bar)) then
+            .not. ieee_is_finite(value_bar)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "ordinal GP likelihood VJP: cotangent shape is invalid")
             return
@@ -234,7 +247,7 @@ contains
             thresholds_bar = thresholds_bar + value_bar*local_threshold_bar
         end do
         if (any(.not. ieee_is_finite(eta_bar)) .or. &
-                any(.not. ieee_is_finite(thresholds_bar))) then
+            any(.not. ieee_is_finite(thresholds_bar))) then
             call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
                 "ordinal GP likelihood VJP: result is not finite")
             return
@@ -265,14 +278,14 @@ contains
         call validate_ordinal_likelihood_inputs(eta, labels, thresholds, likelihood, status)
         if (status%code /= FORTNUM_OK) return
         if (size(eta_hvp) /= size(eta) .or. size(thresholds_hvp) /= size(thresholds) .or. &
-                size(eta_dot) /= size(eta) .or. size(thresholds_dot) /= size(thresholds) .or. &
-                .not. ieee_is_finite(value_bar)) then
+            size(eta_dot) /= size(eta) .or. size(thresholds_dot) /= size(thresholds) .or. &
+            .not. ieee_is_finite(value_bar)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "ordinal GP likelihood HVP: tangent or output shape is invalid")
             return
         end if
         if (any(.not. ieee_is_finite(eta_dot)) .or. &
-                any(.not. ieee_is_finite(thresholds_dot))) then
+            any(.not. ieee_is_finite(thresholds_dot))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "ordinal GP likelihood HVP: tangent is not finite")
             return
@@ -286,7 +299,7 @@ contains
             thresholds_hvp = thresholds_hvp + value_bar*threshold_hessian_dot
         end do
         if (any(.not. ieee_is_finite(eta_hvp)) .or. &
-                any(.not. ieee_is_finite(thresholds_hvp))) then
+            any(.not. ieee_is_finite(thresholds_hvp))) then
             call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
                 "ordinal GP likelihood HVP: result is not finite")
             return
@@ -397,7 +410,7 @@ contains
             return
         end if
         if (likelihood /= GP_ORDINAL_LIKELIHOOD_LOGISTIC .and. &
-                likelihood /= GP_ORDINAL_LIKELIHOOD_PROBIT) then
+            likelihood /= GP_ORDINAL_LIKELIHOOD_PROBIT) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "ordinal GP likelihood: likelihood kind is invalid")
             return
@@ -693,7 +706,7 @@ contains
             return
         end if
         if (size(x, 2) /= self%n_features .or. size(mean) /= size(x, 1) .or. &
-                size(variance) /= size(x, 1)) then
+            size(variance) /= size(x, 1)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "ordinal GP prediction: output shape is invalid")
             return
@@ -746,7 +759,7 @@ contains
             return
         end if
         if (size(x, 2) /= self%n_features .or. &
-                any(shape(log_probabilities) /= [size(x, 1), self%n_classes])) then
+            any(shape(log_probabilities) /= [size(x, 1), self%n_classes])) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "ordinal GP log probability prediction: output shape is invalid")
             return
@@ -799,8 +812,8 @@ contains
             return
         end if
         if (size(mean) /= size(x, 1) .or. size(mean_dot) /= size(x, 1) .or. &
-                size(variance) /= size(x, 1) .or. size(variance_dot) /= size(x, 1) .or. &
-                size(direction) /= self%parameter_count()) then
+            size(variance) /= size(x, 1) .or. size(variance_dot) /= size(x, 1) .or. &
+            size(direction) /= self%parameter_count()) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "ordinal GP latent parameter JVP: shape is invalid")
             return
@@ -828,7 +841,7 @@ contains
             return
         end if
         if (size(mean_bar) /= size(x, 1) .or. size(variance_bar) /= size(x, 1) .or. &
-                size(parameter_bar) /= self%parameter_count()) then
+            size(parameter_bar) /= self%parameter_count()) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "ordinal GP latent parameter VJP: shape is invalid")
             return
@@ -847,7 +860,7 @@ contains
         real(dp), allocatable :: mean(:), mean_dot(:), variance(:), variance_dot(:)
 
         if (any(shape(probabilities) /= [size(x, 1), self%n_classes]) .or. &
-                any(shape(probabilities_dot) /= shape(probabilities))) then
+            any(shape(probabilities_dot) /= shape(probabilities))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "ordinal GP probability parameter JVP: output shape is invalid")
             return
@@ -871,7 +884,7 @@ contains
 
         parameter_bar = 0.0_dp
         if (any(shape(probabilities_bar) /= [size(x, 1), self%n_classes]) .or. &
-                size(parameter_bar) /= self%parameter_count()) then
+            size(parameter_bar) /= self%parameter_count()) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "ordinal GP probability parameter VJP: shape is invalid")
             return
@@ -904,9 +917,9 @@ contains
             return
         end if
         if (size(x, 2) /= self%n_features .or. size(direction) /= self%parameter_count() .or. &
-                any(.not. ieee_is_finite(direction)) .or. &
-                any(shape(log_probabilities) /= [size(x, 1), self%n_classes]) .or. &
-                any(shape(log_probabilities_dot) /= shape(log_probabilities))) then
+            any(.not. ieee_is_finite(direction)) .or. &
+            any(shape(log_probabilities) /= [size(x, 1), self%n_classes]) .or. &
+            any(shape(log_probabilities_dot) /= shape(log_probabilities))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "ordinal GP log probability parameter JVP: direction or output shape is invalid")
             return
@@ -927,7 +940,7 @@ contains
             end do
         end do
         if (any(.not. ieee_is_finite(log_probabilities)) .or. &
-                any(.not. ieee_is_finite(log_probabilities_dot))) then
+            any(.not. ieee_is_finite(log_probabilities_dot))) then
             call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
                 "ordinal GP log probability parameter JVP: result is not finite")
             return
@@ -952,8 +965,8 @@ contains
             return
         end if
         if (size(x, 2) /= self%n_features .or. size(parameter_bar) /= self%parameter_count() .or. &
-                any(shape(log_probabilities_bar) /= [size(x, 1), self%n_classes]) .or. &
-                any(.not. ieee_is_finite(log_probabilities_bar))) then
+            any(shape(log_probabilities_bar) /= [size(x, 1), self%n_classes]) .or. &
+            any(.not. ieee_is_finite(log_probabilities_bar))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "ordinal GP log probability parameter VJP: input or cotangent is invalid")
             return
@@ -992,8 +1005,8 @@ contains
             return
         end if
         if (size(x, 2) /= self%n_features .or. any(shape(x_dot) /= shape(x)) .or. &
-                size(mean) /= size(x, 1) .or. size(mean_dot) /= size(x, 1) .or. &
-                size(variance) /= size(x, 1) .or. size(variance_dot) /= size(x, 1)) then
+            size(mean) /= size(x, 1) .or. size(mean_dot) /= size(x, 1) .or. &
+            size(variance) /= size(x, 1) .or. size(variance_dot) /= size(x, 1)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "ordinal GP latent input JVP: shape is invalid")
             return
@@ -1059,7 +1072,7 @@ contains
             return
         end if
         if (size(x, 2) /= self%n_features .or. size(mean_bar) /= size(x, 1) .or. &
-                size(variance_bar) /= size(x, 1) .or. any(shape(x_bar) /= shape(x))) then
+            size(variance_bar) /= size(x, 1) .or. any(shape(x_bar) /= shape(x))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "ordinal GP latent input VJP: shape is invalid")
             return
@@ -1153,9 +1166,9 @@ contains
             return
         end if
         if (size(x, 2) /= self%n_features .or. any(shape(x_dot) /= shape(x)) .or. &
-                any(.not. ieee_is_finite(x_dot)) .or. &
-                any(shape(log_probabilities) /= [size(x, 1), self%n_classes]) .or. &
-                any(shape(log_probabilities_dot) /= shape(log_probabilities))) then
+            any(.not. ieee_is_finite(x_dot)) .or. &
+            any(shape(log_probabilities) /= [size(x, 1), self%n_classes]) .or. &
+            any(shape(log_probabilities_dot) /= shape(log_probabilities))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "ordinal GP log probability input JVP: input or output shape is invalid")
             return
@@ -1175,7 +1188,7 @@ contains
             end do
         end do
         if (any(.not. ieee_is_finite(log_probabilities)) .or. &
-                any(.not. ieee_is_finite(log_probabilities_dot))) then
+            any(.not. ieee_is_finite(log_probabilities_dot))) then
             call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
                 "ordinal GP log probability input JVP: result is not finite")
             return
@@ -1200,8 +1213,8 @@ contains
             return
         end if
         if (size(x, 2) /= self%n_features .or. any(shape(x_bar) /= shape(x)) .or. &
-                any(shape(log_probabilities_bar) /= [size(x, 1), self%n_classes]) .or. &
-                any(.not. ieee_is_finite(log_probabilities_bar))) then
+            any(shape(log_probabilities_bar) /= [size(x, 1), self%n_classes]) .or. &
+            any(.not. ieee_is_finite(log_probabilities_bar))) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "ordinal GP log probability input VJP: input or cotangent is invalid")
             return
@@ -1220,6 +1233,116 @@ contains
         end do
         call self%predict_proba_input_vjp(x, probability_bar, x_bar, status)
     end subroutine gp_ordinal_predict_log_proba_input_vjp
+
+    subroutine gp_ordinal_predict_proba_threshold_jvp(self, x, thresholds_dot, &
+            probabilities, probabilities_dot, status)
+        !! Differentiate predictive probabilities through the ordered cut points.
+        class(gp_ordinal_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), thresholds_dot(:)
+        real(dp), intent(out) :: probabilities(:, :), probabilities_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: mean(:), variance(:)
+
+        probabilities = 0.0_dp
+        probabilities_dot = 0.0_dp
+        if (.not. valid_threshold_product(self, x, thresholds_dot, probabilities, &
+            probabilities_dot, status, "ordinal GP threshold JVP")) return
+        allocate(mean(size(x, 1)), variance(size(x, 1)))
+        call self%predict_latent(x, mean, variance, status)
+        if (status%code /= FORTNUM_OK) return
+        call ordinal_probabilities(mean, variance, self%cut_points, probabilities, status)
+        if (status%code /= FORTNUM_OK) return
+        call ordinal_threshold_jvp(mean, variance, self%cut_points, thresholds_dot, &
+            probabilities_dot)
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_ordinal_predict_proba_threshold_jvp
+
+    subroutine gp_ordinal_predict_proba_threshold_vjp(self, x, probabilities_bar, &
+            thresholds_bar, status)
+        !! Accumulate the predictive-probability cotangent into cut points.
+        class(gp_ordinal_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), probabilities_bar(:, :)
+        real(dp), intent(out) :: thresholds_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: mean(:), variance(:)
+
+        thresholds_bar = 0.0_dp
+        if (.not. self%is_fitted) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal GP threshold VJP: model is not fitted")
+            return
+        end if
+        if (size(x, 2) /= self%n_features .or. &
+            any(shape(probabilities_bar) /= [size(x, 1), self%n_classes]) .or. &
+            size(thresholds_bar) /= self%n_classes - 1 .or. &
+            any(.not. ieee_is_finite(x)) .or. &
+            any(.not. ieee_is_finite(probabilities_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal GP threshold VJP: input, cotangent, or output shape is invalid")
+            return
+        end if
+        allocate(mean(size(x, 1)), variance(size(x, 1)))
+        call self%predict_latent(x, mean, variance, status)
+        if (status%code /= FORTNUM_OK) return
+        call ordinal_threshold_vjp(mean, variance, self%cut_points, probabilities_bar, &
+            thresholds_bar)
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_ordinal_predict_proba_threshold_vjp
+
+    subroutine gp_ordinal_predict_log_proba_threshold_jvp(self, x, thresholds_dot, &
+            log_probabilities, log_probabilities_dot, status)
+        !! Differentiate stable log probabilities through the cut points.
+        class(gp_ordinal_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), thresholds_dot(:)
+        real(dp), intent(out) :: log_probabilities(:, :), log_probabilities_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: probabilities(:, :), probabilities_dot(:, :)
+
+        log_probabilities = 0.0_dp
+        log_probabilities_dot = 0.0_dp
+        allocate(probabilities(size(log_probabilities, 1), size(log_probabilities, 2)), &
+            probabilities_dot(size(log_probabilities_dot, 1), &
+            size(log_probabilities_dot, 2)))
+        call self%predict_proba_threshold_jvp(x, thresholds_dot, probabilities, &
+            probabilities_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        log_probabilities = log(max(probabilities, tiny(1.0_dp)))
+        where (probabilities > tiny(1.0_dp))
+            log_probabilities_dot = probabilities_dot/probabilities
+        elsewhere
+            log_probabilities_dot = 0.0_dp
+        end where
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_ordinal_predict_log_proba_threshold_jvp
+
+    subroutine gp_ordinal_predict_log_proba_threshold_vjp(self, x, &
+            log_probabilities_bar, thresholds_bar, status)
+        !! Accumulate a log-probability cotangent into cut points.
+        class(gp_ordinal_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), log_probabilities_bar(:, :)
+        real(dp), intent(out) :: thresholds_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: probabilities(:, :), probabilities_bar(:, :)
+
+        thresholds_bar = 0.0_dp
+        if (.not. self%is_fitted .or. size(x, 2) /= self%n_features .or. &
+            any(shape(log_probabilities_bar) /= [size(x, 1), self%n_classes]) .or. &
+            size(thresholds_bar) /= self%n_classes - 1 .or. &
+            any(.not. ieee_is_finite(log_probabilities_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal GP log threshold VJP: input, cotangent, or output shape is invalid")
+            return
+        end if
+        allocate(probabilities(size(x, 1), self%n_classes), &
+            probabilities_bar(size(x, 1), self%n_classes))
+        call self%predict_proba(x, probabilities, status)
+        if (status%code /= FORTNUM_OK) return
+        probabilities_bar = 0.0_dp
+        where (probabilities > tiny(1.0_dp))
+            probabilities_bar = log_probabilities_bar/probabilities
+        end where
+        call self%predict_proba_threshold_vjp(x, probabilities_bar, thresholds_bar, status)
+    end subroutine gp_ordinal_predict_log_proba_threshold_vjp
 
     subroutine gp_ordinal_predict_proba_device(self, device, x, probabilities, status)
         class(gp_ordinal_classification_t), intent(in) :: self
@@ -1324,6 +1447,38 @@ contains
         end select
     end subroutine gp_ordinal_predict_proba_input_vjp_device
 
+    subroutine gp_ordinal_predict_proba_threshold_jvp_device(self, device, x, &
+            thresholds_dot, probabilities, probabilities_dot, status)
+        class(gp_ordinal_classification_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :), thresholds_dot(:)
+        real(dp), intent(out) :: probabilities(:, :), probabilities_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        probabilities = 0.0_dp
+        probabilities_dot = 0.0_dp
+        call ordinal_prediction_device_dispatch(device, status, &
+            "ordinal GP threshold JVP device")
+        if (status%code /= FORTNUM_OK) return
+        call self%predict_proba_threshold_jvp(x, thresholds_dot, probabilities, &
+            probabilities_dot, status)
+    end subroutine gp_ordinal_predict_proba_threshold_jvp_device
+
+    subroutine gp_ordinal_predict_proba_threshold_vjp_device(self, device, x, &
+            probabilities_bar, thresholds_bar, status)
+        class(gp_ordinal_classification_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :), probabilities_bar(:, :)
+        real(dp), intent(out) :: thresholds_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        thresholds_bar = 0.0_dp
+        call ordinal_prediction_device_dispatch(device, status, &
+            "ordinal GP threshold VJP device")
+        if (status%code /= FORTNUM_OK) return
+        call self%predict_proba_threshold_vjp(x, probabilities_bar, thresholds_bar, status)
+    end subroutine gp_ordinal_predict_proba_threshold_vjp_device
+
     function gp_ordinal_classes(self) result(labels)
         class(gp_ordinal_classification_t), intent(in) :: self
         integer, allocatable :: labels(:)
@@ -1339,6 +1494,34 @@ contains
         allocate(thresholds(max(0, self%n_classes - 1)))
         if (self%n_classes > 1) thresholds = self%cut_points
     end function gp_ordinal_thresholds
+
+    subroutine gp_ordinal_set_thresholds(self, thresholds, status)
+        !! Replace fitted cut points only after validating the complete vector.
+        class(gp_ordinal_classification_t), intent(inout) :: self
+        real(dp), intent(in) :: thresholds(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. self%is_fitted) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal GP set_thresholds: model is not fitted")
+            return
+        end if
+        if (size(thresholds) /= self%n_classes - 1 .or. &
+            any(.not. ieee_is_finite(thresholds))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal GP set_thresholds: threshold shape or values are invalid")
+            return
+        end if
+        if (size(thresholds) > 1) then
+            if (any(thresholds(2:) <= thresholds(:size(thresholds) - 1))) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "ordinal GP set_thresholds: thresholds must be strictly increasing")
+                return
+            end if
+        end if
+        self%cut_points = thresholds
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_ordinal_set_thresholds
 
     integer function gp_ordinal_class_count(self) result(count)
         class(gp_ordinal_classification_t), intent(in) :: self
@@ -1448,7 +1631,7 @@ contains
             return
         end if
         if (size(direction) /= self%hyperparameter_count() .or. &
-                size(parameter_hvp) /= self%hyperparameter_count()) then
+            size(parameter_hvp) /= self%hyperparameter_count()) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "ordinal GP hyperparameter HVP: parameter shape is invalid")
             return
@@ -1543,7 +1726,7 @@ contains
         end if
         do i = 1, n
             if (.not. ieee_is_finite(mean(i)) .or. .not. ieee_is_finite(variance(i)) .or. &
-                    variance(i) < 0.0_dp) then
+                variance(i) < 0.0_dp) then
                 call status_set(status, FORTNUM_DOMAIN_ERROR, &
                     "ordinal GP probabilities: latent state is invalid")
                 return
@@ -1581,7 +1764,7 @@ contains
         call ordinal_probabilities(mean, variance, cut_points, probabilities, status)
         if (status%code /= FORTNUM_OK) return
         if (size(mean_dot) /= n .or. size(variance_dot) /= n .or. &
-                any(shape(probabilities_dot) /= [n, k])) then
+            any(shape(probabilities_dot) /= [n, k])) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "ordinal GP probability JVP: shape is invalid")
             return
@@ -1627,7 +1810,7 @@ contains
         mean_bar = 0.0_dp
         variance_bar = 0.0_dp
         if (size(variance) /= n .or. size(mean_bar) /= n .or. size(variance_bar) /= n .or. &
-                any(shape(probabilities_bar) /= [n, k])) then
+            any(shape(probabilities_bar) /= [n, k])) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "ordinal GP probability VJP: shape is invalid")
             return
@@ -1650,6 +1833,95 @@ contains
         end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine ordinal_probability_vjp
+
+    subroutine ordinal_threshold_jvp(mean, variance, cut_points, cut_points_dot, &
+            probabilities_dot)
+        real(dp), intent(in) :: mean(:), variance(:), cut_points(:), cut_points_dot(:)
+        real(dp), intent(out) :: probabilities_dot(:, :)
+        real(dp) :: boundary_dot, scale, z
+        integer :: i, j
+
+        probabilities_dot = 0.0_dp
+        do i = 1, size(mean)
+            scale = sqrt(max(1.0_dp + variance(i), MIN_SCALE))
+            do j = 1, size(cut_points)
+                z = (cut_points(j) - mean(i))/scale
+                boundary_dot = normal_pdf(z)*cut_points_dot(j)/scale
+                probabilities_dot(i, j) = probabilities_dot(i, j) + boundary_dot
+                probabilities_dot(i, j + 1) = &
+                    probabilities_dot(i, j + 1) - boundary_dot
+            end do
+        end do
+    end subroutine ordinal_threshold_jvp
+
+    subroutine ordinal_threshold_vjp(mean, variance, cut_points, probabilities_bar, &
+            cut_points_bar)
+        real(dp), intent(in) :: mean(:), variance(:), cut_points(:)
+        real(dp), intent(in) :: probabilities_bar(:, :)
+        real(dp), intent(out) :: cut_points_bar(:)
+        real(dp) :: scale, z
+        integer :: i, j
+
+        cut_points_bar = 0.0_dp
+        do i = 1, size(mean)
+            scale = sqrt(max(1.0_dp + variance(i), MIN_SCALE))
+            do j = 1, size(cut_points)
+                z = (cut_points(j) - mean(i))/scale
+                cut_points_bar(j) = cut_points_bar(j) + normal_pdf(z)* &
+                    (probabilities_bar(i, j) - probabilities_bar(i, j + 1))/scale
+            end do
+        end do
+    end subroutine ordinal_threshold_vjp
+
+    logical function valid_threshold_product(self, x, thresholds_dot, probabilities, &
+            probabilities_dot, status, operation) result(valid)
+        class(gp_ordinal_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), thresholds_dot(:)
+        real(dp), intent(in) :: probabilities(:, :), probabilities_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        character(*), intent(in) :: operation
+
+        valid = .false.
+        if (.not. self%is_fitted) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, trim(operation)// &
+                ": model is not fitted")
+            return
+        end if
+        if (size(x, 2) /= self%n_features .or. &
+            any(shape(probabilities) /= [size(x, 1), self%n_classes]) .or. &
+            any(shape(probabilities_dot) /= shape(probabilities)) .or. &
+            size(thresholds_dot) /= self%n_classes - 1 .or. &
+            any(.not. ieee_is_finite(x)) .or. &
+            any(.not. ieee_is_finite(thresholds_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, trim(operation)// &
+                ": input, tangent, or output shape is invalid")
+            return
+        end if
+        valid = .true.
+        call status_set(status, FORTNUM_OK, "")
+    end function valid_threshold_product
+
+    subroutine ordinal_prediction_device_dispatch(device, status, operation)
+        type(fortml_device_t), intent(in) :: device
+        type(fortnum_status_t), intent(out) :: status
+        character(*), intent(in) :: operation
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, trim(operation)// &
+                ": device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call status_set(status, FORTNUM_OK, "")
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, trim(operation)// &
+                ": resident ordinal kernel is not linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, trim(operation)// &
+                ": device kind is invalid")
+        end select
+    end subroutine ordinal_prediction_device_dispatch
 
     real(dp) function normal_cdf(value) result(output)
         real(dp), intent(in) :: value
