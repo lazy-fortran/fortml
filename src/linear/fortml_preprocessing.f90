@@ -9,6 +9,8 @@ module fortml_preprocessing
 
     integer, parameter, public :: QUANTILE_OUTPUT_UNIFORM = 1
     integer, parameter, public :: QUANTILE_OUTPUT_NORMAL = 2
+    integer, parameter, public :: POWER_METHOD_YEO_JOHNSON = 1
+    integer, parameter, public :: POWER_METHOD_BOX_COX = 2
 
     type, public :: standard_scaler_t
         private
@@ -90,6 +92,34 @@ module fortml_preprocessing
         procedure, public :: quantile_count => quantile_transformer_quantile_count
         procedure, public :: fitted => quantile_transformer_fitted
     end type quantile_transformer_t
+
+    !> Fitted Yeo-Johnson or Box-Cox power map with optional standardization.
+    !>
+    !> Lambda fitting is deterministic: each feature searches a fixed grid
+    !> on [-2,2] for the Gaussianized transformed likelihood.  Supplying
+    !> `lambdas` to fit bypasses that discrete search and is useful when the
+    !> power coordinates are part of a differentiable outer objective.  The
+    !> fitted transform is smooth away from its method-specific branch at
+    !> zero; branch-crossing JVPs return a typed refusal.
+    type, public :: power_transformer_t
+        private
+        real(dp), allocatable :: lambda_value(:)
+        real(dp), allocatable :: location_value(:)
+        real(dp), allocatable :: scale_value(:)
+        integer :: method_value = POWER_METHOD_YEO_JOHNSON
+        logical :: standardize_value = .true.
+    contains
+        procedure, public :: fit => power_transformer_fit
+        procedure, public :: transform => power_transformer_transform
+        procedure, public :: inverse_transform => power_transformer_inverse
+        procedure, public :: transform_jvp => power_transformer_transform_jvp
+        procedure, public :: lambdas => power_transformer_lambdas
+        procedure, public :: locations => power_transformer_locations
+        procedure, public :: scales => power_transformer_scales
+        procedure, public :: method => power_transformer_method
+        procedure, public :: feature_count => power_transformer_feature_count
+        procedure, public :: fitted => power_transformer_fitted
+    end type power_transformer_t
 
 contains
 
@@ -633,6 +663,424 @@ contains
         value = .true.
         call status_set(status, FORTNUM_OK, "")
     end function quantile_transformer_valid
+
+    subroutine power_transformer_fit(self, x, status, method, standardize, lambdas)
+        class(power_transformer_t), intent(out) :: self
+        real(dp), intent(in) :: x(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        integer, intent(in), optional :: method
+        logical, intent(in), optional :: standardize
+        real(dp), intent(in), optional :: lambdas(:)
+
+        integer :: selected_method, j, grid_index
+        real(dp) :: candidate, score, best_score
+        logical :: valid
+        real(dp), allocatable :: raw(:, :)
+
+        if (.not. valid_matrix(x)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "power transformer fit: input must be finite and nonempty")
+            return
+        end if
+        selected_method = POWER_METHOD_YEO_JOHNSON
+        if (present(method)) selected_method = method
+        if (selected_method /= POWER_METHOD_YEO_JOHNSON .and. &
+                selected_method /= POWER_METHOD_BOX_COX) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "power transformer fit: unknown power method")
+            return
+        end if
+        if (selected_method == POWER_METHOD_BOX_COX) then
+            if (any(x <= 0.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "power transformer fit: Box-Cox requires positive input")
+                return
+            end if
+        end if
+        if (present(lambdas)) then
+            if (size(lambdas) /= size(x, 2) .or. any(.not. ieee_is_finite(lambdas))) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "power transformer fit: lambda shape or values are invalid")
+                return
+            end if
+        end if
+
+        self%method_value = selected_method
+        self%standardize_value = .true.
+        if (present(standardize)) self%standardize_value = standardize
+        allocate(self%lambda_value(size(x, 2)), self%location_value(size(x, 2)), &
+            self%scale_value(size(x, 2)), raw(size(x, 1), size(x, 2)))
+        self%lambda_value = 0.0_dp
+        if (present(lambdas)) then
+            self%lambda_value = lambdas
+        else
+            do j = 1, size(x, 2)
+                best_score = -huge(1.0_dp)
+                do grid_index = 0, 80
+                    candidate = -2.0_dp + 0.05_dp*real(grid_index, dp)
+                    call power_column(x(:, j), candidate, selected_method, &
+                        raw(:, j), score, valid)
+                    if (valid .and. score > best_score) then
+                        best_score = score
+                        self%lambda_value(j) = candidate
+                    end if
+                end do
+            end do
+        end if
+        do j = 1, size(x, 2)
+            call power_column(x(:, j), self%lambda_value(j), selected_method, &
+                raw(:, j), score, valid)
+            if (.not. valid) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "power transformer fit: transform overflowed")
+                return
+            end if
+            self%location_value(j) = 0.0_dp
+            self%scale_value(j) = 1.0_dp
+            if (self%standardize_value) then
+                self%location_value(j) = sum(raw(:, j))/real(size(raw, 1), dp)
+                score = sum((raw(:, j) - self%location_value(j))**2)/ &
+                    real(size(raw, 1), dp)
+                if (score > 0.0_dp) self%scale_value(j) = sqrt(score)
+            end if
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine power_transformer_fit
+
+    subroutine power_transformer_transform(self, x, transformed, status)
+        class(power_transformer_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: transformed(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        integer :: i, j
+        logical :: valid
+
+        if (.not. power_transformer_valid(self, x, transformed, status, &
+                "power transformer transform")) return
+        do j = 1, size(x, 2)
+            do i = 1, size(x, 1)
+                transformed(i, j) = power_forward(x(i, j), self%lambda_value(j), &
+                    self%method_value, valid)
+                if (.not. valid) then
+                    transformed = 0.0_dp
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "power transformer transform: branch overflow")
+                    return
+                end if
+                transformed(i, j) = (transformed(i, j) - self%location_value(j))/ &
+                    self%scale_value(j)
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine power_transformer_transform
+
+    subroutine power_transformer_inverse(self, x, transformed, status)
+        class(power_transformer_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: transformed(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        integer :: i, j
+        logical :: valid
+        real(dp) :: raw_value
+
+        if (.not. power_transformer_valid(self, x, transformed, status, &
+                "power transformer inverse")) return
+        do j = 1, size(x, 2)
+            do i = 1, size(x, 1)
+                raw_value = x(i, j)*self%scale_value(j) + self%location_value(j)
+                transformed(i, j) = power_inverse(raw_value, self%lambda_value(j), &
+                    self%method_value, valid)
+                if (.not. valid) then
+                    transformed = 0.0_dp
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "power transformer inverse: branch overflow")
+                    return
+                end if
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine power_transformer_inverse
+
+    subroutine power_transformer_transform_jvp(self, x, x_dot, transformed_dot, status)
+        class(power_transformer_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), x_dot(:, :)
+        real(dp), intent(out) :: transformed_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        integer :: i, j
+        real(dp) :: derivative
+        logical :: valid
+
+        transformed_dot = 0.0_dp
+        if (.not. power_transformer_fitted(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "power transformer JVP: model is not fitted")
+            return
+        end if
+        if (.not. valid_matrix(x) .or. .not. valid_matrix(x_dot) .or. &
+                any(shape(x) /= shape(x_dot)) .or. any(shape(transformed_dot) /= shape(x))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "power transformer JVP: shape or values are invalid")
+            return
+        end if
+        do j = 1, size(x, 2)
+            do i = 1, size(x, 1)
+                derivative = power_derivative(x(i, j), self%lambda_value(j), &
+                    self%method_value, valid)
+                if (.not. valid) then
+                    transformed_dot = 0.0_dp
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "power transformer JVP: branch point is nonsmooth")
+                    return
+                end if
+                transformed_dot(i, j) = derivative*x_dot(i, j)/self%scale_value(j)
+            end do
+        end do
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine power_transformer_transform_jvp
+
+    function power_transformer_lambdas(self) result(values)
+        class(power_transformer_t), intent(in) :: self
+        real(dp), allocatable :: values(:)
+        if (allocated(self%lambda_value)) then
+            values = self%lambda_value
+        else
+            allocate(values(0))
+        end if
+    end function power_transformer_lambdas
+
+    function power_transformer_locations(self) result(values)
+        class(power_transformer_t), intent(in) :: self
+        real(dp), allocatable :: values(:)
+        if (allocated(self%location_value)) then
+            values = self%location_value
+        else
+            allocate(values(0))
+        end if
+    end function power_transformer_locations
+
+    function power_transformer_scales(self) result(values)
+        class(power_transformer_t), intent(in) :: self
+        real(dp), allocatable :: values(:)
+        if (allocated(self%scale_value)) then
+            values = self%scale_value
+        else
+            allocate(values(0))
+        end if
+    end function power_transformer_scales
+
+    integer function power_transformer_method(self) result(value)
+        class(power_transformer_t), intent(in) :: self
+        value = self%method_value
+    end function power_transformer_method
+
+    integer function power_transformer_feature_count(self) result(count)
+        class(power_transformer_t), intent(in) :: self
+        count = 0
+        if (allocated(self%lambda_value)) count = size(self%lambda_value)
+    end function power_transformer_feature_count
+
+    logical function power_transformer_fitted(self) result(value)
+        class(power_transformer_t), intent(in) :: self
+        value = allocated(self%lambda_value) .and. allocated(self%location_value) .and. &
+            allocated(self%scale_value)
+        if (value) value = size(self%lambda_value) > 0 .and. &
+            size(self%location_value) == size(self%lambda_value) .and. &
+            size(self%scale_value) == size(self%lambda_value)
+    end function power_transformer_fitted
+
+    logical function power_transformer_valid(self, x, transformed, status, context) &
+            result(value)
+        class(power_transformer_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: transformed(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        character(*), intent(in) :: context
+
+        transformed = 0.0_dp
+        value = .false.
+        if (.not. power_transformer_fitted(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, trim(context)//": model is not fitted")
+            return
+        end if
+        if (.not. valid_matrix(x) .or. any(shape(transformed) /= shape(x)) .or. &
+                size(x, 2) /= size(self%lambda_value)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, trim(context)//": shape or values are invalid")
+            return
+        end if
+        value = .true.
+        call status_set(status, FORTNUM_OK, "")
+    end function power_transformer_valid
+
+    subroutine power_column(values, lambda, method, transformed, score, valid)
+        real(dp), intent(in) :: values(:), lambda
+        integer, intent(in) :: method
+        real(dp), intent(out) :: transformed(:), score
+        logical, intent(out) :: valid
+        integer :: i
+        real(dp) :: mean_value, variance, jacobian
+
+        valid = .true.
+        jacobian = 0.0_dp
+        do i = 1, size(values)
+            transformed(i) = power_forward(values(i), lambda, method, valid)
+            if (.not. valid) then
+                score = -huge(1.0_dp)
+                return
+            end if
+            jacobian = jacobian + power_log_jacobian(values(i), lambda, method, valid)
+            if (.not. valid) then
+                score = -huge(1.0_dp)
+                return
+            end if
+        end do
+        mean_value = sum(transformed)/real(size(values), dp)
+        variance = sum((transformed - mean_value)**2)/real(size(values), dp)
+        if (variance <= 0.0_dp .or. .not. ieee_is_finite(variance)) then
+            valid = .false.
+            score = -huge(1.0_dp)
+            return
+        end if
+        score = -0.5_dp*real(size(values), dp)*log(variance) + jacobian
+        valid = ieee_is_finite(score)
+    end subroutine power_column
+
+    real(dp) function power_forward(value, lambda, method, valid) result(mapped)
+        real(dp), intent(in) :: value, lambda
+        integer, intent(in) :: method
+        logical, intent(out) :: valid
+        real(dp) :: base
+
+        valid = .true.
+        if (method == POWER_METHOD_BOX_COX) then
+            if (value <= 0.0_dp) then
+                valid = .false.
+                mapped = 0.0_dp
+                return
+            end if
+            if (abs(lambda) < 1.0e-12_dp) then
+                mapped = log(value)
+            else
+                mapped = exp(lambda*log(value))
+                mapped = (mapped - 1.0_dp)/lambda
+            end if
+        else if (value >= 0.0_dp) then
+            base = 1.0_dp + value
+            if (abs(lambda) < 1.0e-12_dp) then
+                mapped = log(base)
+            else
+                mapped = (exp(lambda*log(base)) - 1.0_dp)/lambda
+            end if
+        else
+            base = 1.0_dp - value
+            if (abs(lambda - 2.0_dp) < 1.0e-12_dp) then
+                mapped = -log(base)
+            else
+                mapped = -(exp((2.0_dp - lambda)*log(base)) - 1.0_dp)/ &
+                    (2.0_dp - lambda)
+            end if
+        end if
+        valid = ieee_is_finite(mapped)
+    end function power_forward
+
+    real(dp) function power_inverse(value, lambda, method, valid) result(mapped)
+        real(dp), intent(in) :: value, lambda
+        integer, intent(in) :: method
+        logical, intent(out) :: valid
+        real(dp) :: base
+
+        valid = .true.
+        if (method == POWER_METHOD_BOX_COX) then
+            if (abs(lambda) < 1.0e-12_dp) then
+                mapped = exp(value)
+            else
+                base = 1.0_dp + lambda*value
+                if (base <= 0.0_dp) then
+                    valid = .false.
+                    mapped = 0.0_dp
+                    return
+                end if
+                mapped = exp(log(base)/lambda)
+            end if
+        else if (value >= 0.0_dp) then
+            if (abs(lambda) < 1.0e-12_dp) then
+                mapped = exp(value) - 1.0_dp
+            else
+                base = 1.0_dp + lambda*value
+                if (base <= 0.0_dp) then
+                    valid = .false.
+                    mapped = 0.0_dp
+                    return
+                end if
+                mapped = exp(log(base)/lambda) - 1.0_dp
+            end if
+        else
+            if (abs(lambda - 2.0_dp) < 1.0e-12_dp) then
+                mapped = 1.0_dp - exp(-value)
+            else
+                base = 1.0_dp - (2.0_dp - lambda)*value
+                if (base <= 0.0_dp) then
+                    valid = .false.
+                    mapped = 0.0_dp
+                    return
+                end if
+                mapped = 1.0_dp - exp(log(base)/(2.0_dp - lambda))
+            end if
+        end if
+        valid = ieee_is_finite(mapped)
+    end function power_inverse
+
+    real(dp) function power_derivative(value, lambda, method, valid) result(derivative)
+        real(dp), intent(in) :: value, lambda
+        integer, intent(in) :: method
+        logical, intent(out) :: valid
+        real(dp) :: base
+
+        valid = .true.
+        if (method == POWER_METHOD_BOX_COX) then
+            if (value <= 0.0_dp) then
+                valid = .false.
+                derivative = 0.0_dp
+                return
+            end if
+            if (abs(lambda) < 1.0e-12_dp) then
+                derivative = 1.0_dp/value
+            else
+                derivative = exp((lambda - 1.0_dp)*log(value))
+            end if
+        else if (value > 0.0_dp) then
+            base = 1.0_dp + value
+            derivative = exp((lambda - 1.0_dp)*log(base))
+        else if (value < 0.0_dp) then
+            base = 1.0_dp - value
+            derivative = exp((1.0_dp - lambda)*log(base))
+        else
+            valid = .false.
+            derivative = 0.0_dp
+            return
+        end if
+        valid = ieee_is_finite(derivative)
+    end function power_derivative
+
+    real(dp) function power_log_jacobian(value, lambda, method, valid) result(value_log)
+        real(dp), intent(in) :: value, lambda
+        integer, intent(in) :: method
+        logical, intent(out) :: valid
+        real(dp) :: derivative
+
+        if (method == POWER_METHOD_YEO_JOHNSON .and. value == 0.0_dp) then
+            value_log = 0.0_dp
+            valid = .true.
+            return
+        end if
+        derivative = power_derivative(value, lambda, method, valid)
+        if (valid .and. derivative > 0.0_dp) then
+            value_log = log(derivative)
+            valid = ieee_is_finite(value_log)
+        else
+            value_log = 0.0_dp
+            valid = .false.
+        end if
+    end function power_log_jacobian
 
     pure real(dp) function quantile_map_value(grid, value) result(mapped)
         real(dp), intent(in) :: grid(:), value

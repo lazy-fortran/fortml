@@ -3241,7 +3241,15 @@ return status errors.
   returns typed boundaries for knots and normal-output requests. The independent
   `test_quantile_transformer` oracle covers values, inverse reconstruction,
   slopes, endpoint clamping, and refusal transactionality.
-- [ ] Add normal-output and power transforms, normalization, ordinal encoding,
+- [x] Add the deterministic `power_transformer_t` preprocessing seam. It
+  supports Yeo--Johnson and positive-input Box--Cox branches, fixed lambdas or
+  a bounded Gaussian-likelihood lambda grid, optional standardization, inverse
+  reconstruction, analytic input JVPs away from zero, transactional overflow
+  and branch refusals, and an independent `test_power_transformer` oracle.
+  The release benchmark records the selected lambda, transform checksum, and
+  typed CUDA boundary; trainable lambda HVPs and resident power kernels remain
+  open.
+- [ ] Add normal-output quantiles, normalization, ordinal encoding,
   target encoding with leakage guards, hashing, and sparse CSR/CSC feature
   views. The total-degree `make_polynomial_interaction_basis` now provides
   deterministic polynomial interactions with analytic value/JVP/VJP/HVP

@@ -1655,6 +1655,18 @@ variant are explicit typed boundaries because their derivatives are not smooth
 under this fixed-state contract. `quantiles`, `quantile_count`, and
 `feature_count` expose fitted metadata.
 
+`power_transformer_t%fit` implements deterministic Yeo--Johnson (the default)
+or positive-input Box--Cox maps. Without explicit `lambdas`, each feature
+selects the best point on a fixed `[-2,2]` grid using the transformed Gaussian
+likelihood; callers may provide lambdas when the power coordinates belong to
+an outer differentiable objective. Optional standardization stores transformed
+locations and scales. `transform`, `inverse_transform`, and
+`transform_jvp` are analytic away from zero branch points, while branch-crossing
+JVPs, invalid Box--Cox inputs, overflow, and malformed shapes return typed
+statuses without mutating output state. `lambdas`, `locations`, `scales`,
+`method`, and `feature_count` expose fitted metadata. CUDA currently returns a
+typed refusal because no resident power kernel is linked.
+
 ### `fortml_simple_imputer`
 
 `simple_imputer_t%fit(x,status[,strategy,fill_value])` fits one statistic per
