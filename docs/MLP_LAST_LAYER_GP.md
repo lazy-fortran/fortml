@@ -32,6 +32,7 @@ call model%initialize([n_input, n_hidden, n_output], status, &
     hidden_activation=MLP_TANH, output_activation=MLP_LINEAR)
 call initializer%fit_apply(model, x, target, status, regularization=1.0e-3_dp)
 call initializer%predict(model, x_query, mean, status)
+call initializer%predictive_variance(model, x_query, variance, status)
 ```
 
 The CPU `jvp` differentiates the posterior mean with respect to
@@ -40,9 +41,19 @@ fixed. Its analytic solve is checked against a central finite difference in
 `test_mlp_last_layer_gp`. `parameters()` and `parameter_metadata()` expose the
 named positive regularization coordinate for FortOpt/search adapters.
 
+`predictive_variance` adds the exact finite-feature posterior diagonal
+`diag(Z (Z^T Z + lambda I)^(-1) Z^T)` for unit observation-noise scale. The
+`predictive_variance_jvp` product differentiates that diagonal with respect to
+the same regularization coordinate. These are fixed-feature posterior
+products, not NNGP covariance propagation or a claim of infinite-width
+equivalence; both products have independent dense-solve oracles in the source
+test and the companion benchmark.
+
 The CUDA entry points intentionally return `FORTNUM_NOT_IMPLEMENTED` without
 mutating model or output state: a CPU feature-map evaluation is never relabeled
 as resident GPU execution. The companion benchmark reports the independent
 NumPy normal-equation oracle, FortML fit/predict timing, approximation error,
 and an explicit CUDA-unavailable row in
 `fortml-bench/results/mlp_last_layer_gp.csv`.
+The posterior-variance extension is recorded in
+`fortml-bench/results/mlp_last_layer_gp_posterior.csv`.

@@ -881,6 +881,14 @@ no-mutation boundary are in `test_mlp_last_layer_gp`; the API contract is
 `docs/MLP_LAST_LAYER_GP.md` and the release lane is
 `fortml-bench/results/mlp_last_layer_gp.csv`.
 
+The initializer now also retains its positive-definite precision matrix and
+exposes the exact finite-feature posterior predictive variance diagonal and
+its regularization JVP. An independent dense-solve oracle and release row are
+recorded in `fortml-bench/results/mlp_last_layer_gp_posterior.csv`; the
+resident CUDA variance path remains a typed refusal. This is a finite-feature
+posterior product only: NNGP covariance propagation, posterior weight draws,
+and structure-preserving GP initialization remain open below.
+
 This closes only the finite-feature last-layer warm-start contract. It does not
 close NNGP covariance propagation, sampled prior draws, full GP-posterior
 weight maps, or structure-preserving Hamiltonian/symplectic/PINN

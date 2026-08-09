@@ -33,12 +33,14 @@ module fortml_mlp_last_layer_gp
         real(dp) :: regularization = 0.0_dp
         logical :: exact_infinite_width = .false.
         logical :: cuda_supported = .false.
+        logical :: predictive_variance_supported = .true.
     end type mlp_last_layer_gp_metadata_t
 
     type, public :: mlp_last_layer_gp_initializer_t
         private
         real(dp), allocatable :: coefficient_state(:, :)
         real(dp), allocatable :: coefficient_jvp(:, :)
+        real(dp), allocatable :: precision_state(:, :)
         real(dp) :: regularization_value = 0.0_dp
         integer :: sample_count_value = 0
         integer :: feature_dimension_value = 0
@@ -50,9 +52,12 @@ module fortml_mlp_last_layer_gp
         procedure, public :: apply => mlp_last_layer_gp_apply
         procedure, public :: predict => mlp_last_layer_gp_predict
         procedure, public :: jvp => mlp_last_layer_gp_jvp
+        procedure, public :: predictive_variance => mlp_last_layer_gp_predictive_variance
+        procedure, public :: predictive_variance_jvp => mlp_last_layer_gp_predictive_variance_jvp
         procedure, public :: predict_cuda => mlp_last_layer_gp_predict_cuda
         procedure, public :: apply_cuda => mlp_last_layer_gp_apply_cuda
         procedure, public :: jvp_cuda => mlp_last_layer_gp_jvp_cuda
+        procedure, public :: predictive_variance_cuda => mlp_last_layer_gp_predictive_variance_cuda
         procedure, public :: fitted => mlp_last_layer_gp_fitted
         procedure, public :: regularization => mlp_last_layer_gp_regularization
         procedure, public :: sample_count => mlp_last_layer_gp_sample_count
@@ -124,6 +129,7 @@ contains
 
         call move_alloc(coefficient_state, self%coefficient_state)
         call move_alloc(coefficient_jvp, self%coefficient_jvp)
+        call move_alloc(normal, self%precision_state)
         self%regularization_value = lambda
         self%sample_count_value = size(x, 1)
         self%feature_dimension_value = size(hidden, 2)
@@ -278,6 +284,107 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine mlp_last_layer_gp_jvp
 
+    subroutine mlp_last_layer_gp_predictive_variance(self, model, x, variance, status)
+        !! Return the exact finite-feature posterior variance (unit noise scale).
+        class(mlp_last_layer_gp_initializer_t), intent(in) :: self
+        class(mlp_t), intent(in) :: model
+        real(dp), intent(in) :: x(:, :)
+        real(dp), allocatable, intent(out) :: variance(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: hidden(:, :), design(:, :), rhs(:, :), solve(:, :)
+        logical :: solved
+
+        if (.not. self%fitted_value .or. .not. allocated(self%precision_state)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "last-layer GP predictive_variance: initializer is unfitted")
+            return
+        end if
+        call model%feature_map(x, hidden, status)
+        if (status%code /= FORTNUM_OK) return
+        if (size(hidden, 2) /= self%feature_dimension_value .or. size(x, 1) < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "last-layer GP predictive_variance: feature dimension mismatch")
+            return
+        end if
+        allocate(design(size(x, 1), size(hidden, 2) + 1))
+        design(:, 1:size(hidden, 2)) = hidden
+        design(:, size(hidden, 2) + 1) = 1.0_dp
+        allocate(rhs(size(design, 2), size(design, 1)), solve(size(design, 2), size(design, 1)))
+        rhs = transpose(design)
+        call cholesky_solve(self%precision_state, rhs, solve, solved)
+        if (.not. solved) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "last-layer GP predictive_variance: posterior solve failed")
+            return
+        end if
+        allocate(variance(size(design, 1)))
+        variance = sum(design*transpose(solve), dim=2)
+        if (.not. all(ieee_is_finite(variance)) .or. any(variance < -1.0e-12_dp)) then
+            deallocate(variance)
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "last-layer GP predictive_variance: result is nonfinite")
+            return
+        end if
+        variance = max(variance, 0.0_dp)
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine mlp_last_layer_gp_predictive_variance
+
+    subroutine mlp_last_layer_gp_predictive_variance_jvp(self, model, x, &
+            regularization_direction, variance, dvariance, status)
+        !! Differentiate the posterior variance through regularization exactly.
+        class(mlp_last_layer_gp_initializer_t), intent(in) :: self
+        class(mlp_t), intent(in) :: model
+        real(dp), intent(in) :: x(:, :), regularization_direction
+        real(dp), allocatable, intent(out) :: variance(:), dvariance(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: hidden(:, :), design(:, :), rhs(:, :), solve(:, :), solve2(:, :)
+        logical :: solved
+
+        if (.not. self%fitted_value .or. .not. allocated(self%precision_state) .or. &
+                .not. ieee_is_finite(regularization_direction)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "last-layer GP predictive_variance_jvp: initializer or direction is invalid")
+            return
+        end if
+        call model%feature_map(x, hidden, status)
+        if (status%code /= FORTNUM_OK) return
+        if (size(hidden, 2) /= self%feature_dimension_value .or. size(x, 1) < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "last-layer GP predictive_variance_jvp: feature dimension mismatch")
+            return
+        end if
+        allocate(design(size(x, 1), size(hidden, 2) + 1))
+        design(:, 1:size(hidden, 2)) = hidden
+        design(:, size(hidden, 2) + 1) = 1.0_dp
+        allocate(rhs(size(design, 2), size(design, 1)), solve(size(design, 2), size(design, 1)))
+        allocate(solve2(size(design, 2), size(design, 1)))
+        rhs = transpose(design)
+        call cholesky_solve(self%precision_state, rhs, solve, solved)
+        if (.not. solved) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "last-layer GP predictive_variance_jvp: posterior solve failed")
+            return
+        end if
+        call cholesky_solve(self%precision_state, solve, solve2, solved)
+        if (.not. solved) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "last-layer GP predictive_variance_jvp: derivative solve failed")
+            return
+        end if
+        allocate(variance(size(design, 1)), dvariance(size(design, 1)))
+        variance = sum(design*transpose(solve), dim=2)
+        dvariance = -regularization_direction*sum(design*transpose(solve2), dim=2)
+        if (.not. all(ieee_is_finite(variance)) .or. .not. all(ieee_is_finite(dvariance)) .or. &
+                any(variance < -1.0e-12_dp)) then
+            deallocate(variance, dvariance)
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "last-layer GP predictive_variance_jvp: result is nonfinite")
+            return
+        end if
+        variance = max(variance, 0.0_dp)
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine mlp_last_layer_gp_predictive_variance_jvp
+
     subroutine mlp_last_layer_gp_predict_cuda(self, model, x, y, status)
         class(mlp_last_layer_gp_initializer_t), intent(in) :: self
         class(mlp_t), intent(in) :: model
@@ -309,6 +416,17 @@ contains
         call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
             "last-layer GP jvp_cuda: resident CUDA products are unavailable")
     end subroutine mlp_last_layer_gp_jvp_cuda
+
+    subroutine mlp_last_layer_gp_predictive_variance_cuda(self, model, x, variance, status)
+        class(mlp_last_layer_gp_initializer_t), intent(in) :: self
+        class(mlp_t), intent(in) :: model
+        real(dp), intent(in) :: x(:, :)
+        real(dp), allocatable, intent(inout) :: variance(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+            "last-layer GP predictive_variance_cuda: resident CUDA products are unavailable")
+    end subroutine mlp_last_layer_gp_predictive_variance_cuda
 
     logical function mlp_last_layer_gp_fitted(self) result(value)
         class(mlp_last_layer_gp_initializer_t), intent(in) :: self
@@ -345,6 +463,7 @@ contains
         metadata%regularization = self%regularization_value
         metadata%exact_infinite_width = .false.
         metadata%cuda_supported = .false.
+        metadata%predictive_variance_supported = .true.
     end function mlp_last_layer_gp_metadata
 
     integer function mlp_last_layer_gp_parameter_count(self) result(value)

@@ -32,6 +32,8 @@ contains
         real(dp), allocatable :: expected(:, :), actual(:, :), derivative(:, :)
         real(dp), allocatable :: coefficients(:, :), parameters(:)
         real(dp), allocatable :: central(:, :)
+        real(dp), allocatable :: variance(:), variance_plus(:), variance_minus(:)
+        real(dp), allocatable :: dvariance(:), expected_variance(:)
         real(dp) :: theta(12), lambda, epsilon
         integer :: i
         type(mlp_last_layer_gp_initializer_t) :: metadata_owner
@@ -80,12 +82,28 @@ contains
         expected = matmul(design, coefficients)
         call check(status_ok(status) .and. maxval(abs(actual - expected)) < 2.0e-13_dp, &
             "posterior mean oracle", failures)
+        call variance_oracle(design, lambda, expected_variance)
+        call initializer%predictive_variance(model, x, variance, status)
+        call check(status_ok(status) .and. maxval(abs(variance - expected_variance)) < 2.0e-12_dp, &
+            "posterior variance oracle", failures)
+        epsilon = 1.0e-5_dp
+        call initializer%predictive_variance_jvp(model, x, 1.0_dp, variance, dvariance, status)
+        call check(status_ok(status), "posterior variance JVP status", failures)
+        call plus%fit(model, x, target, status, lambda + epsilon)
+        call minus%fit(model, x, target, status, lambda - epsilon)
+        call plus%predictive_variance(model, x, variance_plus, status)
+        call minus%predictive_variance(model, x, variance_minus, status)
+        allocate(central(size(x, 1), size(target, 2)))
+        central = 0.0_dp
+        central(:, 1) = (variance_plus - variance_minus)/(2.0_dp*epsilon)
+        call check(status_ok(status) .and. allocated(dvariance) .and. &
+            maxval(abs(dvariance - central(:, 1))) < 2.0e-8_dp, &
+            "posterior variance regularization JVP oracle", failures)
         call initializer%apply(model, status)
         call model%predict(x, actual, status)
         call check(status_ok(status) .and. maxval(abs(actual - expected)) < 2.0e-13_dp, &
             "applied final-layer oracle", failures)
 
-        epsilon = 1.0e-5_dp
         call plus%fit(model, x, target, status, lambda + epsilon)
         call minus%fit(model, x, target, status, lambda - epsilon)
         call plus%predict(model, x, actual, status)
@@ -113,6 +131,7 @@ contains
         type(fortnum_status_t) :: status
         real(dp) :: x(3, 2), target(3, 1)
         real(dp), allocatable :: before(:, :), sentinel(:, :)
+        real(dp), allocatable :: variance_sentinel(:)
         real(dp) :: parameters(1)
 
         x = 0.2_dp
@@ -139,6 +158,13 @@ contains
         call initializer%apply_cuda(model, status)
         call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
             "CUDA apply refusal", failures)
+        allocate(variance_sentinel(3))
+        variance_sentinel = 77.0_dp
+        call initializer%predictive_variance_cuda(model, x, variance_sentinel, status)
+        call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
+            "CUDA posterior variance refusal", failures)
+        call check(maxval(abs(variance_sentinel - 77.0_dp)) == 0.0_dp, &
+            "CUDA posterior variance no mutation", failures)
     end subroutine test_refusals_and_cuda_boundary
 
     subroutine solve_oracle(design, target, lambda, coefficients)
@@ -172,6 +198,41 @@ contains
         end do
         allocate(coefficients, source=rhs)
     end subroutine solve_oracle
+
+    subroutine variance_oracle(design, lambda, variance)
+        real(dp), intent(in) :: design(:, :), lambda
+        real(dp), allocatable, intent(out) :: variance(:)
+        real(dp), allocatable :: matrix(:, :), work(:, :), rhs(:)
+        real(dp) :: pivot, factor
+        integer :: n, i, j, k, row, col
+
+        n = size(design, 2)
+        allocate(variance(size(design, 1)), matrix(n, n), work(n, n), rhs(n))
+        matrix = matmul(transpose(design), design)
+        do i = 1, n
+            matrix(i, i) = matrix(i, i) + lambda
+        end do
+        do i = 1, size(design, 1)
+            work = matrix
+            rhs = design(i, :)
+            do k = 1, n
+                pivot = work(k, k)
+                do col = k, n
+                    work(k, col) = work(k, col)/pivot
+                end do
+                rhs(k) = rhs(k)/pivot
+                do row = 1, n
+                    if (row == k) cycle
+                    factor = work(row, k)
+                    do col = k, n
+                        work(row, col) = work(row, col) - factor*work(k, col)
+                    end do
+                    rhs(row) = rhs(row) - factor*rhs(k)
+                end do
+            end do
+            variance(i) = dot_product(design(i, :), rhs)
+        end do
+    end subroutine variance_oracle
 
     subroutine check(condition, label, failures)
         logical, intent(in) :: condition
