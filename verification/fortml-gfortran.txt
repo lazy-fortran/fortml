@@ -1,5 +1,5 @@
 Verification date: 2026-08-09
-FortML revision: 21f9e0b (wave9 Hamiltonian vector-field VJP lane)
+FortML revision: 6b6d090 (wave9 Hamiltonian vector-field VJP lane)
 FortAD dependency: origin/main 8c513b581892f7b5f486785d092f39a2b7ac7568
 FortFront dependency: not a direct fpm dependency (origin/main 86eb2ba8b5b842bc1aebf9ee8bb00053f12de2f8)
 FortSym dependency: origin/main 26250ce24e3890711343a2f18d5feae2be832508
