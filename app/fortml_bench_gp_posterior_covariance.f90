@@ -20,7 +20,9 @@ program fortml_bench_gp_posterior_covariance
     real(real64) :: started, finished
     real(dp) :: checksum, variance_checksum
     real(dp) :: covariance_dot_checksum, parameter_bar_checksum
-    integer :: i, repetition, cuda_code
+    real(dp), parameter :: covariance_bar_pattern(9) = [0.4_dp, -0.2_dp, 0.3_dp, &
+        0.5_dp, -0.7_dp, 0.1_dp, 0.6_dp, -0.4_dp, 0.2_dp]
+    integer :: i, j, repetition, cuda_code
 
     do i = 1, n
         x(i, 1) = -1.2_dp + 0.08_dp*real(i - 1, dp)
@@ -50,8 +52,11 @@ program fortml_bench_gp_posterior_covariance
         "gp_posterior_covariance", variance_checksum
 
     direction = [0.13_dp, -0.19_dp, 0.23_dp]
-    covariance_bar = reshape([0.4_dp, -0.2_dp, 0.3_dp, 0.5_dp, -0.7_dp, 0.1_dp, &
-        0.6_dp, -0.4_dp, 0.2_dp], shape(covariance_bar))
+    do j = 1, m
+        do i = 1, m
+            covariance_bar(i, j) = covariance_bar_pattern(mod(i - 1 + (j - 1)*m, 9) + 1)
+        end do
+    end do
     call cpu_time(started)
     do repetition = 1, repetitions
         call model%predict_covariance_jvp(query, direction, covariance, covariance_dot, status)
