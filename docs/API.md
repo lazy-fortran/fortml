@@ -177,6 +177,33 @@ graphs are linked. See
 eight-activation value/JVP/VJP oracle, MSE update, transfer counters, and
 repeated resident-batch evidence.
 
+### `fortml_cuda_mlp_chain_api`
+
+`cuda_mlp_chain_plan_t` is the resident native-CUDA plan for a sequential
+dense MLP. `create(layer_sizes,activations,weights,biases,device_index,status)`
+validates `layer_sizes(n_layers+1)`, one activation code per layer, and packed
+finite parameters. Weights are output-major within each layer and biases are
+layer-major; the selected device receives one immutable model upload.
+`predict(query_x,outputs,status)` evaluates every layer in reusable device
+workspaces. `jvp(query_x,query_x_dot,weights_dot,biases_dot,outputs,
+outputs_dot,status)` carries primal and tangent values through the complete
+chain, while `vjp(query_x,output_bar,query_x_bar,weights_bar,biases_bar,
+status)` returns fixed-state input and all-layer parameter cotangents.
+`transfer_stats` reports explicit transfer counters and resident bytes, and
+`stage_count`, `input_count`, `output_count`, `parameter_count`, and `device`
+expose topology metadata.
+
+The native ABI supports the eight resident dense activation codes (linear,
+tanh, ReLU, GELU, SiLU, ELU, softplus, and leaky-ReLU). The ordinary build
+links an unavailable stub and maps native absence to
+`FORTNUM_NOT_IMPLEMENTED`, preserving output sentinels; it never falls back to
+the CPU `mlp_chain_t`. This bounded plan is inference/products only: resident
+training, optimizer state, HVPs, mixed precision, and a device-resident
+FortAD/FortSym graph remain separate contracts. See
+[`CUDA_MLP_CHAIN.md`](CUDA_MLP_CHAIN.md) and
+`test/run_cuda_mlp_chain.sh` for the independent CPU chain oracle and native
+CUDA gate.
+
 | Type | Value or prediction | JVP | VJP or gradient | HVP |
 | --- | --- | --- | --- | --- |
 | `linear_regression_t` | `predict` | Free `linear_predict_jvp` | Free `linear_predict_vjp` | No |
