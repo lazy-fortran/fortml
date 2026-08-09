@@ -21,7 +21,7 @@ boosted-tree partial-dependence/ICE, learned basis fan-in, fixed-full-batch
 SGD clipping hypergradient, and fixed-shape Gamma-GP likelihood slices.
 The broad parity
 gate is still open, so this work does not move or recreate that tag.
-The checklist currently records 410 completed and 149 open items. Open rows are
+The checklist currently records 413 completed and 149 open items. Open rows are
 retained until their implementation, independent oracle, device/refusal
 behavior, and benchmark evidence land together.
 
@@ -242,6 +242,12 @@ it is checked off.
   independent-variance coordinates, with transactional parameter updates,
   shape metadata, and typed CUDA refusal. The dense NumPy finite-difference
   lane is pinned in `fortml-bench/results/MULTI_OUTPUT_GP_HYPERGRADIENTS.md`.
+- [x] Differentiate Laplace GP-classifier latent means, variances, and
+  logistic/probit probabilities through the converged mode, likelihood
+  curvature, posterior solve, and prior solve for packed kernel coordinates.
+  Weighted logistic and probit refits, central differences, and the typed
+  CUDA refusal are pinned in
+  `fortml-bench/results/GP_CLASSIFICATION_IMPLICIT_PREDICTION.md`.
 - [ ] Finish the likelihood catalog: Gaussian, Bernoulli/probit, categorical,
   multinomial, Poisson/count, Gamma, Student-t, heteroskedastic, censored,
   ordinal, and warped links with constraints, stable tails, batch shapes, and
@@ -293,6 +299,10 @@ it is checked off.
   FortOpt L-BFGS-B callbacks, transactional state, and typed CUDA refusal. The
   independent recurrence lane is pinned in
   `fortml-bench/results/MLP_RMSPROP_WEIGHTED_HYPERGRADIENT.md`.
+- [x] Persist named optimizer-group identities in MLP checkpoints and reject
+  resume when names drift even if ranges and multipliers match. The portable
+  format is version 11, with an independent round-trip and typed CUDA boundary
+  in `fortml-bench/results/MLP_OPTIMIZER_GROUP_REGISTRY.md`.
 - [ ] Make every supported optimizer expose exact trajectory products through
   learning rate, decay, momentum, betas, schedules, batch cursor, clipping,
   validation, and early-stopping coordinates, with FortOpt L-BFGS-B using the
@@ -362,6 +372,11 @@ it is checked off.
   outputs on kernel refusal. The native CUDA oracle is
   `test/run_cuda_boosted_tree_plan.sh`; GPU growth/histograms and
   differentiation through split selection remain open.
+- [x] Route numeric XGBoost predictions through the resident CUDA tree plan
+  when the native kernel is available, preserving missing-value refusal policy
+  and returning typed refusals for categorical or unavailable plans. The
+  NumPy leaf-walk, CPU parity, and native resident rows are pinned in
+  `fortml-bench/results/CUDA_BOOSTED_TREE.md`.
 
 ### Derivatives, devices, and benchmark evidence
 
@@ -1186,7 +1201,7 @@ prediction checks, provenance, and typed CUDA refusals. These slices do not
 claim SAMME.R, tree-search backends, or resident radius/boosting kernels.
 
 The same release slice now records CPU RAdam flat-state and MLP training with
-format-10/text-schema-11 checkpoint replay, an independent NumPy recurrence, and
+format-11/text-schema-11 checkpoint replay, an independent NumPy recurrence, and
 a typed CUDA-unavailable row in `fortml-bench/results/RADAM.md`. Ordered-gradient
 integer categorical XGBoost partitions are covered by
 `fortml-bench/results/XGBOOST_CATEGORICAL.md`; the fixture checks the bounded
@@ -4364,7 +4379,7 @@ trials remain visible in the result schema.
   Epoch validation loss (or training loss without a held-out stream) drives a
   deterministic best-metric/bad-observation/reduction state machine.  The
   base-rate and plateau-factor products are analytic on the active branch;
-  version-10 in-memory and formatted checkpoints preserve the counters and
+  version-11 in-memory and formatted checkpoints preserve the counters and
   best metric, and an independent fixture checks recurrence, malformed state,
   and interrupted-versus-uninterrupted resume.  Resident CUDA metric
   reduction and optimizer state remain an explicit typed boundary.

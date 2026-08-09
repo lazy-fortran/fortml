@@ -19,7 +19,7 @@ metric, best-value, `min_delta`, and integer counters have zero products at the
 comparison boundary.  The standalone schedule API retains its typed refusal
 for the stateless `rate` method because a metric state is required.
 
-`mlp_train` owns the metric state and keeps it in the version-10 in-memory and
+`mlp_train` owns the metric state and keeps it in the version-11 in-memory and
 formatted checkpoints.  A resumed run therefore reproduces the uninterrupted
 learning-rate trajectory, including reductions that occur at an epoch boundary.
 The returned `mlp_training_state_t` exposes the current best metric, bad

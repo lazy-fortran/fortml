@@ -82,7 +82,7 @@ The ordinary `rate` surface returns a typed refusal for a plateau schedule
 because it does not own a metric state channel. `mlp_train` is validation-aware:
 it observes validation loss at each completed epoch when a held-out stream is
 present (training loss otherwise), owns the four state variables, and carries
-them in the version-10 checkpoint. A split/resumed run therefore uses the same
+them in the version-11 checkpoint. A split/resumed run therefore uses the same
 reduction sequence as an uninterrupted run. Custom trainer adapters can still
 call the metric-aware method directly.
 

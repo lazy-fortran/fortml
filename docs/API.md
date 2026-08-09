@@ -2556,10 +2556,10 @@ early-stopping counters, and the best-parameter state. A typed built-in
 schedule selected by `options%use_typed_schedule` is serialized with its kind,
 update counts, and fractions; the resumed options must provide the same
 schedule.
-When optimizer groups are configured, their ranges and multipliers are also
-captured and compared on resume; the versioned text schema stores the same
-metadata. Group names are caller-owned labels and do not affect the update
-trajectory.
+When optimizer groups are configured, their names, ranges, and multipliers are
+captured and compared on resume; the version-11 text schema stores the same
+metadata. Names do not affect the numeric update trajectory, but a name change
+is a schema mismatch and is rejected transactionally.
 Procedure pointers are not serializable: install the same deterministic
 callback on the resumed options. A checkpoint
 is rejected when dimensions, batch/accumulation policy, shuffle seed, optimizer
@@ -2751,7 +2751,7 @@ Calling ordinary `rate` with a plateau schedule returns
 `FORTNUM_NOT_IMPLEMENTED` because a metric state is required. `mlp_train` now
 owns that state at epoch boundaries: it monitors validation loss when a held-out
 stream is supplied (training loss otherwise), and preserves the best metric,
-bad-observation count, and reduction count in version-10 in-memory and
+bad-observation count, and reduction count in version-11 in-memory and
 formatted checkpoints and in the returned training state. Split checkpoint/resume therefore reproduces the
 uninterrupted plateau trajectory. The metric-aware method remains available for
 custom trainers and its active-set products retain the same typed boundaries.
