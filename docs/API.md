@@ -1876,6 +1876,16 @@ rule applies to final features of a sequential pipeline and to selected
 columns in a column pipeline; a label is never used to infer a parameter
 offset.
 
+`clone(copy,status)` deep-copies a valid configured pipeline, including stage
+maps, fitted metadata, input schema, labels, and packed parameters. The
+destination is committed only after the source has passed validation, so an
+invalid source leaves an existing destination unchanged. `clone_device` uses
+the same implementation for an explicitly selected CPU context and returns
+`FORTNUM_NOT_IMPLEMENTED` for CUDA until a resident graph clone is available;
+it never hides a host transfer. See `test_basis_pipeline_clone` and
+`BASIS_PIPELINE_CLONE.md` for the independent mutation and device-boundary
+oracle.
+
 ### Versioned pipeline state
 
 `fortml_pipeline_persistence` supplies `basis_pipeline_state_t` plus

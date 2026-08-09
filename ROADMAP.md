@@ -16,7 +16,7 @@ fixed-leaf-product, plateau-trainer, affine Adagrad HVP, and CUDA VJP closure
 slices documented below are post-tag additions.
 The broad parity
 gate is still open, so this work does not move or recreate that tag.
-The checklist currently records 385 completed and 150 open items. Open rows are
+The checklist currently records 386 completed and 150 open items. Open rows are
 retained until their implementation, independent oracle, device/refusal
 behavior, and benchmark evidence land together.
 
@@ -211,6 +211,12 @@ it is checked off.
 
 ### Basis, pipeline, and hyperparameter composition
 
+- [x] Add transactional cloning for a configured horizontal basis pipeline:
+  deep-copy stage maps, fitted metadata, schemas, labels, and packed
+  parameters; preserve the destination on invalid sources; dispatch CPU
+  clones and return a typed CUDA refusal. The independent mutation and
+  device-boundary oracle and benchmark are pinned in
+  `fortml-bench/results/BASIS_PIPELINE_CLONE.md`.
 - [ ] Finish a DAG pipeline graph with named feature paths, sparse layouts,
   missing-value policies, leakage guards, fold-local fitting, cloning,
   conditional/residual/fan-out/fan-in nodes, schema persistence, and static
