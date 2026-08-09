@@ -106,9 +106,14 @@ module fortml_pipeline
         procedure, public :: fit => sequential_pipeline_fit
         procedure, public :: transform => sequential_pipeline_transform
         procedure, public :: evaluate => sequential_pipeline_transform
+        procedure, public :: transform_device => &
+            sequential_pipeline_transform_device
         procedure, public :: jvp => sequential_pipeline_jvp
+        procedure, public :: jvp_device => sequential_pipeline_jvp_device
         procedure, public :: vjp => sequential_pipeline_vjp
+        procedure, public :: vjp_device => sequential_pipeline_vjp_device
         procedure, public :: hvp => sequential_pipeline_hvp
+        procedure, public :: hvp_device => sequential_pipeline_hvp_device
         procedure, public :: input_count => sequential_pipeline_input_count
         procedure, public :: stage_count => sequential_pipeline_stage_count
         procedure, public :: feature_count => sequential_pipeline_feature_count
@@ -130,6 +135,8 @@ module fortml_pipeline
         procedure, public :: static_lowering_eligible => &
             sequential_pipeline_static_lowering_eligible
         procedure, public :: capabilities => sequential_pipeline_capabilities
+        procedure, public :: device_supported => &
+            sequential_pipeline_device_supported
         procedure, public :: valid => sequential_pipeline_valid
         procedure, public :: is_fitted => sequential_pipeline_is_fitted
     end type sequential_basis_pipeline_t
@@ -1292,6 +1299,97 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine sequential_pipeline_hvp
 
+    subroutine sequential_pipeline_transform_device(self, device, x, y, status)
+        class(sequential_basis_pipeline_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(inout) :: y(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. sequential_pipeline_device_ready(self, device, status, &
+            "sequential basis pipeline transform")) return
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%transform(x, y, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "sequential basis pipeline transform: no resident CUDA basis "// &
+                "kernel is linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "sequential basis pipeline transform: device kind is invalid")
+        end select
+    end subroutine sequential_pipeline_transform_device
+
+    subroutine sequential_pipeline_jvp_device(self, device, x, theta_dot, x_dot, &
+            y, y_dot, status)
+        class(sequential_basis_pipeline_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :), theta_dot(:), x_dot(:, :)
+        real(dp), intent(inout) :: y(:, :), y_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. sequential_pipeline_device_ready(self, device, status, &
+            "sequential basis pipeline JVP")) return
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%jvp(x, theta_dot, x_dot, y, y_dot, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "sequential basis pipeline JVP: no resident CUDA basis kernel "// &
+                "is linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "sequential basis pipeline JVP: device kind is invalid")
+        end select
+    end subroutine sequential_pipeline_jvp_device
+
+    subroutine sequential_pipeline_vjp_device(self, device, x, u, theta_bar, &
+            x_bar, status)
+        class(sequential_basis_pipeline_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :), u(:, :)
+        real(dp), intent(inout) :: theta_bar(:), x_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. sequential_pipeline_device_ready(self, device, status, &
+            "sequential basis pipeline VJP")) return
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%vjp(x, u, theta_bar, x_bar, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "sequential basis pipeline VJP: no resident CUDA basis kernel "// &
+                "is linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "sequential basis pipeline VJP: device kind is invalid")
+        end select
+    end subroutine sequential_pipeline_vjp_device
+
+    subroutine sequential_pipeline_hvp_device(self, device, x, u, theta_dot, &
+            x_dot, theta_hvp, x_hvp, status)
+        class(sequential_basis_pipeline_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :), u(:, :), theta_dot(:), x_dot(:, :)
+        real(dp), intent(inout) :: theta_hvp(:), x_hvp(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. sequential_pipeline_device_ready(self, device, status, &
+            "sequential basis pipeline HVP")) return
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%hvp(x, u, theta_dot, x_dot, theta_hvp, x_hvp, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "sequential basis pipeline HVP: no resident CUDA basis kernel "// &
+                "is linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "sequential basis pipeline HVP: device kind is invalid")
+        end select
+    end subroutine sequential_pipeline_hvp_device
+
     integer function sequential_pipeline_input_count(self) result(count)
         class(sequential_basis_pipeline_t), intent(in) :: self
         count = self%n_inputs
@@ -1540,6 +1638,44 @@ contains
         report%supports_parameter_vjp = .true.
         report%supports_parameter_hvp = .true.
     end subroutine sequential_pipeline_capabilities
+
+    logical function sequential_pipeline_device_supported(self, device_kind) &
+            result(supported)
+        class(sequential_basis_pipeline_t), intent(in) :: self
+        integer, intent(in) :: device_kind
+
+        supported = .false.
+        if (.not. sequential_pipeline_valid(self)) return
+        if (.not. self%is_fitted()) return
+        if (device_kind == FORTML_DEVICE_CPU) supported = .true.
+    end function sequential_pipeline_device_supported
+
+    logical function sequential_pipeline_device_ready(self, device, status, &
+            operation) result(ready)
+        class(sequential_basis_pipeline_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        type(fortnum_status_t), intent(out) :: status
+        character(*), intent(in) :: operation
+
+        ready = .false.
+        if (.not. sequential_pipeline_valid(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, trim(operation)// &
+                ": model is invalid")
+            return
+        end if
+        if (.not. self%is_fitted()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, trim(operation)// &
+                ": model is not fitted")
+            return
+        end if
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, trim(operation)// &
+                ": device is not selected")
+            return
+        end if
+        ready = .true.
+        call status_set(status, FORTNUM_OK, "")
+    end function sequential_pipeline_device_ready
 
     subroutine fanout_pipeline_initialize(self, n_inputs, status)
         class(basis_fanout_pipeline_t), intent(out) :: self
