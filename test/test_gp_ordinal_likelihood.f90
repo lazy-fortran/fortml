@@ -1,13 +1,16 @@
 program test_gp_ordinal_likelihood
     !! Independent ordered-logit/probit likelihood and derivative oracle.
     use, intrinsic :: iso_fortran_env, only: dp => real64, error_unit
-    use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_DOMAIN_ERROR
-    use fortml_device, only: FORTML_DEVICE_CPU, FORTML_DEVICE_CUDA
+    use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_DOMAIN_ERROR, &
+        FORTNUM_NOT_IMPLEMENTED
+    use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU, FORTML_DEVICE_CUDA
     use fortml_gp_ordinal_classification, only: &
         GP_ORDINAL_LIKELIHOOD_LOGISTIC, GP_ORDINAL_LIKELIHOOD_PROBIT, &
         gp_ordinal_log_likelihood_value, gp_ordinal_log_likelihood_jvp, &
         gp_ordinal_log_likelihood_vjp, gp_ordinal_log_likelihood_hvp, &
-        gp_ordinal_likelihood_device_supported
+        gp_ordinal_likelihood_device_supported, gp_ordinal_log_likelihood_value_device, &
+        gp_ordinal_log_likelihood_jvp_device, gp_ordinal_log_likelihood_vjp_device, &
+        gp_ordinal_log_likelihood_hvp_device
     implicit none
 
     real(dp) :: eta(5), eta_dot(5), thresholds(2), thresholds_dot(2)
@@ -17,6 +20,7 @@ program test_gp_ordinal_likelihood
     real(dp) :: value, value_dot, value_plus, value_minus, oracle, h
     real(dp) :: lhs, rhs, value_bar
     integer :: labels(5), likelihood, failures
+    type(fortml_device_t) :: cuda
     type(fortnum_status_t) :: status
 
     eta = [-1.2_dp, -0.15_dp, 0.35_dp, 1.1_dp, 0.2_dp]
@@ -78,6 +82,26 @@ program test_gp_ordinal_likelihood
         "CPU likelihood capability", failures)
     call check(.not. gp_ordinal_likelihood_device_supported(FORTML_DEVICE_CUDA), &
         "typed CUDA likelihood capability refusal", failures)
+    cuda%kind = FORTML_DEVICE_CUDA
+    cuda%selected = .true.
+    cuda%available = .true.
+    call gp_ordinal_log_likelihood_value_device(cuda, eta, labels, thresholds, &
+        GP_ORDINAL_LIKELIHOOD_LOGISTIC, value, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED .and. value == 0.0_dp, &
+        "typed CUDA value refusal", failures)
+    call gp_ordinal_log_likelihood_jvp_device(cuda, eta, labels, thresholds, &
+        GP_ORDINAL_LIKELIHOOD_LOGISTIC, eta_dot, thresholds_dot, value, value_dot, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED .and. value == 0.0_dp .and. &
+        value_dot == 0.0_dp, "typed CUDA JVP refusal", failures)
+    call gp_ordinal_log_likelihood_vjp_device(cuda, eta, labels, thresholds, &
+        GP_ORDINAL_LIKELIHOOD_LOGISTIC, value_bar, eta_bar, thresholds_bar, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED .and. all(eta_bar == 0.0_dp) .and. &
+        all(thresholds_bar == 0.0_dp), "typed CUDA VJP refusal", failures)
+    call gp_ordinal_log_likelihood_hvp_device(cuda, eta, labels, thresholds, &
+        GP_ORDINAL_LIKELIHOOD_LOGISTIC, value_bar, eta_dot, thresholds_dot, eta_hvp, &
+        thresholds_hvp, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED .and. all(eta_hvp == 0.0_dp) .and. &
+        all(thresholds_hvp == 0.0_dp), "typed CUDA HVP refusal", failures)
 
     if (failures > 0) then
         write (error_unit, '(a,i0)') "FAIL ordinal likelihood cases: ", failures

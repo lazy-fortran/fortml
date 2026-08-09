@@ -2,12 +2,12 @@ program fortml_bench_gp_ordinal_likelihood
     !! Release timing and checksum application for native ordinal likelihoods.
     use, intrinsic :: iso_fortran_env, only: dp => real64
     use fortnum_status, only: fortnum_status_t, status_ok
-    use fortml_device, only: FORTML_DEVICE_CPU, FORTML_DEVICE_CUDA
+    use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU, FORTML_DEVICE_CUDA
     use fortml_gp_ordinal_classification, only: &
         GP_ORDINAL_LIKELIHOOD_LOGISTIC, GP_ORDINAL_LIKELIHOOD_PROBIT, &
         gp_ordinal_log_likelihood_value, gp_ordinal_log_likelihood_jvp, &
         gp_ordinal_log_likelihood_vjp, gp_ordinal_log_likelihood_hvp, &
-        gp_ordinal_likelihood_device_supported
+        gp_ordinal_likelihood_device_supported, gp_ordinal_log_likelihood_value_device
     implicit none
 
     real(dp) :: eta(5), eta_dot(5), thresholds(2), thresholds_dot(2)
@@ -16,6 +16,7 @@ program fortml_bench_gp_ordinal_likelihood
     integer :: labels(5), likelihood, i, clock_start, clock_end, clock_rate
     integer :: repetitions
     type(fortnum_status_t) :: status
+    type(fortml_device_t) :: cuda
     character(len=16) :: name
     real(dp) :: elapsed
 
@@ -84,4 +85,10 @@ program fortml_bench_gp_ordinal_likelihood
         gp_ordinal_likelihood_device_supported(FORTML_DEVICE_CPU)
     write (*, '(a,l1)') "ordinal_likelihood_device,cuda,supported,", &
         gp_ordinal_likelihood_device_supported(FORTML_DEVICE_CUDA)
+    cuda%kind = FORTML_DEVICE_CUDA
+    cuda%selected = .true.
+    cuda%available = .true.
+    call gp_ordinal_log_likelihood_value_device(cuda, eta, labels, thresholds, &
+        GP_ORDINAL_LIKELIHOOD_LOGISTIC, value, status)
+    write (*, '(a,i0)') "ordinal_likelihood_device,cuda,refused,", status%code
 end program fortml_bench_gp_ordinal_likelihood

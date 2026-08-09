@@ -36,7 +36,8 @@ call gp_ordinal_log_likelihood_hvp(eta, labels, thresholds, &
 
 The primitive is CPU-only until a resident CUDA likelihood/reduction kernel is
 linked. Query `gp_ordinal_likelihood_device_supported` before selecting a
-backend; CUDA returns false rather than hiding a host fallback. The independent
-value, JVP/VJP adjoint, HVP finite-difference, transaction, and capability
-oracle is `test_gp_ordinal_likelihood`. The release benchmark is
+backend; the corresponding `*_device` procedures return
+`FORTNUM_NOT_IMPLEMENTED` for a selected CUDA context rather than hiding a
+host fallback. The independent value, JVP/VJP adjoint, HVP finite-difference,
+transaction, and capability oracle is `test_gp_ordinal_likelihood`. The release benchmark is
 `fortml-bench/results/GP_ORDINAL_LIKELIHOOD.md`.

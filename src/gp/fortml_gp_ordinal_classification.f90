@@ -28,9 +28,13 @@ module fortml_gp_ordinal_classification
     integer, parameter, public :: GP_ORDINAL_LIKELIHOOD_PROBIT = 2
 
     public :: gp_ordinal_log_likelihood_value
+    public :: gp_ordinal_log_likelihood_value_device
     public :: gp_ordinal_log_likelihood_jvp
+    public :: gp_ordinal_log_likelihood_jvp_device
     public :: gp_ordinal_log_likelihood_vjp
+    public :: gp_ordinal_log_likelihood_vjp_device
     public :: gp_ordinal_log_likelihood_hvp
+    public :: gp_ordinal_log_likelihood_hvp_device
     public :: gp_ordinal_likelihood_device_supported
 
     type, public :: gp_ordinal_classification_options_t
@@ -279,6 +283,90 @@ contains
 
         supported = device_kind == FORTML_DEVICE_CPU
     end function gp_ordinal_likelihood_device_supported
+
+    subroutine gp_ordinal_log_likelihood_value_device(device, eta, labels, thresholds, &
+            likelihood, value, status)
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: eta(:), thresholds(:)
+        integer, intent(in) :: labels(:), likelihood
+        real(dp), intent(out) :: value
+        type(fortnum_status_t), intent(out) :: status
+
+        value = 0.0_dp
+        call ordinal_device_dispatch(device, status)
+        if (status%code /= FORTNUM_OK) return
+        call gp_ordinal_log_likelihood_value(eta, labels, thresholds, likelihood, value, status)
+    end subroutine gp_ordinal_log_likelihood_value_device
+
+    subroutine gp_ordinal_log_likelihood_jvp_device(device, eta, labels, thresholds, likelihood, &
+            eta_dot, thresholds_dot, value, value_dot, status)
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: eta(:), thresholds(:), eta_dot(:), thresholds_dot(:)
+        integer, intent(in) :: labels(:), likelihood
+        real(dp), intent(out) :: value, value_dot
+        type(fortnum_status_t), intent(out) :: status
+
+        value = 0.0_dp
+        value_dot = 0.0_dp
+        call ordinal_device_dispatch(device, status)
+        if (status%code /= FORTNUM_OK) return
+        call gp_ordinal_log_likelihood_jvp(eta, labels, thresholds, likelihood, eta_dot, &
+            thresholds_dot, value, value_dot, status)
+    end subroutine gp_ordinal_log_likelihood_jvp_device
+
+    subroutine gp_ordinal_log_likelihood_vjp_device(device, eta, labels, thresholds, likelihood, &
+            value_bar, eta_bar, thresholds_bar, status)
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: eta(:), thresholds(:), value_bar
+        integer, intent(in) :: labels(:), likelihood
+        real(dp), intent(out) :: eta_bar(:), thresholds_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        eta_bar = 0.0_dp
+        thresholds_bar = 0.0_dp
+        call ordinal_device_dispatch(device, status)
+        if (status%code /= FORTNUM_OK) return
+        call gp_ordinal_log_likelihood_vjp(eta, labels, thresholds, likelihood, value_bar, &
+            eta_bar, thresholds_bar, status)
+    end subroutine gp_ordinal_log_likelihood_vjp_device
+
+    subroutine gp_ordinal_log_likelihood_hvp_device(device, eta, labels, thresholds, likelihood, &
+            value_bar, eta_dot, thresholds_dot, eta_hvp, thresholds_hvp, status)
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: eta(:), thresholds(:), value_bar
+        real(dp), intent(in) :: eta_dot(:), thresholds_dot(:)
+        integer, intent(in) :: labels(:), likelihood
+        real(dp), intent(out) :: eta_hvp(:), thresholds_hvp(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        eta_hvp = 0.0_dp
+        thresholds_hvp = 0.0_dp
+        call ordinal_device_dispatch(device, status)
+        if (status%code /= FORTNUM_OK) return
+        call gp_ordinal_log_likelihood_hvp(eta, labels, thresholds, likelihood, value_bar, &
+            eta_dot, thresholds_dot, eta_hvp, thresholds_hvp, status)
+    end subroutine gp_ordinal_log_likelihood_hvp_device
+
+    subroutine ordinal_device_dispatch(device, status)
+        type(fortml_device_t), intent(in) :: device
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal GP likelihood device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call status_set(status, FORTNUM_OK, "")
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "ordinal GP likelihood device: resident CUDA reduction is not linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal GP likelihood device: device kind is invalid")
+        end select
+    end subroutine ordinal_device_dispatch
 
     subroutine validate_ordinal_likelihood_inputs(eta, labels, thresholds, likelihood, status)
         real(dp), intent(in) :: eta(:), thresholds(:)

@@ -4584,9 +4584,11 @@ exact directional Hessian product of that gradient. Shape, rank, ordering,
 finite-value, and category-probability-underflow checks are transactional and
 return typed status codes. These are CPU reference products only:
 `gp_ordinal_likelihood_device_supported(FORTML_DEVICE_CUDA)` is false until a
-resident ordinal likelihood/reduction kernel is linked, so callers cannot
-mistake a host evaluation for GPU execution. The independent oracle is
-`test_gp_ordinal_likelihood`; see
+resident ordinal likelihood/reduction kernel is linked. The corresponding
+`*_device` value, JVP, VJP, and HVP entry points return
+`FORTNUM_NOT_IMPLEMENTED` for a selected CUDA context and preserve zeroed
+outputs, so callers cannot mistake a host evaluation for GPU execution. The
+independent oracle is `test_gp_ordinal_likelihood`; see
 [`GP_ORDINAL_LIKELIHOOD.md`](GP_ORDINAL_LIKELIHOOD.md).
 
 ### `fortml_student_t_likelihood`
