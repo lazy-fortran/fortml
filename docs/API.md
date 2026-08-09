@@ -255,7 +255,7 @@ CUDA gate.
 | `mlp_rmsprop_hypergradient_objective_t` | Validation MSE after fixed full-batch RMSprop trajectory | Packed `[log(learning_rate),log(l2),decay,log(epsilon),momentum]` JVP | Exact trajectory value gradient and scalar VJP | Forward square-average/centered-average/momentum sensitivities, exact affine one-layer outer HVP, nonlinear third-derivative refusal, inner MLP HVP |
 | `mlp_adagrad_hypergradient_objective_t` | Validation MSE after fixed full-batch Adagrad trajectory | Packed `[log(learning_rate),log(l2),log(epsilon)]` JVP | Exact trajectory value gradient and scalar VJP | Exact affine one-layer outer HVP, nonlinear multi-layer outer HVP is a typed refusal, forward accumulated-square sensitivities and inner MLP HVP |
 | `mlp_adafactor_hypergradient_objective_t` | Validation MSE after fixed full-batch unfactored Adafactor trajectory | Packed `[log(learning_rate),log(l2),decay,log(epsilon),log(clip_threshold)]` JVP | Exact trajectory value gradient and scalar VJP | Forward second-moment, update-RMS clipping, and denominator sensitivities; active-set and discrete branches refuse |
-| `adafactor_factored_t` | Layout-aware matrix-factorized Adafactor with vector fallback | Parameter update | Dense second-moment inspection | Explicit row/column state for matrix blocks; CPU recurrence; formatted and in-memory schema-11 checkpoint migration; CUDA remains a typed refusal |
+| `adafactor_factored_t` | Layout-aware matrix-factorized Adafactor with vector fallback | Parameter update | Dense second-moment inspection | Explicit row/column state for matrix blocks; CPU recurrence; formatted and in-memory schema-12 checkpoint migration; CUDA remains a typed refusal |
 | `mlp_schedule_hypergradient_objective_t` | Validation MSE after a typed scheduled full-batch trajectory | Packed `[log(base_rate),log(l2),logit(min_fraction),logit(decay_factor)]` JVP, or `[log(base_rate),log(l2),log(peak_fraction),log(final_fraction)]` for one-cycle | Exact schedule/trajectory value gradient and scalar VJP | Exact affine outer HVP for stateless schedules; nonlinear/plateau/CUDA boundaries are typed |
 | `mlp_radam_schedule_hypergradient_objective_t` | Validation MSE after a typed scheduled full-batch RAdam trajectory | Packed base-rate/L2/beta/epsilon/schedule JVP | Exact trajectory value gradient and scalar VJP | Moment, bias-correction, rectification, and schedule sensitivities; outer HVP/CUDA refusal |
 | `mlp_minibatch_hypergradient_objective_t` | Validation MSE after a fixed seeded mini-batch SGD trajectory | Packed `[log(learning_rate),log(l2)]` JVP | Exact batch-cursor trajectory value gradient and scalar VJP | Per-batch MLP HVP; outer hyper-HVP is a typed refusal |
@@ -2474,7 +2474,7 @@ matrix-factorized state is available by setting
 `options%adafactor_factored=.true.`. The layout-aware path factors dense weight
 blocks and keeps bias/singleton blocks unfactored; see
 [`ADAFACTOR_FACTORED.md`](ADAFACTOR_FACTORED.md). Its ragged row/column state is
-included in the in-memory and formatted schema-11 checkpoints, with block shape
+included in the in-memory and formatted schema-12 checkpoints, with block shape
 metadata and transactional layout validation; CUDA-resident Adafactor remains
 a typed refusal.
 `MLP_OPTIMIZER_AMSGRAD` keeps the Adam first and second moments plus an
@@ -2491,7 +2491,7 @@ denominators, and CUDA trajectory requests are typed refusals. See
 then applies the RAdam variance-rectification factor once `rho_t > 4`; before
 that threshold it uses the bias-corrected first moment. The two moment arrays,
 step count, and common beta/epsilon configuration are captured in the
-in-memory and text-schema-11 checkpoints. The independent
+in-memory and text-schema-12 checkpoints. The independent
 `test_mlp_radam` fixture checks both sides of the threshold, uninterrupted versus
 formatted checkpoint resume, invalid hyperparameters, and the CPU/CUDA device
 boundary. RAdam is CPU-only in this slice: `radam_t%step_device` returns
@@ -2811,7 +2811,7 @@ to its binary64 master vector after the final loss evaluation. Independent
 FP32 trajectory and split-resume oracles cover this contract. FP16, BF16, and
 CUDA resident training return typed `FORTNUM_NOT_IMPLEMENTED` until their
 storage and kernels are independently gated. Loss-scale policy and dynamic
-counters are validated and persisted in formatted checkpoint schema 11.
+counters are validated and persisted in formatted checkpoint schema 12.
 
 `mlp_training_options_t%event_callback` installs a typed
 `mlp_training_event_proc` callback for `train_begin`, `update`,
@@ -3519,14 +3519,17 @@ The independent oracle is `test_adaboost_classifier`.
 
 ### `fortml_discriminant_analysis`
 
-`lda_classifier_t%fit(x,labels,status[,reg_param,priors,sample_weight])` and
-`qda_classifier_t%fit(...)` implement weighted linear and quadratic
+`lda_classifier_t%fit(x,labels,status[,reg_param,priors,sample_weight,class_weight])`
+and `qda_classifier_t%fit(...)` implement weighted linear and quadratic
 discriminant analysis for arbitrary integer labels. Labels are sorted and
 retained verbatim. LDA fits one pooled covariance; QDA fits one covariance per
 class. `reg_param` is a finite diagonal shrinkage in `[0,1]`, and optional
-positive priors are normalized in sorted class order. Every class must retain
-positive effective sample mass. Covariances are Cholesky-factorized and
-probabilities use a stabilized log-sum-exp normalization.
+positive priors are normalized in sorted class order. `sample_weight` scales
+individual observations and `class_weight` supplies one finite positive factor
+per sorted class; the two are multiplied before moments and empirical priors
+are formed. Every class must retain positive effective sample mass.
+Covariances are Cholesky-factorized and probabilities use a stabilized
+log-sum-exp normalization.
 
 `predict_log_proba`, `predict_proba`, and `predict` return log probabilities,
 probabilities, or original integer labels. `classes`, `means`, `covariance`

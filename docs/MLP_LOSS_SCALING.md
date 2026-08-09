@@ -61,7 +61,7 @@ objective must keep the same fixed branch or return its own typed active-set
 refusal.
 
 The dynamic state is captured in `mlp_training_checkpoint_t` and in the
-versioned formatted checkpoint schema 11.  Resume validates the static policy
+versioned formatted checkpoint schema 12.  Resume validates the static policy
 (`initial_scale`, bounds, factors, and interval) while restoring the dynamic
 scale and counters transactionally.  A malformed or stale scale state is a
 typed domain error and cannot partially replace a checkpoint.
