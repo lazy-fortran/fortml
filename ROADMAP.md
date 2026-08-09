@@ -116,7 +116,7 @@ per-label, and shared-kernel products. The affine RMSprop trajectory exposes an
 exact outer HVP. The multiclass XGBoost adapter now exposes stable OVR log
 probabilities and packed leaf-coordinate products. Source revision `78b180a`
 passes 658 static modules, 960 build units, and 291/291 tests with lint clean.
-The matching `fortml-bench` revision is `1a28c4e`.
+The matching `fortml-bench` revision is `325fa8d`.
 
 The weighted OLS slice adds `weighted_ols_regression_t` with deterministic
 weighted multi-output SVD fitting, optional intercepts, packed coefficient
