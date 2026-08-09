@@ -696,6 +696,36 @@ are linked. `device_supported(CPU)` is true for a fitted model; all CUDA score,
 label, probability, and derivative requests refuse explicitly with no host
 fallback.
 
+### `fortml_rbf_svm_multiclass`
+
+`rbf_svm_multiclass_t%fit(x,labels,status[,c,gamma,max_iterations,tolerance,
+sample_weight])` fits a deterministic one-vs-rest collection of finite-basis
+`rbf_svm_classifier_t` children. Integer labels may be arbitrary;
+`classes()` stores their ascending order and `predict` returns those original
+labels. The child fits use the weighted FortOpt L-BFGS-B squared-hinge RKHS
+objective. Child construction is transactional: an invalid option, weight
+vector, or failed child leaves an already fitted wrapper unchanged.
+
+`decision_function(x,scores,status)` returns one margin per sorted class.
+`predict_proba(x,probabilities,status)` applies a stable sigmoid to each margin
+and normalizes rows to a simplex. `predict` selects the largest normalized
+probability, with the first sorted class winning exact ties. `class_count`,
+`feature_count`, `classes`, and `fitted` expose metadata.
+
+The packed `parameters()` layout concatenates each child’s binary
+`[coefficients,intercept,log(gamma)]` vector in sorted-class order;
+`parameter_count` and transactional `set_parameters` use the same layout.
+`predict_proba_jvp(x,x_dot,probabilities,probabilities_dot,status)` and
+`predict_proba_vjp(x,probabilities_bar,x_bar,status)` are fixed-state query
+products. `predict_proba_parameter_jvp(x,direction,probabilities,
+probabilities_dot,status)` and `predict_proba_parameter_vjp(x,
+probabilities_bar,parameter_bar,status)` are the corresponding packed-parameter
+products. Fit/active-set, hinge-boundary, label, and hard-prediction
+derivatives are intentionally not exposed. CPU device dispatch is complete;
+CUDA value and derivative methods return typed `FORTNUM_NOT_IMPLEMENTED` until
+a resident batched RBF implementation is linked, with no host fallback. See
+[`docs/RBF_SVM_MULTICLASS.md`](RBF_SVM_MULTICLASS.md).
+
 ### `fortml_linear_svr`
 
 `linear_svr_regression_t%fit(x,targets,status[,l2,epsilon,fit_intercept,loss,

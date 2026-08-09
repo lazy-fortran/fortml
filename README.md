@@ -50,6 +50,15 @@ second-moment factors, vectors use the unfactored fallback, and checkpoint
 migration plus resident CUDA execution remain typed refusals. The independent
 lane is `fortml-bench/results/ADAFACTOR_FACTORED.md`.
 [ROADMAP.md](ROADMAP.md) records their acceptance criteria and delivery order.
+
+The classification surface also includes `fortml_rbf_svm_multiclass`: a
+transactional, sorted-label one-vs-rest wrapper around the finite-basis RBF
+SVM. It normalizes sigmoid margins, packs one child parameter block per class,
+and exposes fixed-state input and parameter probability JVP/VJP products. CPU
+dispatch is complete and CUDA value/derivative requests are explicit typed
+refusals until resident batched kernels are available; see
+[`docs/RBF_SVM_MULTICLASS.md`](docs/RBF_SVM_MULTICLASS.md).
+
 The model-agnostic `fortml_trainer` now applies typed constant, warmup, cosine,
 exponential, and one-cycle schedules across its streaming optimizers and
 persists the schedule in checkpoint schema 5. Multiclass Laplace-GP OVR models
