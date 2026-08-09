@@ -2,7 +2,7 @@
 
 `lightgbm_t%predict_device` now lowers every fitted finite numeric tree to the
 resident additive-tree CUDA ABI used by the XGBoost numeric path. Leaf-wise
-growth remains a LightGBM CPU fitting policy; only the fitted topology and
+growth remains a LightGBM CPU fitting policy. Only the fitted topology and
 per-round tree scales are transferred to the native plan. A binary model
 applies its sigmoid link after resident raw-margin evaluation.
 
