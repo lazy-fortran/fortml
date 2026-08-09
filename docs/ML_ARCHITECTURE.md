@@ -123,7 +123,9 @@ The trainer is a state machine with one transition per declared update. A batch
 transition validates the data view and row mass, runs the model forward pass,
 reduces the loss, forms derivatives, applies the active loss scale, checks
 finite values, unscales gradients, clips the declared norm, updates the
-optimizer, updates schedules and EMA state, and records an event. Validation,
+optimizer, updates schedules and EMA state, and records an event. A loss-scale
+overflow records an `UPDATE_SKIPPED` event after backoff and leaves the
+optimizer/update counter untouched. Validation,
 early stopping, checkpointing, and callbacks run at explicit boundaries between
 updates. Each transition either commits all owned state or returns a status
 with the previous state intact.

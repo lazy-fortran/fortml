@@ -41,13 +41,19 @@ trainer now executes this scale/check/unscale sequence before every optimizer
 commit, so finite trajectories are exactly invariant to enabling loss scaling
 while overflow updates are transactionally skipped.
 
-The FP64 trainer may enable the state as a CPU recurrence/reference lane.  It
-checks the scaled gradient for IEEE overflow, unscales it, and skips the
-optimizer update on an overflow; with the default disabled state, existing
-FP64 trajectories are bit-for-bit unchanged.  FP32, FP16, and BF16 training still return
-`FORTNUM_NOT_IMPLEMENTED`: master weights, resident lower-precision kernels,
-and device loss-scaling reductions are not claimed until independently gated.
-No CUDA path is inferred from the option.
+The trainer checks the scaled gradient for IEEE overflow, unscales it, and
+skips the optimizer update on an overflow; with the default disabled state,
+existing FP64 trajectories are bit-for-bit unchanged.  CPU FP32 uses binary64
+master parameters with a rounded FP32 forward/gradient boundary and the same
+transactional loss-scale state.  FP16 and BF16 storage, plus resident CUDA
+loss-scaling reductions, still return `FORTNUM_NOT_IMPLEMENTED` until their
+kernels are independently gated.  No CUDA path is inferred from the option.
+
+When the scale-induced overflow branch is taken, the typed event callback
+receives `MLP_EVENT_UPDATE_SKIPPED` (`update_skipped`).  Its update counter and
+parameter vector remain unchanged; the loss-scale backoff and overflow/skipped
+counters advance.  This event makes a replay observable without pretending
+that a discarded optimizer step succeeded.
 
 Growth and overflow branches are discrete policy decisions.  They are not
 advertised as smooth hyperparameter JVPs or HVPs, and an outer derivative
@@ -63,4 +69,5 @@ typed domain error and cannot partially replace a checkpoint.
 `test_mlp_loss_scaling` is an independent recurrence oracle, tests overflow
 backoff and growth boundaries, verifies formatted checkpoint round-tripping,
 and checks that unsupported lower precision refuses without mutating model
-parameters.
+parameters.  `test_mlp_training` additionally exercises the production FP32
+overflow branch, its zero-update oracle, and the `update_skipped` event.

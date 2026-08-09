@@ -90,6 +90,11 @@ module fortml_mlp_training
     integer, parameter, public :: MLP_EVENT_EPOCH_END = 4
     integer, parameter, public :: MLP_EVENT_CHECKPOINT = 5
     integer, parameter, public :: MLP_EVENT_TRAIN_END = 6
+    !! A loss-scale overflow was observed and the optimizer update was
+    !! skipped.  The public update counter is intentionally unchanged; the
+    !! event is the only callback-side indication that a microbatch flush was
+    !! discarded and the scale backoff state advanced.
+    integer, parameter, public :: MLP_EVENT_UPDATE_SKIPPED = 7
 
     abstract interface
         subroutine mlp_epoch_callback_proc(epoch, loss, gradient_norm, stop)
@@ -2394,12 +2399,21 @@ contains
                                     return
                                 end if
                                 if (.not. loss_scaler%scaled_gradient_finite(scaled_gradient)) then
+                                    raw_gradient_norm = sqrt(sum(gradient*gradient))
                                     call loss_scaler%observe(.false., .false., status)
                                     if (status%code /= FORTNUM_OK) then
                                         if (present(state)) state = result
                                         return
                                     end if
                                     result%loss_scale = loss_scaler
+                                    call emit_training_event(config, MLP_EVENT_UPDATE_SKIPPED, &
+                                        epoch, result%updates, loss, validation_loss, &
+                                        raw_gradient_norm, config%learning_rate, event_stop, status)
+                                    if (status%code /= FORTNUM_OK) then
+                                        if (present(state)) state = result
+                                        return
+                                    end if
+                                    if (event_stop) result%early_stopped = .true.
                                     accumulated_gradient = 0.0_dp
                                     accumulated_samples = 0
                                     accumulated_weight_mass = 0.0_dp

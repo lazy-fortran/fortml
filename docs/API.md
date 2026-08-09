@@ -2796,13 +2796,21 @@ storage and kernels are independently gated. Loss-scale policy and dynamic
 counters are validated and persisted in formatted checkpoint schema 11.
 
 `mlp_training_options_t%event_callback` installs a typed
-`mlp_training_event_proc` callback for `train_begin`, `update`, `validation`,
+`mlp_training_event_proc` callback for `train_begin`, `update`,
+`update_skipped`, `validation`,
 `epoch_end`, `checkpoint`, and `train_end` events. Each event carries the
 epoch/update counters and current loss, validation loss, gradient norm, and
 learning rate. The callback can request an early stop or return a non-success
 status; callback failures propagate from `mlp_train` without being swallowed.
 The callback receives caller-owned scalar data and is not serialized in an
 in-memory checkpoint.
+
+`update_skipped` is emitted when mixed-precision loss scaling detects a
+non-finite scaled gradient. The event carries the pre-scale gradient norm and
+configured learning rate; the optimizer update counter and parameter vector do
+not advance, while loss-scale overflow/backoff counters do. This event makes a
+deterministic overflow replay observable without treating a skipped update as
+a successful optimizer step.
 
 ### `fortml_mlp_hypergradient`
 

@@ -12,11 +12,12 @@ program test_mlp_training
         MLP_OPTIMIZER_SGD, &
         MLP_EVENT_TRAIN_BEGIN, MLP_EVENT_UPDATE, MLP_EVENT_VALIDATION, &
         MLP_EVENT_EPOCH_END, MLP_EVENT_CHECKPOINT, MLP_EVENT_TRAIN_END, &
+        MLP_EVENT_UPDATE_SKIPPED, MLP_PRECISION_FP32, &
         mlp_loss_value_gradient, mlp_loss_hvp, mlp_train
     implicit none
 
     integer :: failures
-    integer :: event_counts(6)
+    integer :: event_counts(7)
     logical :: event_fail
 
     failures = 0
@@ -25,6 +26,7 @@ program test_mlp_training
     call test_sgd_option_refusals(failures)
     call test_reproducible_minibatch_and_callback(failures)
     call test_typed_event_callback(failures)
+    call test_loss_scale_skip_event(failures)
     call test_resume_checkpoint(failures)
     call test_l2_hyperparameter_product(failures)
     call test_loss_hvp_oracle(failures)
@@ -63,6 +65,7 @@ contains
         call check(status_ok(status), "typed event callback status", failures)
         call check(event_counts(MLP_EVENT_TRAIN_BEGIN) == 1 .and. &
             event_counts(MLP_EVENT_UPDATE) == state%updates .and. &
+            event_counts(MLP_EVENT_UPDATE_SKIPPED) == 0 .and. &
             event_counts(MLP_EVENT_VALIDATION) == state%epochs .and. &
             event_counts(MLP_EVENT_EPOCH_END) == state%epochs .and. &
             event_counts(MLP_EVENT_CHECKPOINT) > state%epochs .and. &
@@ -80,6 +83,44 @@ contains
         event_fail = .false.
     end subroutine test_typed_event_callback
 
+    subroutine test_loss_scale_skip_event(failures)
+        integer, intent(inout) :: failures
+        type(mlp_t) :: model
+        type(mlp_training_options_t) :: options
+        type(mlp_training_state_t) :: state
+        type(fortnum_status_t) :: status
+        real(dp) :: x(2, 1), target(2, 1), before(2)
+
+        ! The FP32 forward/gradient boundary remains finite, while the
+        ! deliberately huge loss scale overflows the binary64 scaled vector.
+        ! This exercises the production skip branch rather than the direct
+        ! loss-scale helper and has an independent zero-update oracle.
+        x(:, 1) = [1.0_dp, -1.0_dp]
+        target(:, 1) = [1.0e38_dp, -1.0e38_dp]
+        call model%initialize([1, 1], status, output_activation=MLP_LINEAR)
+        call model%set_parameters([0.0_dp, 0.0_dp], status)
+        before = model%parameters()
+        options%optimizer = MLP_OPTIMIZER_SGD
+        options%precision_kind = MLP_PRECISION_FP32
+        options%max_epochs = 1
+        options%learning_rate = 0.1_dp
+        options%tolerance = 0.0_dp
+        options%restore_best = .false.
+        call options%loss_scale%initialize(status, enabled=.true., &
+            initial_scale=1.0e300_dp, maximum_scale=1.0e300_dp, &
+            backoff_factor=0.5_dp, growth_interval=1000)
+        options%event_callback => record_training_event
+        event_counts = 0
+        event_fail = .false.
+        call mlp_train(model, x, target, status, options, state)
+        call check(status_ok(status) .and. state%updates == 0 .and. &
+            state%loss_scale%overflow_count == 1 .and. &
+            state%loss_scale%skipped_updates == 1 .and. &
+            event_counts(MLP_EVENT_UPDATE_SKIPPED) == 1 .and. &
+            maxval(abs(model%parameters() - before)) == 0.0_dp, &
+            "loss-scale overflow emits skip event without optimizer mutation", failures)
+    end subroutine test_loss_scale_skip_event
+
     subroutine record_training_event(event, epoch, update, loss, &
             validation_loss, gradient_norm, learning_rate, stop, status)
         integer, intent(in) :: event, epoch, update
@@ -87,7 +128,7 @@ contains
         logical, intent(out) :: stop
         type(fortnum_status_t), intent(out) :: status
 
-        if (event >= 1 .and. event <= 6) event_counts(event) = &
+        if (event >= 1 .and. event <= 7) event_counts(event) = &
             event_counts(event) + 1
         stop = .false.
         if (event_fail .and. event == MLP_EVENT_VALIDATION) then
