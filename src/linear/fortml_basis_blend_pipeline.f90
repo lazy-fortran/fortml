@@ -190,10 +190,8 @@ contains
             if (status%code /= FORTNUM_OK) return
         end do
         candidate%fitted = .true.
-        select type (self)
-            type is (basis_blend_pipeline_t)
-            self = candidate
-        end select
+        call move_alloc(candidate%branches, self%branches)
+        self%fitted = .true.
         call status_set(status, FORTNUM_OK, "")
     end subroutine blend_fit
 
@@ -537,10 +535,8 @@ contains
             end if
             offset = offset + 1 + n_local
         end do
-        select type (self)
-            type is (basis_blend_pipeline_t)
-            self = candidate
-        end select
+        call move_alloc(candidate%branches, self%branches)
+        call move_alloc(candidate%weights, self%weights)
         call status_set(status, FORTNUM_OK, "")
     end subroutine blend_set_parameters
 
