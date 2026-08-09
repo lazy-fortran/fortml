@@ -51,7 +51,7 @@ program fortml_bench_mlp_trainable_state
     unfrozen_jvp_max = maxval(abs(dy))
     status_code = status%code
 
-    write (*, '(a,i0,6(",",es24.16))') "trainable_state", trainable_count, &
+    write (*, '(a,",",i0,6(",",es24.16))') "trainable_state", trainable_count, &
         frozen_gradient_max, live_gradient_error, frozen_jvp_max, &
         unfrozen_jvp_max, prediction_change, real(status_code, dp)
 end program fortml_bench_mlp_trainable_state
