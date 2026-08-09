@@ -16,7 +16,7 @@ multipliers as described in
 The Adam moment coefficients are explicit trajectory metadata by default. Set
 `options%optimize_moment_parameters = .true.` to append unconstrained
 `[logit(beta1), logit(beta2)]` after any schedule coordinates and before the
-group multipliers; the metadata exposes their indices and bounded logits. This
+group multipliers. The metadata exposes their indices and bounded logits. This
 branch propagates the moment, bias-correction, value, JVP, and VJP tangents
 exactly. Use `fortml_mlp_adam_hypergradient` when a standalone Adam objective
 without optimizer groups is preferred.
