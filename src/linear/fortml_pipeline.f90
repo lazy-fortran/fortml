@@ -52,6 +52,8 @@ module fortml_pipeline
     contains
         procedure, public :: initialize => pipeline_initialize
         procedure, public :: append => pipeline_append
+        procedure, public :: clone => pipeline_clone
+        procedure, public :: clone_device => pipeline_clone_device
         procedure, public :: fit => pipeline_fit
         procedure, public :: transform => pipeline_transform
         procedure, public :: evaluate => pipeline_transform
@@ -499,6 +501,65 @@ contains
         self%fitted = .false.
         call status_set(status, FORTNUM_OK, "")
     end subroutine pipeline_append
+
+    subroutine pipeline_clone(self, clone, status)
+        !! Deep-copy a configured pipeline without sharing stage state.
+        !!
+        !! Intrinsic assignment of the allocatable polymorphic stage maps is
+        !! used only after validating the source.  The candidate is committed
+        !! to ``clone`` in one assignment, so malformed sources leave an
+        !! existing destination untouched.  This is the host-side clone/reset
+        !! seam used by model-selection and cross-validation callers.
+        class(basis_pipeline_t), intent(in) :: self
+        type(basis_pipeline_t), intent(inout) :: clone
+        type(basis_pipeline_t) :: candidate
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. pipeline_valid(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "basis pipeline clone: source pipeline is invalid")
+            return
+        end if
+        select type (source => self)
+            type is (basis_pipeline_t)
+            candidate = source
+        class default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "basis pipeline clone: source dynamic type is unsupported")
+            return
+        end select
+        clone = candidate
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine pipeline_clone
+
+    subroutine pipeline_clone_device(self, device, clone, status)
+        !! Device-aware clone boundary; CUDA requires resident graph support.
+        class(basis_pipeline_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        type(basis_pipeline_t), intent(inout) :: clone
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. pipeline_valid(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "basis pipeline clone device: source pipeline is invalid")
+            return
+        end if
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "basis pipeline clone device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%clone(clone, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "basis pipeline clone device: resident CUDA graph is unavailable")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "basis pipeline clone device: device kind is invalid")
+        end select
+    end subroutine pipeline_clone_device
 
     !> Mark the fixed feature union as fitted after checking a sample matrix.
     !>
