@@ -19,10 +19,15 @@ program fortml_bench_gp_multiclass_hyper_hvp
     type(fortml_device_t) :: cuda
     type(fortnum_status_t) :: status
 
-    x = reshape([ &
-        -0.1_dp, 1.9_dp, 0.1_dp, 2.1_dp, 0.2_dp, 1.8_dp, &
-        -0.1_dp, -0.1_dp, 0.1_dp, 0.2_dp, 0.3_dp, 0.0_dp, &
-        1.9_dp, 0.0_dp, 2.1_dp, 0.2_dp, 1.8_dp, 0.3_dp], shape(x))
+    x(1, :) = [-0.1_dp, 1.9_dp]
+    x(2, :) = [0.1_dp, 2.1_dp]
+    x(3, :) = [0.2_dp, 1.8_dp]
+    x(4, :) = [-0.1_dp, -0.1_dp]
+    x(5, :) = [0.1_dp, 0.2_dp]
+    x(6, :) = [0.3_dp, 0.0_dp]
+    x(7, :) = [1.9_dp, 0.0_dp]
+    x(8, :) = [2.1_dp, 0.2_dp]
+    x(9, :) = [1.8_dp, 0.3_dp]
     labels = [42, 42, 42, -7, -7, -7, 10, 10, 10]
     direction = [0.021_dp, -0.014_dp, 0.017_dp, -0.011_dp, &
         0.013_dp, -0.009_dp]
