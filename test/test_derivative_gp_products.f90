@@ -9,6 +9,7 @@ program test_derivative_gp_products
         make_matern32_kernel, make_matern52_kernel, &
         make_periodic_kernel, make_rational_quadratic_kernel, &
         make_rbf_kernel, make_cosine_kernel, make_user_kernel
+    use fortml_device, only: fortml_device_t, FORTML_DEVICE_CUDA
     use fortnum_cholesky, only: cholesky_factorization_t
     use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_NOT_IMPLEMENTED
     implicit none
@@ -22,6 +23,7 @@ program test_derivative_gp_products
     call test_matern_parameter_products(failures)
     call test_periodic_rational_parameter_products(failures)
     call test_cosine_parameter_products(failures)
+    call test_rational_quadratic_mixed_hvp(failures)
     call test_product_parameter_products(failures)
     call test_prediction_products(failures)
     call test_joint_covariance(failures)
@@ -304,6 +306,74 @@ contains
             failures = failures + 1
         end if
     end subroutine test_cosine_parameter_products
+
+    subroutine test_rational_quadratic_mixed_hvp(failures)
+        !! Independent mixed-observation HVP oracle for the rational-
+        !! quadratic leaf.  The covariance below is assembled directly from
+        !! its one-dimensional radial derivatives; it does not call the
+        !! production derivative-covariance helper.
+        integer, intent(inout) :: failures
+        type(gp_derivative_regression_t) :: model
+        type(kernel_t) :: kernel
+        type(fortml_device_t) :: cuda
+        type(fortnum_status_t) :: status
+        real(dp) :: x(4, 1), y(4, 1), theta(4), direction(4), hvp(4)
+        real(dp) :: gradient(4), oracle_gradient(4), gradient_plus(4), gradient_minus(4), fd_hvp(4), h
+        real(dp) :: query_x(1, 1), query_mean(1, 1), query_variance(1)
+
+        x(:, 1) = [-0.25_dp, 0.16_dp, 0.73_dp, 1.19_dp]
+        y(:, 1) = [0.70_dp, -0.20_dp, 0.55_dp, -0.35_dp]
+        kernel = make_rational_quadratic_kernel(1, 1.25_dp, 0.81_dp, 1.45_dp, status)
+        call model%fit(x, [0, 1, 0, 1], y, kernel, 0.055_dp, status, jitter=1.0e-10_dp)
+        if (.not. status_ok(status)) then
+            write (error_unit, '(a)') "FAIL [rational-quadratic derivative GP] fit"
+            failures = failures + 1
+            return
+        end if
+
+        theta = model%parameters()
+        call model%hyperparameter_gradient(gradient, status)
+        oracle_gradient = oracle_gradient_rational(theta, x, [0, 1, 0, 1], y, &
+            0.055_dp, 1.0e-10_dp)
+        if (.not. status_ok(status) .or. maxval(abs(gradient - oracle_gradient)) > 3.0e-5_dp) then
+            write (error_unit, '(a,es12.4)') &
+                "FAIL [rational-quadratic derivative GP] gradient oracle ", &
+                maxval(abs(gradient - oracle_gradient))
+            write (error_unit, '(a,4(es14.6,1x))') "  analytic=", gradient
+            write (error_unit, '(a,4(es14.6,1x))') "  oracle  =", oracle_gradient
+            failures = failures + 1
+        end if
+        direction = [0.13_dp, -0.09_dp, 0.08_dp, -0.05_dp]
+        call model%hyperparameter_hvp(direction, hvp, status)
+        h = 2.0e-4_dp
+        gradient_plus = oracle_gradient_rational(theta + h*direction, x, [0, 1, 0, 1], y, &
+            0.055_dp, 1.0e-10_dp)
+        gradient_minus = oracle_gradient_rational(theta - h*direction, x, [0, 1, 0, 1], y, &
+            0.055_dp, 1.0e-10_dp)
+        fd_hvp = (gradient_plus - gradient_minus)/(2.0_dp*h)
+        if (.not. status_ok(status) .or. maxval(abs(hvp - fd_hvp)) > 3.0e-4_dp) then
+            write (error_unit, '(a,es12.4)') &
+                "FAIL [rational-quadratic derivative GP] mixed HVP oracle ", &
+                maxval(abs(hvp - fd_hvp))
+            write (error_unit, '(a,4(es14.6,1x))') "  analytic=", hvp
+            write (error_unit, '(a,4(es14.6,1x))') "  oracle  =", fd_hvp
+            failures = failures + 1
+        end if
+
+        ! CUDA is an explicit capability boundary for derivative-observation
+        ! covariance/solve graphs; ensure this leaf does not silently execute
+        ! the CPU implementation when a CUDA context is selected.
+        cuda%kind = FORTML_DEVICE_CUDA
+        cuda%selected = .true.
+        cuda%available = .true.
+        query_x(1, 1) = 0.31_dp
+        call model%predict_device(cuda, query_x, [0], query_mean, query_variance, status)
+        if (status%code /= FORTNUM_NOT_IMPLEMENTED) then
+            write (error_unit, '(a,i0)') &
+                "FAIL [rational-quadratic derivative GP] CUDA refusal code=", status%code
+            failures = failures + 1
+        end if
+    end subroutine test_rational_quadratic_mixed_hvp
 
     subroutine check_kernel_parameter_gradient(kernel, name, failures)
         type(kernel_t), intent(in) :: kernel
@@ -898,6 +968,51 @@ contains
             0.5_dp*real(size(x, 1), dp)*log(2.0_dp*acos(-1.0_dp))
     end function oracle_lml_cosine
 
+    function oracle_gradient_rational(theta, x, components, y, noise, jitter) result(gradient)
+        real(dp), intent(in) :: theta(:), x(:, :), y(:, :), noise, jitter
+        integer, intent(in) :: components(:)
+        real(dp) :: gradient(size(theta))
+        real(dp) :: plus(size(theta)), minus(size(theta)), step
+        integer :: i
+
+        do i = 1, size(theta)
+            step = 2.0e-5_dp*max(1.0_dp, abs(theta(i)))
+            plus = theta
+            minus = theta
+            plus(i) = plus(i) + step
+            minus(i) = minus(i) - step
+            gradient(i) = (oracle_lml_rational(plus, x, components, y, noise, jitter) - &
+                oracle_lml_rational(minus, x, components, y, noise, jitter))/(2.0_dp*step)
+        end do
+    end function oracle_gradient_rational
+
+    real(dp) function oracle_lml_rational(theta, x, components, y, noise, jitter) result(value)
+        real(dp), intent(in) :: theta(:), x(:, :), y(:, :), noise, jitter
+        integer, intent(in) :: components(:)
+        type(cholesky_factorization_t) :: factor
+        type(fortnum_status_t) :: status
+        real(dp), allocatable :: covariance(:, :), alpha(:, :)
+        real(dp) :: logdet
+        integer :: i, j
+
+        allocate(covariance(size(x, 1), size(x, 1)))
+        do j = 1, size(x, 1)
+            do i = 1, size(x, 1)
+                covariance(i, j) = oracle_rational_covariance(x(i, 1), components(i), &
+                    x(j, 1), components(j), exp(theta(1)), exp(theta(2)), exp(theta(3)))
+            end do
+        end do
+        do i = 1, size(x, 1)
+            covariance(i, i) = covariance(i, i) + exp(theta(4)) + jitter
+        end do
+        call factor%factorize(covariance, status)
+        allocate(alpha, source=y)
+        call factor%solve(alpha, status)
+        call factor%log_determinant(logdet, status)
+        value = -0.5_dp*sum(y*alpha) - 0.5_dp*logdet - &
+            0.5_dp*real(size(x, 1), dp)*log(2.0_dp*acos(-1.0_dp))
+    end function oracle_lml_rational
+
     subroutine oracle_predict(theta, x, components, y, x_test, test_components, noise, &
             jitter, mean, variance)
         real(dp), intent(in) :: theta(:), x(:, :), y(:, :), x_test(:, :), noise, jitter
@@ -1067,6 +1182,32 @@ contains
             value = -radial_second
         end if
     end function oracle_cosine_covariance
+
+    real(dp) function oracle_rational_covariance(x1, component1, x2, component2, &
+            variance, lengthscale, alpha) result(value)
+        real(dp), intent(in) :: x1, x2, variance, lengthscale, alpha
+        integer, intent(in) :: component1, component2
+        real(dp) :: difference, squared_distance, q, denominator, kernel_value
+        real(dp) :: first_s, second_s
+
+        difference = x1 - x2
+        squared_distance = difference*difference
+        q = 0.5_dp/(alpha*lengthscale*lengthscale)
+        denominator = 1.0_dp + q*squared_distance
+        kernel_value = variance*denominator**(-alpha)
+        first_s = -kernel_value/(2.0_dp*lengthscale*lengthscale*denominator)
+        second_s = kernel_value*(alpha + 1.0_dp)/(4.0_dp*alpha*lengthscale**4* &
+            denominator*denominator)
+        if (component1 == 0 .and. component2 == 0) then
+            value = kernel_value
+        else if (component1 > 0 .and. component2 == 0) then
+            value = 2.0_dp*first_s*difference
+        else if (component1 == 0 .and. component2 > 0) then
+            value = -2.0_dp*first_s*difference
+        else
+            value = -2.0_dp*first_s - 4.0_dp*second_s*difference*difference
+        end if
+    end function oracle_rational_covariance
 
     real(dp) function oracle_matern32_covariance(x1, component1, x2, component2, &
             variance, lengthscale) result(value)

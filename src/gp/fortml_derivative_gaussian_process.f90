@@ -1868,6 +1868,11 @@ contains
                 parameter, direction, covariance, covariance_dot, covariance_parameter, &
                 covariance_parameter_dot, status)
             return
+        case (KERNEL_RATIONAL_QUADRATIC)
+            call rational_quadratic_derivative_parameter_hvp(kernel, x1, component1, x2, &
+                component2, parameter, direction, covariance, covariance_dot, &
+                covariance_parameter, covariance_parameter_dot, status)
+            return
         case default
             call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
                 "derivative GP mixed HVP: kernel leaf lacks analytic second products")
@@ -2300,6 +2305,165 @@ contains
         end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine periodic_derivative_parameter_hvp
+
+    subroutine rational_quadratic_derivative_parameter_hvp(kernel, x1, component1, x2, &
+            component2, parameter, direction, covariance, covariance_dot, &
+            covariance_parameter, covariance_parameter_dot, status)
+        !! Analytic mixed-observation parameter/HVP products for the
+        !! rational-quadratic leaf. With ``s=||x1-x2||**2``,
+        !! ``q=(2 alpha l**2)**(-1)``, and ``D=1+q s``, the value and its
+        !! first two s-derivatives are
+        !!
+        !!   F=v D**(-alpha), P=F_s=-F/(2 l**2 D),
+        !!   Q=F_ss=F (alpha+1)/(4 alpha l**4 D**2).
+        !!
+        !! Mixed value/gradient/Hessian observations are assembled from
+        !! ``F``, ``P``, and ``Q``. The logarithmic parameter sensitivities
+        !! and their directional products below are closed form, so the
+        !! likelihood HVP never finite-differences a derivative covariance.
+        type(kernel_t), intent(in) :: kernel
+        real(dp), intent(in) :: x1(:), x2(:), direction(:)
+        integer, intent(in) :: component1, component2, parameter
+        real(dp), intent(out) :: covariance, covariance_dot
+        real(dp), intent(out) :: covariance_parameter, covariance_parameter_dot
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: difference(size(x1)), squared_distance, variance, lengthscale, alpha
+        real(dp) :: q, t, denominator, value, p, p2
+        real(dp) :: value_dot, p_dot, p2_dot
+        real(dp) :: value_parameter, p_parameter, p2_parameter
+        real(dp) :: value_parameter_dot, p_parameter_dot, p2_parameter_dot
+        real(dp) :: log_direction, p_log_direction, p2_log_direction
+        real(dp) :: value_sensitivity, p_sensitivity, p2_sensitivity
+        real(dp) :: value_sensitivity_dot, p_sensitivity_dot, p2_sensitivity_dot
+        real(dp) :: parameter_direction, q_direction
+        real(dp) :: dot_i, dot_j
+        real(dp) :: log_d, sensitivity, sensitivity_dot
+        integer :: i, j
+
+        covariance = 0.0_dp
+        covariance_dot = 0.0_dp
+        covariance_parameter = 0.0_dp
+        covariance_parameter_dot = 0.0_dp
+        if (kernel%kind /= KERNEL_RATIONAL_QUADRATIC .or. &
+                kernel%parameter_count() /= 3 .or. size(x1) /= size(x2) .or. &
+                size(direction) /= 3 .or. parameter < 1 .or. parameter > 3 .or. &
+                component1 < 0 .or. component2 < 0 .or. component1 > size(x1) .or. &
+                component2 > size(x2) .or. any(.not. ieee_is_finite(x1)) .or. &
+                any(.not. ieee_is_finite(x2)) .or. any(.not. ieee_is_finite(direction))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "derivative GP rational-quadratic HVP: shape or value is invalid")
+            return
+        end if
+
+        difference = x1 - x2
+        squared_distance = dot_product(difference, difference)
+        variance = exp(kernel%log_parameters(1))
+        lengthscale = exp(kernel%log_parameters(2))
+        alpha = exp(kernel%log_parameters(3))
+        q = 0.5_dp/(alpha*lengthscale*lengthscale)
+        t = q*squared_distance
+        denominator = 1.0_dp + t
+        value = variance*denominator**(-alpha)
+        p = -0.5_dp*value/(lengthscale*lengthscale*denominator)
+        p2 = value*(alpha + 1.0_dp)/(4.0_dp*alpha*lengthscale**4*denominator**2)
+
+        ! Directional logarithmic products of F, P, and Q. q has
+        ! logarithmic directional product -(u_alpha+2*u_lengthscale).
+        parameter_direction = direction(1)
+        q_direction = -direction(3) - 2.0_dp*direction(2)
+        log_d = log(denominator)
+        log_direction = parameter_direction - alpha*direction(3)*log_d - &
+            alpha*t*q_direction/denominator
+        p_log_direction = log_direction - 2.0_dp*direction(2) - &
+            t*q_direction/denominator
+        p2_log_direction = log_direction - 4.0_dp*direction(2) - &
+            direction(3)/(alpha + 1.0_dp) - 2.0_dp*t*q_direction/denominator
+        value_dot = value*log_direction
+        p_dot = p*p_log_direction
+        p2_dot = p2*p2_log_direction
+
+        ! Parameter sensitivities A, B, and C are the log products of F,
+        ! P, and Q for the selected logarithmic coordinate. Their
+        ! directional products are differentiated directly, avoiding ratios
+        ! through a potentially small P or Q.
+        select case (parameter)
+        case (1)
+            value_sensitivity = 1.0_dp
+            p_sensitivity = 1.0_dp
+            p2_sensitivity = 1.0_dp
+            value_sensitivity_dot = 0.0_dp
+            p_sensitivity_dot = 0.0_dp
+            p2_sensitivity_dot = 0.0_dp
+        case (2)
+            value_sensitivity = 2.0_dp*alpha*t/denominator
+            value_sensitivity_dot = 2.0_dp*alpha*t*(direction(3)/denominator + &
+                q_direction/(denominator*denominator))
+            p_sensitivity = -2.0_dp + 2.0_dp*(alpha + 1.0_dp)*t/denominator
+            p_sensitivity_dot = 2.0_dp*alpha*t*direction(3)/denominator + &
+                2.0_dp*(alpha + 1.0_dp)*t*q_direction/(denominator*denominator)
+            p2_sensitivity = -4.0_dp + 2.0_dp*(alpha + 2.0_dp)*t/denominator
+            p2_sensitivity_dot = 2.0_dp*alpha*t*direction(3)/denominator + &
+                2.0_dp*(alpha + 2.0_dp)*t*q_direction/(denominator*denominator)
+        case (3)
+            sensitivity = alpha*(t/denominator - log_d)
+            sensitivity_dot = alpha*direction(3)*(t/denominator - log_d) - &
+                alpha*t*t*q_direction/(denominator*denominator)
+            value_sensitivity = sensitivity
+            value_sensitivity_dot = sensitivity_dot
+            p_sensitivity = sensitivity + t/denominator
+            p_sensitivity_dot = sensitivity_dot + t*q_direction/(denominator*denominator)
+            p2_sensitivity = sensitivity - 1.0_dp/(alpha + 1.0_dp) + &
+                2.0_dp*t/denominator
+            p2_sensitivity_dot = sensitivity_dot + alpha*direction(3)/(alpha + 1.0_dp)**2 + &
+                2.0_dp*t*q_direction/(denominator*denominator)
+        end select
+        value_parameter = value*value_sensitivity
+        p_parameter = p*p_sensitivity
+        p2_parameter = p2*p2_sensitivity
+        value_parameter_dot = value*(log_direction*value_sensitivity + &
+            value_sensitivity_dot)
+        p_parameter_dot = p*(p_log_direction*p_sensitivity + p_sensitivity_dot)
+        p2_parameter_dot = p2*(p2_log_direction*p2_sensitivity + p2_sensitivity_dot)
+
+        if (component1 == 0 .and. component2 == 0) then
+            covariance = value
+            covariance_dot = value_dot
+            covariance_parameter = value_parameter
+            covariance_parameter_dot = value_parameter_dot
+        else if (component1 > 0 .and. component2 == 0) then
+            dot_i = difference(component1)
+            covariance = 2.0_dp*p*dot_i
+            covariance_dot = 2.0_dp*p_dot*dot_i
+            covariance_parameter = 2.0_dp*p_parameter*dot_i
+            covariance_parameter_dot = 2.0_dp*p_parameter_dot*dot_i
+        else if (component1 == 0 .and. component2 > 0) then
+            dot_j = difference(component2)
+            covariance = -2.0_dp*p*dot_j
+            covariance_dot = -2.0_dp*p_dot*dot_j
+            covariance_parameter = -2.0_dp*p_parameter*dot_j
+            covariance_parameter_dot = -2.0_dp*p_parameter_dot*dot_j
+        else
+            i = component1
+            j = component2
+            covariance = -2.0_dp*p*merge(1.0_dp, 0.0_dp, i == j) - &
+                4.0_dp*p2*difference(i)*difference(j)
+            covariance_dot = -2.0_dp*p_dot*merge(1.0_dp, 0.0_dp, i == j) - &
+                4.0_dp*p2_dot*difference(i)*difference(j)
+            covariance_parameter = -2.0_dp*p_parameter*merge(1.0_dp, 0.0_dp, i == j) - &
+                4.0_dp*p2_parameter*difference(i)*difference(j)
+            covariance_parameter_dot = -2.0_dp*p_parameter_dot* &
+                merge(1.0_dp, 0.0_dp, i == j) - 4.0_dp*p2_parameter_dot* &
+                difference(i)*difference(j)
+        end if
+        if (.not. ieee_is_finite(covariance) .or. .not. ieee_is_finite(covariance_dot) .or. &
+                .not. ieee_is_finite(covariance_parameter) .or. &
+                .not. ieee_is_finite(covariance_parameter_dot)) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "derivative GP rational-quadratic HVP: nonfinite product")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine rational_quadratic_derivative_parameter_hvp
 
     subroutine ard_rbf_derivative_parameter_hvp(kernel, x1, component1, x2, component2, &
             parameter, direction, covariance, covariance_dot, covariance_parameter, &

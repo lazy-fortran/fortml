@@ -276,6 +276,21 @@ central-difference covariance oracle and verifies the selected-CUDA typed
 refusal. Rational-quadratic, cosine, user-formula, resident-CUDA, and higher
 operator-observation products remain explicit open rows.
 
+The rational-quadratic derivative-observation slice now closes the next smooth
+kernel HVP row. `gp_derivative_regression_t%hyperparameter_hvp` propagates
+analytic mixed value/first-derivative covariance products through all three
+logarithmic kernel coordinates (`log(variance)`, `log(lengthscale)`, and
+`log(alpha)`) plus log noise. The radial `F_s`/`F_ss` products and their
+parameter-direction products are assembled without finite differences, while
+the existing exact query-input JVP/VJP path supplies the third-input products.
+`test_derivative_gp_products` independently reconstructs the dense
+one-dimensional covariance, checks the packed gradient/HVP against central
+differences, and verifies that selected CUDA prediction remains a typed
+`FORTNUM_NOT_IMPLEMENTED` refusal. The release app and independent benchmark
+are `fortml_bench_derivative_gp_rational_quadratic_hvp` and
+`fortml-bench/results/DERIVATIVE_GP_RATIONAL_QUADRATIC_HVP.md`; cosine,
+user-formula, higher operator orders, and resident CUDA covariance remain open.
+
 The metric-learning loss slice adds a reusable weighted pairwise contrastive
 objective to `fortml_losses`: matching/non-matching Euclidean pairs expose
 value, JVP, VJP, and HVP products with mean/sum reductions.  Independent
@@ -3728,6 +3743,13 @@ state phases are reported separately.
   `test_derivative_gp_periodic_hvp` central-difference likelihood oracle and
   `fortml-bench/results/DERIVATIVE_GP_PERIODIC_HVP.md` gate the CPU contract;
   resident CUDA covariance/factorization remains a typed refusal.
+- [x] Extend mixed-observation derivative-GP HVPs to the rational-quadratic
+  kernel. The exact radial `F_s`/`F_ss` parameter-direction products cover
+  variance, lengthscale, alpha, and log-noise coordinates through the dense
+  Cholesky solve; independent covariance/HVP and query-product checks cover
+  the CPU path, while selected CUDA prediction remains a typed refusal. See
+  `docs/GP_RATIONAL_QUADRATIC_MIXED_HVP.md` and the corresponding
+  `fortml-bench/results/DERIVATIVE_GP_RATIONAL_QUADRATIC_HVP.md` release gate.
 - [x] Extend the bounded scalar 1-D `second_derivative_gp_t` reference from
   RBF to Matérn-5/2. Mixed orders `0:2`, exact order-four covariance blocks,
   order-five query JVP/VJP products away from Matérn coincidences, dense latent
