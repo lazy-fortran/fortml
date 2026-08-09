@@ -3618,6 +3618,20 @@ invalid policy are always refused.
 the same split-boundary refusal; the fitted tree structure and OVR
 normalization are held fixed.
 
+`predict_log_proba` evaluates each positive OVR link with a stable
+log-sigmoid and combines the class links with log-sum-exp, so the returned
+matrix remains finite in probability tails. `predict_log_proba_jvp` and
+`predict_log_proba_vjp` provide the matching fixed-tree input products.
+`parameter_count`/`parameters` (also named `leaf_parameter_count`/
+`leaf_parameters`) expose the packed `[base_score, leaf weights]` coordinates
+of every child in sorted class order. The corresponding
+`predict_proba_parameter_jvp`, `predict_proba_parameter_vjp`,
+`predict_log_proba_parameter_jvp`, and `predict_log_proba_parameter_vjp`
+compose the normalized OVR chain rule through those coordinates. Their
+`*_device` entry points dispatch CPU and return a typed
+`FORTNUM_NOT_IMPLEMENTED` refusal for CUDA; a refusal leaves caller outputs
+unchanged.
+
 The multiclass wrapper forwards `monotone_constraint(feature)` from its
 one-vs-rest estimators and exposes `predict_proba_device` and
 `predict_device`. CPU dispatch is equivalent to the ordinary methods. CUDA
