@@ -22,13 +22,18 @@ Group names and ranges are discrete metadata captured at initialization.
 Every update uses the same post-optimizer scaling as `mlp_train`. Parameters in
 group `i` receive `multiplier_i` times the shared SGD delta, while uncovered
 parameters retain multiplier one. The Adam variant applies the same group
-scales after bias-corrected moment updates. The outer coordinates are differentiable
-through the MLP analytic HVP, the learning rate, L2, and every group
-multiplier. `value_gradient`, `jvp`, `vjp`, and the FortOpt bounded L-BFGS-B
-adapter share one deterministic objective. No finite-difference optimizer
-fallback is used. The public `hvp` entry point is equally explicit: it
-returns a zero product with `FORTNUM_NOT_IMPLEMENTED` until third network
-derivatives are available. Shape or non-finite inputs return
+scales after bias-corrected moment updates. The outer coordinates are
+differentiable through the MLP analytic HVP, the learning rate, L2, and every
+group multiplier. `value_gradient`, `jvp`, `vjp`, and the FortOpt bounded
+L-BFGS-B adapter share one deterministic objective. No finite-difference
+optimizer fallback is used. The public `hvp` entry point also has an exact
+production slice: affine MLPs, constant-rate full-batch SGD, no clipping, and
+fixed group ranges propagate a second trajectory tangent analytically. The
+affine training Hessian is constant, so this path uses the existing loss HVP
+and includes the mixed log-L2 term without third derivatives. Adam,
+nonconstant schedules, clipping, and nonlinear MLPs return a zero product with
+`FORTNUM_NOT_IMPLEMENTED` until their complete second-state derivative
+contracts are available. Shape or non-finite inputs return
 `FORTNUM_DOMAIN_ERROR`. No numerical hyper-HVP is hidden behind the API.
 
 The adapter also accepts a fixed `gradient_clip_norm` and applies the same
@@ -61,5 +66,7 @@ call mlp_optimize_optimizer_group_hyperparameters(model, train_x, train_y, &
 `test_mlp_optimizer_group_hypergradient` checks an independent central-
 finite-difference oracle for every packed coordinate, JVP contraction, scalar
 VJP scaling, exact parity with `mlp_train`'s group update, FortOpt result
-coordinates, overlap validation, the typed outer-HVP refusal, and the typed
-CUDA refusal.
+coordinates, overlap validation, and the typed CUDA/refusal boundaries.
+`test_mlp_optimizer_group_affine_hvp` supplies an independent scalar affine
+recurrence and checks the full outer HVP against its central difference, plus
+the nonlinear typed refusal.

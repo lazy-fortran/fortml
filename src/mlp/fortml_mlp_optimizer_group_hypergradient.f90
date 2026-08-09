@@ -10,11 +10,12 @@ module fortml_mlp_optimizer_group_hypergradient
     !! The trajectory supports plain full-batch SGD and coupled-L2 Adam.
     !! MLP analytic HVPs propagate every smooth outer
     !! coordinate, and FortOpt consumes the resulting value/gradient callback.
-    !! The outer HVP is intentionally a typed refusal: producing it would
-    !! require third network derivatives (the inner recurrence already uses
-    !! an MLP HVP).  Keeping the method on the public objective gives callers
-    !! one stable derivative surface and prevents accidental finite-difference
-    !! fallbacks.
+    !! The outer HVP has an exact affine constant-rate SGD slice.  General
+    !! nonlinear, scheduled, clipped, and Adam trajectories retain a typed
+    !! refusal because their second state tangent requires third network or
+    !! optimizer-state derivatives.  Keeping the method on the public
+    !! objective gives callers one stable derivative surface and prevents
+    !! accidental finite-difference fallbacks.
     !! CUDA is an explicit refusal until the complete model, update, and group
     !! metadata are resident on a device.
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
@@ -22,7 +23,7 @@ module fortml_mlp_optimizer_group_hypergradient
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
         FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED, FORTNUM_CONVERGENCE_ERROR
     use fortml_device, only: FORTML_DEVICE_CPU, FORTML_DEVICE_CUDA
-    use fortml_mlp, only: mlp_t
+    use fortml_mlp, only: mlp_t, MLP_LINEAR
     use fortml_mlp_schedules, only: mlp_learning_rate_schedule_t, &
         MLP_SCHEDULE_CONSTANT, MLP_SCHEDULE_COSINE_DECAY, MLP_SCHEDULE_WARMUP_COSINE, &
         MLP_SCHEDULE_EXPONENTIAL_DECAY, MLP_SCHEDULE_PLATEAU, MLP_SCHEDULE_ONE_CYCLE
@@ -453,15 +454,15 @@ contains
     end subroutine mlp_optimizer_group_hypergradient_vjp
 
     subroutine mlp_optimizer_group_hypergradient_hvp(self, parameters, direction, product, status)
-        !! Return a typed refusal until third network derivatives are available.
+        !! Exact outer HVP for affine full-batch SGD trajectories.
         !!
-        !! `value_gradient`, `jvp`, and `vjp` are exact.  An outer HVP would
-        !! differentiate the inner MLP HVP with respect to the trajectory and
-        !! therefore needs third derivatives of the network loss.  Returning
-        !! zero with `FORTNUM_NOT_IMPLEMENTED` makes the unsupported product
-        !! explicit and keeps FortOpt from silently consuming a numerical
-        !! approximation.
-        class(mlp_optimizer_group_hypergradient_objective_t), intent(in) :: self
+        !! An affine MLP with MSE+L2 has a parameter-independent data Hessian.
+        !! The second trajectory tangent can therefore be propagated using the
+        !! existing analytic loss HVP without requesting a third network
+        !! derivative.  Adam, schedules, clipping, and nonlinear networks
+        !! retain a typed refusal because their second state tangent needs a
+        !! wider derivative contract than this production slice provides.
+        class(mlp_optimizer_group_hypergradient_objective_t), intent(inout) :: self
         real(dp), intent(in) :: parameters(:), direction(:)
         real(dp), intent(out) :: product(:)
         type(fortnum_status_t), intent(out) :: status
@@ -481,9 +482,187 @@ contains
                 "MLP optimizer-group hypergradient HVP: objective is not initialized")
             return
         end if
-        call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
-            "MLP optimizer-group hypergradient HVP requires third network derivatives")
+        if (self%layout%optimizer /= MLP_OPTIMIZER_SGD .or. &
+            self%layout%schedule_kind /= MLP_SCHEDULE_CONSTANT .or. &
+            self%gradient_clip_norm > 0.0_dp .or. self%optimize_moment_parameters .or. &
+            .not. affine_model(self%model)) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "MLP optimizer-group HVP requires affine constant-schedule SGD")
+            return
+        end if
+        call optimizer_group_affine_hvp(self, parameters, direction, product, status)
     end subroutine mlp_optimizer_group_hypergradient_hvp
+
+    subroutine optimizer_group_affine_hvp(self, parameters, direction, product, status)
+        !! Propagate one directional second tangent of an affine SGD path.
+        !!
+        !! `theta_dot(:,j)` is the first tangent for outer coordinate `j` and
+        !! `theta_ddot(:,j)` is its mixed derivative with `direction`.  For an
+        !! affine MLP the training Hessian is constant in `theta`; the only
+        !! explicit Hessian variation is the log-L2 coordinate, which is
+        !! included below.  Thus this routine is a true analytic HVP and does
+        !! not finite-difference either the trajectory or its gradient.
+        class(mlp_optimizer_group_hypergradient_objective_t), intent(inout) :: self
+        real(dp), intent(in) :: parameters(:), direction(:)
+        real(dp), intent(out) :: product(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: theta(:), theta_dot(:, :), theta_ddot(:, :)
+        real(dp), allocatable :: raw_gradient(:), gradient_dot(:, :), gradient_q(:)
+        real(dp), allocatable :: gradient_ddot(:), theta_dot_q(:)
+        real(dp), allocatable :: scale(:), scale_q(:), scale_j(:), scale_jq(:)
+        real(dp), allocatable :: validation_gradient(:), validation_hvp(:)
+        real(dp) :: learning_rate, l2, train_value, l2_gradient, scalar_hvp
+        real(dp) :: learning_rate_q, learning_rate_j, learning_rate_jq
+        real(dp) :: l2_q, l2_j, l2_jq
+        real(dp) :: validation_value, validation_l2_gradient
+        integer :: n_model, n_outer, step, j, group_index, first, last, index
+
+        product = 0.0_dp
+        n_model = size(self%initial_parameters)
+        n_outer = self%layout%parameter_count
+        if (size(parameters) /= n_outer .or. size(direction) /= n_outer .or. &
+                size(product) /= n_outer) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP optimizer-group affine HVP: packed shape is invalid")
+            return
+        end if
+        learning_rate = exp(parameters(MLP_OPTIMIZER_GROUP_LOG_LEARNING_RATE))
+        l2 = exp(parameters(MLP_OPTIMIZER_GROUP_LOG_L2))
+        if (.not. ieee_is_finite(learning_rate) .or. .not. ieee_is_finite(l2) .or. &
+                learning_rate <= 0.0_dp .or. l2 <= 0.0_dp) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP optimizer-group affine HVP: physical parameters are invalid")
+            return
+        end if
+
+        allocate(theta, source=self%initial_parameters)
+        allocate(theta_dot(n_model, n_outer), theta_ddot(n_model, n_outer))
+        allocate(raw_gradient(n_model), gradient_dot(n_model, n_outer), &
+            gradient_q(n_model), gradient_ddot(n_model), &
+            theta_dot_q(n_model))
+        allocate(scale(n_model), scale_q(n_model), scale_j(n_model), scale_jq(n_model))
+        allocate(validation_gradient(n_model), validation_hvp(n_model))
+        theta_dot = 0.0_dp
+        theta_ddot = 0.0_dp
+        scale = 1.0_dp
+        scale_q = 0.0_dp
+        do group_index = 1, self%layout%group_count
+            first = self%groups(group_index)%first
+            last = self%groups(group_index)%last
+            index = self%layout%first_log_multiplier_index + group_index - 1
+            scale(first:last) = exp(parameters(index))
+            scale_q(first:last) = scale(first:last)*direction(index)
+        end do
+
+        do step = 1, self%layout%inner_steps
+            call self%model%set_parameters(theta, status)
+            if (status%code /= FORTNUM_OK) return
+            call mlp_loss_value_gradient(self%model, self%train_x, self%train_target, &
+                l2, train_value, raw_gradient, l2_gradient, status)
+            if (status%code /= FORTNUM_OK) return
+
+            l2_q = l2*direction(MLP_OPTIMIZER_GROUP_LOG_L2)
+            theta_dot_q = matmul(theta_dot, direction)
+            call mlp_loss_hvp(self%model, self%train_x, self%train_target, l2, &
+                theta_dot_q, l2_q, gradient_q, scalar_hvp, status)
+            if (status%code /= FORTNUM_OK) return
+            do j = 1, n_outer
+                l2_j = 0.0_dp
+                if (j == MLP_OPTIMIZER_GROUP_LOG_L2) l2_j = l2
+                call mlp_loss_hvp(self%model, self%train_x, self%train_target, l2, &
+                    theta_dot(:, j), l2_j, gradient_dot(:, j), scalar_hvp, status)
+                if (status%code /= FORTNUM_OK) return
+            end do
+
+            do j = 1, n_outer
+                l2_j = 0.0_dp
+                if (j == MLP_OPTIMIZER_GROUP_LOG_L2) l2_j = l2
+                l2_jq = 0.0_dp
+                if (j == MLP_OPTIMIZER_GROUP_LOG_L2) then
+                    l2_jq = l2*direction(MLP_OPTIMIZER_GROUP_LOG_L2)
+                end if
+                call mlp_loss_hvp(self%model, self%train_x, self%train_target, l2, &
+                    theta_ddot(:, j), 0.0_dp, gradient_ddot, scalar_hvp, status)
+                if (status%code /= FORTNUM_OK) return
+                gradient_ddot = gradient_ddot + l2_q*theta_dot(:, j) + &
+                    l2_j*theta_dot_q + l2_jq*theta
+
+                learning_rate_j = 0.0_dp
+                if (j == MLP_OPTIMIZER_GROUP_LOG_LEARNING_RATE) learning_rate_j = learning_rate
+                learning_rate_q = learning_rate*direction(MLP_OPTIMIZER_GROUP_LOG_LEARNING_RATE)
+                learning_rate_jq = 0.0_dp
+                if (j == MLP_OPTIMIZER_GROUP_LOG_LEARNING_RATE) then
+                    learning_rate_jq = learning_rate*direction(MLP_OPTIMIZER_GROUP_LOG_LEARNING_RATE)
+                end if
+                scale_j = 0.0_dp
+                scale_jq = 0.0_dp
+                do group_index = 1, self%layout%group_count
+                    first = self%groups(group_index)%first
+                    last = self%groups(group_index)%last
+                    index = self%layout%first_log_multiplier_index + group_index - 1
+                    if (j == index) then
+                        scale_j(first:last) = scale(first:last)
+                        scale_jq(first:last) = scale(first:last)*direction(index)
+                    end if
+                end do
+
+                theta_ddot(:, j) = theta_ddot(:, j) - &
+                    (learning_rate_jq*scale*raw_gradient + &
+                     learning_rate_j*scale_q*raw_gradient + &
+                     learning_rate_j*scale*gradient_q + &
+                     learning_rate_q*scale_j*raw_gradient + &
+                     learning_rate*scale_jq*raw_gradient + &
+                     learning_rate*scale_j*gradient_q + &
+                     learning_rate_q*scale*gradient_dot(:, j) + &
+                     learning_rate*scale_q*gradient_dot(:, j) + &
+                     learning_rate*scale*gradient_ddot)
+                theta_dot(:, j) = theta_dot(:, j) - &
+                    learning_rate_j*scale*raw_gradient - &
+                    learning_rate*scale_j*raw_gradient - &
+                    learning_rate*scale*gradient_dot(:, j)
+            end do
+            theta = theta-learning_rate*scale*raw_gradient
+            if (any(.not. ieee_is_finite(theta)) .or. &
+                    any(.not. ieee_is_finite(theta_dot)) .or. &
+                    any(.not. ieee_is_finite(theta_ddot))) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP optimizer-group affine HVP: trajectory is not finite")
+                return
+            end if
+        end do
+
+        call self%model%set_parameters(theta, status)
+        if (status%code /= FORTNUM_OK) return
+        call mlp_loss_value_gradient(self%model, self%validation_x, &
+            self%validation_target, 0.0_dp, validation_value, validation_gradient, &
+            validation_l2_gradient, status)
+        if (status%code /= FORTNUM_OK) return
+        theta_dot_q = matmul(theta_dot, direction)
+        call mlp_loss_hvp(self%model, self%validation_x, self%validation_target, 0.0_dp, &
+            theta_dot_q, 0.0_dp, validation_hvp, scalar_hvp, status)
+        if (status%code /= FORTNUM_OK) return
+        do j = 1, n_outer
+            product(j) = dot_product(validation_hvp, theta_dot(:, j)) + &
+                dot_product(validation_gradient, theta_ddot(:, j))
+        end do
+        if (any(.not. ieee_is_finite(product))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP optimizer-group affine HVP: product is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine optimizer_group_affine_hvp
+
+    logical function affine_model(model) result(valid)
+        type(mlp_t), intent(in) :: model
+
+        valid = .false.
+        if (.not. allocated(model%layer)) return
+        if (size(model%layer) < 1) return
+        if (model%output_activation /= MLP_LINEAR) return
+        if (size(model%layer) > 1 .and. model%hidden_activation /= MLP_LINEAR) return
+        valid = .true.
+    end function affine_model
 
     subroutine mlp_optimizer_group_hypergradient_fortopt(self, objective, status)
         class(mlp_optimizer_group_hypergradient_objective_t), target, intent(inout) :: self

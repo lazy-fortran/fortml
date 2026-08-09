@@ -362,17 +362,17 @@ contains
         call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
             "optimizer-group CUDA refusal", failures)
 
-        ! The inner trajectory uses an exact MLP HVP, but an outer HVP would
-        ! require third network derivatives.  The public method must refuse
-        ! explicitly rather than silently finite-differencing the objective.
+        ! The affine constant-schedule SGD fixture has a parameter-independent
+        ! training Hessian, so the outer HVP is available analytically.  More
+        ! general trajectories retain the typed third-derivative boundary.
         call fixture(model, options, train_x, train_target, validation_x, validation_target, status)
         call objective%initialize(model, train_x, train_target, validation_x, &
             validation_target, options, status)
         direction = [0.2_dp, -0.1_dp, 0.07_dp, -0.05_dp]
         product = 1.0_dp
         call objective%hvp(objective%parameters(), direction, product, status)
-        call check(status%code == FORTNUM_NOT_IMPLEMENTED .and. all(product == 0.0_dp), &
-            "optimizer-group outer HVP typed refusal", failures)
+        call check(status_ok(status) .and. all(ieee_is_finite(product)), &
+            "optimizer-group affine outer HVP", failures)
         product = 1.0_dp
         call objective%hvp(objective%parameters(), direction(:3), product, status)
         call check(status%code == FORTNUM_DOMAIN_ERROR .and. all(product == 0.0_dp), &
