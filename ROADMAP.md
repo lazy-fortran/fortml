@@ -19,7 +19,7 @@ The checklist currently records 345 completed and 127 open items; open rows are
 retained until their implementation, independent oracle, device/refusal
 behavior, and benchmark evidence land together.
 
-The current parity wave closes seventeen bounded contracts: chronological
+The current parity wave closes nineteen bounded contracts: chronological
 expanding/rolling validation with scorer and clone/reset metadata,
 multiclass focal-softmax value/JVP/VJP/HVP products wired through MLP and
 FortOpt objectives, RBF order-three derivative observations, implicit binary
@@ -33,8 +33,9 @@ direct or positive log-L2 coordinates, multiclass Laplace-GP hyperparameter
 HVPs, the shared trainer learning-rate schedule seam, and fixed-topology
 boosted-tree leaf objectives, mixed-observation Matérn 3/2 and 5/2 derivative-GP
 hyperparameter HVPs, and Hamiltonian vector-field VJPs. Each has an independent
-CPU oracle, a typed CUDA boundary, and a pinned `fortml-bench` record. The broad
-parity gate remains
+CPU oracle, a typed CUDA boundary, and a pinned `fortml-bench` record. The wave
+also closes finite-feature GP posterior variance/regularization JVP products
+and named PINN per-term gradient/HVP diagnostics. The broad parity gate remains
 open for the explicit rows below.
 
 ## Production-parity execution contract
