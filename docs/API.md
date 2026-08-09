@@ -155,6 +155,7 @@ repeated resident-batch evidence.
 | `radius_neighbors_regressor_t` | Closed-radius scalar weighted average | Refused across discrete neighbor-selection boundaries | Refused across discrete neighbor-selection boundaries | No |
 | `radius_neighbors_multioutput_regressor_t` | Closed-radius multi-output weighted average | Zero away from radius boundaries; boundary refusal | Zero away from radius boundaries; boundary refusal | No |
 | `glm_regression_t` | Weighted positive-response Poisson/Gamma log-link `predict` | Packed-parameter and continuous-input JVP | Packed-parameter and continuous-input VJP; value/gradient objective | No |
+| `huber_regression_t` | Weighted Huber `predict` | Packed-parameter and continuous-input JVP | Packed-parameter and continuous-input VJP; packed objective VJP | Exact fixed-branch objective HVP; typed kink refusal |
 | `pca_t` | Centered projection and reconstruction | Input JVP for a fixed fitted state | Input VJP for a fixed fitted state | Fit-time SVD derivatives are not exposed |
 | `linear_autoencoder_t` | Tied centered linear encode/decode/reconstruct, initialized from PCA | Input JVP for encode and reconstruction | No parameter VJP (weights are fixed PCA state) | No |
 | `kmeans_t` | Deterministic dense seeded k-means labels, centers, Euclidean distances, and inertia | Fixed-center input JVP away from zero distances | Fixed-center input VJP away from zero distances | Fit/assignment is discrete; zero-distance derivatives and CUDA are typed refusals |
@@ -365,6 +366,29 @@ no derivative through the SVD fit, rank decisions, sample-weight support, or
 estimator rather than a silent host fallback. Unfitted calls, malformed
 packs, nonfinite arrays, nonpositive weight mass, and shape mismatches return
 `FORTNUM_DOMAIN_ERROR`.
+
+### `fortml_huber_regression`
+
+`huber_regression_t%fit(x,y,status[,delta,l2,fit_intercept,sample_weight,
+max_iterations,tolerance])` fits a weighted multi-output linear model with
+the normalized Huber loss. `delta` is finite and strictly positive, `l2` is
+finite and nonnegative, and the intercept is excluded from the L2 penalty.
+The vector overload accepts a one-dimensional target. `sample_weight` must be
+finite, nonnegative, and have positive mass. Fitting uses bounded FortOpt
+L-BFGS-B and stores the packed coefficient block in the shared parameter
+registry contract.
+
+`huber_training_objective_t%initialize(model,x,target,delta,l2,status[,
+optimize_l2,optimize_delta,sample_weight,kink_tolerance,device_kind])` exposes
+the same objective to generic search and trainer code. Its packed vector is
+`[coefficients, l2?, delta?]`, in Fortran column-major coefficient order.
+`value_gradient`, `jvp`, and `vjp` are exact weighted products. `hvp` is exact
+for a fixed residual branch, including mixed coefficient/L2/delta blocks; it
+returns `FORTNUM_NOT_IMPLEMENTED` when any nonzero-weight residual lies within
+`kink_tolerance*max(1,delta)` of `abs(residual)=delta`. Thus callers never
+mistake a branch boundary for a smooth second derivative. A selected CUDA
+context is refused with `FORTNUM_NOT_IMPLEMENTED` until resident robust-linear
+kernels are linked; CPU never masquerades as CUDA.
 
 ### `fortml_elastic_net_regression`
 

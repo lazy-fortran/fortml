@@ -38,6 +38,18 @@ also closes finite-feature GP posterior variance/regularization JVP products
 and named PINN per-term gradient/HVP diagnostics. The broad parity gate remains
 open for the explicit rows below.
 
+The weighted Huber linear-regression slice adds `huber_regression_t` and the
+registry-backed `huber_training_objective_t`. It supports vector and
+multi-output targets, nonnegative sample weights, optional intercept and L2
+regularization, bounded FortOpt L-BFGS-B fitting, and optional packed L2 and
+delta coordinates for outer search. Value/gradient/JVP/VJP products are exact;
+the objective HVP includes mixed coefficient/L2/delta blocks on a fixed
+residual branch and returns `FORTNUM_NOT_IMPLEMENTED` at the Huber kink.
+`test_huber_regression`, `app/fortml_bench_huber_regression`, and the dedicated
+`fortml-bench` release record provide the independent finite-difference,
+adjoint, convergence, and typed CUDA-refusal evidence. Resident CUDA Huber
+kernels, quantile fitting, and derivative-through-fit remain separate gaps.
+
 ## Next production parity wave
 
 The next waves preserve the shared registry/objective/device/state contract and
@@ -1517,9 +1529,14 @@ when a lower-level primitive already exists.
   intercept / threshold parameters, analytic input and parameter JVP/VJP
   products, and explicit CPU/CUDA capability metadata. CUDA requests return
   `FORTNUM_NOT_IMPLEMENTED` until a resident ordinal kernel is linked.
-- [ ] Huber, quantile, Poisson, Gamma, ordinal-GP, multilabel, multioutput,
-  and partial-fit estimators with the shared parameter registry and
-  sample-weight contract.
+- [x] Weighted Huber vector and multi-output regression with a shared
+  parameter-registry coefficient block, optional packed L2/delta coordinates,
+  exact value/gradient/JVP/VJP products, fixed-branch mixed HVPs, bounded
+  FortOpt L-BFGS-B fitting, positive-mass sample weights, independent kink and
+  CUDA refusals, and release benchmark evidence.
+- [ ] Quantile, ordinal-GP, multilabel, multioutput partial-fit, and remaining
+  robust estimators with the shared parameter registry and sample-weight
+  contract.
 - [x] Dense k-nearest-neighbor classification with deterministic ties, uniform
   or inverse-distance voting, optional sample weights, and explicit
   nondifferentiable neighbor-selection boundaries.
