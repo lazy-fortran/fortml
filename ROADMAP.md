@@ -2647,7 +2647,9 @@ when a lower-level primitive already exists.
   transaction, and refusal oracles plus a companion benchmark. These are
   finite linear/PCA optima, not NNGP, NTK, GP-posterior, physics-consistent,
   symplectic, or Hamiltonian equivalences; those structure-aware mappings remain
-  open in WP9d.
+  open in WP9d. The clean release evidence is pinned in
+  `fortml-bench/results/MLP_PCA_INITIALIZER.md` and
+  `fortml-bench/results/mlp_pca_initializer.csv`.
 - [x] Extend dense MLP value/JVP/VJP/HVP products with linear, `tanh`, ReLU,
   tanh-approximate GELU, SiLU, ELU, softplus, fixed-slope leaky ReLU, stable
   sigmoid, and Mish activations. Independent value and central-difference
