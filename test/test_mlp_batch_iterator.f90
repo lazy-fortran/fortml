@@ -1,9 +1,13 @@
 program test_mlp_batch_iterator
     !! Independent behavioral checks for batch cursors and trainer controls.
     use fortnum_kinds, only: dp
-    use fortnum_status, only: fortnum_status_t, status_ok
+    use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_DOMAIN_ERROR, &
+        FORTNUM_NOT_IMPLEMENTED
+    use fortml_device, only: FORTML_DEVICE_CPU, FORTML_DEVICE_CUDA
     use fortml_mlp, only: mlp_t, MLP_LINEAR
     use fortml_mlp_training, only: mlp_batch_iterator_t, &
+        mlp_batch_iterator_cursor_t, mlp_batch_iterator_device_supported, &
+        mlp_batch_iterator_require_device, &
         mlp_training_options_t, &
         mlp_training_state_t, mlp_train
     implicit none
@@ -12,6 +16,7 @@ program test_mlp_batch_iterator
 
     failures = 0
     call test_iterator_oracle(failures)
+    call test_cursor_replay_oracle(failures)
     call test_gradient_accumulation_oracle(failures)
     call test_training_schedule_and_clipping(failures)
     call test_validation_restore_oracle(failures)
@@ -65,6 +70,58 @@ contains
         call iterator%initialize(0, status)
         call check(.not. status_ok(status), "invalid iterator refusal", failures)
     end subroutine test_iterator_oracle
+
+    subroutine test_cursor_replay_oracle(failures)
+        integer, intent(inout) :: failures
+        type(mlp_batch_iterator_t) :: source, replay
+        type(mlp_batch_iterator_cursor_t) :: cursor, empty_cursor
+        type(fortnum_status_t) :: status
+        integer, allocatable :: first(:), expected_next(:), actual_next(:)
+        integer :: expected_first(3), expected_second(3)
+        logical :: has_batch
+
+        expected_first = [7, 2, 5]
+        expected_second = [6, 3, 4]
+        call source%initialize(7, status, batch_size=3, shuffle=.true., seed=42)
+        call check(status_ok(status), "cursor source initialize", failures)
+        call source%reset(status)
+        call source%next_batch(first, has_batch, status)
+        call check(status_ok(status) .and. has_batch .and. &
+            all(first == expected_first), "cursor source prefix oracle", failures)
+        call source%capture(cursor, status)
+        call check(status_ok(status) .and. cursor%valid(), &
+            "capture validates complete cursor", failures)
+        call source%next_batch(expected_next, has_batch, status)
+        call check(status_ok(status) .and. has_batch .and. &
+            all(expected_next == expected_second), &
+            "cursor source suffix oracle", failures)
+
+        call replay%initialize(7, status, batch_size=3, shuffle=.true., seed=999)
+        call replay%restore(cursor, status)
+        call replay%next_batch(actual_next, has_batch, status)
+        call check(status_ok(status) .and. has_batch .and. &
+            all(actual_next == expected_second), &
+            "restored cursor reproduces shuffled suffix", failures)
+        call cursor%clear()
+        call check(.not. cursor%valid(), "cleared cursor is not restorable", failures)
+        call replay%restore(cursor, status)
+        call check(status%code == FORTNUM_DOMAIN_ERROR .and. &
+            replay%current_epoch() == 1 .and. replay%current_position() == 7, &
+            "invalid cursor refusal preserves iterator", failures)
+        call source%capture(empty_cursor, status)
+        call check(status_ok(status) .and. empty_cursor%valid(), &
+            "capture remains usable after independent refusal", failures)
+
+        call check(mlp_batch_iterator_device_supported(FORTML_DEVICE_CPU), &
+            "batch cursor CPU capability", failures)
+        call check(.not. mlp_batch_iterator_device_supported(FORTML_DEVICE_CUDA), &
+            "batch cursor CUDA capability refusal", failures)
+        call mlp_batch_iterator_require_device(FORTML_DEVICE_CPU, status)
+        call check(status_ok(status), "batch cursor CPU device contract", failures)
+        call mlp_batch_iterator_require_device(FORTML_DEVICE_CUDA, status)
+        call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
+            "batch cursor CUDA device refusal", failures)
+    end subroutine test_cursor_replay_oracle
 
     subroutine test_gradient_accumulation_oracle(failures)
         integer, intent(inout) :: failures

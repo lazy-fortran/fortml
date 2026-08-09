@@ -14,6 +14,7 @@ module fortml_mlp_training
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
         FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED, FORTNUM_CONVERGENCE_ERROR
+    use fortml_device, only: FORTML_DEVICE_CPU, FORTML_DEVICE_CUDA
     use fortml_mlp, only: mlp_t, mlp_parameter_block_t
     use fortml_mlp_schedules, only: mlp_learning_rate_schedule_t, &
         MLP_SCHEDULE_PLATEAU
@@ -352,6 +353,29 @@ module fortml_mlp_training
         integer :: sample_count = 0
     end type mlp_loss_diagnostics_t
 
+    type, public :: mlp_batch_iterator_cursor_t
+        !! Immutable-by-convention data-loader cursor for deterministic replay.
+        !!
+        !! A cursor captures the complete host-side iterator state, including
+        !! the current permutation and PRNG stream.  It is intentionally
+        !! separate from model checkpoints so data-loader replay can be tested,
+        !! forked, or handed to an outer trainer without exposing iterator
+        !! implementation details.  Construct cursors with `capture`; restore
+        !! validates the whole snapshot before changing an iterator.
+        private
+        integer :: n_samples = 0
+        integer :: batch_size = 0
+        integer :: position = 1
+        integer :: epoch_number = 0
+        integer(int64) :: shuffle_state = 1_int64
+        logical :: shuffle = .false.
+        logical :: ready = .false.
+        integer, allocatable :: order(:)
+    contains
+        procedure, public :: clear => batch_cursor_clear
+        procedure, public :: valid => batch_cursor_valid
+    end type mlp_batch_iterator_cursor_t
+
     type, public :: mlp_batch_iterator_t
         !! Deterministic row-index batches with explicit epoch boundaries.
         !!
@@ -377,6 +401,8 @@ module fortml_mlp_training
         procedure, public :: current_epoch => batch_iterator_epoch
         procedure, public :: current_position => batch_iterator_position
         procedure, public :: initialized => batch_iterator_initialized
+        procedure, public :: capture => batch_iterator_capture
+        procedure, public :: restore => batch_iterator_restore
     end type mlp_batch_iterator_t
 
     type, public :: mlp_training_objective_t
@@ -446,6 +472,8 @@ module fortml_mlp_training
     public :: mlp_train
     public :: mlp_optimize_lbfgsb
     public :: mlp_precision_name
+    public :: mlp_batch_iterator_device_supported
+    public :: mlp_batch_iterator_require_device
 
 contains
 
@@ -809,6 +837,130 @@ contains
 
         initialized = self%ready
     end function batch_iterator_initialized
+
+    subroutine batch_iterator_capture(self, cursor, status)
+        !! Capture a complete deterministic data-loader cursor.
+        class(mlp_batch_iterator_t), intent(in) :: self
+        type(mlp_batch_iterator_cursor_t), intent(out) :: cursor
+        type(fortnum_status_t), intent(out) :: status
+
+        call cursor%clear()
+        if (.not. self%ready .or. .not. allocated(self%order)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP batch iterator: capture before initialize")
+            return
+        end if
+        cursor%n_samples = self%n_samples
+        cursor%batch_size = self%batch_size
+        cursor%position = self%position
+        cursor%epoch_number = self%epoch_number
+        cursor%shuffle_state = self%shuffle_state
+        cursor%shuffle = self%shuffle
+        allocate(cursor%order, source=self%order)
+        cursor%ready = .true.
+        if (.not. cursor%valid()) then
+            call cursor%clear()
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP batch iterator: refusing invalid capture")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine batch_iterator_capture
+
+    subroutine batch_iterator_restore(self, cursor, status)
+        !! Restore a cursor transactionally without changing it on failure.
+        class(mlp_batch_iterator_t), intent(inout) :: self
+        type(mlp_batch_iterator_cursor_t), intent(in) :: cursor
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. cursor%valid()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP batch iterator: invalid cursor")
+            return
+        end if
+        if (allocated(self%order)) deallocate(self%order)
+        self%n_samples = cursor%n_samples
+        self%batch_size = cursor%batch_size
+        self%position = cursor%position
+        self%epoch_number = cursor%epoch_number
+        self%shuffle_state = cursor%shuffle_state
+        self%shuffle = cursor%shuffle
+        self%ready = cursor%ready
+        allocate(self%order, source=cursor%order)
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine batch_iterator_restore
+
+    subroutine batch_cursor_clear(self)
+        !! Return a cursor to its empty, non-restorable state.
+        class(mlp_batch_iterator_cursor_t), intent(inout) :: self
+
+        if (allocated(self%order)) deallocate(self%order)
+        self%n_samples = 0
+        self%batch_size = 0
+        self%position = 1
+        self%epoch_number = 0
+        self%shuffle_state = 1_int64
+        self%shuffle = .false.
+        self%ready = .false.
+    end subroutine batch_cursor_clear
+
+    logical function batch_cursor_valid(self) result(valid)
+        !! Validate shape, cursor bounds, and permutation values.
+        class(mlp_batch_iterator_cursor_t), intent(in) :: self
+
+        valid = self%ready
+        if (.not. valid) return
+        if (self%n_samples < 1 .or. self%batch_size < 1 .or. &
+            self%batch_size > self%n_samples) then
+            valid = .false.
+            return
+        end if
+        if (self%position < 1 .or. self%position > self%n_samples + 1) then
+            valid = .false.
+            return
+        end if
+        if (self%epoch_number < 0) then
+            valid = .false.
+            return
+        end if
+        if (self%shuffle .and. self%shuffle_state <= 0_int64) then
+            valid = .false.
+            return
+        end if
+        if (.not. allocated(self%order)) then
+            valid = .false.
+            return
+        end if
+        if (size(self%order) /= self%n_samples) then
+            valid = .false.
+            return
+        end if
+        valid = all(self%order >= 1) .and. all(self%order <= self%n_samples)
+    end function batch_cursor_valid
+
+    logical function mlp_batch_iterator_device_supported(device_kind) result(supported)
+        !! Data-loader cursors are host-owned; CUDA replay requires a resident
+        !! permutation/RNG implementation and therefore never falls back.
+        integer, intent(in) :: device_kind
+
+        supported = device_kind == FORTML_DEVICE_CPU
+    end function mlp_batch_iterator_device_supported
+
+    subroutine mlp_batch_iterator_require_device(device_kind, status)
+        !! Return the explicit CPU/CUDA cursor capability boundary.
+        integer, intent(in) :: device_kind
+        type(fortnum_status_t), intent(out) :: status
+
+        if (device_kind == FORTML_DEVICE_CPU) then
+            call status_set(status, FORTNUM_OK, "")
+        else if (device_kind == FORTML_DEVICE_CUDA) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "MLP batch iterator: CUDA-resident replay is not implemented")
+        else
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP batch iterator: invalid device kind")
+        end if
+    end subroutine mlp_batch_iterator_require_device
 
     subroutine mlp_checkpoint_clear(self)
         class(mlp_training_checkpoint_t), intent(inout) :: self
