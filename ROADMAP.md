@@ -4175,7 +4175,9 @@ trials remain visible in the result schema.
   optimizer-group multipliers. The exact first/second-moment and bias-correction
   tangents follow the production post-update scaling order, with independent
   value/gradient/JVP/VJP and zero-moment/CUDA refusal tests. The correctness-
-  gated release evidence is `fortml-bench/results/MLP_ADAM_OPTIMIZER_GROUP_HYPERGRADIENT.md`.
+  gated release evidence is
+  `fortml-bench/results/MLP_ADAM_OPTIMIZER_GROUP_HYPERGRADIENT.md` at bench
+  commit `1cbd89d` (FortML `c16d5a3`).
   Optional bounded `[logit(beta1), logit(beta2)]` coordinates now share the
   same exact recurrence and independent oracle; mini-batch and resident-CUDA
   optimizer-group state remain open.
@@ -5407,7 +5409,9 @@ checkouts before deciding that a product is unavailable.
   observation path. Named `[value, d/dx]` coefficient rows now support exact
   dense fit, prediction, joint covariance, coefficient JVP/VJP products, and
   explicit CUDA refusal; an independent dense oracle and release benchmark
-  cover the CPU contract. Higher-order, vector-field, and resident-device
+  cover the CPU contract in
+  `fortml-bench/results/GP_LINEAR_OPERATOR.md` at bench commit `e90e886`
+  (FortML `66879d1`). Higher-order, vector-field, and resident-device
   extensions remain open.
 - [ ] Add physics-consistent kernels and mean functions for linear ODE/PDE
   constraints, boundary conditions, and Green-function constructions. Include
