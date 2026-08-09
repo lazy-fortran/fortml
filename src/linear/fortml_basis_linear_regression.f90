@@ -27,6 +27,7 @@ module fortml_basis_linear_regression
         procedure, public :: predict => basis_linear_predict
         procedure, public :: predict_jvp => basis_linear_predict_jvp
         procedure, public :: predict_vjp => basis_linear_predict_vjp
+        procedure, public :: predict_hvp => basis_linear_predict_hvp
         procedure, public :: input_count => basis_linear_input_count
         procedure, public :: feature_count => basis_linear_feature_count
         procedure, public :: output_count => basis_linear_output_count
@@ -186,6 +187,83 @@ contains
             coefficient_bar)])
         call status_set(status, FORTNUM_OK, "")
     end subroutine basis_linear_predict_vjp
+
+    subroutine basis_linear_predict_hvp(self, x, u, theta_dot, x_dot, &
+            theta_hvp, x_hvp, status)
+        !! Exact HVP for the composed basis map and linear readout.
+        !!
+        !! The readout coefficient block contributes the directional feature
+        !! product.  The pipeline block combines its fixed-cotangent HVP with
+        !! a VJP of the cotangent induced by the directional coefficients.
+        class(basis_linear_regression_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), u(:, :), theta_dot(:), x_dot(:, :)
+        real(dp), intent(out) :: theta_hvp(:), x_hvp(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: features(:, :), features_dot(:, :)
+        real(dp), allocatable :: pipeline_theta_hvp(:), pipeline_x_hvp(:, :)
+        real(dp), allocatable :: pipeline_theta_bar(:), pipeline_x_bar(:, :)
+        real(dp), allocatable :: cotangent(:, :), cotangent_dot(:, :)
+        real(dp), allocatable :: coefficient_dot(:, :), coefficient_hvp(:, :)
+        integer :: n_pipeline_parameters, n_features, n_outputs, j, k
+
+        if (.not. self%fitted .or. size(x, 2) /= self%input_count() .or. &
+            size(u, 1) /= size(x, 1) .or. size(u, 2) /= self%n_outputs .or. &
+            any(shape(x_dot) /= shape(x)) .or. &
+            size(theta_dot) /= self%parameter_count() .or. &
+            size(theta_hvp) /= self%parameter_count() .or. &
+            any(shape(x_hvp) /= shape(x)) .or. &
+            any(.not. ieee_is_finite(x)) .or. any(.not. ieee_is_finite(u)) .or. &
+            any(.not. ieee_is_finite(theta_dot)) .or. any(.not. ieee_is_finite(x_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "basis linear HVP: model, direction, or shape is invalid")
+            return
+        end if
+        n_pipeline_parameters = self%pipeline%parameter_count()
+        n_features = self%feature_count()
+        n_outputs = self%n_outputs
+        allocate(features(size(x, 1), n_features), features_dot(size(x, 1), n_features))
+        allocate(coefficient_dot(n_features + 1, n_outputs), &
+            coefficient_hvp(n_features + 1, n_outputs))
+        coefficient_dot = reshape(theta_dot(n_pipeline_parameters + 1:), &
+            shape(coefficient_dot))
+        call self%pipeline%jvp(x, theta_dot(:n_pipeline_parameters), x_dot, &
+            features, features_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        coefficient_hvp = 0.0_dp
+        do k = 1, n_outputs
+            do j = 1, n_features
+                coefficient_hvp(j + 1, k) = sum(features_dot(:, j)*u(:, k))
+            end do
+        end do
+        allocate(cotangent(size(x, 1), n_features), &
+            cotangent_dot(size(x, 1), n_features))
+        cotangent = 0.0_dp; cotangent_dot = 0.0_dp
+        do k = 1, n_outputs
+            do j = 1, n_features
+                cotangent(:, j) = cotangent(:, j) + u(:, k)* &
+                    self%regressor%coef(j + 1, k)
+                cotangent_dot(:, j) = cotangent_dot(:, j) + u(:, k)* &
+                    coefficient_dot(j + 1, k)
+            end do
+        end do
+        allocate(pipeline_theta_hvp(n_pipeline_parameters), &
+            pipeline_x_hvp(size(x, 1), size(x, 2)), &
+            pipeline_theta_bar(n_pipeline_parameters), &
+            pipeline_x_bar(size(x, 1), size(x, 2)))
+        call self%pipeline%hvp(x, cotangent, theta_dot(:n_pipeline_parameters), &
+            x_dot, pipeline_theta_hvp, pipeline_x_hvp, status)
+        if (status%code /= FORTNUM_OK) return
+        call self%pipeline%vjp(x, cotangent_dot, pipeline_theta_bar, &
+            pipeline_x_bar, status)
+        if (status%code /= FORTNUM_OK) return
+        theta_hvp = 0.0_dp
+        x_hvp = pipeline_x_hvp + pipeline_x_bar
+        if (n_pipeline_parameters > 0) theta_hvp(:n_pipeline_parameters) = &
+            pipeline_theta_hvp + pipeline_theta_bar
+        theta_hvp(n_pipeline_parameters + 1:) = reshape(coefficient_hvp, &
+            [size(coefficient_hvp)])
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine basis_linear_predict_hvp
 
     integer function basis_linear_input_count(self) result(count)
         class(basis_linear_regression_t), intent(in) :: self

@@ -2045,6 +2045,11 @@ two stages without hiding their feature shape.
 `parameters` packs all basis parameters first and the column-major regression
 coefficients second. `predict_jvp` and `predict_vjp` chain exact basis and
 linear products with respect to both packed parameters and input rows.
+`predict_hvp(x,u,theta_dot,x_dot,theta_hvp,x_hvp,status)` exposes the exact
+scalar-contraction Hessian-vector product for the complete composition. It
+combines the pipeline HVP with the readout's directional feature block and
+the mixed pipeline VJP induced by directional coefficients. An independent
+finite-difference oracle is provided by `test_basis_linear_regression_hvp`.
 `set_parameters` updates the same packed state. Empty pipelines, unfitted
 models, nonfinite data, malformed packs, and shape mismatches return status
 errors.
