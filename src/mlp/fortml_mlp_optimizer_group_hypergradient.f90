@@ -53,6 +53,9 @@ module fortml_mlp_optimizer_group_hypergradient
         integer :: group_count = 0
         integer :: inner_steps = 0
         integer :: optimizer = MLP_OPTIMIZER_GROUP_OPTIMIZER
+        integer :: moment_parameter_count = 0
+        integer :: logit_beta1_index = 0
+        integer :: logit_beta2_index = 0
         integer :: log_learning_rate_index = MLP_OPTIMIZER_GROUP_LOG_LEARNING_RATE
         integer :: log_l2_index = MLP_OPTIMIZER_GROUP_LOG_L2
         integer :: first_log_multiplier_index = MLP_OPTIMIZER_GROUP_FIRST_LOG_MULTIPLIER
@@ -72,6 +75,11 @@ module fortml_mlp_optimizer_group_hypergradient
         real(dp) :: beta1 = 0.9_dp
         real(dp) :: beta2 = 0.999_dp
         real(dp) :: epsilon = 1.0e-8_dp
+        logical :: optimize_moment_parameters = .false.
+        real(dp) :: lower_logit_beta1 = -12.0_dp
+        real(dp) :: upper_logit_beta1 = 12.0_dp
+        real(dp) :: lower_logit_beta2 = -12.0_dp
+        real(dp) :: upper_logit_beta2 = 12.0_dp
         type(mlp_learning_rate_schedule_t) :: schedule
         type(mlp_optimizer_group_t), allocatable :: groups(:)
         integer :: optimizer = MLP_OPTIMIZER_GROUP_OPTIMIZER
@@ -108,6 +116,10 @@ module fortml_mlp_optimizer_group_hypergradient
         real(dp) :: log_l2 = 0.0_dp
         real(dp) :: learning_rate = 0.0_dp
         real(dp) :: l2 = 0.0_dp
+        real(dp) :: logit_beta1 = 0.0_dp
+        real(dp) :: logit_beta2 = 0.0_dp
+        real(dp) :: beta1 = 0.0_dp
+        real(dp) :: beta2 = 0.0_dp
         real(dp) :: logit_min_fraction = 0.0_dp
         real(dp) :: logit_decay_factor = 0.0_dp
         real(dp) :: min_rate_fraction = 0.0_dp
@@ -132,6 +144,9 @@ module fortml_mlp_optimizer_group_hypergradient
         real(dp) :: beta1 = 0.9_dp
         real(dp) :: beta2 = 0.999_dp
         real(dp) :: epsilon = 1.0e-8_dp
+        logical :: optimize_moment_parameters = .false.
+        real(dp) :: initial_logit_beta1 = 0.0_dp
+        real(dp) :: initial_logit_beta2 = 0.0_dp
         type(mlp_learning_rate_schedule_t) :: schedule
         logical :: initialized = .false.
     contains
@@ -243,6 +258,9 @@ contains
         self%beta1 = options%beta1
         self%beta2 = options%beta2
         self%epsilon = options%epsilon
+        self%optimize_moment_parameters = options%optimize_moment_parameters
+        self%initial_logit_beta1 = logit(options%beta1)
+        self%initial_logit_beta2 = logit(options%beta2)
         self%schedule = options%schedule
         self%layout%schedule_kind = options%schedule%kind
         self%layout%warmup_updates = options%schedule%warmup_updates
@@ -253,10 +271,17 @@ contains
         else
             self%layout%schedule_parameter_count = 2
         end if
+        self%layout%moment_parameter_count = 0
+        if (options%optimize_moment_parameters) then
+            self%layout%moment_parameter_count = 2
+            self%layout%logit_beta1_index = MLP_OPTIMIZER_GROUP_BASE_COUNT + &
+                self%layout%schedule_parameter_count + 1
+            self%layout%logit_beta2_index = self%layout%logit_beta1_index + 1
+        end if
         self%layout%first_log_multiplier_index = MLP_OPTIMIZER_GROUP_BASE_COUNT + &
-            self%layout%schedule_parameter_count + 1
+            self%layout%schedule_parameter_count + self%layout%moment_parameter_count + 1
         self%layout%parameter_count = MLP_OPTIMIZER_GROUP_BASE_COUNT + &
-            self%layout%schedule_parameter_count + n_groups
+            self%layout%schedule_parameter_count + self%layout%moment_parameter_count + n_groups
         self%initialized = .true.
         call status_set(status, FORTNUM_OK, "")
     end subroutine mlp_optimizer_group_hypergradient_initialize
@@ -340,6 +365,10 @@ contains
                     min(1.0_dp-1.0e-8_dp, max(1.0e-8_dp, self%schedule%decay_factor)) / &
                     (1.0_dp-min(1.0_dp-1.0e-8_dp, max(1.0e-8_dp, self%schedule%decay_factor))))
             end if
+        end if
+        if (self%layout%moment_parameter_count > 0) then
+            parameters(self%layout%logit_beta1_index) = self%initial_logit_beta1
+            parameters(self%layout%logit_beta2_index) = self%initial_logit_beta2
         end if
         do i = 1, self%layout%group_count
             parameters(self%layout%first_log_multiplier_index + i - 1) = &
@@ -536,6 +565,12 @@ contains
                 upper(MLP_OPTIMIZER_GROUP_LOGIT_DECAY_FACTOR) = options%upper_logit_decay_factor
             end if
         end if
+        if (adapter%layout%moment_parameter_count > 0) then
+            lower(adapter%layout%logit_beta1_index) = options%lower_logit_beta1
+            upper(adapter%layout%logit_beta1_index) = options%upper_logit_beta1
+            lower(adapter%layout%logit_beta2_index) = options%lower_logit_beta2
+            upper(adapter%layout%logit_beta2_index) = options%upper_logit_beta2
+        end if
         do i = 1, n_groups
             lower(adapter%layout%first_log_multiplier_index+i-1) = options%lower_log_multiplier
             upper(adapter%layout%first_log_multiplier_index+i-1) = options%upper_log_multiplier
@@ -561,6 +596,15 @@ contains
         result%log_l2 = parameters(2)
         result%learning_rate = exp(result%log_learning_rate)
         result%l2 = exp(result%log_l2)
+        if (adapter%layout%moment_parameter_count > 0) then
+            result%logit_beta1 = parameters(adapter%layout%logit_beta1_index)
+            result%logit_beta2 = parameters(adapter%layout%logit_beta2_index)
+            result%beta1 = sigmoid(result%logit_beta1)
+            result%beta2 = sigmoid(result%logit_beta2)
+        else
+            result%beta1 = options%beta1
+            result%beta2 = options%beta2
+        end if
         if (adapter%layout%schedule_parameter_count > 0) then
             result%logit_min_fraction = parameters(MLP_OPTIMIZER_GROUP_LOGIT_MIN_FRACTION)
             result%logit_decay_factor = parameters(MLP_OPTIMIZER_GROUP_LOGIT_DECAY_FACTOR)
@@ -592,6 +636,7 @@ contains
         real(dp), allocatable :: gradient_dot(:, :), hvp(:), scale(:), scale_dot(:, :)
         real(dp), allocatable :: first_moment(:), second_moment(:)
         real(dp), allocatable :: first_moment_dot(:, :), second_moment_dot(:, :)
+        real(dp), allocatable :: first_moment_old(:), second_moment_old(:)
         real(dp), allocatable :: adam_direction(:), adam_direction_dot(:, :)
         real(dp), allocatable :: adam_root(:), adam_denominator(:)
         real(dp), allocatable :: adam_root_dot(:, :), adam_denominator_dot(:, :)
@@ -603,6 +648,7 @@ contains
         real(dp) :: base_dot, min_dot, decay_dot, peak_dot, final_dot
         real(dp) :: raw_gradient_norm, clip_scale, norm_dot, clip_tolerance
         real(dp) :: beta1, beta2, epsilon, bias1, bias2
+        real(dp) :: beta1_dot, beta2_dot, bias1_dot, bias2_dot
         type(mlp_learning_rate_schedule_t) :: schedule
         integer :: n_model, n_outer, step, parameter_index, group_index, first, last
 
@@ -626,6 +672,7 @@ contains
         allocate(scale(n_model), scale_dot(n_model, n_outer))
         allocate(first_moment(n_model), second_moment(n_model), &
             first_moment_dot(n_model, n_outer), second_moment_dot(n_model, n_outer))
+        allocate(first_moment_old(n_model), second_moment_old(n_model))
         allocate(adam_direction(n_model), adam_direction_dot(n_model, n_outer), &
             adam_root(n_model), adam_denominator(n_model), &
             adam_root_dot(n_model, n_outer), adam_denominator_dot(n_model, n_outer))
@@ -639,6 +686,10 @@ contains
         beta1 = self%beta1
         beta2 = self%beta2
         epsilon = self%epsilon
+        if (self%optimize_moment_parameters) then
+            beta1 = sigmoid(parameters(self%layout%logit_beta1_index))
+            beta2 = sigmoid(parameters(self%layout%logit_beta2_index))
+        end if
         do group_index = 1, self%layout%group_count
             first = self%groups(group_index)%first
             last = self%groups(group_index)%last
@@ -698,13 +749,27 @@ contains
                 raw_gradient = clip_scale*raw_gradient
             end if
             if (self%layout%optimizer == MLP_OPTIMIZER_ADAM) then
+                first_moment_old = first_moment
+                second_moment_old = second_moment
                 first_moment = beta1*first_moment + (1.0_dp-beta1)*raw_gradient
                 second_moment = beta2*second_moment + (1.0_dp-beta2)*raw_gradient*raw_gradient
                 do parameter_index = 1, n_outer
+                    beta1_dot = 0.0_dp
+                    beta2_dot = 0.0_dp
+                    if (self%optimize_moment_parameters) then
+                        if (parameter_index == self%layout%logit_beta1_index) then
+                            beta1_dot = beta1*(1.0_dp-beta1)
+                        end if
+                        if (parameter_index == self%layout%logit_beta2_index) then
+                            beta2_dot = beta2*(1.0_dp-beta2)
+                        end if
+                    end if
                     first_moment_dot(:, parameter_index) = beta1*first_moment_dot(:, parameter_index) + &
-                        (1.0_dp-beta1)*gradient_dot(:, parameter_index)
+                        (1.0_dp-beta1)*gradient_dot(:, parameter_index) + &
+                        beta1_dot*(first_moment_old-raw_gradient)
                     second_moment_dot(:, parameter_index) = beta2*second_moment_dot(:, parameter_index) + &
-                        2.0_dp*(1.0_dp-beta2)*raw_gradient*gradient_dot(:, parameter_index)
+                        2.0_dp*(1.0_dp-beta2)*raw_gradient*gradient_dot(:, parameter_index) + &
+                        beta2_dot*(second_moment_old-raw_gradient*raw_gradient)
                 end do
                 bias1 = 1.0_dp-beta1**step
                 bias2 = 1.0_dp-beta2**step
@@ -717,11 +782,25 @@ contains
                 adam_denominator = adam_root+epsilon
                 adam_direction = (first_moment/bias1)/adam_denominator
                 do parameter_index = 1, n_outer
+                    beta1_dot = 0.0_dp
+                    beta2_dot = 0.0_dp
+                    if (self%optimize_moment_parameters) then
+                        if (parameter_index == self%layout%logit_beta1_index) then
+                            beta1_dot = beta1*(1.0_dp-beta1)
+                        end if
+                        if (parameter_index == self%layout%logit_beta2_index) then
+                            beta2_dot = beta2*(1.0_dp-beta2)
+                        end if
+                    end if
+                    bias1_dot = -real(step, dp)*beta1**max(0, step-1)*beta1_dot
+                    bias2_dot = -real(step, dp)*beta2**max(0, step-1)*beta2_dot
                     adam_root_dot(:, parameter_index) = 0.5_dp* &
-                        second_moment_dot(:, parameter_index)/(bias2*adam_root)
+                        (second_moment_dot(:, parameter_index)/bias2 - &
+                        second_moment*bias2_dot/(bias2*bias2))/adam_root
                     adam_denominator_dot(:, parameter_index) = adam_root_dot(:, parameter_index)
                     adam_direction_dot(:, parameter_index) = &
-                        first_moment_dot(:, parameter_index)/(bias1*adam_denominator) - &
+                        (first_moment_dot(:, parameter_index)/bias1 - &
+                        first_moment*bias1_dot/(bias1*bias1))/adam_denominator - &
                         (first_moment/bias1)*adam_denominator_dot(:, parameter_index) / &
                         (adam_denominator*adam_denominator)
                 end do
@@ -857,6 +936,22 @@ contains
                 options%beta1 < 1.0_dp .and. options%beta2 > 0.0_dp .and. &
                 options%beta2 < 1.0_dp .and. options%epsilon > 0.0_dp
             if (.not. valid) return
+            if (options%optimize_moment_parameters) then
+                valid = ieee_is_finite(options%lower_logit_beta1) .and. &
+                    ieee_is_finite(options%upper_logit_beta1) .and. &
+                    ieee_is_finite(options%lower_logit_beta2) .and. &
+                    ieee_is_finite(options%upper_logit_beta2) .and. &
+                    options%lower_logit_beta1 <= options%upper_logit_beta1 .and. &
+                    options%lower_logit_beta2 <= options%upper_logit_beta2 .and. &
+                    logit(options%beta1) >= options%lower_logit_beta1 .and. &
+                    logit(options%beta1) <= options%upper_logit_beta1 .and. &
+                    logit(options%beta2) >= options%lower_logit_beta2 .and. &
+                    logit(options%beta2) <= options%upper_logit_beta2
+                if (.not. valid) return
+            end if
+        else if (options%optimize_moment_parameters) then
+            valid = .false.
+            return
         end if
         if (options%schedule%kind == MLP_SCHEDULE_ONE_CYCLE) then
             valid = log(options%schedule%peak_rate_fraction) >= options%lower_logit_min_fraction .and. &

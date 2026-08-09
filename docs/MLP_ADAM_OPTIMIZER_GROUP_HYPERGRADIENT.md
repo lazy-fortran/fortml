@@ -13,9 +13,13 @@ trajectory.  The packed outer coordinates remain
 and schedule coordinates, when active, are inserted before the group
 multipliers as described in
 [`MLP_OPTIMIZER_GROUP_HYPERGRADIENT.md`](MLP_OPTIMIZER_GROUP_HYPERGRADIENT.md).
-The Adam moment coefficients are explicit trajectory metadata rather than
-packed coordinates in this ABI. Use `fortml_mlp_adam_hypergradient` when
-optimizing `beta1` and `beta2` themselves.
+The Adam moment coefficients are explicit trajectory metadata by default. Set
+`options%optimize_moment_parameters = .true.` to append unconstrained
+`[logit(beta1), logit(beta2)]` after any schedule coordinates and before the
+group multipliers; the metadata exposes their indices and bounded logits. This
+branch propagates the moment, bias-correction, value, JVP, and VJP tangents
+exactly. Use `fortml_mlp_adam_hypergradient` when a standalone Adam objective
+without optimizer groups is preferred.
 
 Each update computes the regularized MSE gradient, updates Adam's first and
 second moments with bias correction, and then applies the group's multiplier to
@@ -37,6 +41,7 @@ options%optimizer = MLP_OPTIMIZER_GROUP_ADAM
 options%beta1 = 0.9_dp
 options%beta2 = 0.999_dp
 options%epsilon = 1.0e-8_dp
+options%optimize_moment_parameters = .true. ! append beta-logit coordinates
 call objective%initialize(model, train_x, train_target, validation_x, &
     validation_target, options, status)
 call objective%value_gradient(objective%parameters(), value, gradient, status)

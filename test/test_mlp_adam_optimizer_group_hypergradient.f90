@@ -82,6 +82,7 @@ program test_mlp_adam_optimizer_group_hypergradient
         call check(status_ok(status) .and. abs(fd-g(i)) < 2.0e-7_dp, &
             "Adam group central-difference gradient", failures)
     end do
+    call test_optimized_moments(model, options, x, target, vx, vtarget, failures)
     if (failures > 0) then
         write (*, '(a,i0)') "FAIL grouped Adam recurrence cases: ", failures
         error stop 1
@@ -89,6 +90,43 @@ program test_mlp_adam_optimizer_group_hypergradient
     write (*, '(a)') "PASS grouped Adam independent recurrence oracle"
 
 contains
+
+    subroutine test_optimized_moments(model, options, x, target, vx, vtarget, failures)
+        type(mlp_t), intent(inout) :: model
+        type(mlp_optimizer_group_hypergradient_options_t), intent(inout) :: options
+        real(dp), intent(in) :: x(:, :), target(:, :), vx(:, :), vtarget(:, :)
+        integer, intent(inout) :: failures
+        type(mlp_optimizer_group_hypergradient_objective_t) :: objective
+        type(fortnum_status_t) :: status
+        real(dp), allocatable :: p(:), g(:), plus(:), minus(:)
+        real(dp) :: value, value_plus, value_minus, expected, fd
+        integer :: i
+
+        options%optimize_moment_parameters = .true.
+        call model%set_parameters([0.25_dp, 0.1_dp], status)
+        call objective%initialize(model, x, target, vx, vtarget, options, status)
+        call check(status_ok(status) .and. objective%parameter_count() == 6, &
+            "optimized Adam moment layout", failures)
+        p = objective%parameters()
+        allocate(g(size(p)), plus(size(p)), minus(size(p)))
+        call objective%value_gradient(p, value, g, status)
+        expected = independent_value_with_moments(p, x(:, 1), target(:, 1), &
+            vx(:, 1), vtarget(:, 1), options%steps, [0.25_dp, 0.1_dp])
+        call check(status_ok(status) .and. abs(value-expected) < 2.0e-13_dp, &
+            "optimized Adam moment value", failures)
+        do i = 1, size(p)
+            plus = p
+            minus = p
+            plus(i) = plus(i)+2.0e-6_dp
+            minus(i) = minus(i)-2.0e-6_dp
+            call objective%value_gradient(plus, value_plus, g, status)
+            call objective%value_gradient(minus, value_minus, g, status)
+            fd = (value_plus-value_minus)/(4.0e-6_dp)
+            call objective%value_gradient(p, value, g, status)
+            call check(status_ok(status) .and. abs(fd-g(i)) < 3.0e-7_dp, &
+                "optimized Adam moment gradient", failures)
+        end do
+    end subroutine test_optimized_moments
 
     real(dp) function independent_value(p, x, y, vx, vy, steps, scales, theta0) result(value)
         real(dp), intent(in) :: p(:), x(:), y(:), vx(:), vy(:), scales(:), theta0(:)
@@ -119,6 +157,47 @@ contains
         prediction = theta(1)*vx+theta(2)
         value = 0.5_dp*sum((prediction-vy)**2)/real(size(vx), dp)
     end function independent_value
+
+    real(dp) function independent_value_with_moments(p, x, y, vx, vy, steps, theta0) result(value)
+        real(dp), intent(in) :: p(:), x(:), y(:), vx(:), vy(:), theta0(:)
+        integer, intent(in) :: steps
+        real(dp) :: theta(2), m(2), v(2), grad(2), residual(size(x))
+        real(dp) :: lr, l2, beta1, beta2, eps, b1, b2, direction(2)
+        real(dp) :: prediction(size(vx)), scales(2)
+        integer :: step
+
+        lr = exp(p(1))
+        l2 = exp(p(2))
+        beta1 = sigmoid(p(3))
+        beta2 = sigmoid(p(4))
+        scales = exp(p(5:6))
+        eps = 1.0e-7_dp
+        theta = theta0
+        m = 0.0_dp
+        v = 0.0_dp
+        do step = 1, steps
+            residual = theta(1)*x+theta(2)-y
+            grad(1) = sum(residual*x)/real(size(x), dp)+l2*theta(1)
+            grad(2) = sum(residual)/real(size(x), dp)+l2*theta(2)
+            m = beta1*m+(1.0_dp-beta1)*grad
+            v = beta2*v+(1.0_dp-beta2)*grad*grad
+            b1 = 1.0_dp-beta1**step
+            b2 = 1.0_dp-beta2**step
+            direction = (m/b1)/(sqrt(v/b2)+eps)
+            theta = theta-lr*scales*direction
+        end do
+        prediction = theta(1)*vx+theta(2)
+        value = 0.5_dp*sum((prediction-vy)**2)/real(size(vx), dp)
+    end function independent_value_with_moments
+
+    real(dp) function sigmoid(value) result(output)
+        real(dp), intent(in) :: value
+        if (value >= 0.0_dp) then
+            output = 1.0_dp/(1.0_dp+exp(-value))
+        else
+            output = exp(value)/(1.0_dp+exp(value))
+        end if
+    end function sigmoid
 
     subroutine check(condition, label, failures)
         logical, intent(in) :: condition

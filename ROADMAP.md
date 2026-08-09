@@ -21,7 +21,7 @@ boosted-tree partial-dependence/ICE, learned basis fan-in, fixed-full-batch
 SGD clipping hypergradient, and fixed-shape Gamma-GP likelihood slices.
 The broad parity
 gate is still open, so this work does not move or recreate that tag.
-The checklist currently records 414 completed and 149 open items. Open rows are
+The checklist currently records 416 completed and 147 open items. Open rows are
 retained until their implementation, independent oracle, device/refusal
 behavior, and benchmark evidence land together.
 
@@ -4171,6 +4171,14 @@ trials remain visible in the result schema.
   central-difference/adjoint tests. Mini-batch, schedules, stochastic state,
   and resident CUDA Adam remain explicit refusals until their state derivatives
   and reproducibility contracts land.
+- [x] Add grouped coupled-L2 Adam trajectory hypergradients with packed
+  optimizer-group multipliers. The exact first/second-moment and bias-correction
+  tangents follow the production post-update scaling order, with independent
+  value/gradient/JVP/VJP and zero-moment/CUDA refusal tests. The correctness-
+  gated release evidence is `fortml-bench/results/MLP_ADAM_OPTIMIZER_GROUP_HYPERGRADIENT.md`.
+  Optional bounded `[logit(beta1), logit(beta2)]` coordinates now share the
+  same exact recurrence and independent oracle; mini-batch and resident-CUDA
+  optimizer-group state remain open.
 - [x] Add the exact fixed full-batch RMSprop trajectory hypergradient objective
   over `[log(learning_rate), log(l2), decay, log(epsilon), momentum]`, including
   centered and uncentered square/mean/momentum state sensitivities, JVP/VJP
@@ -5395,9 +5403,12 @@ checkouts before deciding that a product is unavailable.
 
 #### WP9c: physics-consistent and symplectic GPs
 
-- [ ] Generalize derivative observations from coordinate gradients to registered
-  linear differential operators. The operator registry provides value, adjoint,
-  and mixed-operator covariance products and rejects unsupported smoothness.
+- [x] Add a bounded first-order registered linear-differential-operator GP
+  observation path. Named `[value, d/dx]` coefficient rows now support exact
+  dense fit, prediction, joint covariance, coefficient JVP/VJP products, and
+  explicit CUDA refusal; an independent dense oracle and release benchmark
+  cover the CPU contract. Higher-order, vector-field, and resident-device
+  extensions remain open.
 - [ ] Add physics-consistent kernels and mean functions for linear ODE/PDE
   constraints, boundary conditions, and Green-function constructions. Include
   Ghosttasking and Monge-GP prototypes behind explicit experimental modules.
