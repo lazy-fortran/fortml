@@ -201,6 +201,11 @@ FortAD/FortSym reference products until their device graph is complete.
 
 `linear_regression_t` is the stable dense baseline: sample rows, feature
 columns, output columns, SVD fitting, optional intercept, and ridge penalty.
+`weighted_ols_regression_t` is the unregularized weighted companion: it keeps
+the same row/column and packed-state conventions while validating finite,
+nonnegative sample weights and exposing fixed-fit prediction JVP/VJP products.
+Its CUDA method is an explicit typed refusal until a resident dense solve is
+available.
 `ridge_regression_t` adds weighted SVD fitting with an explicit packed state;
 `elastic_net_regression_t` adds weighted multi-output lasso/elastic-net fitting
 through deterministic coordinate descent. Both estimators expose the same

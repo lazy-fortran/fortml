@@ -164,6 +164,7 @@ repeated resident-batch evidence.
 | Type | Value or prediction | JVP | VJP or gradient | HVP |
 | --- | --- | --- | --- | --- |
 | `linear_regression_t` | `predict` | Free `linear_predict_jvp` | Free `linear_predict_vjp` | No |
+| `weighted_ols_regression_t` | Weighted `predict` | Packed-parameter and continuous-input JVP | Packed-parameter and continuous-input VJP | No |
 | `ridge_regression_t` | Weighted `predict` | Packed-parameter and continuous-input JVP | Packed-parameter and continuous-input VJP | No |
 | `elastic_net_regression_t` | Weighted `predict` | Packed-parameter and continuous-input JVP | Packed-parameter and continuous-input VJP | No |
 | `linear_svr_regression_t` | Weighted epsilon-insensitive `predict` | Packed-parameter and continuous-input JVP | Packed-parameter and continuous-input VJP; objective value/gradient | No |
@@ -348,6 +349,33 @@ The free procedures
 `linear_predict_vjp(coef,x,u,coef_bar,x_bar[,fit_intercept])` operate on an
 explicit coefficient array. They do not return a status object, so all arrays
 must have the model shapes described above.
+
+### `fortml_weighted_ols`
+
+`weighted_ols_regression_t%fit(x,y,status[,fit_intercept,sample_weight])`
+fits a deterministic dense weighted ordinary-least-squares model for a vector
+or matrix target. Inputs use `(n_samples,n_features)` row semantics and
+targets use `(n_samples,n_outputs)`; the vector overload accepts a
+one-dimensional target. The default includes an intercept. `sample_weight`
+must be finite, nonnegative, have one entry per sample, and have positive total
+mass. The solve is the shared weighted SVD least-squares kernel with zero
+regularization, so rank-deficient designs receive a deterministic minimum-norm
+solution. The estimator stores only its fitted coefficient matrix.
+
+`predict(x,y,status)` has vector and matrix forms. `coefficients()` returns a
+copy, `parameters()` flattens the coefficient matrix in Fortran column-major
+order, and `set_parameters(values,status)` updates the fixed prediction state
+after checking packed size and finiteness. `parameter_count()`,
+`feature_count()`, `output_count()`, `fit_intercept()`, and `fitted()` expose
+metadata.
+
+`predict_jvp(x,theta_dot,x_dot,y,y_dot,status)` (also `jvp`) and
+`predict_vjp(x,y_bar,theta_bar,x_bar,status)` (also `vjp`) provide exact
+fixed-fit products with respect to packed coefficients and continuous inputs.
+They hold the fitted solve, sample weights, and intercept policy fixed; there
+is no derivative through fitting. `device_supported(kind)` reports CPU only,
+and `predict_device` returns `FORTNUM_NOT_IMPLEMENTED` for CUDA rather than
+silently falling back to a host execution.
 
 ### `fortml_ridge_regression`
 
