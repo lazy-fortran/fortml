@@ -123,6 +123,29 @@ benchmark row never promotes an implementation that bypasses the shared
 objective or hides a host fallback. The open checklist below is the source of
 truth for which rows have reached each stage.
 
+## Production parity closure map
+
+This is the clean-break target for the remaining work. It is intentionally
+broader than the currently implemented estimator inventory; each item needs a
+public state object, an independent behavioral oracle, a derivative-capability
+row, a persistence contract, a device result, and a benchmark before it can be
+marked complete.
+
+| Area | Complete target surface | Required production details still audited as gaps |
+| --- | --- | --- |
+| Classification | One state protocol for binary, multinomial, OVR, OVO, multilabel, classifier chains, ordinal, multioutput, calibrated, Naive Bayes, LDA/QDA, linear/kernel/one-class SVM, neighbors, trees, forests, bagging, AdaBoost, histogram/XGBoost/LightGBM, and neural/GP heads. | Sorted arbitrary labels, class/sample weights, thresholds, ties, `decision_function`, `predict_proba`/`predict_log_proba`, `score`, `partial_fit`, warm starts, cloning, schema migration, malformed-batch rollback, and fixed-topology derivative refusals. |
+| Gaussian processes | ARD/RBF, Matérn, periodic, locally-periodic, rational-quadratic, cosine, polynomial, linear, constant, white-noise, spectral-mixture, change-point, sums/products, user, neural/NTK, graph, physics, and operator-valued kernels with value, derivative, Hessian, linear-operator, and vector-field observations. | Batched/multitask shapes, mean/prior/constraint registries, exact/lazy/matrix-free/CG, Laplace, SVGP, SKI/KISS-GP, local/deep/fantasy updates, derivative-through-fit products, natural gradients, and resident GPU solves. |
+| Neural modules | A single module tree for dense, residual, convolution/pooling, normalization, embedding, recurrent/GRU/LSTM, attention/transformer, graph, neural operator, autoencoder/VAE/BNN, HNN/LNN/SympNet/PINN, and physics-consistent blocks. | Named paths, buffers/aliases/tied/frozen blocks, train/eval state, shape inference, deterministic flattening, serialization, forward/reverse/higher products, checkpointing, rematerialization, mixed precision, distributed state, and resident CUDA execution. |
+| Training and HPO | One trainer and parameter registry for SGD/Nesterov, Adam/AdamW, RMSprop, Adagrad, AMSGrad, RAdam, Adafactor, Lion, schedules, validation, early stopping, clipping, accumulation, EMA, callbacks, and FortOpt L-BFGS-B. | Exact trajectory and implicit products through every smooth coordinate, deterministic loader/RNG/checkpoint replay, optimizer-group routing, AMP overflow recovery, distributed reductions, multistart/pruning, and matched optimizer/performance curves. |
+| Bases and pipelines | Interchangeable polynomial/interaction, spline, Fourier/random-Fourier, radial/Chebyshev, GP/NNGP/NTK, PCA, autoencoder, imputation, encoding, scaling, physics, horizontal/sequential/conditional/residual/fan-out/fan-in/DAG maps. | Named feature/schema paths, sparse layouts, leakage guards, fold-local state, parameter offsets, graph persistence, cross-validation cloning, transform JVP/VJP/HVP products, and static CPU/CUDA/OpenACC lowering. |
+| Trees and boosting | Exact/histogram/quantile growth with missing/categorical/monotonic/interaction policies, ranking/survival/AFT, DART/GOSS/EFB, staged/sliced/warm-start state, SHAP/contributions, and XGBoost/LightGBM-compatible persistence. | Pair/group metrics, validation callbacks, distributed workers, split/topology boundaries, SHAP interactions, resident histogram/sketch/prediction kernels, deterministic reductions, and matched external fixtures. |
+| Devices and ecosystem | CPU, resident CUDA, OpenACC, FortSym-generated fixed algebra, FortAD products, model cards, state dictionaries, deployment manifests, and matched scikit-learn/PyTorch/JAX/GPyTorch/GPflow/Flux/Lux/XGBoost/LightGBM tiers. | No hidden host fallback; complete transfer/workspace/memory/precision accounting; generated capability matrix; compiler/architecture provenance; clean refusal rows; and reproducible compile, warmup, steady-state, throughput, convergence, and energy measurements. |
+
+The clean-break policy permits replacing incomplete public interfaces. A new
+API may therefore make state ownership, parameter paths, derivative products,
+device placement, and persistence explicit rather than preserving an older
+ambiguous signature. Compatibility shims are not a completion criterion.
+
 ## 2026-08 parity expansion backlog
 
 This backlog makes the requested scikit-learn/PyTorch/JAX/GPyTorch/XGBoost/
