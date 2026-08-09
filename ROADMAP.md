@@ -335,18 +335,19 @@ open; see [`docs/CONTRASTIVE_LOSS.md`](docs/CONTRASTIVE_LOSS.md).
 
 | Compiler | Command | Result |
 | --- | --- | --- |
-| GNU Fortran | `fo` | Static build, all 277 behavioral tests, and lint passed at the current integrated FortML/FortAD-main revisions (621 modules, 937 build units). The compiler still emits non-fatal array-temporary warnings; see [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
-| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded older compiler lane. The checked-in NVIDIA log predates the current 277-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
+| GNU Fortran | `fo` | Static build, all 278 behavioral tests, and lint passed at the current integrated FortML/FortAD-main revisions (624 modules, 939 build units). The compiler still emits non-fatal array-temporary warnings; see [`verification/fortml-gfortran.txt`](verification/fortml-gfortran.txt). |
+| NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded older compiler lane. The checked-in NVIDIA log predates the current 278-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
-The weighted OLS, deterministic linear-SGD, and scalar Lagrangian-MLP slices
-are now included in the fresh whole-repository gate below. Their focused
+The weighted OLS, deterministic linear-SGD, scalar Lagrangian-MLP, and PINN
+structure-aware GP slices are now included in the fresh whole-repository gate
+below. Their focused
 independent tests and release applications pass; the Lagrangian lane adds
 analytic state Hessians, a mass-matrix singularity refusal, and an explicit
 CUDA boundary.
 
 The checked-in GNU compiler log is the fresh 2026-08-09 run against FortML code
-revision `497f0e8` (including scalar Lagrangian MLP, deterministic linear SGD,
+revision `6e8bedc` (including PINN structure-aware GP, scalar Lagrangian MLP, deterministic linear SGD,
 weighted OLS, weighted Bayesian ridge posterior, classifier-chain, weighted Huber, rational-
 quadratic and cosine derivative-GP, cubic-spline basis, and
 structure-aware MLP-GP
@@ -398,7 +399,7 @@ attributions, and model-agnostic trainer validation diagnostics.
 The build emits non-fatal GNU
 array-temporary warnings in FortFront query/generator calls, existing GP
 benchmark boundaries, variational-GP batch conversions, and basis-pipeline
-shape conversions. They are isolated to array construction; all 277 behavioral
+shape conversions. They are isolated to array construction; all 278 behavioral
 tests pass. Lint has zero unused-import findings and the full `fo` lint stage
 passes despite the non-fatal compiler warning corpus. The independent CUDA gate additionally covers the
 resident dense-affine value/JVP/VJP path and its single-layer MSE update with
@@ -407,7 +408,7 @@ compiler coverage remains an
 explicit older-build result.
 
 The checked-in evidence is maintained on the clean FortML-bench revision
-`51b8f1c`; each CSV records the exact clean benchmark revision used to produce
+`9daf654`; each CSV records the exact clean benchmark revision used to produce
 its rows (older CSVs retain their historical provenance),
 the trainer-checkpoint, unfactored-Adafactor, binary-objective,
 multiclass-calibration, variational-multiclass-GP, PINN/physics-objective,
