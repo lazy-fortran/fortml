@@ -2039,6 +2039,16 @@ when a lower-level primitive already exists.
   `fortml-bench/results/robust_gp_poisson_products.csv` release lane. Exact
   evidence, hyperparameter-through-refit products, scalable inference, and
   resident CUDA remain open.
+- [x] Add the fixed-latent Student-t observation likelihood seam in
+  `student_t_likelihood_t`. Stable `[log(scale),log(nu)]` coordinates provide
+  normalized aggregate value, gradient, JVP, VJP, and HVP products; the
+  negative-log-likelihood object exposes a transactional FortOpt context for
+  bounded L-BFGS-B. `test_student_t_likelihood` uses an independent scalar
+  density finite-difference oracle, and
+  `fortml-bench/results/GP_STUDENT_T_LIKELIHOOD.md` records the CPU products,
+  optimizer callback, and typed CUDA refusal. This is fixed-latent only;
+  derivatives through GP modes, covariance factors, and resident CUDA remain
+  open.
 - [x] Add a locally-periodic kernel with a four-coordinate logarithmic
   parameter registry, analytic value/input/parameter products, exact-GP
   integration, coincident-point limits, an independent oracle, and typed

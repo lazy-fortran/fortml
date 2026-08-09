@@ -4515,6 +4515,20 @@ optimizer oracle is `test_gp_ordinal_classification_hyperparameters`, and the
 design note is
 [`docs/GP_ORDINAL_CLASSIFICATION.md`](GP_ORDINAL_CLASSIFICATION.md).
 
+### `fortml_student_t_likelihood`
+
+`student_t_likelihood_t` is a fixed-latent Student-t observation likelihood
+with unconstrained `[log(scale), log(nu)]` coordinates. The free procedures
+`student_t_log_likelihood_value`, `..._gradient`, `..._jvp`, `..._vjp`, and
+`..._hvp` return normalized aggregate log-density products. The object
+`value_gradient` method returns the negative log likelihood and
+`fortopt(objective,status)` creates a FortOpt-compatible context for bounded
+L-BFGS-B. Updates are transactional. This is a CPU reference path; CUDA
+initialization returns `FORTNUM_NOT_IMPLEMENTED` until resident special
+functions and latent batches are linked. See
+[`docs/GP_STUDENT_T_LIKELIHOOD.md`](GP_STUDENT_T_LIKELIHOOD.md) and
+`test_student_t_likelihood`.
+
 ### `fortml_student_t_process`
 
 `student_t_process_t` is a dense scalar Student-t process regression baseline.
