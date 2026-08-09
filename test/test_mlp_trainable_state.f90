@@ -34,6 +34,7 @@ contains
         real(dp), allocatable :: y(:, :), y_frozen(:, :), dy(:, :), dtheta(:)
         real(dp), allocatable :: u(:, :), dx(:, :)
         real(dp), allocatable :: gradient(:), frozen_gradient(:), x_bar(:, :)
+        real(dp), allocatable :: parameter_hvp(:), x_hvp(:, :)
         logical, allocatable :: mask(:)
         integer :: first, last
         logical :: found
@@ -45,7 +46,8 @@ contains
         call check(status_ok(status), "load deterministic parameters", failures)
 
         allocate(y(2, 1), y_frozen(2, 1), dy(2, 1), dtheta(7), gradient(7), &
-            frozen_gradient(7), x_bar(2, 1), u(2, 1), dx(2, 1))
+            frozen_gradient(7), x_bar(2, 1), u(2, 1), dx(2, 1), &
+            parameter_hvp(7), x_hvp(2, 1))
         u = 1.0_dp
         dx = 0.0_dp
         call model%predict(x, y, status)
@@ -80,11 +82,17 @@ contains
         call model%jvp(x, dtheta, dx, y_frozen, dy, status)
         call check(status_ok(status) .and. maxval(abs(dy)) == 0.0_dp, &
             "frozen JVP ignores selected direction", failures)
+        call model%hvp(x, u, dtheta, dx, parameter_hvp, x_hvp, status)
+        call check(status_ok(status) .and. maxval(abs(parameter_hvp(1:2))) == 0.0_dp, &
+            "frozen HVP ignores selected direction", failures)
         call model%set_trainable("layer_1.weight", .true., status)
         call check(status_ok(status), "unfreeze named weight block", failures)
         call model%jvp(x, dtheta, dx, y_frozen, dy, status)
         call check(status_ok(status) .and. maxval(abs(dy)) > 1.0e-12_dp, &
             "unfrozen JVP restores selected direction", failures)
+        call model%hvp(x, u, dtheta, dx, parameter_hvp, x_hvp, status)
+        call check(status_ok(status) .and. maxval(abs(parameter_hvp)) > 1.0e-12_dp, &
+            "unfrozen HVP restores selected direction", failures)
 
         call model%parameter_range("layer_1.weight", first, last, found)
         call check(found .and. first == 1 .and. last == 2, &
