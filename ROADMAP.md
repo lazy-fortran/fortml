@@ -4820,6 +4820,11 @@ checkouts before deciding that a product is unavailable.
   scalar MLP, analytic reverse-over-forward Hessian path, independent
   finite-difference/adjoint oracle, and typed CUDA refusal are documented in
   `docs/LAGRANGIAN_MLP.md` and `test_lagrangian_mlp`.
+- [x] Add an exact forward tangent for one separable velocity-Verlet step via
+  `hamiltonian_mlp_t%leapfrog_jvp`. The product differentiates packed
+  potential/kinetic parameters and the initial state through all three split
+  stages using the MLP HVP path, with an independent central-difference oracle
+  and a typed nonseparable/general-mode refusal in `test_hamiltonian_mlp`.
 - [ ] Add SympNet and symplectic recurrent map variants with architecture-
   specific composition certificates and a testable symplectic Jacobian. A
   generating-function certificate is required only for an architecture that

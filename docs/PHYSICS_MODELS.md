@@ -31,6 +31,15 @@ products against central differences, the VJP dot-product identities, general
 state/parameter JVPs, and the separable finite-difference Jacobian's
 symplectic-form defect and reversibility.
 
+For a separable model, `leapfrog_jvp(state,dtheta,dstate,step,next_state,
+dnext_state,status)` differentiates the same velocity-Verlet map in one exact
+forward tangent. The three split stages call the MLP reverse-over-forward HVP
+product, so `dnext_state` contains both packed-parameter and initial-state
+directions without a finite-difference fallback. The integration step is a
+fixed hyperparameter in this bounded API; a step-size tangent and general
+Hamiltonian implicit map are separate contracts. General mode returns a typed
+`FORTNUM_NOT_IMPLEMENTED` refusal and does not silently execute a host map.
+
 The Hamiltonian model has canonical coordinates and does not learn a Poisson
 tensor or an implicit integrator. `linear_autoencoder_t` is likewise only the exact
 tied, centered PCA reconstruction seam. It is not a nonlinear or physics

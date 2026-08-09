@@ -2155,6 +2155,12 @@ place the potential network before the kinetic network. `energy_jvp` and
 `energy_vjp` differentiate with respect to both state and packed parameters.
 `vector_field_jvp` supplies the corresponding mixed product. `leapfrog` is an
 explicit velocity-Verlet split map and is symplectic for the separable model.
+`leapfrog_jvp(state,dtheta,dstate,step,next_state,dnext_state,status)` returns
+the exact tangent of that map with respect to packed model parameters and the
+initial state. It propagates each split stage through the MLP HVP product;
+`step` is fixed for this product. General Hamiltonians retain the typed
+`FORTNUM_NOT_IMPLEMENTED` refusal because an implicit symplectic solve is not
+implemented.
 `vector_field_vjp(state,field_bar,parameter_bar,state_bar,status)` returns the
 exact reverse product for the canonical field, namely the gradient of
 `dot_product(field_bar,vector_field)` with respect to packed parameters and

@@ -13,6 +13,7 @@ program test_hamiltonian_mlp
     call test_vector_field_vjp(failures)
     call test_general_products(failures)
     call test_symplectic_leapfrog(failures)
+    call test_symplectic_leapfrog_jvp(failures)
     call test_refusal(failures)
     if (failures /= 0) then
         write (error_unit, '(i0,a)') failures, " Hamiltonian MLP test(s) failed"
@@ -304,6 +305,66 @@ contains
             failures = failures + 1
         end if
     end subroutine test_symplectic_leapfrog
+
+    subroutine test_symplectic_leapfrog_jvp(failures)
+        integer, intent(inout) :: failures
+        type(hamiltonian_mlp_t) :: model
+        type(fortnum_status_t) :: status
+        real(dp) :: state(1, 2), dstate(1, 2), mapped(1, 2), dmapped(1, 2)
+        real(dp) :: state_plus(1, 2), state_minus(1, 2)
+        real(dp) :: forward(1, 2), recovered(1, 2)
+        real(dp) :: theta(14), dtheta(14), theta_plus(14), theta_minus(14)
+        real(dp) :: h, step, error
+        integer :: i
+        real(dp), allocatable :: general_theta(:), general_dtheta(:)
+        real(dp), allocatable :: general_mapped(:, :), general_dmapped(:, :)
+
+        call make_model(model, status)
+        theta = model%parameters()
+        dtheta = [(0.005_dp*real(i, dp), i=1, size(theta))]
+        state = reshape([0.21_dp, -0.32_dp], shape(state))
+        dstate = reshape([-0.14_dp, 0.09_dp], shape(dstate))
+        step = 0.061_dp
+        call model%leapfrog_jvp(state, dtheta, dstate, step, mapped, dmapped, status)
+        call model%leapfrog(state, step, forward, status)
+        h = 1.0e-6_dp
+        theta_plus = theta + h*dtheta
+        theta_minus = theta - h*dtheta
+        state_plus = state + h*dstate
+        state_minus = state - h*dstate
+        call model%set_parameters(theta_plus, status)
+        call model%leapfrog(state_plus, step, forward, status)
+        call model%set_parameters(theta_minus, status)
+        call model%leapfrog(state_minus, step, recovered, status)
+        call model%set_parameters(theta, status)
+        error = maxval(abs(dmapped - (forward - recovered)/(2.0_dp*h)))
+        if (.not. status_ok(status) .or. error > 3.0e-7_dp) then
+            write (error_unit, '(a,es12.4)') &
+                "FAIL [hamiltonian-leapfrog-jvp] finite difference=", error
+            failures = failures + 1
+        end if
+        call model%leapfrog(state, step, forward, status)
+        if (.not. status_ok(status) .or. maxval(abs(mapped - forward)) > 2.0e-14_dp) then
+            write (error_unit, '(a)') &
+                "FAIL [hamiltonian-leapfrog-jvp] primal mismatch"
+            failures = failures + 1
+        end if
+
+        call model%initialize_general(1, [2, 3, 1], status, initialization_seed=53)
+        allocate(general_theta(model%parameter_count()), &
+            general_dtheta(model%parameter_count()), general_mapped(1, 2), &
+            general_dmapped(1, 2))
+        general_theta = model%parameters()
+        general_dtheta = [(0.003_dp*real(i, dp), i=1, size(general_theta))]
+        call model%leapfrog_jvp(state, general_dtheta, dstate, step, &
+            general_mapped, general_dmapped, status)
+        if (status%code /= FORTNUM_NOT_IMPLEMENTED .or. &
+                maxval(abs(general_dmapped)) /= 0.0_dp) then
+            write (error_unit, '(a)') &
+                "FAIL [hamiltonian-leapfrog-jvp] general refusal"
+            failures = failures + 1
+        end if
+    end subroutine test_symplectic_leapfrog_jvp
 
     subroutine test_refusal(failures)
         integer, intent(inout) :: failures

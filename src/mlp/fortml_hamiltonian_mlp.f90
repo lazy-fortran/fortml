@@ -35,6 +35,7 @@ module fortml_hamiltonian_mlp
         procedure, public :: vector_field_jvp => hamiltonian_mlp_vector_field_jvp
         procedure, public :: vector_field_vjp => hamiltonian_mlp_vector_field_vjp
         procedure, public :: leapfrog => hamiltonian_mlp_leapfrog
+        procedure, public :: leapfrog_jvp => hamiltonian_mlp_leapfrog_jvp
         procedure, public :: coordinate_count => hamiltonian_mlp_coordinate_count
         procedure, public :: is_general => hamiltonian_mlp_is_general
         procedure, public :: potential_model => hamiltonian_mlp_potential_model
@@ -615,6 +616,117 @@ contains
         next_state(:, 1:nq) = q_next
         next_state(:, nq + 1:2*nq) = p_half - 0.5_dp*step*gq
     end subroutine hamiltonian_mlp_leapfrog
+
+    subroutine hamiltonian_mlp_leapfrog_jvp(self, state, dtheta, dstate, step, &
+            next_state, dnext_state, status)
+        !! Exact tangent product for one separable velocity-Verlet step.
+        !!
+        !! The tangent follows the three split updates and differentiates the
+        !! potential/kinetic gradients with the MLP reverse-over-forward HVP.
+        !! It therefore covers both packed parameters and the input state
+        !! without finite differences.  ``step`` is a fixed integration
+        !! hyperparameter; a step-size tangent is deliberately not part of
+        !! this bounded contract yet.
+        class(hamiltonian_mlp_t), intent(in) :: self
+        real(dp), intent(in) :: state(:, :), dtheta(:), dstate(:, :), step
+        real(dp), intent(out) :: next_state(:, :), dnext_state(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: q(:, :), p(:, :), dq(:, :), dp_state(:, :)
+        real(dp), allocatable :: q_next(:, :), p_half(:, :), dq_next(:, :)
+        real(dp), allocatable :: dp_half(:, :)
+        real(dp), allocatable :: one(:, :), gq(:, :), dgq(:, :)
+        real(dp), allocatable :: gp(:, :), dgp(:, :), gq_next(:, :)
+        real(dp), allocatable :: dgq_next(:, :)
+        real(dp), allocatable :: potential_bar(:), potential_hvp(:)
+        real(dp), allocatable :: kinetic_bar(:), kinetic_hvp(:)
+        integer :: n, nq, np, nk
+
+        n = size(state, 1)
+        nq = self%n_coordinates
+        if (.not. valid_state(self, state)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "Hamiltonian MLP leapfrog_jvp: invalid state")
+            return
+        end if
+        if (.not. ieee_is_finite(step)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "Hamiltonian MLP leapfrog_jvp: step is nonfinite")
+            return
+        end if
+        if (any(shape(dstate) /= shape(state))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "Hamiltonian MLP leapfrog_jvp: state tangent shape is invalid")
+            return
+        end if
+        if (any(shape(next_state) /= shape(state)) .or. &
+                any(shape(dnext_state) /= shape(state))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "Hamiltonian MLP leapfrog_jvp: output shape is invalid")
+            return
+        end if
+        if (any(.not. ieee_is_finite(dstate)) .or. &
+                any(.not. ieee_is_finite(dtheta))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "Hamiltonian MLP leapfrog_jvp: direction is nonfinite")
+            return
+        end if
+        if (self%general_mode) then
+            next_state = state
+            dnext_state = 0.0_dp
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "Hamiltonian MLP leapfrog_jvp: general H(q,p) requires an implicit integrator")
+            return
+        end if
+
+        np = self%potential%parameter_count()
+        nk = self%kinetic%parameter_count()
+        if (size(dtheta) /= np + nk) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "Hamiltonian MLP leapfrog_jvp: parameter tangent shape is invalid")
+            return
+        end if
+
+        call split_state(self, state, q, p)
+        call split_state(self, dstate, dq, dp_state)
+        allocate(q_next(n, nq), p_half(n, nq), dq_next(n, nq), dp_half(n, nq))
+        allocate(one(n, 1), gq(n, nq), dgq(n, nq), gp(n, nq), dgp(n, nq))
+        allocate(gq_next(n, nq), dgq_next(n, nq))
+        allocate(potential_bar(np), potential_hvp(np))
+        allocate(kinetic_bar(nk), kinetic_hvp(nk))
+        one = 1.0_dp
+
+        call self%potential%vjp(q, one, potential_bar, gq, status)
+        if (.not. status_ok(status)) return
+        call self%potential%hvp(q, one, dtheta(1:np), dq, potential_hvp, dgq, status)
+        if (.not. status_ok(status)) return
+        p_half = p - 0.5_dp*step*gq
+        dp_half = dp_state - 0.5_dp*step*dgq
+
+        call self%kinetic%vjp(p_half, one, kinetic_bar, gp, status)
+        if (.not. status_ok(status)) return
+        call self%kinetic%hvp(p_half, one, dtheta(np + 1:np + nk), dp_half, &
+            kinetic_hvp, dgp, status)
+        if (.not. status_ok(status)) return
+        q_next = q + step*gp
+        dq_next = dq + step*dgp
+
+        call self%potential%vjp(q_next, one, potential_bar, gq_next, status)
+        if (.not. status_ok(status)) return
+        call self%potential%hvp(q_next, one, dtheta(1:np), dq_next, &
+            potential_hvp, dgq_next, status)
+        if (.not. status_ok(status)) return
+        next_state(:, 1:nq) = q_next
+        next_state(:, nq + 1:2*nq) = p_half - 0.5_dp*step*gq_next
+        dnext_state(:, 1:nq) = dq_next
+        dnext_state(:, nq + 1:2*nq) = dp_half - 0.5_dp*step*dgq_next
+        if (any(.not. ieee_is_finite(next_state)) .or. &
+                any(.not. ieee_is_finite(dnext_state))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "Hamiltonian MLP leapfrog_jvp: product is nonfinite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine hamiltonian_mlp_leapfrog_jvp
 
     logical function valid_state(self, state) result(valid)
         class(hamiltonian_mlp_t), intent(in) :: self
