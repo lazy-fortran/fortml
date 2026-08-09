@@ -1,21 +1,25 @@
 program fortml_bench_mlp_loss_scaling
     !! Release workload for the deterministic MLP loss-scale recurrence.
+    use, intrinsic :: iso_fortran_env, only: real32
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_ok
     use fortml_mlp, only: mlp_t, MLP_LINEAR
     use fortml_mlp_training, only: mlp_loss_scale_state_t, mlp_train, &
         mlp_training_options_t, mlp_training_state_t, MLP_OPTIMIZER_SGD, &
-        MLP_PRECISION_FP32
+        mlp_training_checkpoint_t, MLP_PRECISION_FP32, MLP_PRECISION_FP16, &
+        MLP_PRECISION_BF16
     implicit none
 
     type(mlp_loss_scale_state_t) :: scaler
     type(mlp_t) :: model
     type(mlp_training_options_t) :: options
     type(mlp_training_state_t) :: state
+    type(mlp_training_checkpoint_t) :: checkpoint
     type(fortnum_status_t) :: status
     real(dp) :: x(3, 1), target(3, 1), before(2), elapsed, started
     real(dp) :: gradient(2), scaled_gradient(2), recovered_gradient(2)
     real(dp) :: overflowing_gradient(2)
+    real(dp) :: master_parameters(2), rounded_parameters(2)
     integer :: i
 
     call cpu_time(started)
@@ -68,13 +72,44 @@ program fortml_bench_mlp_loss_scaling
     write (*, '(a,",",i0,",",es24.16,",",i0)') "fp64_training", &
         state%updates, state%loss_scale%scale, state%loss_scale%skipped_updates
 
+    call model%set_parameters([0.123456789012345_dp, -0.234567890123456_dp], status)
+    options%max_epochs = 3
+    options%learning_rate = 0.05_dp
+    options%loss_scale%enabled = .true.
+    options%loss_scale%initial_scale = 2.0_dp
+    options%loss_scale%scale = 2.0_dp
+    options%loss_scale%growth_interval = 100
     options%precision_kind = MLP_PRECISION_FP32
+    call mlp_train(model, x, target, status, options, state)
+    if (.not. status_ok(status)) error stop "FP32 master training failed"
+    master_parameters = model%parameters()
+    rounded_parameters = real(real(master_parameters, real32), dp)
+    write (*, '(a,",",i0,",",i0,",",es24.16,",",es24.16,",",es24.16,",",es24.16)') "fp32_training", &
+        state%updates, state%precision_kind, state%loss_scale%scale, &
+        maxval(abs(master_parameters - rounded_parameters)), master_parameters
+    call model%set_parameters([0.123456789012345_dp, -0.234567890123456_dp], status)
+    options%max_epochs = 2
+    options%loss_scale%initial_scale = 2.0_dp
+    options%loss_scale%scale = 2.0_dp
+    call mlp_train(model, x, target, status, options, state, checkpoint=checkpoint)
+    if (.not. status_ok(status) .or. .not. checkpoint%valid()) then
+        error stop "FP32 checkpoint capture failed"
+    end if
+    write (*, '(a,",",i0,",",es24.16)') "fp32_checkpoint", &
+        checkpoint%precision_kind, checkpoint%parameters(1)
+    options%precision_kind = MLP_PRECISION_FP16
     before = model%parameters()
     call mlp_train(model, x, target, status, options, state)
     if (status_ok(status) .or. maxval(abs(model%parameters() - before)) /= 0.0_dp) then
-        error stop "lower-precision refusal contract failed"
+        error stop "FP16 refusal contract failed"
     end if
-    write (*, '(a,",",i0)') "fp32_typed_refusal", status%code
+    write (*, '(a,",",i0)') "fp16_typed_refusal", status%code
+    options%precision_kind = MLP_PRECISION_BF16
+    call mlp_train(model, x, target, status, options, state)
+    if (status_ok(status) .or. maxval(abs(model%parameters() - before)) /= 0.0_dp) then
+        error stop "BF16 refusal contract failed"
+    end if
+    write (*, '(a,",",i0)') "bf16_typed_refusal", status%code
     call cpu_time(elapsed)
     write (*, '(a,",",es24.16)') "elapsed_seconds", elapsed - started
 end program fortml_bench_mlp_loss_scaling

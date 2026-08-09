@@ -2675,10 +2675,15 @@ gradients and skips an overflowing update; disabled scaling leaves the existing
 trajectory unchanged. `scale_gradient`, `unscale_gradient`, and
 `scaled_gradient_finite` expose the allocation-free scale/check/unscale
 products so custom trainers can use the same transactional update contract.
-FP32/FP16/BF16 and CUDA resident training return a typed
-`FORTNUM_NOT_IMPLEMENTED` until master-weight and resident lower-precision
-kernels are independently gated. Loss-scale policy and dynamic counters are
-validated and persisted in formatted checkpoint schema 11.
+With `options%precision_kind=MLP_PRECISION_FP32`, `mlp_train` keeps its
+optimizer vector and checkpoint `parameters` in binary64, rounds features,
+targets, model parameters, and gradients through `real(real32)`, and applies
+loss-scale overflow recovery before the optimizer step. The model is restored
+to its binary64 master vector after the final loss evaluation. Independent
+FP32 trajectory and split-resume oracles cover this contract. FP16, BF16, and
+CUDA resident training return typed `FORTNUM_NOT_IMPLEMENTED` until their
+storage and kernels are independently gated. Loss-scale policy and dynamic
+counters are validated and persisted in formatted checkpoint schema 11.
 
 `mlp_training_options_t%event_callback` installs a typed
 `mlp_training_event_proc` callback for `train_begin`, `update`, `validation`,

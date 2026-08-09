@@ -3997,6 +3997,13 @@ trials remain visible in the result schema.
   failed branch. The independent FP64 recurrence and gradient oracle has zero
   error. Master-weight FP16/BF16 execution and resident CUDA loss scaling
   remain open under the broader mixed-precision row.
+- [x] Add the CPU FP32 master-weight trainer slice. `mlp_train` keeps the
+  optimizer vector and schema-11 checkpoint `parameters` in binary64, rounds
+  features, targets, model parameters, and gradients through `real(real32)`,
+  and runs loss-scale overflow recovery before the optimizer commit. The
+  independent linear recurrence and split-checkpoint oracle cover the master
+  trajectory. FP16/BF16 storage and kernels plus resident CUDA mixed precision
+  remain typed refusals.
 - [x] Add sample-weighted MLP microbatch accumulation with an explicit flush
   boundary and exact full-batch equivalence for the MSE+L2 objective.
 - [x] Add deterministic parameter exponential moving averages to the MLP

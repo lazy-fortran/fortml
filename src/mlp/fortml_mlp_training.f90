@@ -9,7 +9,7 @@ module fortml_mlp_training
     !! scalar L2 derivative is returned as a first-class hyperparameter
     !! product, which lets an outer optimizer differentiate this objective
     !! without finite-difference plumbing.
-    use, intrinsic :: iso_fortran_env, only: int64
+    use, intrinsic :: iso_fortran_env, only: int64, real32
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     use fortnum_kinds, only: dp
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
@@ -46,10 +46,11 @@ module fortml_mlp_training
     integer, parameter, public :: MLP_OPTIMIZER_RADAM = 8
     integer, parameter, public :: MLP_OPTIMIZER_LION = 9
 
-    ! Precision is a first-class training contract.  FP64 is the current
-    ! deterministic reference implementation; lower-precision modes are
-    ! named now so callers receive a typed refusal instead of an implicit
-    ! kind conversion or an untracked loss-scaling policy.
+    ! Precision is a first-class training contract.  FP64 is the deterministic
+    ! reference path.  FP32 uses DP master parameters and a single-precision
+    ! model/data boundary with transactional loss scaling.  FP16 and BF16 are
+    ! named so callers receive a typed refusal until their storage and kernels
+    ! are available.
     integer, parameter, public :: MLP_PRECISION_FP64 = 1
     integer, parameter, public :: MLP_PRECISION_FP32 = 2
     integer, parameter, public :: MLP_PRECISION_FP16 = 3
@@ -59,9 +60,9 @@ module fortml_mlp_training
         !! Explicit automatic-mixed-precision loss-scale state.
         !!
         !! The state is deliberately independent of a device backend.  It is
-        !! therefore usable by the FP64 reference path as a deterministic
-        !! recurrence oracle, while lower-precision resident kernels retain a
-        !! typed refusal until their master-weight implementation is present.
+        !! used by both the FP64 reference path and the CPU FP32 master-weight
+        !! path.  Lower-precision resident kernels retain a typed refusal until
+        !! their storage and execution contracts are present.
         logical :: enabled = .false.
         real(dp) :: scale = 1.0_dp
         real(dp) :: initial_scale = 1.0_dp
@@ -161,10 +162,10 @@ module fortml_mlp_training
         logical :: rmsprop_centered = .false.
         integer :: optimizer = MLP_OPTIMIZER_ADAM
         integer :: precision_kind = MLP_PRECISION_FP64
-        !! Loss scaling is explicit and can be enabled on the FP64 reference
-        !! path for recurrence/checkpoint testing.  FP32/FP16/BF16 still
-        !! return a typed refusal because resident master-weight kernels are
-        !! not yet available.
+        !! Loss scaling is explicit for FP64 and FP32.  FP32 keeps the
+        !! optimizer and checkpoint parameters in binary64 while the model
+        !! boundary is rounded through `real(real32)`.  FP16/BF16 remain typed
+        !! refusals until their storage and kernels are available.
         type(mlp_loss_scale_state_t) :: loss_scale
         real(dp) :: momentum = 0.0_dp
         logical :: nesterov = .false.
@@ -656,9 +657,9 @@ contains
         self%last = -1
         self%learning_rate_multiplier = 1.0_dp
         if (len_trim(name) == 0 .or. len_trim(name) > len(self%name) .or. &
-                first < 1 .or. last < first .or. &
-                .not. ieee_is_finite(learning_rate_multiplier) .or. &
-                learning_rate_multiplier <= 0.0_dp) then
+            first < 1 .or. last < first .or. &
+            .not. ieee_is_finite(learning_rate_multiplier) .or. &
+            learning_rate_multiplier <= 0.0_dp) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "MLP optimizer group: invalid name, range, or multiplier")
             return
@@ -994,14 +995,14 @@ contains
         end if
         if (self%optimizer == MLP_OPTIMIZER_ADAFACTOR .and. self%adafactor_factored) then
             if (self%n_adafactor_blocks < 1 .or. &
-                    .not. allocated(self%adafactor_block_first) .or. &
-                    .not. allocated(self%adafactor_block_last) .or. &
-                    .not. allocated(self%adafactor_block_rows) .or. &
-                    .not. allocated(self%adafactor_block_columns) .or. &
-                    .not. allocated(self%adafactor_block_factored) .or. &
-                    .not. allocated(self%adafactor_row_moment) .or. &
-                    .not. allocated(self%adafactor_column_moment) .or. &
-                    .not. allocated(self%adafactor_second_moment)) then
+                .not. allocated(self%adafactor_block_first) .or. &
+                .not. allocated(self%adafactor_block_last) .or. &
+                .not. allocated(self%adafactor_block_rows) .or. &
+                .not. allocated(self%adafactor_block_columns) .or. &
+                .not. allocated(self%adafactor_block_factored) .or. &
+                .not. allocated(self%adafactor_row_moment) .or. &
+                .not. allocated(self%adafactor_column_moment) .or. &
+                .not. allocated(self%adafactor_second_moment)) then
                 valid = .false.
                 return
             end if
@@ -1016,7 +1017,7 @@ contains
                 all(self%adafactor_block_rows >= 1) .and. &
                 all(self%adafactor_block_columns >= 1) .and. &
                 all((self%adafactor_block_factored == 0) .or. &
-                    (self%adafactor_block_factored == 1))
+                (self%adafactor_block_factored == 1))
             if (.not. valid) return
             valid = all(self%adafactor_block_last - self%adafactor_block_first + 1 == &
                 self%adafactor_block_rows*self%adafactor_block_columns)
@@ -1734,6 +1735,8 @@ contains
         real(dp), allocatable :: lion_momentum(:)
         real(dp), allocatable :: x_batch(:, :), target_batch(:, :)
         real(dp), allocatable :: weight_batch(:)
+        real(dp), allocatable :: x_training(:, :), target_training(:, :)
+        real(dp), allocatable :: validation_x_training(:, :), validation_target_training(:, :)
         integer, allocatable :: batch_indices(:)
         real(dp) :: loss, l2_gradient, gradient_norm, improvement
         real(dp) :: best_loss
@@ -1787,9 +1790,10 @@ contains
             if (present(state)) state = result
             return
         end if
-        if (config%precision_kind /= MLP_PRECISION_FP64) then
+        if (config%precision_kind == MLP_PRECISION_FP16 .or. &
+            config%precision_kind == MLP_PRECISION_BF16) then
             call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
-                "MLP train: requested precision has no master-weight/loss-scaling implementation")
+                "MLP train: fp16/bf16 storage and kernels are unavailable")
             if (present(state)) state = result
             return
         end if
@@ -1803,6 +1807,39 @@ contains
         end if
 
         n_samples = size(x, 1)
+        allocate(x_training(n_samples, size(x, 2)), target_training(size(target, 1), size(target, 2)))
+        x_training = x
+        target_training = target
+        if (config%precision_kind == MLP_PRECISION_FP32) then
+            call quantize_matrix_fp32(x_training, status, "MLP train features")
+            if (status%code /= FORTNUM_OK) then
+                if (present(state)) state = result
+                return
+            end if
+            call quantize_matrix_fp32(target_training, status, "MLP train targets")
+            if (status%code /= FORTNUM_OK) then
+                if (present(state)) state = result
+                return
+            end if
+        end if
+        if (present(validation_x)) then
+            allocate(validation_x_training(size(validation_x, 1), size(validation_x, 2)), &
+                validation_target_training(size(validation_target, 1), size(validation_target, 2)))
+            validation_x_training = validation_x
+            validation_target_training = validation_target
+            if (config%precision_kind == MLP_PRECISION_FP32) then
+                call quantize_matrix_fp32(validation_x_training, status, "MLP validation features")
+                if (status%code /= FORTNUM_OK) then
+                    if (present(state)) state = result
+                    return
+                end if
+                call quantize_matrix_fp32(validation_target_training, status, "MLP validation targets")
+                if (status%code /= FORTNUM_OK) then
+                    if (present(state)) state = result
+                    return
+                end if
+            end if
+        end if
         if (present(sample_weight)) then
             call validate_sample_weight(sample_weight, n_samples, batch_weight_mass, &
                 status, "MLP train")
@@ -1942,7 +1979,7 @@ contains
 
         if (resuming) then
             theta = checkpoint%parameters
-            call model%set_parameters(theta, status)
+            call set_model_parameters_for_precision(model, theta, config%precision_kind, status)
             if (status%code /= FORTNUM_OK) then
                 if (present(state)) state = result
                 return
@@ -1961,6 +1998,11 @@ contains
             loss_scaler = checkpoint%loss_scale
         else
             theta = model%parameters()
+            call set_model_parameters_for_precision(model, theta, config%precision_kind, status)
+            if (status%code /= FORTNUM_OK) then
+                if (present(state)) state = result
+                return
+            end if
             allocate(best_theta, source=theta)
             if (config%ema_decay > 0.0_dp) then
                 allocate(ema_parameters, source=theta)
@@ -2019,12 +2061,17 @@ contains
             monitored_loss = checkpoint%best_loss
         else
             if (present(sample_weight)) then
-                call mlp_loss_value_gradient(model, x, target, config%l2, loss, &
+                call mlp_loss_value_gradient(model, x_training, target_training, config%l2, loss, &
                     gradient, l2_gradient, status, sample_weight=sample_weight)
             else
-                call mlp_loss_value_gradient(model, x, target, config%l2, loss, &
+                call mlp_loss_value_gradient(model, x_training, target_training, config%l2, loss, &
                     gradient, l2_gradient, status)
             end if
+            if (status%code /= FORTNUM_OK) then
+                if (present(state)) state = result
+                return
+            end if
+            call round_gradient_for_precision(gradient, config%precision_kind, status)
             if (status%code /= FORTNUM_OK) then
                 if (present(state)) state = result
                 return
@@ -2035,13 +2082,18 @@ contains
             monitored_loss = loss
             if (present(validation_x)) then
                 if (present(validation_weight)) then
-                    call mlp_loss_value_gradient(model, validation_x, validation_target, &
+                    call mlp_loss_value_gradient(model, validation_x_training, validation_target_training, &
                         config%l2, validation_loss, gradient, l2_gradient, status, &
                         sample_weight=validation_weight)
                 else
-                    call mlp_loss_value_gradient(model, validation_x, validation_target, &
+                    call mlp_loss_value_gradient(model, validation_x_training, validation_target_training, &
                         config%l2, validation_loss, gradient, l2_gradient, status)
                 end if
+                if (status%code /= FORTNUM_OK) then
+                    if (present(state)) state = result
+                    return
+                end if
+                call round_gradient_for_precision(gradient, config%precision_kind, status)
                 if (status%code /= FORTNUM_OK) then
                     if (present(state)) state = result
                     return
@@ -2266,8 +2318,8 @@ contains
                 allocate(x_batch(size(batch_indices), size(x, 2)))
                 allocate(target_batch(size(batch_indices), n_outputs))
                 allocate(weight_batch(size(batch_indices)))
-                x_batch = x(batch_indices, :)
-                target_batch = target(batch_indices, :)
+                x_batch = x_training(batch_indices, :)
+                target_batch = target_training(batch_indices, :)
                 if (present(sample_weight)) then
                     weight_batch = sample_weight(batch_indices)
                 else
@@ -2292,8 +2344,21 @@ contains
                     if (present(state)) state = result
                     return
                 end if
+                call round_gradient_for_precision(gradient, config%precision_kind, status)
+                if (status%code /= FORTNUM_OK) then
+                    if (present(state)) state = result
+                    return
+                end if
                 accumulated_gradient = accumulated_gradient + &
                     batch_weight_mass*gradient
+                if (config%precision_kind == MLP_PRECISION_FP32) then
+                    call round_gradient_for_precision(accumulated_gradient, &
+                        config%precision_kind, status)
+                    if (status%code /= FORTNUM_OK) then
+                        if (present(state)) state = result
+                        return
+                    end if
+                end if
                 accumulated_samples = accumulated_samples + size(batch_indices)
                 accumulated_weight_mass = accumulated_weight_mass + batch_weight_mass
                 microbatch_count = microbatch_count + 1
@@ -2306,157 +2371,165 @@ contains
                     if (microbatch_count > 0) then
                         if (accumulated_weight_mass > 0.0_dp) then
                             gradient = accumulated_gradient/accumulated_weight_mass
-                        theta = model%parameters()
-                        gradient = gradient + config%l2*theta
-                        if (loss_scaler%enabled) then
-                            call loss_scaler%scale_gradient(gradient, scaled_gradient, status)
+                            if (config%precision_kind == MLP_PRECISION_FP64) then
+                                theta = model%parameters()
+                            end if
+                            gradient = gradient + config%l2*theta
+                            call round_gradient_for_precision(gradient, config%precision_kind, status)
                             if (status%code /= FORTNUM_OK) then
                                 if (present(state)) state = result
                                 return
                             end if
-                            if (.not. loss_scaler%scaled_gradient_finite(scaled_gradient)) then
-                                call loss_scaler%observe(.false., .false., status)
+                            if (loss_scaler%enabled) then
+                                call loss_scaler%scale_gradient(gradient, scaled_gradient, status)
                                 if (status%code /= FORTNUM_OK) then
                                     if (present(state)) state = result
                                     return
                                 end if
-                                result%loss_scale = loss_scaler
-                                accumulated_gradient = 0.0_dp
-                                accumulated_samples = 0
-                                accumulated_weight_mass = 0.0_dp
-                                microbatch_count = 0
-                                cycle
-                            end if
-                            call loss_scaler%unscale_gradient(scaled_gradient, gradient, status)
-                            if (status%code /= FORTNUM_OK) then
-                                if (present(state)) state = result
-                                return
-                            end if
-                        end if
-                        raw_gradient_norm = sqrt(sum(gradient*gradient))
-                        if (config%gradient_clip_norm > 0.0_dp .and. &
-                            raw_gradient_norm > config%gradient_clip_norm) then
-                            gradient = gradient*config%gradient_clip_norm/ &
-                                raw_gradient_norm
-                            result%gradient_clipped_updates = &
-                                result%gradient_clipped_updates + 1
-                        end if
-                        effective_rate = config%learning_rate
-                        if (has_typed_schedule) then
-                            if (schedule_config%kind == MLP_SCHEDULE_PLATEAU) then
-                                effective_rate = config%learning_rate*schedule_config%plateau_factor** &
-                                    schedule_reductions
-                                if (.not. ieee_is_finite(effective_rate)) then
-                                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
-                                        "MLP train: plateau schedule rate is not finite")
+                                if (.not. loss_scaler%scaled_gradient_finite(scaled_gradient)) then
+                                    call loss_scaler%observe(.false., .false., status)
+                                    if (status%code /= FORTNUM_OK) then
+                                        if (present(state)) state = result
+                                        return
+                                    end if
+                                    result%loss_scale = loss_scaler
+                                    accumulated_gradient = 0.0_dp
+                                    accumulated_samples = 0
+                                    accumulated_weight_mass = 0.0_dp
+                                    microbatch_count = 0
+                                    cycle
+                                end if
+                                call loss_scaler%unscale_gradient(scaled_gradient, gradient, status)
+                                if (status%code /= FORTNUM_OK) then
                                     if (present(state)) state = result
                                     return
                                 end if
+                            end if
+                            raw_gradient_norm = sqrt(sum(gradient*gradient))
+                            if (config%gradient_clip_norm > 0.0_dp .and. &
+                                raw_gradient_norm > config%gradient_clip_norm) then
+                                gradient = gradient*config%gradient_clip_norm/ &
+                                    raw_gradient_norm
+                                result%gradient_clipped_updates = &
+                                    result%gradient_clipped_updates + 1
+                            end if
+                            effective_rate = config%learning_rate
+                            if (has_typed_schedule) then
+                                if (schedule_config%kind == MLP_SCHEDULE_PLATEAU) then
+                                    effective_rate = config%learning_rate*schedule_config%plateau_factor** &
+                                        schedule_reductions
+                                    if (.not. ieee_is_finite(effective_rate)) then
+                                        call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                                            "MLP train: plateau schedule rate is not finite")
+                                        if (present(state)) state = result
+                                        return
+                                    end if
+                                else
+                                    call schedule_config%rate(result%updates + 1, &
+                                        config%learning_rate, effective_rate, status)
+                                end if
+                                if (status%code /= FORTNUM_OK) then
+                                    if (present(state)) state = result
+                                    return
+                                end if
+                            else if (associated(config%learning_rate_schedule)) then
+                                call config%learning_rate_schedule(epoch, &
+                                    result%updates + 1, config%learning_rate, &
+                                    effective_rate)
+                            end if
+                            if (.not. ieee_is_finite(effective_rate) .or. &
+                                effective_rate <= 0.0_dp) then
+                                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                                    "MLP train: schedule returned an invalid learning rate")
+                                if (present(state)) state = result
+                                return
+                            end if
+                            if (config%optimizer == MLP_OPTIMIZER_ADAM) then
+                                optimizer%learning_rate = effective_rate
+                            else if (config%optimizer == MLP_OPTIMIZER_SGD) then
+                                sgd_optimizer%learning_rate = effective_rate
+                            else if (config%optimizer == MLP_OPTIMIZER_ADAMW) then
+                                adamw_optimizer%learning_rate = effective_rate
+                            else if (config%optimizer == MLP_OPTIMIZER_ADAGRAD) then
+                                adagrad_optimizer%learning_rate = effective_rate
+                            else if (config%optimizer == MLP_OPTIMIZER_ADAFACTOR) then
+                                adafactor_optimizer%learning_rate = effective_rate
+                                if (config%adafactor_factored) then
+                                    adafactor_factored_optimizer%learning_rate = effective_rate
+                                end if
+                            else if (config%optimizer == MLP_OPTIMIZER_AMSGRAD) then
+                                amsgrad_optimizer%learning_rate = effective_rate
+                            else if (config%optimizer == MLP_OPTIMIZER_RADAM) then
+                                radam_optimizer%learning_rate = effective_rate
+                            else if (config%optimizer == MLP_OPTIMIZER_LION) then
+                                ! Lion consumes the effective rate directly below.
                             else
-                                call schedule_config%rate(result%updates + 1, &
-                                    config%learning_rate, effective_rate, status)
+                                rmsprop_optimizer%learning_rate = effective_rate
+                            end if
+                            result%last_learning_rate = effective_rate
+                            if (allocated(theta_before)) theta_before = theta
+                            if (config%optimizer == MLP_OPTIMIZER_ADAM) then
+                                call optimizer%step(theta, gradient, status)
+                            else if (config%optimizer == MLP_OPTIMIZER_SGD) then
+                                call sgd_optimizer%step(theta, gradient, status)
+                            else if (config%optimizer == MLP_OPTIMIZER_ADAMW) then
+                                call adamw_optimizer%step(theta, gradient, status)
+                            else if (config%optimizer == MLP_OPTIMIZER_ADAGRAD) then
+                                call adagrad_optimizer%step(theta, gradient, status)
+                            else if (config%optimizer == MLP_OPTIMIZER_ADAFACTOR) then
+                                if (config%adafactor_factored) then
+                                    call adafactor_factored_optimizer%step(theta, gradient, status)
+                                else
+                                    call adafactor_optimizer%step(theta, gradient, status)
+                                end if
+                            else if (config%optimizer == MLP_OPTIMIZER_AMSGRAD) then
+                                call amsgrad_optimizer%step(theta, gradient, status)
+                            else if (config%optimizer == MLP_OPTIMIZER_RADAM) then
+                                call radam_optimizer%step(theta, gradient, status)
+                            else if (config%optimizer == MLP_OPTIMIZER_LION) then
+                                call lion_step(theta, gradient, lion_momentum, config%beta1, &
+                                    config%beta2, effective_rate, config%weight_decay, status)
+                            else
+                                call rmsprop_optimizer%step(theta, gradient, status)
                             end if
                             if (status%code /= FORTNUM_OK) then
                                 if (present(state)) state = result
                                 return
                             end if
-                        else if (associated(config%learning_rate_schedule)) then
-                            call config%learning_rate_schedule(epoch, &
-                                result%updates + 1, config%learning_rate, &
-                                effective_rate)
-                        end if
-                        if (.not. ieee_is_finite(effective_rate) .or. &
-                            effective_rate <= 0.0_dp) then
-                            call status_set(status, FORTNUM_DOMAIN_ERROR, &
-                                "MLP train: schedule returned an invalid learning rate")
-                            if (present(state)) state = result
-                            return
-                        end if
-                        if (config%optimizer == MLP_OPTIMIZER_ADAM) then
-                            optimizer%learning_rate = effective_rate
-                        else if (config%optimizer == MLP_OPTIMIZER_SGD) then
-                            sgd_optimizer%learning_rate = effective_rate
-                        else if (config%optimizer == MLP_OPTIMIZER_ADAMW) then
-                            adamw_optimizer%learning_rate = effective_rate
-                        else if (config%optimizer == MLP_OPTIMIZER_ADAGRAD) then
-                            adagrad_optimizer%learning_rate = effective_rate
-                        else if (config%optimizer == MLP_OPTIMIZER_ADAFACTOR) then
-                            adafactor_optimizer%learning_rate = effective_rate
-                            if (config%adafactor_factored) then
-                                adafactor_factored_optimizer%learning_rate = effective_rate
+                            if (allocated(config%optimizer_groups)) then
+                                call apply_optimizer_group_scales(theta, theta_before, &
+                                    config%optimizer_groups, status)
+                                if (status%code /= FORTNUM_OK) then
+                                    if (present(state)) state = result
+                                    return
+                                end if
                             end if
-                        else if (config%optimizer == MLP_OPTIMIZER_AMSGRAD) then
-                            amsgrad_optimizer%learning_rate = effective_rate
-                        else if (config%optimizer == MLP_OPTIMIZER_RADAM) then
-                            radam_optimizer%learning_rate = effective_rate
-                        else if (config%optimizer == MLP_OPTIMIZER_LION) then
-                            ! Lion consumes the effective rate directly below.
-                        else
-                            rmsprop_optimizer%learning_rate = effective_rate
-                        end if
-                        result%last_learning_rate = effective_rate
-                        if (allocated(theta_before)) theta_before = theta
-                        if (config%optimizer == MLP_OPTIMIZER_ADAM) then
-                            call optimizer%step(theta, gradient, status)
-                        else if (config%optimizer == MLP_OPTIMIZER_SGD) then
-                            call sgd_optimizer%step(theta, gradient, status)
-                        else if (config%optimizer == MLP_OPTIMIZER_ADAMW) then
-                            call adamw_optimizer%step(theta, gradient, status)
-                        else if (config%optimizer == MLP_OPTIMIZER_ADAGRAD) then
-                            call adagrad_optimizer%step(theta, gradient, status)
-                        else if (config%optimizer == MLP_OPTIMIZER_ADAFACTOR) then
-                            if (config%adafactor_factored) then
-                                call adafactor_factored_optimizer%step(theta, gradient, status)
-                            else
-                                call adafactor_optimizer%step(theta, gradient, status)
-                            end if
-                        else if (config%optimizer == MLP_OPTIMIZER_AMSGRAD) then
-                            call amsgrad_optimizer%step(theta, gradient, status)
-                        else if (config%optimizer == MLP_OPTIMIZER_RADAM) then
-                            call radam_optimizer%step(theta, gradient, status)
-                        else if (config%optimizer == MLP_OPTIMIZER_LION) then
-                            call lion_step(theta, gradient, lion_momentum, config%beta1, &
-                                config%beta2, effective_rate, config%weight_decay, status)
-                        else
-                            call rmsprop_optimizer%step(theta, gradient, status)
-                        end if
-                        if (status%code /= FORTNUM_OK) then
-                            if (present(state)) state = result
-                            return
-                        end if
-                        if (allocated(config%optimizer_groups)) then
-                            call apply_optimizer_group_scales(theta, theta_before, &
-                                config%optimizer_groups, status)
+                            call set_model_parameters_for_precision(model, theta, &
+                                config%precision_kind, status)
                             if (status%code /= FORTNUM_OK) then
                                 if (present(state)) state = result
                                 return
                             end if
-                        end if
-                        call model%set_parameters(theta, status)
-                        if (status%code /= FORTNUM_OK) then
-                            if (present(state)) state = result
-                            return
-                        end if
-                        if (config%ema_decay > 0.0_dp) then
-                            ema_parameters = config%ema_decay*ema_parameters + &
-                                (1.0_dp-config%ema_decay)*theta
-                            result%ema_parameters = ema_parameters
-                        end if
-                        call loss_scaler%observe(.true., .true., status)
-                        if (status%code /= FORTNUM_OK) then
-                            if (present(state)) state = result
-                            return
-                        end if
-                        result%loss_scale = loss_scaler
-                        result%updates = result%updates + 1
-                        call emit_training_event(config, MLP_EVENT_UPDATE, epoch, &
-                            result%updates, loss, validation_loss, &
-                            raw_gradient_norm, effective_rate, event_stop, status)
-                        if (status%code /= FORTNUM_OK) then
-                            if (present(state)) state = result
-                            return
-                        end if
-                        if (event_stop) result%early_stopped = .true.
+                            if (config%ema_decay > 0.0_dp) then
+                                ema_parameters = config%ema_decay*ema_parameters + &
+                                    (1.0_dp-config%ema_decay)*theta
+                                result%ema_parameters = ema_parameters
+                            end if
+                            call loss_scaler%observe(.true., .true., status)
+                            if (status%code /= FORTNUM_OK) then
+                                if (present(state)) state = result
+                                return
+                            end if
+                            result%loss_scale = loss_scaler
+                            result%updates = result%updates + 1
+                            call emit_training_event(config, MLP_EVENT_UPDATE, epoch, &
+                                result%updates, loss, validation_loss, &
+                                raw_gradient_norm, effective_rate, event_stop, status)
+                            if (status%code /= FORTNUM_OK) then
+                                if (present(state)) state = result
+                                return
+                            end if
+                            if (event_stop) result%early_stopped = .true.
                         end if
                         accumulated_gradient = 0.0_dp
                         accumulated_samples = 0
@@ -2494,12 +2567,17 @@ contains
             end do
 
             if (present(sample_weight)) then
-                call mlp_loss_value_gradient(model, x, target, config%l2, loss, &
+                call mlp_loss_value_gradient(model, x_training, target_training, config%l2, loss, &
                     gradient, l2_gradient, status, sample_weight=sample_weight)
             else
-                call mlp_loss_value_gradient(model, x, target, config%l2, loss, &
+                call mlp_loss_value_gradient(model, x_training, target_training, config%l2, loss, &
                     gradient, l2_gradient, status)
             end if
+            if (status%code /= FORTNUM_OK) then
+                if (present(state)) state = result
+                return
+            end if
+            call round_gradient_for_precision(gradient, config%precision_kind, status)
             if (status%code /= FORTNUM_OK) then
                 if (present(state)) state = result
                 return
@@ -2512,27 +2590,32 @@ contains
             if (present(validation_x)) then
                 if (mod(epoch, config%validation_interval) == 0) then
                     if (present(validation_weight)) then
-                        call mlp_loss_value_gradient(model, validation_x, validation_target, &
+                        call mlp_loss_value_gradient(model, validation_x_training, validation_target_training, &
                             config%l2, validation_loss, gradient, l2_gradient, status, &
                             sample_weight=validation_weight)
                     else
-                        call mlp_loss_value_gradient(model, validation_x, validation_target, &
+                        call mlp_loss_value_gradient(model, validation_x_training, validation_target_training, &
                             config%l2, validation_loss, gradient, l2_gradient, status)
                     end if
-                if (status%code /= FORTNUM_OK) then
-                    if (present(state)) state = result
-                    return
-                end if
-                result%validation_loss_history(epoch) = validation_loss
-                monitored_loss = validation_loss
-                call emit_training_event(config, MLP_EVENT_VALIDATION, epoch, &
-                    result%updates, loss, validation_loss, gradient_norm, &
-                    result%last_learning_rate, event_stop, status)
-                if (status%code /= FORTNUM_OK) then
-                    if (present(state)) state = result
-                    return
-                end if
-                if (event_stop) result%early_stopped = .true.
+                    if (status%code /= FORTNUM_OK) then
+                        if (present(state)) state = result
+                        return
+                    end if
+                    call round_gradient_for_precision(gradient, config%precision_kind, status)
+                    if (status%code /= FORTNUM_OK) then
+                        if (present(state)) state = result
+                        return
+                    end if
+                    result%validation_loss_history(epoch) = validation_loss
+                    monitored_loss = validation_loss
+                    call emit_training_event(config, MLP_EVENT_VALIDATION, epoch, &
+                        result%updates, loss, validation_loss, gradient_norm, &
+                        result%last_learning_rate, event_stop, status)
+                    if (status%code /= FORTNUM_OK) then
+                        if (present(state)) state = result
+                        return
+                    end if
+                    if (event_stop) result%early_stopped = .true.
                 end if
             else
                 monitored_loss = loss
@@ -2646,18 +2729,23 @@ contains
         end if
         if (config%restore_best .and. result%best_epoch < result%epochs) then
             theta = best_theta
-            call model%set_parameters(theta, status)
+            call set_model_parameters_for_precision(model, theta, config%precision_kind, status)
             if (status%code /= FORTNUM_OK) then
                 if (present(state)) state = result
                 return
             end if
             if (present(sample_weight)) then
-                call mlp_loss_value_gradient(model, x, target, config%l2, loss, &
+                call mlp_loss_value_gradient(model, x_training, target_training, config%l2, loss, &
                     gradient, l2_gradient, status, sample_weight=sample_weight)
             else
-                call mlp_loss_value_gradient(model, x, target, config%l2, loss, &
+                call mlp_loss_value_gradient(model, x_training, target_training, config%l2, loss, &
                     gradient, l2_gradient, status)
             end if
+            if (status%code /= FORTNUM_OK) then
+                if (present(state)) state = result
+                return
+            end if
+            call round_gradient_for_precision(gradient, config%precision_kind, status)
             if (status%code /= FORTNUM_OK) then
                 if (present(state)) state = result
                 return
@@ -2668,18 +2756,33 @@ contains
         result%final_loss = loss
         if (present(validation_x)) then
             if (present(validation_weight)) then
-                call mlp_loss_value_gradient(model, validation_x, validation_target, &
+                call mlp_loss_value_gradient(model, validation_x_training, validation_target_training, &
                     config%l2, validation_loss, gradient, l2_gradient, status, &
                     sample_weight=validation_weight)
             else
-                call mlp_loss_value_gradient(model, validation_x, validation_target, &
+                call mlp_loss_value_gradient(model, validation_x_training, validation_target_training, &
                     config%l2, validation_loss, gradient, l2_gradient, status)
             end if
             if (status%code /= FORTNUM_OK) then
                 if (present(state)) state = result
                 return
             end if
+            call round_gradient_for_precision(gradient, config%precision_kind, status)
+            if (status%code /= FORTNUM_OK) then
+                if (present(state)) state = result
+                return
+            end if
             result%final_validation_loss = validation_loss
+        end if
+        ! Keep the public model at the binary64 master state after the final
+        ! FP32 evaluation.  The forward model is rounded again at the start
+        ! of every resumed call, while callers retain the usual model API.
+        if (config%precision_kind == MLP_PRECISION_FP32) then
+            call model%set_parameters(theta, status)
+            if (status%code /= FORTNUM_OK) then
+                if (present(state)) state = result
+                return
+            end if
         end if
         call emit_training_event(config, MLP_EVENT_TRAIN_END, result%epochs, &
             result%updates, result%final_loss, result%final_validation_loss, &
@@ -3476,6 +3579,72 @@ contains
         ! check; this call avoids exposing its private allocation predicate.
         valid = model%parameter_count() > 0
     end function valid_data
+
+    subroutine set_model_parameters_for_precision(model, parameters, precision_kind, status)
+        !! Load the forward model from a binary64 master vector.
+        !!
+        !! FP32 deliberately has no second parameter storage in `mlp_t` yet.
+        !! The model boundary is therefore a transactional binary32 cast.  The
+        !! caller keeps `parameters` as the optimizer/master vector and this
+        !! routine leaves it untouched.  A value outside the finite FP32 range
+        !! is rejected before the model can be partially updated.
+        class(mlp_t), intent(inout) :: model
+        real(dp), intent(in) :: parameters(:)
+        integer, intent(in) :: precision_kind
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: rounded(:)
+
+        if (precision_kind == MLP_PRECISION_FP32) then
+            allocate(rounded(size(parameters)))
+            rounded = real(real(parameters, real32), dp)
+            if (any(.not. ieee_is_finite(rounded))) then
+                call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                    "MLP train: master parameter is outside finite FP32 range")
+                return
+            end if
+            call model%set_parameters(rounded, status)
+            return
+        end if
+        call model%set_parameters(parameters, status)
+    end subroutine set_model_parameters_for_precision
+
+    subroutine quantize_matrix_fp32(values, status, context)
+        !! Round a training data matrix through the IEEE binary32 kind.
+        real(dp), intent(inout) :: values(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        character(len=*), intent(in) :: context
+        real(dp), allocatable :: rounded(:, :)
+
+        allocate(rounded(size(values, 1), size(values, 2)))
+        rounded = real(real(values, real32), dp)
+        if (any(.not. ieee_is_finite(rounded))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                trim(context)//" exceeds finite FP32 range")
+            return
+        end if
+        values = rounded
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine quantize_matrix_fp32
+
+    subroutine round_gradient_for_precision(gradient, precision_kind, status)
+        !! Keep the gradient boundary identical to the FP32 forward boundary.
+        real(dp), intent(inout) :: gradient(:)
+        integer, intent(in) :: precision_kind
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: rounded(:)
+
+        if (precision_kind == MLP_PRECISION_FP32) then
+            allocate(rounded(size(gradient)))
+            rounded = real(real(gradient, real32), dp)
+            if (any(.not. ieee_is_finite(rounded))) then
+                call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                    "MLP train: gradient exceeds finite FP32 range")
+                return
+            end if
+            gradient = rounded
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine round_gradient_for_precision
 
     subroutine validate_sample_weight(sample_weight, n_samples, weight_mass, &
             status, context)

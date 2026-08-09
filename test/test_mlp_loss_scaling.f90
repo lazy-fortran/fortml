@@ -6,7 +6,7 @@ program test_mlp_loss_scaling
     use fortml_mlp, only: mlp_t, MLP_LINEAR
     use fortml_mlp_training, only: mlp_loss_scale_state_t, mlp_training_options_t, &
         mlp_training_state_t, mlp_training_checkpoint_t, mlp_train, &
-        MLP_OPTIMIZER_SGD, MLP_PRECISION_FP32
+        MLP_OPTIMIZER_SGD, MLP_PRECISION_FP16, MLP_PRECISION_BF16
     use fortml_mlp_checkpoint, only: mlp_checkpoint_save, mlp_checkpoint_load
     implicit none
 
@@ -140,7 +140,7 @@ contains
         call model%initialize([1, 1], status, output_activation=MLP_LINEAR)
         call model%set_parameters([0.25_dp, -0.5_dp], status)
         before = model%parameters()
-        options%precision_kind = MLP_PRECISION_FP32
+        options%precision_kind = MLP_PRECISION_FP16
         options%max_epochs = 1
         options%loss_scale%enabled = .true.
         options%loss_scale%initial_scale = 16.0_dp
@@ -150,6 +150,12 @@ contains
             maxval(abs(model%parameters() - before)) == 0.0_dp .and. &
             state%loss_scale%enabled, &
             "unsupported resident lower precision is typed and non-mutating", failures)
+        options%precision_kind = MLP_PRECISION_BF16
+        call mlp_train(model, x, target, status, options, state)
+        call check(status%code == FORTNUM_NOT_IMPLEMENTED .and. &
+            maxval(abs(model%parameters() - before)) == 0.0_dp .and. &
+            state%precision_kind == MLP_PRECISION_BF16 .and. state%updates == 0, &
+            "BF16 storage and kernels remain a typed refusal", failures)
     end subroutine test_lower_precision_refusal
 
     subroutine check(condition, description, failures)
