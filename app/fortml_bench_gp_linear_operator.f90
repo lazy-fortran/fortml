@@ -36,8 +36,8 @@ program fortml_bench_gp_linear_operator
     call query_ops%set_operator(2, "gradient", [0.0_dp, 1.0_dp], status)
     call query_ops%set_operator(3, "robin_left", [0.7_dp, -0.4_dp], status)
     call query_ops%set_operator(4, "robin_right", [0.5_dp, 0.25_dp], status)
-    direction = reshape([0.05_dp, -0.07_dp, 0.03_dp, 0.02_dp, &
-        -0.04_dp, 0.06_dp, -0.02_dp, 0.08_dp], shape(direction))
+    direction = reshape([0.05_dp, -0.04_dp, -0.07_dp, 0.06_dp, &
+        0.03_dp, -0.02_dp, 0.02_dp, 0.08_dp], shape(direction))
     do i = 1, q
         mean_bar(i, 1) = 0.2_dp - 0.03_dp*real(i, dp)
         variance_bar(i) = -0.08_dp + 0.02_dp*real(i, dp)
