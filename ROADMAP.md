@@ -21,7 +21,7 @@ boosted-tree partial-dependence/ICE, learned basis fan-in, fixed-full-batch
 SGD clipping hypergradient, and fixed-shape Gamma-GP likelihood slices.
 The broad parity
 gate is still open, so this work does not move or recreate that tag.
-The checklist currently records 413 completed and 149 open items. Open rows are
+The checklist currently records 414 completed and 149 open items. Open rows are
 retained until their implementation, independent oracle, device/refusal
 behavior, and benchmark evidence land together.
 
@@ -346,6 +346,12 @@ it is checked off.
   clones and return a typed CUDA refusal. The independent mutation and
   device-boundary oracle and benchmark are pinned in
   `fortml-bench/results/BASIS_PIPELINE_CLONE.md`.
+- [x] Add transactional cloning for a fitted sequential basis pipeline:
+  deep-copy every ordered stage, packed parameters, fitted metadata, labels,
+  and input schema; preserve the destination on invalid sources; dispatch an
+  explicitly selected CPU clone and return a typed CUDA refusal. Independent
+  mutation and refusal evidence is pinned in
+  `fortml-bench/results/SEQUENTIAL_PIPELINE_CLONE.md`.
 - [x] Add a transactional learned basis fan-in node for same-shape named
   branches, packed mixing weights, metadata/schema persistence, value/JVP/VJP/
   HVP products, and typed CUDA/OpenACC refusals. Evidence is pinned in
