@@ -1521,6 +1521,7 @@ input derivative is required.  This boundary is covered by
 | `make_random_fourier_basis(n_inputs,frequencies,phases,status[,include_intercept])` | Fixed `sqrt(2/m) cos(w_k dot x + b_k)` random-feature map | Empty (frequencies and phases are fixed transform state) |
 | `make_radial_basis(n_inputs,centers,scales,status[,include_intercept])` | One anisotropic Gaussian feature per center | Centers followed by log scales |
 | `make_spline_basis(n_inputs,order,breakpoints,status[,include_intercept])` | B-spline basis functions for each input | Empty |
+| `make_cubic_spline_basis(n_inputs,breakpoints,status[,include_intercept])` | Clamped cubic B-spline basis (order four) for each input | Empty |
 | `map%initialize_callback(...)` | Caller-defined | Caller-defined flat vector |
 
 The public operations are `feature_count`, `parameter_count`, `parameters`,
@@ -1540,6 +1541,11 @@ extension and test code. Chebyshev maps use the three-term recurrence
 `T_0=1`, `T_1=x`, `T_k=2*x*T_(k-1)-T_(k-2)`; `include_intercept` adds the shared
 `T_0` column. They are parameter-free and exact on CPU; resident-CUDA calls
 return a typed refusal until a static device lowering is available.
+
+`make_cubic_spline_basis` is the production convenience constructor for the
+common cubic case. It is exactly `make_spline_basis(n_inputs,4,...)`, with
+order fixed to four (degree three), and retains the same feature ordering,
+clamped endpoints, fixed-span derivative contract, and parameter-free state.
 
 `make_polynomial_interaction_basis` is the interaction-aware polynomial
 variant. For two inputs and degree two its optional-intercept feature order is

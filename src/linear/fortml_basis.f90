@@ -32,6 +32,7 @@ module fortml_basis
             basis_initialize_random_fourier
         procedure, public :: initialize_radial => basis_initialize_radial
         procedure, public :: initialize_spline => basis_initialize_spline
+        procedure, public :: initialize_cubic_spline => basis_initialize_cubic_spline
         procedure, public :: initialize_callback => basis_initialize_callback
         procedure, public :: input_count => basis_input_count
         procedure, public :: feature_count => basis_feature_count
@@ -54,6 +55,7 @@ module fortml_basis
     public :: make_random_fourier_basis
     public :: make_radial_basis
     public :: make_spline_basis
+    public :: make_cubic_spline_basis
     public :: basis_value_callback, basis_jvp_callback, basis_vjp_callback
 
 contains
@@ -136,6 +138,25 @@ contains
         call map%initialize_spline(n_inputs, order, breakpoints, status, &
             include_intercept)
     end function make_spline_basis
+
+    function make_cubic_spline_basis(n_inputs, breakpoints, status, &
+            include_intercept) result(map)
+        !! Construct a clamped cubic B-spline map.
+        !!
+        !! FortNum's spline order is degree + 1, hence cubic splines use
+        !! order four.  `breakpoints(:,j)` is the strictly increasing knot
+        !! breakpoint vector for input `j`; endpoint knots are clamped by the
+        !! underlying evaluator.  The optional intercept is a shared constant
+        !! feature appended after the per-input spline features.
+        integer, intent(in) :: n_inputs
+        real(dp), intent(in) :: breakpoints(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        logical, intent(in), optional :: include_intercept
+        type(basis_map_t) :: map
+
+        call map%initialize_cubic_spline(n_inputs, breakpoints, status, &
+            include_intercept)
+    end function make_cubic_spline_basis
 
     subroutine basis_initialize_polynomial(self, n_inputs, degree, status, &
             include_intercept)
@@ -248,6 +269,18 @@ contains
         if (status%code /= FORTNUM_OK) return
         call move_alloc(implementation, self%implementation)
     end subroutine basis_initialize_spline
+
+    subroutine basis_initialize_cubic_spline(self, n_inputs, breakpoints, &
+            status, include_intercept)
+        class(basis_map_t), intent(out) :: self
+        integer, intent(in) :: n_inputs
+        real(dp), intent(in) :: breakpoints(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        logical, intent(in), optional :: include_intercept
+
+        call self%initialize_spline(n_inputs, 4, breakpoints, status, &
+            include_intercept)
+    end subroutine basis_initialize_cubic_spline
 
     subroutine basis_initialize_callback(self, n_inputs, n_features, parameters, &
             value, jvp, vjp, status)

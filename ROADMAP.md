@@ -2588,6 +2588,11 @@ return status errors.
 - [x] Provide polynomial, Fourier, radial, and B-spline basis maps with value,
   JVP, VJP, and analytic scalar-contraction HVP products. Callback maps retain
   value/JVP/VJP products and return a typed HVP refusal.
+- [x] Add the explicit `make_cubic_spline_basis` convenience constructor and
+  matching `initialize_cubic_spline` initializer. It fixes FortNum's clamped
+  spline order to four (degree three), preserving the generic feature layout
+  and fixed-span derivative contract; `test_basis_cubic_spline` supplies an
+  independent Cox--de Boor oracle and finite-difference product checks.
 - [x] Provide a parameter-free Chebyshev first-kind basis through
   `make_chebyshev_basis`. The per-input `T_1` through `T_degree` recurrence,
   optional shared intercept, exact input JVP/VJP/HVP products, independent
