@@ -19,7 +19,7 @@ The checklist currently records 345 completed and 127 open items; open rows are
 retained until their implementation, independent oracle, device/refusal
 behavior, and benchmark evidence land together.
 
-The current parity wave closes twelve bounded contracts: chronological
+The current parity wave closes thirteen bounded contracts: chronological
 expanding/rolling validation with scorer and clone/reset metadata,
 multiclass focal-softmax value/JVP/VJP/HVP products wired through MLP and
 FortOpt objectives, RBF order-three derivative observations, implicit binary
@@ -97,6 +97,17 @@ This contract is the implementation filter for the open checklist below. A
 feature is not complete when a type exists; it is complete when its registry,
 derivatives, state, device behavior, independent oracle, and benchmark all
 agree.
+
+The generic trainer now closes the first shared schedule seam. Its
+`trainer_options_t%learning_rate_schedule` applies the existing typed
+constant, warmup, cosine, exponential, and one-cycle rates to every streaming
+optimizer without reinitializing moments, persists the schedule configuration
+in checkpoint schema 5, and refuses plateau schedules or L-BFGS-B combinations
+that need validation/state not owned by this trainer. The independent
+`test_trainer_schedule` recurrence and continuation oracle is the source gate;
+the release benchmark is retained in `fortml-bench` alongside the model-family
+trajectory lanes. Schedule hyperparameter gradients/HVPs remain model-specific
+until their objective adapters expose the same derivative provider.
 
 The multilabel neural-objective slice adds
 `mlp_multilabel_training_objective_t` and
@@ -183,6 +194,14 @@ refusal rows are pinned in
 `fortml-bench/results/GP_ORDINAL_HYPERPARAMETERS.md`. Native cumulative
 ordinal likelihoods, optimized cut points, and resident GPU solves remain
 open.
+
+The multiclass Laplace-GP closure adds a block-packed directional
+`hyperparameter_hvp` over the independent sorted-label OVR models. Each class
+delegates to the exact binary implicit-mode product, while the device method
+returns the same explicit resident-CUDA refusal until a multiclass factorization
+graph is linked. `test_gp_multiclass_classification` checks the HVP against
+independent refit-gradient finite differences, and the release record is
+`fortml-bench/results/GP_MULTICLASS_HYPER_HVP.md`.
 
 The metric-learning loss slice adds a reusable weighted pairwise contrastive
 objective to `fortml_losses`: matching/non-matching Euclidean pairs expose

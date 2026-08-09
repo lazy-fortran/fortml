@@ -258,9 +258,13 @@ is intentionally not claimed; a layout-aware adapter remains an explicit
 extension. The second moment and step counter are checkpointed.
 
 `trainer_options_t` owns optimizer coefficients, gradient clipping, optional
-parameter bounds, EMA decay, convergence tolerances, and an optional typed
-step callback. `trainer_state_t` reports counters, objective and gradient
-histories, clipping, convergence, final parameters, and EMA parameters.
+parameter bounds, EMA decay, convergence tolerances, an optional typed step
+callback, and an optional stateless `mlp_learning_rate_schedule_t`. The
+schedule is evaluated at each streaming update for SGD, Adam, AdamW, Adagrad,
+RMSprop, Adafactor, and Lion without resetting optimizer moments; invalid
+plateau or L-BFGS-B combinations return a typed refusal. `trainer_state_t`
+reports counters, objective and gradient histories, clipping, convergence,
+final parameters, and EMA parameters.
 `state_copy()` is an in-memory checkpoint and `clone(copy,status)` copies the
 complete optimizer and objective state, including moments and L-BFGS-B
 parameters, so an interrupted run can resume without process-global state.
@@ -277,8 +281,9 @@ SGD/Adam/AdamW/Adagrad/RMSprop/Adafactor/Lion recurrence. `load_checkpoint(path,
 transactional: it requires an initialized destination with the same packed
 dimension, validates schema/order/counts/finite values, and refuses truncated,
 unknown, extra, or incompatible records without changing the destination.
-Schema version 2 is a deliberate clean break from version 1 so the new
-Adafactor options and state cannot be silently misread.
+Schema version 5 is a deliberate clean break that records the typed schedule
+configuration and rejects older or newer trainer snapshots rather than
+silently changing a trajectory.
 Procedure callbacks and objective closures remain process-local and must be
 attached by the caller; L-BFGS-B has no resumable streaming state in this
 trainer format.
