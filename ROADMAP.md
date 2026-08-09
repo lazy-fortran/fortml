@@ -339,6 +339,12 @@ open; see [`docs/CONTRASTIVE_LOSS.md`](docs/CONTRASTIVE_LOSS.md).
 | NVIDIA HPC SDK | `FO_FC=nvfortran fo` | Static and lint checks passed in the recorded older compiler lane. The checked-in NVIDIA log predates the current 273-test GNU run. See [`verification/fortml-nvfortran.txt`](verification/fortml-nvfortran.txt). |
 | Intel LLVM Fortran | `ifx` | Compiler unavailable in the verification environment. Not tested. |
 
+The weighted OLS and deterministic linear-SGD slices landed after the recorded
+full gate. Their focused independent tests and release applications pass; a
+fresh whole-repository gate is pending while the active FortFront owned-array
+branch is being completed, because that dirty dependency checkout currently
+does not compile as a self-consistent revision.
+
 The checked-in GNU compiler log is the fresh 2026-08-09 run against FortML code
 revision `6051b2b` (including weighted Bayesian ridge posterior, classifier-chain, weighted Huber, rational-
 quadratic and cosine derivative-GP, cubic-spline basis, and
@@ -400,7 +406,7 @@ compiler coverage remains an
 explicit older-build result.
 
 The checked-in evidence is maintained on the clean FortML-bench revision
-`0cd94c4`; each CSV records the exact clean benchmark revision used to produce
+`007c589`; each CSV records the exact clean benchmark revision used to produce
 its rows (older CSVs retain their historical provenance),
 the trainer-checkpoint, unfactored-Adafactor, binary-objective,
 multiclass-calibration, variational-multiclass-GP, PINN/physics-objective,
