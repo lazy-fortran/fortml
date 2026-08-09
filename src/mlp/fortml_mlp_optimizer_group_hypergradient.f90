@@ -23,6 +23,8 @@ module fortml_mlp_optimizer_group_hypergradient
         FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED, FORTNUM_CONVERGENCE_ERROR
     use fortml_device, only: FORTML_DEVICE_CPU, FORTML_DEVICE_CUDA
     use fortml_mlp, only: mlp_t
+    use fortml_mlp_schedules, only: mlp_learning_rate_schedule_t, &
+        MLP_SCHEDULE_CONSTANT, MLP_SCHEDULE_PLATEAU, MLP_SCHEDULE_ONE_CYCLE
     use fortml_mlp_training, only: mlp_loss_value_gradient, mlp_loss_hvp, &
         mlp_optimizer_group_t, MLP_OPTIMIZER_SGD
     use fortopt_objective, only: objective_t
@@ -34,6 +36,10 @@ module fortml_mlp_optimizer_group_hypergradient
     integer, parameter, public :: MLP_OPTIMIZER_GROUP_LOG_LEARNING_RATE = 1
     integer, parameter, public :: MLP_OPTIMIZER_GROUP_LOG_L2 = 2
     integer, parameter, public :: MLP_OPTIMIZER_GROUP_FIRST_LOG_MULTIPLIER = 3
+    integer, parameter, public :: MLP_OPTIMIZER_GROUP_LOGIT_MIN_FRACTION = 3
+    integer, parameter, public :: MLP_OPTIMIZER_GROUP_LOGIT_DECAY_FACTOR = 4
+    integer, parameter, public :: MLP_OPTIMIZER_GROUP_LOG_PEAK_FRACTION = 3
+    integer, parameter, public :: MLP_OPTIMIZER_GROUP_LOG_FINAL_FRACTION = 4
     integer, parameter, public :: MLP_OPTIMIZER_GROUP_OPTIMIZER = MLP_OPTIMIZER_SGD
     real(dp), parameter :: LOG_PARAMETER_MIN = -40.0_dp
     real(dp), parameter :: LOG_PARAMETER_MAX = 40.0_dp
@@ -45,12 +51,18 @@ module fortml_mlp_optimizer_group_hypergradient
         integer :: log_learning_rate_index = MLP_OPTIMIZER_GROUP_LOG_LEARNING_RATE
         integer :: log_l2_index = MLP_OPTIMIZER_GROUP_LOG_L2
         integer :: first_log_multiplier_index = MLP_OPTIMIZER_GROUP_FIRST_LOG_MULTIPLIER
+        integer :: schedule_parameter_count = 0
+        integer :: schedule_kind = MLP_SCHEDULE_CONSTANT
+        integer :: warmup_updates = 0
+        integer :: total_updates = 0
+        logical :: one_cycle_coordinates = .false.
     end type mlp_optimizer_group_hypergradient_metadata_t
 
     type, public :: mlp_optimizer_group_hypergradient_options_t
         integer :: steps = 8
         real(dp) :: learning_rate = 1.0e-2_dp
         real(dp) :: l2 = 1.0e-4_dp
+        type(mlp_learning_rate_schedule_t) :: schedule
         type(mlp_optimizer_group_t), allocatable :: groups(:)
         real(dp) :: lower_log_learning_rate = -16.0_dp
         real(dp) :: upper_log_learning_rate = 1.0_dp
@@ -58,6 +70,10 @@ module fortml_mlp_optimizer_group_hypergradient
         real(dp) :: upper_log_l2 = 1.0_dp
         real(dp) :: lower_log_multiplier = -8.0_dp
         real(dp) :: upper_log_multiplier = 8.0_dp
+        real(dp) :: lower_logit_min_fraction = -12.0_dp
+        real(dp) :: upper_logit_min_fraction = 12.0_dp
+        real(dp) :: lower_logit_decay_factor = -12.0_dp
+        real(dp) :: upper_logit_decay_factor = 12.0_dp
         !! Fixed global norm clipping applied before each grouped SGD update.
         !! The clipping norm is not an outer coordinate; derivatives are exact
         !! for the fixed active set and the norm boundary is a typed refusal.
@@ -82,6 +98,12 @@ module fortml_mlp_optimizer_group_hypergradient
         real(dp) :: log_l2 = 0.0_dp
         real(dp) :: learning_rate = 0.0_dp
         real(dp) :: l2 = 0.0_dp
+        real(dp) :: logit_min_fraction = 0.0_dp
+        real(dp) :: logit_decay_factor = 0.0_dp
+        real(dp) :: min_rate_fraction = 0.0_dp
+        real(dp) :: decay_factor = 0.0_dp
+        real(dp) :: peak_rate_fraction = 0.0_dp
+        real(dp) :: final_rate_fraction = 0.0_dp
         real(dp), allocatable :: log_multiplier(:)
         real(dp), allocatable :: multiplier(:)
     end type mlp_optimizer_group_hypergradient_result_t
@@ -97,6 +119,7 @@ module fortml_mlp_optimizer_group_hypergradient
         real(dp) :: initial_log_learning_rate = 0.0_dp
         real(dp) :: initial_log_l2 = 0.0_dp
         real(dp) :: gradient_clip_norm = 0.0_dp
+        type(mlp_learning_rate_schedule_t) :: schedule
         logical :: initialized = .false.
     contains
         procedure, public :: initialize => mlp_optimizer_group_hypergradient_initialize
@@ -136,7 +159,8 @@ contains
         self%layout = mlp_optimizer_group_hypergradient_metadata_t_default
         if (.not. valid_options(options)) then
             if (options%optimizer /= MLP_OPTIMIZER_GROUP_OPTIMIZER .or. &
-                options%device_kind == FORTML_DEVICE_CUDA) then
+                options%device_kind == FORTML_DEVICE_CUDA .or. &
+                options%schedule%kind == MLP_SCHEDULE_PLATEAU) then
                 call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
                     "MLP optimizer-group hypergradient: optimizer or device is unsupported")
             else
@@ -201,6 +225,20 @@ contains
         self%initial_log_learning_rate = log(options%learning_rate)
         self%initial_log_l2 = log(options%l2)
         self%gradient_clip_norm = options%gradient_clip_norm
+        self%schedule = options%schedule
+        self%layout%schedule_kind = options%schedule%kind
+        self%layout%warmup_updates = options%schedule%warmup_updates
+        self%layout%total_updates = options%schedule%total_updates
+        self%layout%one_cycle_coordinates = options%schedule%kind == MLP_SCHEDULE_ONE_CYCLE
+        if (options%schedule%kind == MLP_SCHEDULE_CONSTANT) then
+            self%layout%schedule_parameter_count = 0
+        else
+            self%layout%schedule_parameter_count = 2
+        end if
+        self%layout%first_log_multiplier_index = MLP_OPTIMIZER_GROUP_BASE_COUNT + &
+            self%layout%schedule_parameter_count + 1
+        self%layout%parameter_count = MLP_OPTIMIZER_GROUP_BASE_COUNT + &
+            self%layout%schedule_parameter_count + n_groups
         self%initialized = .true.
         call status_set(status, FORTNUM_OK, "")
     end subroutine mlp_optimizer_group_hypergradient_initialize
@@ -270,8 +308,23 @@ contains
         if (.not. self%initialized) return
         parameters(MLP_OPTIMIZER_GROUP_LOG_LEARNING_RATE) = self%initial_log_learning_rate
         parameters(MLP_OPTIMIZER_GROUP_LOG_L2) = self%initial_log_l2
+        if (self%layout%schedule_parameter_count > 0) then
+            if (self%layout%one_cycle_coordinates) then
+                parameters(MLP_OPTIMIZER_GROUP_LOG_PEAK_FRACTION) = &
+                    log(max(self%schedule%peak_rate_fraction, 1.0e-12_dp))
+                parameters(MLP_OPTIMIZER_GROUP_LOG_FINAL_FRACTION) = &
+                    log(max(self%schedule%final_rate_fraction, 1.0e-12_dp))
+            else
+                parameters(MLP_OPTIMIZER_GROUP_LOGIT_MIN_FRACTION) = log( &
+                    min(1.0_dp-1.0e-8_dp, max(1.0e-8_dp, self%schedule%min_rate_fraction)) / &
+                    (1.0_dp-min(1.0_dp-1.0e-8_dp, max(1.0e-8_dp, self%schedule%min_rate_fraction))))
+                parameters(MLP_OPTIMIZER_GROUP_LOGIT_DECAY_FACTOR) = log( &
+                    min(1.0_dp-1.0e-8_dp, max(1.0e-8_dp, self%schedule%decay_factor)) / &
+                    (1.0_dp-min(1.0_dp-1.0e-8_dp, max(1.0e-8_dp, self%schedule%decay_factor))))
+            end if
+        end if
         do i = 1, self%layout%group_count
-            parameters(MLP_OPTIMIZER_GROUP_FIRST_LOG_MULTIPLIER + i - 1) = &
+            parameters(self%layout%first_log_multiplier_index + i - 1) = &
                 log(self%groups(i)%learning_rate_multiplier)
         end do
     end function mlp_optimizer_group_hypergradient_parameters
@@ -452,9 +505,22 @@ contains
         upper(1) = options%upper_log_learning_rate
         lower(2) = options%lower_log_l2
         upper(2) = options%upper_log_l2
+        if (adapter%layout%schedule_parameter_count > 0) then
+            if (adapter%layout%one_cycle_coordinates) then
+                lower(MLP_OPTIMIZER_GROUP_LOG_PEAK_FRACTION) = options%lower_logit_min_fraction
+                upper(MLP_OPTIMIZER_GROUP_LOG_PEAK_FRACTION) = options%upper_logit_min_fraction
+                lower(MLP_OPTIMIZER_GROUP_LOG_FINAL_FRACTION) = options%lower_logit_decay_factor
+                upper(MLP_OPTIMIZER_GROUP_LOG_FINAL_FRACTION) = options%upper_logit_decay_factor
+            else
+                lower(MLP_OPTIMIZER_GROUP_LOGIT_MIN_FRACTION) = options%lower_logit_min_fraction
+                upper(MLP_OPTIMIZER_GROUP_LOGIT_MIN_FRACTION) = options%upper_logit_min_fraction
+                lower(MLP_OPTIMIZER_GROUP_LOGIT_DECAY_FACTOR) = options%lower_logit_decay_factor
+                upper(MLP_OPTIMIZER_GROUP_LOGIT_DECAY_FACTOR) = options%upper_logit_decay_factor
+            end if
+        end if
         do i = 1, n_groups
-            lower(2+i) = options%lower_log_multiplier
-            upper(2+i) = options%upper_log_multiplier
+            lower(adapter%layout%first_log_multiplier_index+i-1) = options%lower_log_multiplier
+            upper(adapter%layout%first_log_multiplier_index+i-1) = options%upper_log_multiplier
         end do
         call adapter%fortopt(objective, status)
         if (status%code /= FORTNUM_OK) return
@@ -477,7 +543,18 @@ contains
         result%log_l2 = parameters(2)
         result%learning_rate = exp(result%log_learning_rate)
         result%l2 = exp(result%log_l2)
-        result%log_multiplier = parameters(3:)
+        if (adapter%layout%schedule_parameter_count > 0) then
+            result%logit_min_fraction = parameters(MLP_OPTIMIZER_GROUP_LOGIT_MIN_FRACTION)
+            result%logit_decay_factor = parameters(MLP_OPTIMIZER_GROUP_LOGIT_DECAY_FACTOR)
+            if (adapter%layout%one_cycle_coordinates) then
+                result%peak_rate_fraction = exp(parameters(MLP_OPTIMIZER_GROUP_LOG_PEAK_FRACTION))
+                result%final_rate_fraction = exp(parameters(MLP_OPTIMIZER_GROUP_LOG_FINAL_FRACTION))
+            else
+                result%min_rate_fraction = sigmoid(result%logit_min_fraction)
+                result%decay_factor = sigmoid(result%logit_decay_factor)
+            end if
+        end if
+        result%log_multiplier = parameters(adapter%layout%first_log_multiplier_index:)
         result%multiplier = exp(result%log_multiplier)
         if (.not. result%converged) then
             call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
@@ -497,8 +574,12 @@ contains
         real(dp), allocatable :: gradient_dot(:, :), hvp(:), scale(:), scale_dot(:, :)
         real(dp), allocatable :: validation_gradient(:)
         real(dp) :: learning_rate, l2, train_value, l2_gradient, scalar_hvp
-        real(dp) :: learning_rate_dot, l2_dot, multiplier
+        real(dp) :: learning_rate_dot, l2_dot, multiplier, rate
+        real(dp) :: rate_dot, d_base, d_min, d_decay, d_peak, d_final
+        real(dp) :: min_fraction, decay_factor, peak_fraction, final_fraction
+        real(dp) :: base_dot, min_dot, decay_dot, peak_dot, final_dot
         real(dp) :: raw_gradient_norm, clip_scale, norm_dot, clip_tolerance
+        type(mlp_learning_rate_schedule_t) :: schedule
         integer :: n_model, n_outer, step, parameter_index, group_index, first, last
 
         value = huge(1.0_dp)
@@ -511,6 +592,10 @@ contains
         end if
         n_model = size(self%initial_parameters)
         n_outer = self%layout%parameter_count
+        schedule = self%schedule
+        call schedule_parameters(schedule, parameters, self%layout, min_fraction, &
+            decay_factor, peak_fraction, final_fraction, status)
+        if (status%code /= FORTNUM_OK) return
         allocate(theta, source=self%initial_parameters)
         allocate(theta_dot(n_model, n_outer), raw_gradient(n_model))
         allocate(gradient_dot(n_model, n_outer), hvp(n_model))
@@ -521,10 +606,10 @@ contains
         do group_index = 1, self%layout%group_count
             first = self%groups(group_index)%first
             last = self%groups(group_index)%last
-            multiplier = exp(parameters(MLP_OPTIMIZER_GROUP_FIRST_LOG_MULTIPLIER + &
+            multiplier = exp(parameters(self%layout%first_log_multiplier_index + &
                 group_index - 1))
             scale(first:last) = multiplier
-            scale_dot(first:last, MLP_OPTIMIZER_GROUP_FIRST_LOG_MULTIPLIER + &
+            scale_dot(first:last, self%layout%first_log_multiplier_index + &
                 group_index - 1) = multiplier
         end do
 
@@ -534,6 +619,14 @@ contains
             call mlp_loss_value_gradient(self%model, self%train_x, self%train_target, &
                 l2, train_value, raw_gradient, l2_gradient, status)
             if (status%code /= FORTNUM_OK) return
+            call schedule%rate_with_full_derivatives(step, learning_rate, rate, d_base, &
+                d_min, d_decay, d_peak, d_final, status)
+            if (status%code /= FORTNUM_OK) return
+            base_dot = learning_rate
+            min_dot = min_fraction*(1.0_dp-min_fraction)
+            decay_dot = decay_factor*(1.0_dp-decay_factor)
+            peak_dot = peak_fraction
+            final_dot = final_fraction
             raw_gradient_norm = sqrt(sum(raw_gradient*raw_gradient))
             if (.not. ieee_is_finite(raw_gradient_norm)) then
                 call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -571,14 +664,28 @@ contains
             do parameter_index = 1, n_outer
                 learning_rate_dot = 0.0_dp
                 if (parameter_index == MLP_OPTIMIZER_GROUP_LOG_LEARNING_RATE) then
-                    learning_rate_dot = learning_rate
+                    learning_rate_dot = d_base*base_dot
+                end if
+                if (parameter_index == MLP_OPTIMIZER_GROUP_LOGIT_MIN_FRACTION) then
+                    learning_rate_dot = d_min*min_dot
+                end if
+                if (parameter_index == MLP_OPTIMIZER_GROUP_LOGIT_DECAY_FACTOR) then
+                    learning_rate_dot = d_decay*decay_dot
+                end if
+                if (self%layout%one_cycle_coordinates .and. &
+                    parameter_index == MLP_OPTIMIZER_GROUP_LOG_PEAK_FRACTION) then
+                    learning_rate_dot = d_peak*peak_dot
+                end if
+                if (self%layout%one_cycle_coordinates .and. &
+                    parameter_index == MLP_OPTIMIZER_GROUP_LOG_FINAL_FRACTION) then
+                    learning_rate_dot = d_final*final_dot
                 end if
                 theta_dot(:, parameter_index) = theta_dot(:, parameter_index) - &
                     learning_rate_dot*scale*raw_gradient - &
-                    learning_rate*scale_dot(:, parameter_index)*raw_gradient - &
-                    learning_rate*scale*gradient_dot(:, parameter_index)
+                rate*scale_dot(:, parameter_index)*raw_gradient - &
+                    rate*scale*gradient_dot(:, parameter_index)
             end do
-            theta = theta-learning_rate*scale*raw_gradient
+            theta = theta-rate*scale*raw_gradient
             if (any(.not. ieee_is_finite(theta)) .or. &
                 any(.not. ieee_is_finite(theta_dot))) then
                 call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -623,6 +730,15 @@ contains
         l2 = exp(parameters(2))
         valid = ieee_is_finite(learning_rate) .and. ieee_is_finite(l2) .and. &
             learning_rate > 0.0_dp .and. l2 > 0.0_dp
+        if (.not. valid) return
+        if (self%layout%schedule_parameter_count > 0) then
+            if (self%layout%one_cycle_coordinates) then
+                valid = exp(parameters(MLP_OPTIMIZER_GROUP_LOG_PEAK_FRACTION)) >= 1.0_dp .and. &
+                    exp(parameters(MLP_OPTIMIZER_GROUP_LOG_FINAL_FRACTION)) > 0.0_dp .and. &
+                    exp(parameters(MLP_OPTIMIZER_GROUP_LOG_FINAL_FRACTION)) <= &
+                    exp(parameters(MLP_OPTIMIZER_GROUP_LOG_PEAK_FRACTION))
+            end if
+        end if
     end function valid_trajectory_parameters
 
     logical function valid_parameter_vector(parameters, gradient, count) result(valid)
@@ -638,6 +754,7 @@ contains
 
         valid = options%steps >= 1 .and. options%optimizer == MLP_OPTIMIZER_GROUP_OPTIMIZER .and. &
             options%device_kind == FORTML_DEVICE_CPU .and. &
+            options%schedule%valid() .and. options%schedule%kind /= MLP_SCHEDULE_PLATEAU .and. &
             ieee_is_finite(options%learning_rate) .and. ieee_is_finite(options%l2) .and. &
             options%learning_rate > 0.0_dp .and. options%l2 > 0.0_dp .and. &
             ieee_is_finite(options%lower_log_learning_rate) .and. &
@@ -657,7 +774,29 @@ contains
             options%max_line_search >= 1 .and. ieee_is_finite(options%gradient_tolerance) .and. &
             ieee_is_finite(options%step_tolerance) .and. ieee_is_finite(options%objective_tolerance) .and. &
             options%gradient_tolerance >= 0.0_dp .and. options%step_tolerance >= 0.0_dp .and. &
-            options%objective_tolerance >= 0.0_dp
+            options%objective_tolerance >= 0.0_dp .and. &
+            ieee_is_finite(options%lower_logit_min_fraction) .and. &
+            ieee_is_finite(options%upper_logit_min_fraction) .and. &
+            ieee_is_finite(options%lower_logit_decay_factor) .and. &
+            ieee_is_finite(options%upper_logit_decay_factor) .and. &
+            options%lower_logit_min_fraction <= options%upper_logit_min_fraction .and. &
+            options%lower_logit_decay_factor <= options%upper_logit_decay_factor
+        if (.not. valid) return
+        if (options%schedule%kind == MLP_SCHEDULE_ONE_CYCLE) then
+            valid = log(options%schedule%peak_rate_fraction) >= options%lower_logit_min_fraction .and. &
+                log(options%schedule%peak_rate_fraction) <= options%upper_logit_min_fraction .and. &
+                log(options%schedule%final_rate_fraction) >= options%lower_logit_decay_factor .and. &
+                log(options%schedule%final_rate_fraction) <= options%upper_logit_decay_factor
+        else if (options%schedule%kind /= MLP_SCHEDULE_CONSTANT) then
+            valid = logit(interior_probability(options%schedule%min_rate_fraction)) >= &
+                options%lower_logit_min_fraction .and. &
+                logit(interior_probability(options%schedule%min_rate_fraction)) <= &
+                options%upper_logit_min_fraction .and. &
+                logit(interior_probability(options%schedule%decay_factor)) >= &
+                options%lower_logit_decay_factor .and. &
+                logit(interior_probability(options%schedule%decay_factor)) <= &
+                options%upper_logit_decay_factor
+        end if
     end function valid_options
 
     logical function valid_data(model, x, target) result(valid)
@@ -674,6 +813,75 @@ contains
         if (any(.not. ieee_is_finite(x)) .or. any(.not. ieee_is_finite(target))) return
         valid = .true.
     end function valid_data
+
+    subroutine schedule_parameters(schedule, parameters, layout, min_fraction, &
+            decay_factor, peak_fraction, final_fraction, status)
+        type(mlp_learning_rate_schedule_t), intent(inout) :: schedule
+        real(dp), intent(in) :: parameters(:)
+        type(mlp_optimizer_group_hypergradient_metadata_t), intent(in) :: layout
+        real(dp), intent(out) :: min_fraction, decay_factor, peak_fraction, final_fraction
+        type(fortnum_status_t), intent(out) :: status
+
+        min_fraction = schedule%min_rate_fraction
+        decay_factor = schedule%decay_factor
+        peak_fraction = schedule%peak_rate_fraction
+        final_fraction = schedule%final_rate_fraction
+        if (layout%schedule_parameter_count == 0) then
+            call status_set(status, FORTNUM_OK, "")
+            return
+        end if
+        if (layout%one_cycle_coordinates) then
+            peak_fraction = exp(parameters(MLP_OPTIMIZER_GROUP_LOG_PEAK_FRACTION))
+            final_fraction = exp(parameters(MLP_OPTIMIZER_GROUP_LOG_FINAL_FRACTION))
+            if (.not. ieee_is_finite(peak_fraction) .or. .not. ieee_is_finite(final_fraction) .or. &
+                peak_fraction < 1.0_dp .or. final_fraction <= 0.0_dp .or. &
+                final_fraction > peak_fraction) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP optimizer-group hypergradient: one-cycle coordinates are invalid")
+                return
+            end if
+            schedule%peak_rate_fraction = peak_fraction
+            schedule%final_rate_fraction = final_fraction
+        else
+            min_fraction = sigmoid(parameters(MLP_OPTIMIZER_GROUP_LOGIT_MIN_FRACTION))
+            decay_factor = sigmoid(parameters(MLP_OPTIMIZER_GROUP_LOGIT_DECAY_FACTOR))
+            if (.not. ieee_is_finite(min_fraction) .or. .not. ieee_is_finite(decay_factor)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP optimizer-group hypergradient: schedule coordinates are invalid")
+                return
+            end if
+            schedule%min_rate_fraction = min_fraction
+            schedule%decay_factor = decay_factor
+        end if
+        if (.not. schedule%valid()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP optimizer-group hypergradient: schedule coordinates are invalid")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine schedule_parameters
+
+    real(dp) function sigmoid(value) result(output)
+        real(dp), intent(in) :: value
+
+        if (value >= 0.0_dp) then
+            output = 1.0_dp/(1.0_dp + exp(-value))
+        else
+            output = exp(value)/(1.0_dp + exp(value))
+        end if
+    end function sigmoid
+
+    real(dp) function logit(value) result(output)
+        real(dp), intent(in) :: value
+
+        output = log(value/(1.0_dp-value))
+    end function logit
+
+    real(dp) function interior_probability(value) result(output)
+        real(dp), intent(in) :: value
+
+        output = min(1.0_dp-1.0e-8_dp, max(1.0e-8_dp, value))
+    end function interior_probability
 
     logical function ranges_overlap(a, b) result(overlap)
         type(mlp_optimizer_group_t), intent(in) :: a, b

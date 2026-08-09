@@ -5,11 +5,14 @@ program test_mlp_optimizer_group_hypergradient
     use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_NOT_IMPLEMENTED, &
         FORTNUM_DOMAIN_ERROR, FORTNUM_CONVERGENCE_ERROR
     use fortml_device, only: FORTML_DEVICE_CUDA
+    use fortml_mlp_schedules, only: make_mlp_schedule_cosine_decay, &
+        make_mlp_schedule_one_cycle
     use fortml_mlp, only: mlp_t, MLP_LINEAR
     use fortml_mlp_training, only: mlp_optimizer_group_t, mlp_training_options_t, &
         mlp_training_state_t, mlp_train, MLP_OPTIMIZER_SGD
     use fortml_mlp_optimizer_group_hypergradient, only: &
         mlp_optimizer_group_hypergradient_options_t, &
+        mlp_optimizer_group_hypergradient_metadata_t, &
         mlp_optimizer_group_hypergradient_objective_t, &
         mlp_optimizer_group_hypergradient_result_t, &
         mlp_optimize_optimizer_group_hyperparameters
@@ -22,6 +25,7 @@ program test_mlp_optimizer_group_hypergradient
     call test_trainer_parity(failures)
     call test_clipped_trajectory_and_boundary(failures)
     call test_fortopt_and_refusals(failures)
+    call test_scheduled_group_products(failures)
     if (failures > 0) then
         write (*, '(a,i0)') "FAIL MLP optimizer-group hypergradient cases: ", failures
         error stop 1
@@ -29,6 +33,72 @@ program test_mlp_optimizer_group_hypergradient
     write (*, '(a)') "PASS MLP optimizer-group hypergradient independent behavioral oracles"
 
 contains
+
+    subroutine test_scheduled_group_products(failures)
+        integer, intent(inout) :: failures
+        type(mlp_t) :: model
+        type(mlp_optimizer_group_hypergradient_options_t) :: options
+        type(mlp_optimizer_group_hypergradient_objective_t) :: objective
+        type(mlp_optimizer_group_hypergradient_metadata_t) :: metadata
+        type(fortnum_status_t) :: status
+        real(dp) :: train_x(4, 1), train_target(4, 1)
+        real(dp) :: validation_x(3, 1), validation_target(3, 1)
+        real(dp), allocatable :: parameters(:), gradient(:), direction(:)
+        real(dp), allocatable :: plus(:), minus(:), gradient_plus(:), gradient_minus(:)
+        real(dp) :: value, value_plus, value_minus, tangent, fd, h
+        integer :: i
+
+        call fixture(model, options, train_x, train_target, validation_x, validation_target, status)
+        options%schedule = make_mlp_schedule_cosine_decay(6, 0.2_dp)
+        options%schedule%decay_factor = 0.5_dp
+        call objective%initialize(model, train_x, train_target, validation_x, &
+            validation_target, options, status)
+        call check(status_ok(status) .and. objective%parameter_count() == 6, &
+            "cosine optimizer-group setup", failures)
+        parameters = objective%parameters()
+        allocate(gradient(size(parameters)), direction(size(parameters)), &
+            plus(size(parameters)), minus(size(parameters)), &
+            gradient_plus(size(parameters)), gradient_minus(size(parameters)))
+        call objective%value_gradient(parameters, value, gradient, status)
+        call check(status_ok(status), "cosine optimizer-group products", failures)
+        direction = [0.11_dp, -0.07_dp, 0.09_dp, -0.05_dp, 0.13_dp, -0.17_dp]
+        call objective%jvp(parameters, direction, value, tangent, status)
+        call check(status_ok(status) .and. abs(tangent-dot_product(gradient, direction)) < 2.0e-11_dp, &
+            "cosine optimizer-group JVP contraction", failures)
+        h = 2.0e-6_dp
+        do i = 1, size(parameters)
+            plus = parameters
+            minus = parameters
+            plus(i) = plus(i)+h
+            minus(i) = minus(i)-h
+            call objective%value_gradient(plus, value_plus, gradient_plus, status)
+            call objective%value_gradient(minus, value_minus, gradient_minus, status)
+            fd = (value_plus-value_minus)/(2.0_dp*h)
+            call check(status_ok(status) .and. abs(fd-gradient(i)) < 3.0e-7_dp, &
+                "cosine optimizer-group central difference", failures)
+        end do
+
+        options%schedule = make_mlp_schedule_one_cycle(2, 8, 1.8_dp, 0.08_dp)
+        call objective%initialize(model, train_x, train_target, validation_x, &
+            validation_target, options, status)
+        metadata = objective%metadata()
+        call check(status_ok(status) .and. metadata%one_cycle_coordinates .and. &
+            objective%parameter_count() == 6, "one-cycle optimizer-group setup", failures)
+        parameters = objective%parameters()
+        call objective%value_gradient(parameters, value, gradient, status)
+        call check(status_ok(status), "one-cycle optimizer-group products", failures)
+        do i = 1, size(parameters)
+            plus = parameters
+            minus = parameters
+            plus(i) = plus(i)+h
+            minus(i) = minus(i)-h
+            call objective%value_gradient(plus, value_plus, gradient_plus, status)
+            call objective%value_gradient(minus, value_minus, gradient_minus, status)
+            fd = (value_plus-value_minus)/(2.0_dp*h)
+            call check(status_ok(status) .and. abs(fd-gradient(i)) < 4.0e-7_dp, &
+                "one-cycle optimizer-group central difference", failures)
+        end do
+    end subroutine test_scheduled_group_products
 
     subroutine fixture(model, options, train_x, train_target, validation_x, validation_target, &
             status)

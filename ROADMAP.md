@@ -1992,8 +1992,16 @@ when a lower-level primitive already exists.
   the schedule through split checkpoint/resume. Independent transition,
   finite-difference, trainer, persistence, resume, and refusal oracles are in
   `test_mlp_plateau_schedule` and `fortml-bench/results/MLP_PLATEAU_SCHEDULE.md`.
-- [ ] Remaining production optimizer gaps: cosine/one-cycle/warmup schedule
-  derivatives through optimizer groups, validation policy, and device state.
+- [x] Add exact cosine/one-cycle/warm-up schedule products through optimizer
+  groups. The fixed full-batch CPU SGD trajectory now inserts typed schedule
+  coordinates before contiguous group multipliers, uses analytic
+  `rate_with_full_derivatives` recurrences, records schedule kind and update
+  counts in the metadata layout, and preserves the constant-schedule packed
+  ABI. Cosine, warm-up/cosine, linear warm-up, and one-cycle value/gradient,
+  JVP, and VJP products have independent central-difference and contraction
+  oracles; FortOpt consumes the same callback. Plateau, CUDA, stochastic,
+  validation-policy, and outer-HVP requests retain typed boundaries.
+- [ ] Remaining production optimizer gaps: validation policy and device state.
   The deterministic mini-batch SGD trajectory objective now records a private
   batch cursor (including seeded epoch shuffles), exposes exact learning-rate
   and L2 hypergradients through validation MSE, and is consumable by FortOpt

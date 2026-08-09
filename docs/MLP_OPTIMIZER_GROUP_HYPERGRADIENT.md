@@ -8,6 +8,15 @@ fixed full-batch SGD trajectory packs
 [ log(learning_rate), log(l2), log(multiplier_1), ..., log(multiplier_g) ]
 ```
 
+For a nonconstant stateless schedule, two schedule coordinates are inserted
+before the group multipliers. Cosine and warm-up/cosine schedules use
+`[logit(min_rate_fraction), logit(decay_factor)]`; one-cycle uses
+`[log(peak_rate_fraction), log(final_rate_fraction)]`. Inactive fields have
+exact zero products. The constant-schedule ABI is unchanged, while
+`metadata%first_log_multiplier_index` and
+`metadata%schedule_parameter_count` describe an extended layout. Schedule
+kind and integer warm-up/total-update counts are fixed metadata.
+
 Group names and ranges are discrete metadata captured at initialization.
 Every update uses the same post-optimizer scaling as `mlp_train`. Parameters in
 group `i` receive `multiplier_i` times the shared SGD delta, while uncovered
@@ -25,9 +34,11 @@ global-norm clipping order as `mlp_train`, after the L2 term and before grouped
 scaling. The packed derivatives propagate through the clipped branch for a
 fixed active set. A trajectory that lands on the clipping boundary returns a
 typed `FORTNUM_NOT_IMPLEMENTED` instead of assigning a false derivative. The
-clip norm itself is not an outer coordinate. Momentum, Adam-family state,
-schedules, minibatch cursors, and resident CUDA group state remain separate
-capability boundaries. CUDA requests return typed
+clip norm itself is not an outer coordinate. Momentum, Adam-family state, and
+minibatch cursors remain separate capability boundaries. Cosine, linear
+warm-up, warm-up/cosine, and one-cycle rates use the schedule's analytic
+`rate_with_full_derivatives` path on CPU. Plateau schedules and resident CUDA
+group state return typed
 `FORTNUM_NOT_IMPLEMENTED`. Invalid or overlapping ranges are domain errors.
 
 ```fortran
