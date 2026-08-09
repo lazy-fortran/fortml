@@ -16,7 +16,7 @@ fixed-leaf-product, plateau-trainer, affine Adagrad HVP, and CUDA VJP closure
 slices documented below are post-tag additions.
 The broad parity
 gate is still open, so this work does not move or recreate that tag.
-The checklist currently records 379 completed and 150 open items. Open rows are
+The checklist currently records 381 completed and 150 open items. Open rows are
 retained until their implementation, independent oracle, device/refusal
 behavior, and benchmark evidence land together.
 
@@ -2113,8 +2113,8 @@ when a lower-level primitive already exists.
 - [ ] XGBoost and LightGBM parity beyond the completed exact/histogram growth,
   validation, ranking, monotonic, sampling, serialization, warm-start, and
   interaction-group slices: quantile-sketch equivalence, categorical
-  partitions, EFB, distributed workers, warm-start LightGBM state,
-  and resident GPU histograms.
+  partitions, EFB, distributed workers, warm-start LightGBM ranking state,
+  survival/count objectives, and resident GPU histograms.
 
 ### Gaussian processes and probabilistic models
 
@@ -3582,11 +3582,20 @@ hyperparameter block. A deliberate train/validation leakage fixture must fail.
   `results/lightgbm_dart.csv` replay the independent depth-one NumPy tree-walk
   oracle, deterministic scales, persistence, warm start, invalid-rate refusal,
   fixed-tree derivatives, and CUDA refusal. Fit-time dropout derivatives remain
-  explicitly unsupported because tree selection is discrete. Class- and
-  query-weighted ranking objectives
-  (pairwise logistic and Lambda-style NDCG), survival/count objectives,
-  custom objective callbacks, and custom
-  evaluation metrics. Unsupported objectives must return a structured refusal.
+  explicitly unsupported because tree selection is discrete. Query-weighted
+  ranking, survival/count objectives, custom objective callbacks, and custom
+  evaluation metrics remain separate contracts. Unsupported objectives must
+  return a structured refusal.
+- [x] Add a query-weighted LightGBM `rank:pairwise` objective through
+  `lightgbm_t%fit_ranking`. Positive query IDs isolate unequal-relevance
+  pairs; optional row weights use the smaller endpoint weight, with stable
+  logistic loss, gradients, positive Hessians, zero base margin, raw-margin
+  predictions, validation-group checks, deterministic leaf-wise growth, and
+  typed CUDA refusal. `test_lightgbm_ranking` replays direct pair and two-row
+  leaf oracles, group isolation, malformed/singleton groups, deterministic
+  fit replay, and the explicit ranking warm-start refusal. The release lane is
+  `fortml-bench/results/lightgbm_ranking.csv`; Lambda-NDCG, survival/count,
+  custom callbacks, and retained query-group state remain open.
 - [x] Add the LightGBM-style multiclass OVR classifier adapter. `lightgbm_multiclass_t`
   fits one binary leaf-wise child per sorted integer class, normalizes final and
   staged probabilities, exposes raw margins and validation best-prefix metadata,

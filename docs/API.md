@@ -267,7 +267,7 @@ CUDA gate.
 | `kernel_t` | Scalar value and matrix | Parameter JVP | Parameter VJP | Parameter HVP |
 | `xgboost_t` | Squared/squared-log (RMSLE)/logistic/Poisson/fixed-shape Gamma/Tweedie/Huber/quantile/absolute/rank:pairwise margins, predictions, additive tree contributions, fitted-prefix slicing, bounded ordered-gradient integer categorical partitions, and packed fixed-structure base/leaf coordinates | Fixed-tree input JVP away from split boundaries; categorical models refuse discrete tangents; raw-margin leaf-coordinate JVP | Fixed-tree input VJP away from split boundaries; categorical models refuse discrete cotangents; raw-margin leaf-coordinate VJP | No |
 | `xgboost_classifier_t` | Binary integer labels, logistic `(n,2)` probabilities and stable log probabilities, staged margins, feature diagnostics, and categorical/interaction metadata | Fixed-tree probability/log-probability/input JVP away from split boundaries | Fixed-tree probability/log-probability/input VJP away from split boundaries | No |
-| `lightgbm_t` | Weighted numeric regression/binary logistic histogram boosting with deterministic globally best-leaf growth, GOSS top/other-rate gradient/Hessian sampling, seeded DART/dropout with persisted tree-normalisation scales, and packed fixed-structure base/leaf coordinates | Fixed-tree input JVP away from split boundaries; raw-margin leaf-coordinate JVP | Fixed-tree input VJP away from split boundaries; raw-margin leaf-coordinate VJP | No |
+| `lightgbm_t` | Weighted numeric regression, binary logistic, and query-weighted rank:pairwise histogram boosting with deterministic globally best-leaf growth, GOSS top/other-rate gradient/Hessian sampling, seeded DART/dropout with persisted tree-normalisation scales, and packed fixed-structure base/leaf coordinates | Fixed-tree input JVP away from split boundaries; raw-margin leaf-coordinate JVP | Fixed-tree input VJP away from split boundaries; raw-margin leaf-coordinate VJP | No |
 | `lightgbm_multiclass_t` | Sorted-integer-label one-vs-rest LightGBM-style binary logistic children with normalized final/staged probabilities, stable log probabilities, raw margins, weighted validation best-prefix metadata, packed base/leaf coordinates, and transactional fit | Fixed-tree normalized probability/log-probability input and packed-leaf JVP away from split boundaries | Fixed-tree normalized probability/log-probability input and packed-leaf VJP away from split boundaries | No |
 | `random_forest_classifier_t` | Bootstrap-ensemble probabilities/labels plus transactional OOB decision probabilities, OOB accuracy, coverage, bootstrap-inclusion audit state, and deterministic fixed-state accuracy permutation importance | Refused: split routing and permutation membership are discrete | Refused: split routing and permutation membership are discrete | CPU OOB/permutation diagnostics; CUDA returns typed `FORTNUM_NOT_IMPLEMENTED` |
 | `random_forest_regressor_t` | Seeded weighted bootstrap CART ensemble with scalar/multi-output predictions, staged prefix averages, bootstrap-inclusion audit state, schema metadata, and normalized split-frequency feature importance | Fixed-state input JVP is exact zero away from split boundaries; exact boundary returns `FORTNUM_DOMAIN_ERROR` | Fixed-state input VJP is exact zero away from split boundaries; exact boundary returns `FORTNUM_DOMAIN_ERROR` | CPU only; selected CUDA returns typed `FORTNUM_NOT_IMPLEMENTED` without host fallback |
@@ -4889,6 +4889,20 @@ indices, and EOF before replacing the destination; truncated, unknown,
 trailing, or malformed records return `FORTNUM_DOMAIN_ERROR` and leave it
 unchanged.
 
+`fit_ranking(x,relevance,group,status[,options,sample_weight,...])` selects
+the query-weighted `rank:pairwise` objective. Positive integer query IDs
+isolate pair construction, and only unequal relevance labels contribute the
+stable logistic loss and positive Newton Hessian. Optional observation
+weights use the smaller endpoint weight for each pair. The fitted model
+returns raw ranking margins with a zero base margin. Validation rows carry
+their own query IDs and are scored with the same pair loss. A query set with
+no unequal-relevance pair, missing group IDs, malformed validation groups, or
+an ordinary `fit` request that supplies a ranking objective without groups is
+refused transactionally. Ranking fit is CPU-only; `predict_device` on CUDA
+returns `FORTNUM_NOT_IMPLEMENTED`. Ranking continuation through
+`fit_warm_start` remains a typed refusal because query-group state is not
+retained in the fitted model.
+
 `predict_shap(x,shap,status)` provides the same bounded per-feature raw-margin
 contract as XGBoost. Column one is the path-dependent expected margin and
 columns two through `n_features+1` are exact subset Shapley values, with
@@ -4949,10 +4963,11 @@ silently approximated. Fixed-tree input JVP/VJP products are zero away from
 learned split surfaces and return `FORTNUM_DOMAIN_ERROR` exactly on a split
 boundary. CPU dispatch is supported; `predict_device` on a selected CUDA
 device returns `FORTNUM_NOT_IMPLEMENTED` until resident leaf-wise histogram
-state is available. Independent hand, tree-walk, DART, and persistence oracles
-are `test_lightgbm`, `test_lightgbm_staged_slice`, `test_lightgbm_persistence`,
-`test_lightgbm_goss`, and `test_lightgbm_dart`; the release benchmarks are
-`lightgbm_leafwise.csv`, `lightgbm_goss.csv`, and `lightgbm_dart.csv` in
+state is available. Independent hand, tree-walk, DART, persistence, and
+ranking oracles are `test_lightgbm`, `test_lightgbm_staged_slice`,
+`test_lightgbm_persistence`, `test_lightgbm_goss`, `test_lightgbm_dart`, and
+`test_lightgbm_ranking`; the release benchmarks are `lightgbm_leafwise.csv`,
+`lightgbm_goss.csv`, `lightgbm_dart.csv`, and `lightgbm_ranking.csv` in
 `../fortml-bench`.
 
 ### `fortml_lightgbm_multiclass`

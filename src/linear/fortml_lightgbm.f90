@@ -7,12 +7,14 @@ module fortml_lightgbm
         FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED
     use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU, &
         FORTML_DEVICE_CUDA
-    use fortml_xgboost, only: xgb_histogram_cut_positions
+    use fortml_xgboost, only: xgb_histogram_cut_positions, xgb_pairwise_loss, &
+        xgb_pairwise_derivatives
     implicit none
     private
 
     integer, parameter, public :: LIGHTGBM_OBJECTIVE_REGRESSION = 1
     integer, parameter, public :: LIGHTGBM_OBJECTIVE_BINARY = 2
+    integer, parameter, public :: LIGHTGBM_OBJECTIVE_RANK_PAIRWISE = 3
     character(*), parameter, public :: LIGHTGBM_MODEL_TEXT_MAGIC = &
         "FORTML_LIGHTGBM_TEXT"
     integer, parameter, public :: LIGHTGBM_MODEL_TEXT_SCHEMA_VERSION = 3
@@ -134,6 +136,7 @@ module fortml_lightgbm
         procedure, public :: fit => lgbm_fit
         procedure, public :: fit_regression => lgbm_fit_regression
         procedure, public :: fit_binary => lgbm_fit_binary
+        procedure, public :: fit_ranking => lgbm_fit_ranking
         procedure, public :: fit_warm_start => lgbm_fit_warm_start
         procedure, public :: predict => lgbm_predict
         procedure, public :: predict_margin => lgbm_predict_margin
@@ -222,6 +225,37 @@ contains
             validation_y, validation_weight)
     end subroutine lgbm_fit_binary
 
+    !> Fit a LightGBM-style leaf-wise pairwise ranking ensemble.
+    !! Rows sharing one positive query ID form an isolated ranking query.  A
+    !! pair contributes the logistic loss only when its relevance labels
+    !! differ; optional observation weights use the smaller weight of the two
+    !! rows, matching the public XGBoost pairwise objective.  The fitted
+    !! model returns raw ranking margins (no probability link).  Validation
+    !! queries are optional but must be supplied together with validation
+    !! rows and labels when present.
+    subroutine lgbm_fit_ranking(self, x, relevance, group, status, options, &
+            sample_weight, validation_x, validation_relevance, validation_group, &
+            validation_weight)
+        class(lightgbm_t), intent(out) :: self
+        real(dp), intent(in) :: x(:, :), relevance(:)
+        integer, intent(in) :: group(:)
+        type(fortnum_status_t), intent(out) :: status
+        type(lightgbm_options_t), intent(in), optional :: options
+        real(dp), intent(in), optional :: sample_weight(:)
+        real(dp), intent(in), optional :: validation_x(:, :), validation_relevance(:)
+        integer, intent(in), optional :: validation_group(:)
+        real(dp), intent(in), optional :: validation_weight(:)
+        type(lightgbm_options_t) :: settings
+        type(lightgbm_options_t) :: lightgbm_options_t_default
+
+        settings = lightgbm_options_t_default
+        if (present(options)) settings = options
+        settings%objective = "rank:pairwise"
+        call lgbm_fit(self, x, relevance, status, settings, sample_weight, &
+            validation_x, validation_relevance, validation_weight, group, &
+            validation_group)
+    end subroutine lgbm_fit_ranking
+
     !> Continue a fitted LightGBM ensemble to a larger `n_estimators` target.
     !>
     !> The existing tree prefix is copied into temporary storage and only
@@ -278,6 +312,11 @@ contains
             boosting_type_code /= self%boosting_type_code) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "lightgbm warm start: objective and boosting type must match the fitted prefix")
+            return
+        end if
+        if (objective_code == LIGHTGBM_OBJECTIVE_RANK_PAIRWISE) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "lightgbm warm start: ranking continuation requires query-group state")
             return
         end if
         if (settings%num_leaves /= self%num_leaves_value .or. &
@@ -571,7 +610,7 @@ contains
     end subroutine lgbm_fit_warm_start
 
     subroutine lgbm_fit(self, x, y, status, options, sample_weight, validation_x, &
-            validation_y, validation_weight)
+            validation_y, validation_weight, group, validation_group)
         class(lightgbm_t), intent(out) :: self
         real(dp), intent(in) :: x(:, :), y(:)
         type(fortnum_status_t), intent(out) :: status
@@ -579,6 +618,7 @@ contains
         real(dp), intent(in), optional :: sample_weight(:)
         real(dp), intent(in), optional :: validation_x(:, :), validation_y(:), &
             validation_weight(:)
+        integer, intent(in), optional :: group(:), validation_group(:)
         type(lightgbm_options_t) :: settings
         real(dp), allocatable :: weights(:), margin(:), gradient(:), hessian(:), correction(:)
         real(dp), allocatable :: gradient_for_tree(:), hessian_for_tree(:), row_scale(:)
@@ -590,7 +630,7 @@ contains
         integer :: completed_estimators, best_iteration, stale_rounds, j, drop_count
         real(dp) :: weight_sum, mean_target, validation_loss, best_validation_loss
         real(dp) :: normalization
-        logical :: have_validation, improved
+        logical :: have_validation, improved, is_ranking
         !! Default-initialized instances, standing in for empty
         !! structure constructors: nvfortran rejects `T()` outright,
         !! and a declared local carries the same default init.
@@ -599,7 +639,7 @@ contains
         settings = lightgbm_options_t_default
         if (present(options)) settings = options
         have_validation = present(validation_x) .or. present(validation_y) .or. &
-            present(validation_weight)
+            present(validation_weight) .or. present(validation_group)
         if (present(validation_x) .neqv. present(validation_y)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "lightgbm fit: validation_x and validation_y must be supplied together")
@@ -608,6 +648,11 @@ contains
         if (present(validation_weight) .and. .not. present(validation_x)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "lightgbm fit: validation_weight requires validation data")
+            return
+        end if
+        if (present(validation_group) .and. .not. present(validation_x)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm fit: validation_group requires validation data")
             return
         end if
         if (settings%early_stopping_rounds < 0 .or. &
@@ -621,8 +666,31 @@ contains
         objective_code = parse_lgbm_objective(settings%objective)
         if (objective_code == 0) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
-                "lightgbm fit: objective must be regression or binary")
+                "lightgbm fit: unsupported objective")
             return
+        end if
+        is_ranking = objective_code == LIGHTGBM_OBJECTIVE_RANK_PAIRWISE
+        if (is_ranking .neqv. present(group)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm fit: rank:pairwise requires group IDs and other objectives reject them")
+            return
+        end if
+        if (present(validation_group) .and. .not. is_ranking) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm fit: validation group IDs are only valid for rank:pairwise")
+            return
+        end if
+        if (is_ranking .and. have_validation .and. .not. present(validation_group)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm fit: ranking validation data requires validation group IDs")
+            return
+        end if
+        if (is_ranking) then
+            if (.not. valid_lgbm_group_ids(group, size(y))) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "lightgbm fit: group IDs must be positive and match target length")
+                return
+            end if
         end if
         boosting_type_code = parse_lgbm_boosting_type(settings%boosting_type)
         if (boosting_type_code < 0) then
@@ -639,6 +707,13 @@ contains
                 call status_set(status, FORTNUM_DOMAIN_ERROR, &
                     "lightgbm fit: validation dimensions do not match training features")
                 return
+            end if
+            if (is_ranking) then
+                if (.not. valid_lgbm_group_ids(validation_group, n_validation)) then
+                    call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                        "lightgbm fit: validation group IDs must be positive and match validation targets")
+                    return
+                end if
             end if
         else
             n_validation = 0
@@ -736,6 +811,8 @@ contains
         mean_target = sum(weights*y)/weight_sum
         if (objective_code == LIGHTGBM_OBJECTIVE_BINARY) then
             self%base_score = stable_logit(mean_target)
+        else if (is_ranking) then
+            self%base_score = 0.0_dp
         else
             self%base_score = mean_target
         end if
@@ -777,7 +854,7 @@ contains
                 drop_count = 0
             end if
             call lgbm_objective_derivatives(objective_code, margin, y, weights, gradient, &
-                hessian, status)
+                hessian, status, group)
             if (status%code /= FORTNUM_OK) return
             gradient_for_tree = gradient
             hessian_for_tree = hessian
@@ -826,7 +903,7 @@ contains
                 validation_margin = validation_margin + settings%learning_rate * &
                     self%estimator(i)%scale*validation_correction
                 call lgbm_objective_loss(objective_code, validation_margin, validation_y, &
-                    validation_weights, validation_loss, status)
+                    validation_weights, validation_loss, status, validation_group)
                 if (status%code /= FORTNUM_OK) return
                 improved = validation_loss < best_validation_loss - &
                     settings%early_stopping_min_delta
@@ -1703,6 +1780,8 @@ contains
         class(lightgbm_t), intent(in) :: self
         if (self%objective_code == LIGHTGBM_OBJECTIVE_BINARY) then
             name = "binary"
+        else if (self%objective_code == LIGHTGBM_OBJECTIVE_RANK_PAIRWISE) then
+            name = "rank:pairwise"
         else if (self%objective_code == LIGHTGBM_OBJECTIVE_REGRESSION) then
             name = "regression"
         else
@@ -1810,11 +1889,13 @@ contains
         value = self%estimator(tree_index)%scale
     end function lgbm_tree_scale
 
-    subroutine lgbm_objective_derivatives(code, margin, target, weights, gradient, hessian, status)
+    subroutine lgbm_objective_derivatives(code, margin, target, weights, gradient, hessian, &
+            status, group)
         integer, intent(in) :: code
         real(dp), intent(in) :: margin(:), target(:), weights(:)
         real(dp), intent(out) :: gradient(:), hessian(:)
         type(fortnum_status_t), intent(out) :: status
+        integer, intent(in), optional :: group(:)
         real(dp) :: p
         integer :: i
 
@@ -1832,6 +1913,15 @@ contains
                 gradient(i) = weights(i)*(p-target(i))
                 hessian(i) = weights(i)*max(p*(1.0_dp-p), 1.0e-12_dp)
             end do
+        else if (code == LIGHTGBM_OBJECTIVE_RANK_PAIRWISE) then
+            if (.not. present(group)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "lightgbm derivatives: ranking group IDs are missing")
+                return
+            end if
+            call xgb_pairwise_derivatives(margin, target, group, gradient, hessian, &
+                status, weights=weights)
+            return
         else
             call status_set(status, FORTNUM_DOMAIN_ERROR, "lightgbm derivatives: objective is unsupported")
             return
@@ -1839,11 +1929,12 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine lgbm_objective_derivatives
 
-    subroutine lgbm_objective_loss(code, margin, target, weights, loss, status)
+    subroutine lgbm_objective_loss(code, margin, target, weights, loss, status, group)
         integer, intent(in) :: code
         real(dp), intent(in) :: margin(:), target(:), weights(:)
         real(dp), intent(out) :: loss
         type(fortnum_status_t), intent(out) :: status
+        integer, intent(in), optional :: group(:)
         real(dp) :: total_weight, term
         integer :: i
 
@@ -1875,6 +1966,14 @@ contains
                 loss = loss + weights(i)*term
             end do
             loss = loss/total_weight
+        else if (code == LIGHTGBM_OBJECTIVE_RANK_PAIRWISE) then
+            if (.not. present(group)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "lightgbm validation objective: ranking group IDs are missing")
+                return
+            end if
+            call xgb_pairwise_loss(margin, target, group, loss, status, weights=weights)
+            return
         else
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "lightgbm validation objective: objective is unsupported")
@@ -2115,7 +2214,8 @@ contains
         valid = model%n_estimators >= 1 .and. model%requested_estimators >= model%n_estimators
         if (.not. valid) return
         valid = model%objective_code == LIGHTGBM_OBJECTIVE_REGRESSION .or. &
-            model%objective_code == LIGHTGBM_OBJECTIVE_BINARY
+            model%objective_code == LIGHTGBM_OBJECTIVE_BINARY .or. &
+            model%objective_code == LIGHTGBM_OBJECTIVE_RANK_PAIRWISE
         if (.not. valid) return
         valid = model%num_leaves_value >= 2 .and. model%max_bin_value >= 2 .and. &
             model%max_depth_value >= 0 .and. model%min_data_in_leaf_value >= 1
@@ -2281,10 +2381,21 @@ contains
             code = LIGHTGBM_OBJECTIVE_REGRESSION
         case ("binary", "binary_logloss", "binary:logistic", "logistic")
             code = LIGHTGBM_OBJECTIVE_BINARY
+        case ("rank:pairwise", "rank_pairwise", "pairwise", "ranking")
+            code = LIGHTGBM_OBJECTIVE_RANK_PAIRWISE
         case default
             code = 0
         end select
     end function parse_lgbm_objective
+
+    logical function valid_lgbm_group_ids(group, n_rows) result(valid)
+        integer, intent(in), optional :: group(:)
+        integer, intent(in) :: n_rows
+
+        valid = present(group)
+        if (.not. valid) return
+        valid = size(group) == n_rows .and. n_rows >= 2 .and. all(group > 0)
+    end function valid_lgbm_group_ids
 
     integer function parse_lgbm_boosting_type(name) result(code)
         character(len=*), intent(in) :: name
