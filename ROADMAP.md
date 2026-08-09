@@ -15,7 +15,7 @@ attribution, binary-GP log-probability, fixed-leaf-product, plateau-trainer,
 and CUDA VJP closure slices documented below are post-tag additions.
 The broad parity
 gate is still open, so this work does not move or recreate that tag.
-The checklist currently records 343 completed and 127 open items; open rows are
+The checklist currently records 344 completed and 127 open items; open rows are
 retained until their implementation, independent oracle, device/refusal
 behavior, and benchmark evidence land together.
 
@@ -29,6 +29,20 @@ metadata, explicit MLP loss-scale state, interval-routed conditional feature
 unions, and differentiable cross-validation scoring. Each has an independent
 CPU oracle, a typed CUDA boundary, and a pinned `fortml-bench` record. The
 broad parity gate remains open for the explicit rows below.
+
+The multilabel neural-objective slice adds
+`mlp_multilabel_training_objective_t` and
+`mlp_multilabel_optimize_lbfgsb`. The objective copies indicator data and
+effective sample-by-label weights, validates every target and weight before
+installing a model pointer, and exposes weighted BCE value/gradient, scalar
+JVP/VJP, and exact network/L2 HVP products. The packed tail can hold a direct
+nonnegative L2 coordinate or a positive `log(l2)` coordinate. The bounded
+FortOpt path routes the same callback through network and L2 bounds and reports
+the physical coefficient. `test_mlp_multilabel_objective` independently
+checks central finite differences, adjoint duality, mixed HVPs, malformed
+weight transactionality, and both coordinate modes. CUDA remains a typed
+resident-graph refusal. The companion release record is
+`results/MLP_MULTILABEL_OBJECTIVE.md` in `fortml-bench`.
 
 The 2026-08-09 multi-output boosting slice adds transactional
 `xgboost_multioutput_t` and `lightgbm_multioutput_t` adapters.  Each adapter
@@ -2240,6 +2254,12 @@ CUDA refusal until private CART storage is safely bound to the C ABI.
   logits/probability input and parameter JVP/VJP products, BCE parameter HVPs,
   and typed CUDA refusal. Binary and ordinal heads have separate contracts;
   calibrated neural heads are covered by the next checked slice.
+- [x] Add `mlp_multilabel_training_objective_t` with copied sample-by-label
+  weights, direct or positive log-L2 coordinates, exact packed
+  value/gradient/JVP/VJP/HVP products, and a bounded FortOpt L-BFGS-B adapter.
+  The independent `test_mlp_multilabel_objective` oracle covers finite
+  differences, adjoint duality, mixed hyperparameter HVPs, malformed-weight
+  transactionality, and both coordinate modes; CUDA remains a typed refusal.
 - [x] Add a scalar-score ordinal neural classifier with sorted arbitrary integer
   labels, strictly increasing cumulative-logit thresholds, deterministic
   full-batch FortOpt L-BFGS-B training, positive sample weights, packed

@@ -181,7 +181,8 @@ repeated resident-batch evidence.
 | `mlp_calibrated_classifier_t` | MLP logits with binary sigmoid/temperature/isotonic or multiclass temperature probabilities and labels | Exact joint network/input plus smooth calibration JVP; isotonic active-set refusal | Exact joint network/input plus smooth calibration VJP; isotonic active-set refusal | No |
 | `mlp_ordinal_classifier_t` | Ordered cumulative-logit neural score, probabilities, and labels | Packed network/threshold and input JVP | Packed network/threshold and input VJP | No |
 | `mlp_binary_classifier_t` | One-logit sigmoid probabilities and binary labels | Parameter/input JVP, probability JVP | Parameter/input VJP, probability VJP; weighted BCE gradient | Exact weighted BCE parameter HVP |
-| `mlp_multilabel_classifier_t` | Independent sigmoid probabilities and indicator labels | Packed parameter/input JVP, probability JVP | Packed parameter/input VJP, probability VJP; mean BCE gradient | Exact mean BCE parameter HVP |
+| `mlp_multilabel_classifier_t` | Independent sigmoid probabilities and indicator labels | Packed parameter/input JVP, probability JVP | Packed parameter/input VJP, probability VJP; weighted mean BCE gradient | Exact weighted mean BCE parameter HVP |
+| `mlp_multilabel_training_objective_t` | Weighted multilabel BCE plus direct L2 or positive log-L2 coordinate | Packed network/L2 JVP | Packed network/L2 gradient and scalar VJP | Exact joint network/L2 HVP |
 | `mlp_chain_t` | Sequential composition of named MLP stages | Packed all-stage parameters and inputs | Packed all-stage parameters and inputs | Differentiated reverse chain rule for parameters and inputs |
 | `mlp_training_objective_t` | MSE+L2 scalar objective | Packed network/L2 JVP | Packed network/L2 gradient and scalar VJP | Joint network/L2 HVP |
 | `mlp_poisson_training_objective_t` | Weighted one-output Poisson NLL in log-rate coordinates with optional L2 | Packed network/L2 JVP | Packed network/L2 gradient and scalar VJP | Exact joint network/L2 HVP |
@@ -2773,6 +2774,17 @@ matrix using configurable per-label thresholds. `label_count`,
 `thresholds`, `set_thresholds`, and `fitted` expose the packed state.
 `loss_gradient` and `loss_hvp` return the mean multilabel BCE+L2 value and exact
 shared-parameter products.
+
+`mlp_multilabel_training_objective_t` packages the same weighted loss for
+FortOpt. Its packed vector contains the network parameters and, optionally,
+either a nonnegative L2 coordinate or `log(l2)`. The objective exposes exact
+value/gradient, scalar JVP/VJP, and mixed HVP products. Sample weights are
+nonnegative, class weights have shape `(2,n_labels)` with positive entries, and
+each label must retain positive effective weight. `fortopt` installs the
+generic objective callback, while `mlp_multilabel_optimize_lbfgsb` provides
+bounded network and L2/log-L2 coordinates. Invalid initialization is
+transactional and selected CUDA contexts retain the typed resident-kernel
+refusal. See [MLP_MULTILABEL_OBJECTIVE.md](MLP_MULTILABEL_OBJECTIVE.md).
 
 `decision_function_jvp`/`decision_function_vjp` and
 `predict_proba_jvp`/`predict_proba_vjp` are exact products with respect to the

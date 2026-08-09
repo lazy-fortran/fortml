@@ -282,6 +282,15 @@ transactional FortOpt likelihood-only fit; CUDA likelihood products remain
 typed refusals until the inducing graph is resident. The independent release lane is
 `results/GP_CATEGORICAL_LIKELIHOOD.md` in `../fortml-bench`.
 
+`mlp_multilabel_training_objective_t` exposes the shared multilabel MLP BCE
+through FortOpt. The copied sample-by-label weights support nonnegative sample
+weights and positive per-label class factors. Its packed vector can append a
+direct L2 coefficient or `log(l2)`, with exact network/L2 JVP, VJP, and mixed
+HVP products. `mlp_multilabel_optimize_lbfgsb` supplies bounded network and
+L2 coordinates. Invalid indicators, weights, or coordinate modes fail before
+the fitted model is changed. See
+[`docs/MLP_MULTILABEL_OBJECTIVE.md`](docs/MLP_MULTILABEL_OBJECTIVE.md).
+
 The standalone `multiclass_probability_calibrator_t` also supports weighted
 one-vs-rest Platt sigmoid maps over stable softmax columns.  Its interleaved
 `[slope, intercept]` parameter vector has exact smooth input and parameter
