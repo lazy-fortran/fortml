@@ -39,8 +39,7 @@ values and exact output shapes.
 
 The selected CPU device executes the host implementation. Selected CUDA
 requests return `FORTNUM_NOT_IMPLEMENTED` transactionally until resident
-LightGBM tree and reduction kernels are linked; no hidden host fallback is
+LightGBM tree and reduction kernels are linked. No hidden host fallback is
 used. `test_lightgbm_multiclass_log_proba` checks the independent margin
 normalization oracle, simplex/log round trip, input finite-difference and
 adjoint products, packed-parameter adjoints, CPU dispatch, and CUDA refusal.
-
