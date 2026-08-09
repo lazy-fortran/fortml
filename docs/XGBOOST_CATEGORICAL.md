@@ -20,8 +20,10 @@ while the first sorted code is fixed to the left child so complementary
 partitions are not enumerated twice. Codes are sorted before enumeration, so
 the selected tie is independent of input row order. This policy is bounded by
 the same explicit category limit and is intended for small-cardinality
-columns; large categorical domains should use `ordered` or a separate encoding
-stage.
+columns. To keep subset enumeration bounded, an observed partition policy
+with more than `XGB_MAX_EXHAUSTIVE_CATEGORICAL_VALUES` (12) distinct codes
+returns `FORTNUM_NOT_IMPLEMENTED`; large categorical domains should use
+`ordered` or a separate encoding stage.
 
 At each node, finite integer codes are grouped by their accumulated gradient
 over Hessian score.  Prefix partitions in ascending score order are evaluated

@@ -36,6 +36,7 @@ module fortml_xgboost
     integer, parameter, public :: XGB_BOOSTER_DART = 2
     integer, parameter :: XGB_MAX_SERIALIZED_NODES = 1000000
     integer, parameter :: XGB_MAX_CATEGORICAL_VALUES = 64
+    integer, parameter, public :: XGB_MAX_EXHAUSTIVE_CATEGORICAL_VALUES = 12
     ! Exact subset enumeration keeps the SHAP-like path attribution
     ! deterministic and independent of a background-data side channel.  The
     ! bounded contract refuses wider models rather than silently switching to
@@ -4575,6 +4576,13 @@ contains
                     end if
                 end do
                 if (n_categories < 2) cycle
+                if (parse_categorical_policy(options%categorical_policy) == &
+                    XGB_CATEGORICAL_PARTITION .and. n_categories > &
+                    XGB_MAX_EXHAUSTIVE_CATEGORICAL_VALUES) then
+                    call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                        "xgboost tree: exhaustive categorical cardinality exceeds bounded subset limit")
+                    return
+                end if
                 if (parse_categorical_policy(options%categorical_policy) == &
                     XGB_CATEGORICAL_PARTITION) then
                     ! Exhaustive partitions are canonicalised by always
