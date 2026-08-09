@@ -36,6 +36,12 @@ module fortml_gp_ordinal_classification
     public :: gp_ordinal_log_likelihood_hvp
     public :: gp_ordinal_log_likelihood_hvp_device
     public :: gp_ordinal_likelihood_device_supported
+    public :: gp_ordinal_predict_log_proba
+    public :: gp_ordinal_predict_log_proba_device
+    public :: gp_ordinal_predict_log_proba_parameter_jvp
+    public :: gp_ordinal_predict_log_proba_parameter_vjp
+    public :: gp_ordinal_predict_log_proba_input_jvp
+    public :: gp_ordinal_predict_log_proba_input_vjp
 
     type, public :: gp_ordinal_classification_options_t
         !! Controls the latent Gaussian fit and predictive uncertainty.
@@ -62,6 +68,7 @@ module fortml_gp_ordinal_classification
         procedure, public :: fit => gp_ordinal_fit
         procedure, public :: predict_latent => gp_ordinal_predict_latent
         procedure, public :: predict_proba => gp_ordinal_predict_proba
+        procedure, public :: predict_log_proba => gp_ordinal_predict_log_proba
         procedure, public :: predict => gp_ordinal_predict
         procedure, public :: predict_latent_parameter_jvp => &
             gp_ordinal_predict_latent_parameter_jvp
@@ -71,6 +78,10 @@ module fortml_gp_ordinal_classification
             gp_ordinal_predict_proba_parameter_jvp
         procedure, public :: predict_proba_parameter_vjp => &
             gp_ordinal_predict_proba_parameter_vjp
+        procedure, public :: predict_log_proba_parameter_jvp => &
+            gp_ordinal_predict_log_proba_parameter_jvp
+        procedure, public :: predict_log_proba_parameter_vjp => &
+            gp_ordinal_predict_log_proba_parameter_vjp
         procedure, public :: predict_latent_input_jvp => &
             gp_ordinal_predict_latent_input_jvp
         procedure, public :: predict_latent_input_vjp => &
@@ -79,8 +90,14 @@ module fortml_gp_ordinal_classification
             gp_ordinal_predict_proba_input_jvp
         procedure, public :: predict_proba_input_vjp => &
             gp_ordinal_predict_proba_input_vjp
+        procedure, public :: predict_log_proba_input_jvp => &
+            gp_ordinal_predict_log_proba_input_jvp
+        procedure, public :: predict_log_proba_input_vjp => &
+            gp_ordinal_predict_log_proba_input_vjp
         procedure, public :: predict_proba_device => &
             gp_ordinal_predict_proba_device
+        procedure, public :: predict_log_proba_device => &
+            gp_ordinal_predict_log_proba_device
         procedure, public :: predict_proba_parameter_vjp_device => &
             gp_ordinal_predict_proba_parameter_vjp_device
         procedure, public :: predict_proba_input_vjp_device => &
@@ -710,6 +727,42 @@ contains
         call ordinal_probabilities(mean, variance, self%cut_points, probabilities, status)
     end subroutine gp_ordinal_predict_proba
 
+    !> Return stable natural logarithms of the ordered predictive probabilities.
+    !! A finite floor protects the tails of the normal-CDF difference while
+    !! preserving the probability output contract.  The floor is treated as
+    !! a constant by the product routines below, so clipped tails have a zero
+    !! derivative instead of an artificial `1/tiny` amplification.
+    subroutine gp_ordinal_predict_log_proba(self, x, log_probabilities, status)
+        class(gp_ordinal_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: log_probabilities(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: probabilities(:, :)
+
+        log_probabilities = 0.0_dp
+        if (.not. self%is_fitted) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal GP log probability prediction: model is not fitted")
+            return
+        end if
+        if (size(x, 2) /= self%n_features .or. &
+                any(shape(log_probabilities) /= [size(x, 1), self%n_classes])) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal GP log probability prediction: output shape is invalid")
+            return
+        end if
+        allocate(probabilities(size(x, 1), self%n_classes))
+        call self%predict_proba(x, probabilities, status)
+        if (status%code /= FORTNUM_OK) return
+        log_probabilities = log(max(probabilities, tiny(1.0_dp)))
+        if (any(.not. ieee_is_finite(log_probabilities))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "ordinal GP log probability prediction: result is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_ordinal_predict_log_proba
+
     subroutine gp_ordinal_predict(self, x, labels, status)
         class(gp_ordinal_classification_t), intent(in) :: self
         real(dp), intent(in) :: x(:, :)
@@ -832,6 +885,93 @@ contains
         if (status%code /= FORTNUM_OK) return
         call self%predict_latent_parameter_vjp(x, mean_bar, variance_bar, parameter_bar, status)
     end subroutine gp_ordinal_predict_proba_parameter_vjp
+
+    !> Forward fixed-state parameter product of ordinal log probabilities.
+    subroutine gp_ordinal_predict_log_proba_parameter_jvp(self, x, direction, &
+            log_probabilities, log_probabilities_dot, status)
+        class(gp_ordinal_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), direction(:)
+        real(dp), intent(out) :: log_probabilities(:, :), log_probabilities_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: probabilities(:, :), probabilities_dot(:, :)
+        integer :: i, j
+
+        log_probabilities = 0.0_dp
+        log_probabilities_dot = 0.0_dp
+        if (.not. self%is_fitted) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal GP log probability parameter JVP: model is not fitted")
+            return
+        end if
+        if (size(x, 2) /= self%n_features .or. size(direction) /= self%parameter_count() .or. &
+                any(.not. ieee_is_finite(direction)) .or. &
+                any(shape(log_probabilities) /= [size(x, 1), self%n_classes]) .or. &
+                any(shape(log_probabilities_dot) /= shape(log_probabilities))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal GP log probability parameter JVP: direction or output shape is invalid")
+            return
+        end if
+        allocate(probabilities(size(x, 1), self%n_classes), &
+            probabilities_dot(size(x, 1), self%n_classes))
+        call self%predict_proba_parameter_jvp(x, direction, probabilities, &
+            probabilities_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        do j = 1, self%n_classes
+            do i = 1, size(x, 1)
+                log_probabilities(i, j) = log(max(probabilities(i, j), tiny(1.0_dp)))
+                if (probabilities(i, j) > tiny(1.0_dp)) then
+                    log_probabilities_dot(i, j) = probabilities_dot(i, j) / probabilities(i, j)
+                else
+                    log_probabilities_dot(i, j) = 0.0_dp
+                end if
+            end do
+        end do
+        if (any(.not. ieee_is_finite(log_probabilities)) .or. &
+                any(.not. ieee_is_finite(log_probabilities_dot))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "ordinal GP log probability parameter JVP: result is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_ordinal_predict_log_proba_parameter_jvp
+
+    !> Reverse fixed-state parameter product of ordinal log probabilities.
+    subroutine gp_ordinal_predict_log_proba_parameter_vjp(self, x, &
+            log_probabilities_bar, parameter_bar, status)
+        class(gp_ordinal_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), log_probabilities_bar(:, :)
+        real(dp), intent(out) :: parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: probabilities(:, :), probability_bar(:, :)
+        integer :: i, j
+
+        parameter_bar = 0.0_dp
+        if (.not. self%is_fitted) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal GP log probability parameter VJP: model is not fitted")
+            return
+        end if
+        if (size(x, 2) /= self%n_features .or. size(parameter_bar) /= self%parameter_count() .or. &
+                any(shape(log_probabilities_bar) /= [size(x, 1), self%n_classes]) .or. &
+                any(.not. ieee_is_finite(log_probabilities_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal GP log probability parameter VJP: input or cotangent is invalid")
+            return
+        end if
+        allocate(probabilities(size(x, 1), self%n_classes), &
+            probability_bar(size(x, 1), self%n_classes))
+        call self%predict_proba(x, probabilities, status)
+        if (status%code /= FORTNUM_OK) return
+        probability_bar = 0.0_dp
+        do j = 1, self%n_classes
+            do i = 1, size(x, 1)
+                if (probabilities(i, j) > tiny(1.0_dp)) then
+                    probability_bar(i, j) = log_probabilities_bar(i, j) / probabilities(i, j)
+                end if
+            end do
+        end do
+        call self%predict_proba_parameter_vjp(x, probability_bar, parameter_bar, status)
+    end subroutine gp_ordinal_predict_log_proba_parameter_vjp
 
     subroutine gp_ordinal_predict_latent_input_jvp(self, x, x_dot, mean, mean_dot, &
             variance, variance_dot, status)
@@ -995,6 +1135,92 @@ contains
         call self%predict_latent_input_vjp(x, mean_bar, variance_bar, x_bar, status)
     end subroutine gp_ordinal_predict_proba_input_vjp
 
+    !> Forward query-input product of ordinal log probabilities.
+    subroutine gp_ordinal_predict_log_proba_input_jvp(self, x, x_dot, &
+            log_probabilities, log_probabilities_dot, status)
+        class(gp_ordinal_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), x_dot(:, :)
+        real(dp), intent(out) :: log_probabilities(:, :), log_probabilities_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: probabilities(:, :), probabilities_dot(:, :)
+        integer :: i, j
+
+        log_probabilities = 0.0_dp
+        log_probabilities_dot = 0.0_dp
+        if (.not. self%is_fitted) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal GP log probability input JVP: model is not fitted")
+            return
+        end if
+        if (size(x, 2) /= self%n_features .or. any(shape(x_dot) /= shape(x)) .or. &
+                any(.not. ieee_is_finite(x_dot)) .or. &
+                any(shape(log_probabilities) /= [size(x, 1), self%n_classes]) .or. &
+                any(shape(log_probabilities_dot) /= shape(log_probabilities))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal GP log probability input JVP: input or output shape is invalid")
+            return
+        end if
+        allocate(probabilities(size(x, 1), self%n_classes), &
+            probabilities_dot(size(x, 1), self%n_classes))
+        call self%predict_proba_input_jvp(x, x_dot, probabilities, probabilities_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        do j = 1, self%n_classes
+            do i = 1, size(x, 1)
+                log_probabilities(i, j) = log(max(probabilities(i, j), tiny(1.0_dp)))
+                if (probabilities(i, j) > tiny(1.0_dp)) then
+                    log_probabilities_dot(i, j) = probabilities_dot(i, j) / probabilities(i, j)
+                else
+                    log_probabilities_dot(i, j) = 0.0_dp
+                end if
+            end do
+        end do
+        if (any(.not. ieee_is_finite(log_probabilities)) .or. &
+                any(.not. ieee_is_finite(log_probabilities_dot))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "ordinal GP log probability input JVP: result is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_ordinal_predict_log_proba_input_jvp
+
+    !> Reverse query-input product of ordinal log probabilities.
+    subroutine gp_ordinal_predict_log_proba_input_vjp(self, x, log_probabilities_bar, &
+            x_bar, status)
+        class(gp_ordinal_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), log_probabilities_bar(:, :)
+        real(dp), intent(out) :: x_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: probabilities(:, :), probability_bar(:, :)
+        integer :: i, j
+
+        x_bar = 0.0_dp
+        if (.not. self%is_fitted) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal GP log probability input VJP: model is not fitted")
+            return
+        end if
+        if (size(x, 2) /= self%n_features .or. any(shape(x_bar) /= shape(x)) .or. &
+                any(shape(log_probabilities_bar) /= [size(x, 1), self%n_classes]) .or. &
+                any(.not. ieee_is_finite(log_probabilities_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal GP log probability input VJP: input or cotangent is invalid")
+            return
+        end if
+        allocate(probabilities(size(x, 1), self%n_classes), &
+            probability_bar(size(x, 1), self%n_classes))
+        call self%predict_proba(x, probabilities, status)
+        if (status%code /= FORTNUM_OK) return
+        probability_bar = 0.0_dp
+        do j = 1, self%n_classes
+            do i = 1, size(x, 1)
+                if (probabilities(i, j) > tiny(1.0_dp)) then
+                    probability_bar(i, j) = log_probabilities_bar(i, j) / probabilities(i, j)
+                end if
+            end do
+        end do
+        call self%predict_proba_input_vjp(x, probability_bar, x_bar, status)
+    end subroutine gp_ordinal_predict_log_proba_input_vjp
+
     subroutine gp_ordinal_predict_proba_device(self, device, x, probabilities, status)
         class(gp_ordinal_classification_t), intent(in) :: self
         type(fortml_device_t), intent(in) :: device
@@ -1018,6 +1244,33 @@ contains
                 "ordinal GP device prediction: device kind is invalid")
         end select
     end subroutine gp_ordinal_predict_proba_device
+
+    !> Device-dispatched ordinal log-probability prediction.  CUDA remains a
+    !! typed refusal until the covariance and normal-CDF graph is resident.
+    subroutine gp_ordinal_predict_log_proba_device(self, device, x, log_probabilities, status)
+        class(gp_ordinal_classification_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: log_probabilities(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        log_probabilities = 0.0_dp
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal GP log probability device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_log_proba(x, log_probabilities, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "ordinal GP log probability device: resident ordinal graph is not linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "ordinal GP log probability device: device kind is invalid")
+        end select
+    end subroutine gp_ordinal_predict_log_proba_device
 
     subroutine gp_ordinal_predict_proba_parameter_vjp_device(self, device, x, &
             probabilities_bar, parameter_bar, status)
