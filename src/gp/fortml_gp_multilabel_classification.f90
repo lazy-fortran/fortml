@@ -11,12 +11,14 @@ module fortml_gp_multilabel_classification
     !! have resident kernels; CPU dispatch never hides a host fallback.
     use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
     use fortnum_kinds, only: dp
-    use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
+    use fortnum_status, only: fortnum_status_t, status_set, status_ok, FORTNUM_OK, &
         FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED, FORTNUM_CONVERGENCE_ERROR
     use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU, FORTML_DEVICE_CUDA
     use fortml_kernels, only: kernel_t
     use fortml_gp_classification, only: gp_classification_t, &
         gp_classification_options_t, gp_classification_state_t
+    use fortopt_objective, only: objective_t
+    use fortopt_lbfgsb, only: lbfgsb_t, lbfgsb_options_t, lbfgsb_result_t
     implicit none
     private
 
@@ -68,6 +70,18 @@ module fortml_gp_multilabel_classification
         procedure, public :: parameters => gp_multilabel_parameters
         procedure, public :: hyperparameter_gradient => &
             gp_multilabel_hyperparameter_gradient
+        procedure, public :: shared_parameter_count => &
+            gp_multilabel_shared_parameter_count
+        procedure, public :: hyperparameter_count => &
+            gp_multilabel_shared_parameter_count
+        procedure, public :: shared_parameters => gp_multilabel_shared_parameters
+        procedure, public :: set_shared_parameters => &
+            gp_multilabel_set_shared_parameters
+        procedure, public :: fixed_state_value_gradient => &
+            gp_multilabel_fixed_state_value_gradient
+        procedure, public :: shared_hyperparameter_gradient => &
+            gp_multilabel_shared_hyperparameter_gradient
+        procedure, public :: optimize_lbfgsb => gp_multilabel_optimize_lbfgsb
         procedure, public :: label_count => gp_multilabel_label_count
         procedure, public :: feature_count => gp_multilabel_feature_count
         procedure, public :: thresholds => gp_multilabel_thresholds
@@ -75,6 +89,41 @@ module fortml_gp_multilabel_classification
         procedure, public :: fitted => gp_multilabel_fitted
         procedure, public :: device_supported => gp_multilabel_device_supported
     end type gp_multilabel_classification_t
+
+    type, public :: gp_multilabel_training_objective_t
+        !! FortOpt adapter for the shared fixed-state kernel objective.
+        private
+        type(gp_multilabel_classification_t), pointer :: model => null()
+    contains
+        procedure, public :: initialize => gp_multilabel_objective_initialize
+        procedure, public :: parameter_count => gp_multilabel_objective_parameter_count
+        procedure, public :: parameters => gp_multilabel_objective_parameters
+        procedure, public :: value_gradient => gp_multilabel_objective_value_gradient
+        procedure, public :: jvp => gp_multilabel_objective_jvp
+        procedure, public :: vjp => gp_multilabel_objective_vjp
+        procedure, public :: fortopt => gp_multilabel_objective_fortopt
+    end type gp_multilabel_training_objective_t
+
+    type, public :: gp_multilabel_lbfgsb_options_t
+        !! Bounds and convergence controls for shared kernel-log fitting.
+        integer :: memory = 10
+        integer :: max_iterations = 100
+        integer :: max_line_search = 40
+        real(dp) :: gradient_tolerance = 1.0e-8_dp
+        real(dp) :: step_tolerance = 1.0e-12_dp
+        real(dp) :: objective_tolerance = 1.0e-12_dp
+        real(dp) :: lower_bound = -20.0_dp
+        real(dp) :: upper_bound = 20.0_dp
+    end type gp_multilabel_lbfgsb_options_t
+
+    type, public :: gp_multilabel_lbfgsb_result_t
+        !! Diagnostics returned by `gp_multilabel_optimize_lbfgsb`.
+        logical :: converged = .false.
+        integer :: iterations = 0
+        integer :: line_search_evaluations = 0
+        real(dp) :: objective = huge(1.0_dp)
+        real(dp) :: gradient_norm = huge(1.0_dp)
+    end type gp_multilabel_lbfgsb_result_t
 
     public :: gp_multilabel_fit
     public :: gp_multilabel_predict_latent
@@ -91,6 +140,9 @@ module fortml_gp_multilabel_classification
     public :: gp_multilabel_predict_proba_parameter_vjp
     public :: gp_multilabel_predict
     public :: gp_multilabel_predict_device
+    public :: gp_multilabel_optimize_lbfgsb
+    public :: gp_multilabel_set_shared_parameters
+    public :: gp_multilabel_fixed_state_value_gradient
 
 contains
 
@@ -548,7 +600,7 @@ contains
         class(gp_multilabel_classification_t), intent(in) :: self
         integer :: i
         count = 0
-        if (.not. self%fitted()) return
+        if (.not. gp_multilabel_fitted(self)) return
         do i = 1, self%n_labels
             count = count + self%models(i)%parameter_count()
         end do
@@ -558,7 +610,7 @@ contains
         class(gp_multilabel_classification_t), intent(in) :: self
         real(dp), allocatable :: parameters(:), local(:)
         integer :: i, first, last
-        if (.not. self%fitted()) then
+        if (.not. gp_multilabel_fitted(self)) then
             allocate(parameters(0)); return
         end if
         allocate(parameters(self%parameter_count())); first = 1
@@ -575,7 +627,7 @@ contains
         real(dp), allocatable :: local(:)
         integer :: i, first, last, local_count
         gradient = 0.0_dp
-        if (.not. self%fitted()) then
+        if (.not. gp_multilabel_fitted(self)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "multilabel GP hyperparameter gradient: model is not fitted")
             return
@@ -601,6 +653,338 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine gp_multilabel_hyperparameter_gradient
 
+    integer function gp_multilabel_shared_parameter_count(self) result(count)
+        class(gp_multilabel_classification_t), intent(in) :: self
+
+        count = 0
+        if (.not. gp_multilabel_fitted(self)) return
+        count = self%models(1)%parameter_count()
+    end function gp_multilabel_shared_parameter_count
+
+    function gp_multilabel_shared_parameters(self) result(parameters)
+        class(gp_multilabel_classification_t), intent(in) :: self
+        real(dp), allocatable :: parameters(:)
+
+        if (.not. gp_multilabel_fitted(self)) then
+            allocate(parameters(0))
+            return
+        end if
+        parameters = self%models(1)%parameters()
+    end function gp_multilabel_shared_parameters
+
+    !> Transactionally set one shared kernel-log vector on every label head.
+    !!
+    !! Candidate heads are built first.  A failed factorization, unsupported
+    !! kernel product, or invalid value therefore leaves every fitted head at
+    !! its previous state.
+    subroutine gp_multilabel_set_shared_parameters(self, parameters, status)
+        class(gp_multilabel_classification_t), intent(inout) :: self
+        real(dp), intent(in) :: parameters(:)
+        type(fortnum_status_t), intent(out) :: status
+        type(gp_classification_t), allocatable :: candidate(:)
+        integer :: i
+
+        if (.not. gp_multilabel_fitted(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multilabel GP shared parameters: model is not fitted")
+            return
+        end if
+        if (size(parameters) /= self%shared_parameter_count() .or. &
+            any(.not. ieee_is_finite(parameters))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multilabel GP shared parameters: shape or values are invalid")
+            return
+        end if
+        allocate(candidate(self%n_labels))
+        candidate = self%models
+        do i = 1, self%n_labels
+            call candidate(i)%set_parameters(parameters, status)
+            if (.not. status_ok(status)) return
+        end do
+        self%models = candidate
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_multilabel_set_shared_parameters
+
+    !> Minimize the negative shared fixed-state Laplace mode posterior.
+    !!
+    !! The mode and likelihood curvature from the original fit are held fixed
+    !! while FortOpt changes common logarithmic kernel parameters.  This is a
+    !! deliberate, smooth outer-HPO slice; a fresh `fit` remains the API for
+    !! recomputing all per-label Newton states.
+    subroutine gp_multilabel_fixed_state_value_gradient(self, parameters, value, &
+            gradient, status)
+        class(gp_multilabel_classification_t), intent(inout) :: self
+        real(dp), intent(in) :: parameters(:)
+        real(dp), intent(out) :: value, gradient(:)
+        type(fortnum_status_t), intent(out) :: status
+        type(gp_classification_t), allocatable :: candidate(:)
+        real(dp), allocatable :: local_gradient(:)
+        real(dp) :: local_value
+        integer :: i
+
+        value = huge(1.0_dp)
+        gradient = 0.0_dp
+        if (.not. gp_multilabel_fitted(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multilabel GP fixed-state objective: model is not fitted")
+            return
+        end if
+        if (size(parameters) /= self%shared_parameter_count() .or. &
+            size(gradient) /= size(parameters) .or. &
+            any(.not. ieee_is_finite(parameters))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multilabel GP fixed-state objective: shape or values are invalid")
+            return
+        end if
+        allocate(candidate(self%n_labels), local_gradient(size(parameters)))
+        candidate = self%models
+        do i = 1, self%n_labels
+            call candidate(i)%set_parameters(parameters, status)
+            if (.not. status_ok(status)) return
+        end do
+        value = 0.0_dp
+        gradient = 0.0_dp
+        do i = 1, self%n_labels
+            call candidate(i)%fixed_state_log_posterior(local_value, status)
+            if (.not. status_ok(status)) return
+            call candidate(i)%fixed_state_log_posterior_gradient(local_gradient, status)
+            if (.not. status_ok(status)) return
+            value = value - local_value
+            gradient = gradient - local_gradient
+        end do
+        if (.not. ieee_is_finite(value) .or. any(.not. ieee_is_finite(gradient))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "multilabel GP fixed-state objective: result is not finite")
+            return
+        end if
+        self%models = candidate
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_multilabel_fixed_state_value_gradient
+
+    subroutine gp_multilabel_shared_hyperparameter_gradient(self, gradient, status)
+        class(gp_multilabel_classification_t), intent(in) :: self
+        real(dp), intent(out) :: gradient(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: local(:)
+        integer :: i
+
+        gradient = 0.0_dp
+        if (.not. gp_multilabel_fitted(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multilabel GP shared gradient: model is not fitted")
+            return
+        end if
+        if (size(gradient) /= self%shared_parameter_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multilabel GP shared gradient: output shape is invalid")
+            return
+        end if
+        allocate(local(size(gradient)))
+        do i = 1, self%n_labels
+            call self%models(i)%fixed_state_log_posterior_gradient(local, status)
+            if (.not. status_ok(status)) return
+            gradient = gradient + local
+        end do
+        if (any(.not. ieee_is_finite(gradient))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "multilabel GP shared gradient: result is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_multilabel_shared_hyperparameter_gradient
+
+    subroutine gp_multilabel_objective_initialize(self, model, status)
+        class(gp_multilabel_training_objective_t), intent(out) :: self
+        class(gp_multilabel_classification_t), target, intent(inout) :: model
+        type(fortnum_status_t), intent(out) :: status
+
+        nullify(self%model)
+        if (.not. gp_multilabel_fitted(model)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multilabel GP objective: model is not fitted")
+            return
+        end if
+        self%model => model
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_multilabel_objective_initialize
+
+    integer function gp_multilabel_objective_parameter_count(self) result(count)
+        class(gp_multilabel_training_objective_t), intent(in) :: self
+
+        count = 0
+        if (associated(self%model)) count = self%model%shared_parameter_count()
+    end function gp_multilabel_objective_parameter_count
+
+    function gp_multilabel_objective_parameters(self) result(parameters)
+        class(gp_multilabel_training_objective_t), intent(in) :: self
+        real(dp), allocatable :: parameters(:)
+
+        if (.not. associated(self%model)) then
+            allocate(parameters(0))
+            return
+        end if
+        parameters = self%model%shared_parameters()
+    end function gp_multilabel_objective_parameters
+
+    subroutine gp_multilabel_objective_value_gradient(self, parameters, value, &
+            gradient, status)
+        class(gp_multilabel_training_objective_t), intent(inout) :: self
+        real(dp), intent(in) :: parameters(:)
+        real(dp), intent(out) :: value, gradient(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        value = huge(1.0_dp)
+        gradient = 0.0_dp
+        if (.not. associated(self%model)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multilabel GP objective: adapter is not initialized")
+            return
+        end if
+        call self%model%fixed_state_value_gradient(parameters, value, gradient, status)
+    end subroutine gp_multilabel_objective_value_gradient
+
+    subroutine gp_multilabel_objective_jvp(self, parameters, direction, value, &
+            tangent, status)
+        class(gp_multilabel_training_objective_t), intent(inout) :: self
+        real(dp), intent(in) :: parameters(:), direction(:)
+        real(dp), intent(out) :: value, tangent
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: gradient(:)
+
+        value = huge(1.0_dp)
+        tangent = 0.0_dp
+        if (size(direction) /= size(parameters) .or. &
+            any(.not. ieee_is_finite(direction))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multilabel GP objective JVP: direction is invalid")
+            return
+        end if
+        allocate(gradient(size(parameters)))
+        call self%value_gradient(parameters, value, gradient, status)
+        if (.not. status_ok(status)) return
+        tangent = dot_product(gradient, direction)
+        if (.not. ieee_is_finite(tangent)) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "multilabel GP objective JVP: tangent is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_multilabel_objective_jvp
+
+    subroutine gp_multilabel_objective_vjp(self, parameters, output_bar, gradient, status)
+        class(gp_multilabel_training_objective_t), intent(inout) :: self
+        real(dp), intent(in) :: parameters(:), output_bar
+        real(dp), intent(out) :: gradient(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: value
+
+        gradient = 0.0_dp
+        if (.not. ieee_is_finite(output_bar)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multilabel GP objective VJP: cotangent is invalid")
+            return
+        end if
+        call self%value_gradient(parameters, value, gradient, status)
+        if (.not. status_ok(status)) return
+        gradient = output_bar*gradient
+        if (any(.not. ieee_is_finite(gradient))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "multilabel GP objective VJP: result is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_multilabel_objective_vjp
+
+    subroutine gp_multilabel_objective_fortopt(self, objective, status)
+        class(gp_multilabel_training_objective_t), target, intent(inout) :: self
+        type(objective_t), intent(out) :: objective
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. associated(self%model)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multilabel GP objective: adapter is not initialized")
+            return
+        end if
+        call objective%initialize_context(self%parameter_count(), self, &
+            gp_multilabel_objective_context_callback, status)
+    end subroutine gp_multilabel_objective_fortopt
+
+    subroutine gp_multilabel_objective_context_callback(context, parameters, value, &
+            gradient, status)
+        class(*), intent(inout) :: context
+        real(dp), intent(in) :: parameters(:)
+        real(dp), intent(out) :: value, gradient(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        select type (adapter => context)
+            type is (gp_multilabel_training_objective_t)
+            call adapter%value_gradient(parameters, value, gradient, status)
+        class default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multilabel GP objective: context has the wrong type")
+        end select
+    end subroutine gp_multilabel_objective_context_callback
+
+    subroutine gp_multilabel_optimize_lbfgsb(model, options, result, status)
+        !! Optimize shared logarithmic kernel parameters with FortOpt L-BFGS-B.
+        class(gp_multilabel_classification_t), target, intent(inout) :: model
+        type(gp_multilabel_lbfgsb_options_t), intent(in) :: options
+        type(gp_multilabel_lbfgsb_result_t), intent(out) :: result
+        type(fortnum_status_t), intent(out) :: status
+        type(gp_multilabel_training_objective_t), target :: adapter
+        type(objective_t) :: objective
+        type(lbfgsb_t) :: optimizer
+        type(lbfgsb_options_t) :: optimizer_options
+        type(lbfgsb_result_t) :: optimizer_result
+        real(dp), allocatable :: parameters(:), lower(:), upper(:), gradient(:)
+        integer :: n_parameters
+        type(gp_multilabel_lbfgsb_result_t) :: result_default
+
+        result = result_default
+        if (.not. valid_lbfgsb_options(options)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "multilabel GP L-BFGS-B: options are invalid")
+            return
+        end if
+        call adapter%initialize(model, status)
+        if (.not. status_ok(status)) return
+        n_parameters = adapter%parameter_count()
+        parameters = model%shared_parameters()
+        allocate(lower(n_parameters), upper(n_parameters), gradient(n_parameters))
+        lower = options%lower_bound
+        upper = options%upper_bound
+        parameters = min(max(parameters, lower), upper)
+        call adapter%fortopt(objective, status)
+        if (.not. status_ok(status)) return
+        optimizer_options%memory = options%memory
+        optimizer_options%max_iterations = options%max_iterations
+        optimizer_options%max_line_search = options%max_line_search
+        optimizer_options%gradient_tolerance = options%gradient_tolerance
+        optimizer_options%step_tolerance = options%step_tolerance
+        optimizer_options%objective_tolerance = options%objective_tolerance
+        call optimizer%minimize(objective, parameters, lower, upper, optimizer_options, &
+            optimizer_result, status)
+        if (.not. status_ok(status)) return
+        call adapter%value_gradient(parameters, result%objective, gradient, status)
+        if (.not. status_ok(status)) return
+        result%converged = optimizer_result%state%converged
+        result%iterations = optimizer_result%state%iteration
+        result%line_search_evaluations = optimizer_result%line_search_evaluations
+        result%gradient_norm = sqrt(sum(gradient*gradient))
+        if (.not. ieee_is_finite(result%objective) .or. &
+            .not. ieee_is_finite(result%gradient_norm)) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "multilabel GP L-BFGS-B: result is not finite")
+            return
+        end if
+        if (.not. result%converged) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "multilabel GP L-BFGS-B: iteration limit reached")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_multilabel_optimize_lbfgsb
+
     integer function gp_multilabel_label_count(self) result(count)
         class(gp_multilabel_classification_t), intent(in) :: self
         count = self%n_labels
@@ -625,7 +1009,7 @@ contains
         class(gp_multilabel_classification_t), intent(inout) :: self
         real(dp), intent(in) :: thresholds(:)
         type(fortnum_status_t), intent(out) :: status
-        if (.not. self%fitted() .or. size(thresholds) /= self%n_labels .or. &
+        if (.not. gp_multilabel_fitted(self) .or. size(thresholds) /= self%n_labels .or. &
             any(.not. ieee_is_finite(thresholds)) .or. any(thresholds <= 0.0_dp) .or. &
             any(thresholds >= 1.0_dp)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -645,7 +1029,7 @@ contains
     logical function gp_multilabel_device_supported(self, device_kind) result(supported)
         class(gp_multilabel_classification_t), intent(in) :: self
         integer, intent(in) :: device_kind
-        supported = self%fitted() .and. device_kind == FORTML_DEVICE_CPU
+        supported = gp_multilabel_fitted(self) .and. device_kind == FORTML_DEVICE_CPU
     end function gp_multilabel_device_supported
 
     logical function valid_query(self, x, output, status) result(valid)
@@ -654,7 +1038,7 @@ contains
         real(dp), intent(in) :: output(:, :)
         type(fortnum_status_t), intent(out) :: status
         valid = .false.
-        if (.not. self%fitted()) then
+        if (.not. gp_multilabel_fitted(self)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "multilabel GP prediction: model is not fitted")
             return
@@ -675,7 +1059,7 @@ contains
         integer, intent(in) :: output(:, :)
         type(fortnum_status_t), intent(out) :: status
         valid = .false.
-        if (.not. self%fitted()) then
+        if (.not. gp_multilabel_fitted(self)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "multilabel GP prediction: model is not fitted")
             return
@@ -690,5 +1074,17 @@ contains
         valid = .true.
         call status_set(status, FORTNUM_OK, "")
     end function valid_integer_query
+
+    logical function valid_lbfgsb_options(options) result(valid)
+        type(gp_multilabel_lbfgsb_options_t), intent(in) :: options
+
+        valid = options%memory >= 1 .and. options%max_iterations >= 1 .and. &
+            options%max_line_search >= 1 .and. options%lower_bound <= options%upper_bound .and. &
+            options%gradient_tolerance >= 0.0_dp .and. options%step_tolerance >= 0.0_dp .and. &
+            options%objective_tolerance >= 0.0_dp
+        valid = valid .and. ieee_is_finite(options%gradient_tolerance) .and. &
+            ieee_is_finite(options%step_tolerance) .and. ieee_is_finite(options%objective_tolerance) .and. &
+            ieee_is_finite(options%lower_bound) .and. ieee_is_finite(options%upper_bound)
+    end function valid_lbfgsb_options
 
 end module fortml_gp_multilabel_classification

@@ -282,7 +282,11 @@ explicit `FORTNUM_NOT_IMPLEMENTED` boundary. See
 The classification surface also includes `fortml_gp_multilabel_classification`,
 which fits independent weighted logistic/probit Laplace-GP heads for dense
 indicator targets and exposes packed/input JVP/VJP products plus explicit CPU/
-CUDA capability metadata. It also includes `fortml_calibrated_softmax_classifier`
+CUDA capability metadata. Its shared kernel-log vector also has transactional
+fixed-state value/gradient products and a bounded FortOpt L-BFGS-B adapter;
+the objective holds each fitted Laplace mode fixed and returns a typed CPU-only
+boundary rather than silently staging CUDA work. It also includes
+`fortml_calibrated_softmax_classifier`
 for leakage-safe stratified OOF softmax calibration with positive temperature,
 one-vs-rest Platt, and weighted isotonic policies. Temperature and Platt have
 packed smooth products; isotonic active-set products and every CUDA path are

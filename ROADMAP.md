@@ -1949,6 +1949,18 @@ when a lower-level primitive already exists.
   configurable thresholds, CPU dispatch, and typed CUDA refusals are covered
   by `test_gp_multilabel_classification` and the independent NumPy release
   lane `fortml-bench/results/GP_MULTILABEL.md`.
+- [x] Add the shared-kernel multilabel GP outer-HPO slice. `shared_parameters`
+  and `set_shared_parameters` expose one transactional logarithmic kernel
+  vector across every independent head; `fixed_state_value_gradient` and
+  `shared_hyperparameter_gradient` sum exact binary prior-envelope products
+  while retaining the fitted Laplace modes and likelihood curvatures. The
+  `gp_multilabel_training_objective_t` adapter supplies value/gradient,
+  JVP/VJP, and FortOpt callbacks, and
+  `gp_multilabel_optimize_lbfgsb` supplies bounded FortOpt L-BFGS-B diagnostics.
+  `test_gp_multilabel_optimizer` checks central finite differences, objective
+  duality, failed-update rollback, and convergence. CUDA remains an explicit
+  typed refusal; full refit-through-mode and resident GPU optimization remain
+  open.
 - [x] Add the implicit-mode binary Laplace-GP kernel hyperparameter HVP.
   `gp_classification_t%hyperparameter_hvp` differentiates the converged mode
   tangent through the posterior factorization and contracts analytic kernel

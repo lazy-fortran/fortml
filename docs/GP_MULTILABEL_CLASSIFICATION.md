@@ -31,3 +31,26 @@ The independent behavioral oracle is
 The release benchmark compares the two-head weighted Laplace Newton recurrence,
 posterior probabilities, and an input-JVP finite difference against NumPy:
 [`fortml-bench/results/GP_MULTILABEL.md`](../../fortml-bench/results/GP_MULTILABEL.md).
+
+## Shared kernel hyperparameter optimization
+
+`shared_parameter_count()` and `shared_parameters()` expose the one common
+kernel-log vector used by every label head. `set_shared_parameters(values,
+status)` validates and factorizes candidate heads before committing any of
+them, so failed values leave the fitted model unchanged. The smooth fixed-state
+objective is available through
+`fixed_state_value_gradient(values,value,gradient,status)`: it minimizes the
+negative sum of the independent mode log posteriors while holding each fitted
+Newton mode, likelihood curvature, and labels fixed. Its gradient is the exact
+sum of binary prior-envelope contractions; no finite-difference gradient or
+hidden refit is used.
+
+For FortOpt callers, `gp_multilabel_training_objective_t` provides
+`value_gradient`, `jvp`, `vjp`, and `fortopt`. The convenience
+`gp_multilabel_optimize_lbfgsb(model,options,result,status)` applies bounded
+FortOpt L-BFGS-B to this shared vector. Bounds, line-search controls, and
+convergence diagnostics live in `gp_multilabel_lbfgsb_options_t` and
+`gp_multilabel_lbfgsb_result_t`. This is intentionally a fixed-state outer
+hyperparameter slice; call `fit` again when a fully recomputed Laplace mode is
+required. The optimizer and products are CPU-only and return typed CUDA
+refusals through the existing `device_supported` contract.

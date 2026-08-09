@@ -3945,6 +3945,25 @@ fallback is implied.  The independent behavioral oracle is
 `test_gp_multilabel_classification`, and the cross-engine correctness record
 is `fortml-bench/results/GP_MULTILABEL.md`.
 
+`shared_parameter_count()` and `shared_parameters()` expose the common packed
+kernel-log vector used by all label heads. `set_shared_parameters(values,
+status)` is transactional: candidate covariance and Cholesky factors are
+constructed for every head before the model commits. The fixed-state outer
+objective `fixed_state_value_gradient(values,value,gradient,status)` returns
+the negative sum of the independent mode log posteriors and its analytic
+shared kernel gradient while retaining the fitted Newton modes and likelihood
+curvatures. `shared_hyperparameter_gradient` returns the corresponding
+positive log-posterior gradient.
+
+`gp_multilabel_training_objective_t` adapts this contract to FortOpt with
+`value_gradient`, `jvp`, `vjp`, and `fortopt`. The convenience
+`gp_multilabel_optimize_lbfgsb(model,options,result,status)` runs bounded
+FortOpt L-BFGS-B over the shared kernel-log coordinates using
+`gp_multilabel_lbfgsb_options_t` and reports
+`gp_multilabel_lbfgsb_result_t`. This path is a fixed-state CPU
+hyperparameter slice; it does not silently refit a mode or stage work for
+CUDA, and unsupported device requests remain typed refusals.
+
 ### `fortml_gp_classification_training`
 
 `gp_classification_optimize_hyperparameters(model,x,labels,kernel,options,

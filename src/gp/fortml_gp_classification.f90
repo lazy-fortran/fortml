@@ -52,6 +52,8 @@ module fortml_gp_classification
         real(dp), allocatable :: mode(:)
         real(dp), allocatable :: alpha(:)
         real(dp), allocatable :: sqrt_w(:)
+        integer, allocatable :: training_labels(:)
+        real(dp), allocatable :: sample_weights(:)
         integer :: class_label(2) = 0
         integer :: n_samples = 0
         integer :: n_features = 0
@@ -90,6 +92,10 @@ module fortml_gp_classification
         procedure, public :: parameter_count => gp_classification_parameter_count
         procedure, public :: parameters => gp_classification_parameters
         procedure, public :: set_parameters => gp_classification_set_parameters
+        procedure, public :: fixed_state_log_posterior => &
+            gp_classification_fixed_state_log_posterior
+        procedure, public :: fixed_state_log_posterior_gradient => &
+            gp_classification_fixed_state_log_posterior_gradient
         procedure, public :: hyperparameter_gradient => &
             gp_classification_hyperparameter_gradient
         procedure, public :: hyperparameter_hvp => gp_classification_hyperparameter_hvp
@@ -121,6 +127,8 @@ module fortml_gp_classification
     public :: gp_classification_predict_log_proba_parameter_vjp
     public :: gp_classification_predict
     public :: gp_classification_set_parameters
+    public :: gp_classification_fixed_state_log_posterior
+    public :: gp_classification_fixed_state_log_posterior_gradient
     public :: gp_classification_log_likelihood_value
     public :: gp_classification_log_likelihood_jvp
     public :: gp_classification_log_likelihood_vjp
@@ -198,6 +206,8 @@ contains
 
         self%kernel = kernel
         allocate(self%x_train, source=x)
+        allocate(self%training_labels, source=labels)
+        allocate(self%sample_weights, source=weights)
         self%n_samples = size(x, 1)
         self%n_features = size(x, 2)
         self%likelihood = requested%likelihood
@@ -1244,6 +1254,79 @@ contains
         self%posterior_factorization = posterior_candidate
         call status_set(status, FORTNUM_OK, "")
     end subroutine gp_classification_set_parameters
+
+    !> Evaluate the mode log posterior after a kernel transaction.
+    !!
+    !! The Newton mode itself, and therefore the likelihood contribution, is
+    !! held fixed.  The prior term is evaluated with the current kernel
+    !! factorization, so callers can use this routine as a smooth objective
+    !! while changing the packed logarithmic kernel parameters with
+    !! `set_parameters`.
+    subroutine gp_classification_fixed_state_log_posterior(self, value, status)
+        class(gp_classification_t), intent(in) :: self
+        real(dp), intent(out) :: value
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: alpha_candidate(:)
+
+        value = -huge(1.0_dp)
+        if (.not. self%fitted() .or. .not. allocated(self%training_labels) .or. &
+            .not. allocated(self%sample_weights)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP classification fixed-state objective: model is not fitted")
+            return
+        end if
+        allocate(alpha_candidate(self%n_samples))
+        alpha_candidate = self%mode
+        call self%prior_factorization%solve(alpha_candidate, status)
+        if (status%code /= FORTNUM_OK) return
+        value = log_posterior(self%mode, alpha_candidate, self%training_labels, &
+            self%class_label, self%likelihood, self%sample_weights)
+        if (.not. ieee_is_finite(value)) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "GP classification fixed-state objective: value is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_classification_fixed_state_log_posterior
+
+    !> Gradient of `fixed_state_log_posterior` with respect to kernel logs.
+    !!
+    !! This is the exact prior-envelope contraction at the fixed mode.  The
+    !! candidate inverse-kernel solve is intentional: after a transactional
+    !! `set_parameters`, `alpha = K(theta)^(-1) f_mode` changes even though
+    !! the mode and likelihood state remain fixed.
+    subroutine gp_classification_fixed_state_log_posterior_gradient(self, gradient, status)
+        class(gp_classification_t), intent(in) :: self
+        real(dp), intent(out) :: gradient(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: alpha_candidate(:), matrix_bar(:, :)
+
+        gradient = 0.0_dp
+        if (.not. self%fitted() .or. .not. allocated(self%training_labels) .or. &
+            .not. allocated(self%sample_weights)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP classification fixed-state gradient: model is not fitted")
+            return
+        end if
+        if (size(gradient) /= self%parameter_count()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "GP classification fixed-state gradient: output shape is invalid")
+            return
+        end if
+        allocate(alpha_candidate(self%n_samples), matrix_bar(self%n_samples, self%n_samples))
+        alpha_candidate = self%mode
+        call self%prior_factorization%solve(alpha_candidate, status)
+        if (status%code /= FORTNUM_OK) return
+        matrix_bar = 0.5_dp*outer_product(alpha_candidate, alpha_candidate)
+        call self%kernel%parameter_vjp(self%x_train, self%x_train, matrix_bar, gradient, status)
+        if (status%code /= FORTNUM_OK) return
+        if (any(.not. ieee_is_finite(gradient))) then
+            call status_set(status, FORTNUM_CONVERGENCE_ERROR, &
+                "GP classification fixed-state gradient: result is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gp_classification_fixed_state_log_posterior_gradient
 
     subroutine gp_classification_hyperparameter_gradient(self, gradient, status)
         class(gp_classification_t), intent(in) :: self
