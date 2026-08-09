@@ -99,6 +99,21 @@ Returned GP variances are latent-function variances unless a procedure says
 otherwise. Observation noise is used in fitting and is not added to prediction
 variance.
 
+## Weighted Bayesian ridge regression
+
+`fortml_bayesian_ridge::bayesian_ridge_regression_t` provides the dense,
+fixed-hyperparameter conjugate-Gaussian regression slice. `fit(x, y, status,
+alpha, lambda, fit_intercept, sample_weight)` accepts vector or multi-output
+targets and nonnegative row weights. `alpha` is the observation precision and
+`lambda` is the isotropic coefficient-prior precision (the intercept is part of
+that prior when enabled); both are retained as fitted metadata. The fitted
+`posterior_mean`, `posterior_precision`, `posterior_covariance`, and
+`log_evidence` are deterministic dense CPU quantities. `predict_jvp` and
+`predict_vjp` expose exact fixed-state input/packed-coefficient products, while
+`predict_device` returns `FORTNUM_NOT_IMPLEMENTED` for CUDA because no resident
+Bayesian-ridge kernel is claimed. Evidence maximisation/ARD, derivative-
+through-fit, sparse solvers, and GPU execution remain separate open contracts.
+
 ## Product coverage
 
 The derivative surface is model-specific. A method absent from this table is
