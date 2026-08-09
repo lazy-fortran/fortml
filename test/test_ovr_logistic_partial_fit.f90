@@ -12,9 +12,13 @@ program test_ovr_logistic_partial_fit
     real(dp) :: x(9, 2), first_x(4, 2), second_x(5, 2), query(3, 2)
     real(dp) :: p_incremental(3, 3), p_reference(3, 3), p_before(3, 3)
     real(dp) :: x_dot(3, 2), p_dot(3, 3), p_plus(3, 3), p_minus(3, 3)
+    real(dp) :: parameter_p_dot(3, 3), p_bar(3, 3)
+    real(dp), allocatable :: parameters(:), parameters_dot(:), parameters_plus(:)
+    real(dp), allocatable :: parameters_minus(:), parameters_bar(:)
     integer :: labels(9), first_labels(4), second_labels(5), query_labels(3)
     integer :: classes(3), classes_bad(3), failures
-    real(dp) :: error_value
+    real(dp) :: error_value, lhs, rhs
+    integer :: i
 
     x = reshape([ &
         -2.0_dp, 2.0_dp, -1.8_dp, 2.1_dp, -2.1_dp, 1.8_dp, &
@@ -75,6 +79,30 @@ program test_ovr_logistic_partial_fit
     call check(status_ok(status) .and. maxval(abs(p_dot - &
         (p_plus - p_minus)/(2.0e-5_dp))) < 3.0e-6_dp, &
         "fixed-state input JVP survives partial fit", failures)
+
+    parameters = incremental%parameters()
+    allocate(parameters_dot(size(parameters)), parameters_plus(size(parameters)), &
+        parameters_minus(size(parameters)), parameters_bar(size(parameters)))
+    parameters_dot = [(0.01_dp*real(i, dp), i=1,size(parameters))]
+    p_bar = reshape([0.2_dp, -0.1_dp, 0.3_dp, -0.4_dp, 0.5_dp, -0.2_dp, &
+        0.6_dp, 0.1_dp, -0.3_dp], shape(p_bar))
+    call incremental%predict_proba_parameter_jvp(query, parameters_dot, &
+        p_incremental, parameter_p_dot, status)
+    parameters_plus = parameters + 1.0e-5_dp*parameters_dot
+    call incremental%set_parameters(parameters_plus, status)
+    call incremental%predict_proba(query, p_plus, status)
+    parameters_minus = parameters - 1.0e-5_dp*parameters_dot
+    call incremental%set_parameters(parameters_minus, status)
+    call incremental%predict_proba(query, p_minus, status)
+    call incremental%set_parameters(parameters, status)
+    call check(status_ok(status) .and. maxval(abs(parameter_p_dot - &
+        (p_plus - p_minus)/(2.0e-5_dp))) < 3.0e-6_dp, &
+        "fixed-state parameter JVP survives partial fit", failures)
+    call incremental%predict_proba_parameter_vjp(query, p_bar, parameters_bar, status)
+    lhs = sum(p_bar*parameter_p_dot)
+    rhs = sum(parameters_bar*parameters_dot)
+    call check(status_ok(status) .and. abs(lhs - rhs) < 3.0e-6_dp, &
+        "fixed-state parameter VJP adjoint identity", failures)
 
     replay = reference
     call replay%partial_fit(first_x, first_labels, status, classes=classes_bad)
