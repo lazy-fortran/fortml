@@ -265,7 +265,7 @@ CUDA gate.
 | `vae_t` | `elbo`, `reconstruct` | No | ELBO gradient | No |
 | `rnn_t` | `forward`, squared-error `loss` | No | Loss gradient by BPTT | No |
 | `kernel_t` | Scalar value and matrix | Parameter JVP | Parameter VJP | Parameter HVP |
-| `xgboost_t` | Squared/squared-log (RMSLE)/logistic/Poisson/fixed-shape Gamma/Tweedie/Huber/quantile/absolute/rank:pairwise margins, predictions, additive tree contributions, fitted-prefix slicing, bounded ordered-gradient integer categorical partitions, and packed fixed-structure base/leaf coordinates | Fixed-tree input JVP away from split boundaries; categorical models refuse discrete tangents; raw-margin leaf-coordinate JVP | Fixed-tree input VJP away from split boundaries; categorical models refuse discrete cotangents; raw-margin leaf-coordinate VJP | No |
+| `xgboost_t` | Squared/squared-log (RMSLE)/logistic/Poisson/fixed-shape Gamma/Tweedie/Huber/quantile/absolute/rank:pairwise margins, predictions, additive tree contributions, fitted-prefix slicing, bounded ordered-gradient and exhaustive small-cardinality integer categorical partitions, and packed fixed-structure base/leaf coordinates | Fixed-tree input JVP away from split boundaries; categorical models refuse discrete tangents; raw-margin leaf-coordinate JVP | Fixed-tree input VJP away from split boundaries; categorical models refuse discrete cotangents; raw-margin leaf-coordinate VJP | No |
 | `xgboost_classifier_t` | Binary integer labels, logistic `(n,2)` probabilities and stable log probabilities, staged margins, feature diagnostics, and categorical/interaction metadata | Fixed-tree probability/log-probability/input JVP away from split boundaries | Fixed-tree probability/log-probability/input VJP away from split boundaries | No |
 | `lightgbm_t` | Weighted numeric regression, binary logistic, and query-weighted rank:pairwise histogram boosting with deterministic globally best-leaf growth, GOSS top/other-rate gradient/Hessian sampling, seeded DART/dropout with persisted tree-normalisation scales, and packed fixed-structure base/leaf coordinates | Fixed-tree input JVP away from split boundaries; raw-margin leaf-coordinate JVP | Fixed-tree input VJP away from split boundaries; raw-margin leaf-coordinate VJP | No |
 | `lightgbm_multiclass_t` | Sorted-integer-label one-vs-rest LightGBM-style binary logistic children with normalized final/staged probabilities, stable log probabilities, raw margins, weighted validation best-prefix metadata, packed base/leaf coordinates, and transactional fit | Fixed-tree normalized probability/log-probability input and packed-leaf JVP away from split boundaries | Fixed-tree normalized probability/log-probability input and packed-leaf VJP away from split boundaries | No |
@@ -329,7 +329,12 @@ schedule is evaluated at each streaming update for SGD, Adam, AdamW, Adagrad,
 RMSprop, Adafactor, and Lion without resetting optimizer moments; invalid
 plateau or L-BFGS-B combinations return a typed refusal. `trainer_state_t`
 reports counters, objective and gradient histories, clipping, convergence,
-final parameters, and EMA parameters.
+final parameters, EMA parameters, and the most recent fit diagnostics.
+`fit_calls` counts successful `fit` invocations; `optimizer_iterations` counts
+accepted updates (or FortOpt L-BFGS-B iterations), while
+`line_search_evaluations` and `curvature_updates` expose the corresponding
+bounded-solver diagnostics. Streaming optimizers report zero for the two
+L-BFGS-B-specific counters.
 `state_copy()` is an in-memory checkpoint and `clone(copy,status)` copies the
 complete optimizer and objective state, including moments and L-BFGS-B
 parameters, so an interrupted run can resume without process-global state.
@@ -355,8 +360,8 @@ SGD/Adam/AdamW/Adagrad/RMSprop/Adafactor/Lion recurrence. `load_checkpoint(path,
 transactional: it requires an initialized destination with the same packed
 dimension, validates schema/order/counts/finite values, and refuses truncated,
 unknown, extra, or incompatible records without changing the destination.
-Schema version 6 is a deliberate clean break that records the typed schedule
-configuration and validation direction, and rejects older or newer trainer
+Schema version 7 is a deliberate clean break that records the typed schedule
+configuration, validation direction, and fit diagnostics, and rejects older or newer trainer
 snapshots rather than
 silently changing a trajectory.
 Procedure callbacks and objective closures remain process-local and must be
@@ -3576,6 +3581,21 @@ no canonical continuous tangent space.  See
 [`docs/XGBOOST_CATEGORICAL.md`](XGBOOST_CATEGORICAL.md) and the independent
 `test_xgboost_categorical` fixture.
 
+For small-cardinality columns, `categorical_policy="partition"` selects the
+exhaustive CPU policy.  It enumerates every nontrivial subset of the observed
+codes (with the first code fixed to the left child to remove complement
+duplicates), evaluates the same second-order gain and missing-value defaults,
+and sorts codes before enumeration for row-order-independent tie behavior.
+The bound remains `categorical_max_categories <= 64`, with exhaustive work
+intended for the small-cardinality range; the same integer-code and explicit
+cardinality refusals apply.  The policy name and code metadata survive text
+snapshots, slices, and warm starts.  CPU prediction is supported and selected
+CUDA remains an explicit `FORTNUM_NOT_IMPLEMENTED` refusal; input JVP/VJP
+products retain the discrete-category refusal.  The independent
+`test_xgboost_categorical_partition` fixture checks the hand-computed
+Newton partition, persistence, metadata mismatch, malformed-code, and device
+boundaries.
+
 The Tweedie lane uses the compound-Poisson variance-power interval
 `1 < p < 2`, where `p` is `tweedie_variance_power`. Margins are log means and
 `predict`/`predict_staged` apply `exp(margin)`. Up to a target-only constant,
@@ -4602,6 +4622,14 @@ every inducing posterior. `elbo_gradient` and `elbo_jvp` include both terms.
 
 `predict_latent` returns per-class means and variances. `predict_proba` returns
 coupled simplex probabilities and `predict` uses sorted-class first-max ties.
+`predict_log_proba` returns the stable logarithm of those normalized
+probabilities for scikit-learn-style scoring. Its fixed-state packed-parameter
+and input products are available as
+`predict_log_proba_parameter_jvp`/`predict_log_proba_parameter_vjp` and
+`predict_log_proba_input_jvp`/`predict_log_proba_input_vjp`; each is obtained
+from the same softmax product and is checked against independent finite
+differences. Device wrappers preserve zeroed outputs and return a typed CUDA
+refusal until the resident categorical graph is linked.
 `predict_proba_parameter_jvp`/`predict_proba_parameter_vjp` and
 `predict_proba_input_jvp`/`predict_proba_input_vjp` differentiate the complete
 softmax, variance correction, and inducing projection. `parameters()` packs

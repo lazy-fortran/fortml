@@ -16,7 +16,7 @@ fixed-leaf-product, plateau-trainer, affine Adagrad HVP, and CUDA VJP closure
 slices documented below are post-tag additions.
 The broad parity
 gate is still open, so this work does not move or recreate that tag.
-The checklist currently records 389 completed and 150 open items. Open rows are
+The checklist currently records 390 completed and 149 open items. Open rows are
 retained until their implementation, independent oracle, device/refusal
 behavior, and benchmark evidence land together.
 
@@ -168,6 +168,11 @@ it is checked off.
   explicit CPU/CUDA derivative dispatch. `test_gp_posterior_covariance`
   checks a dense finite-difference tangent and Frobenius adjoint identity;
   CUDA derivative requests are typed refusals with cleared outputs.
+- [x] Add stable `predict_log_proba` to coupled categorical variational GPs,
+  with fixed-state packed-parameter and input JVP/VJP products, sorted-label
+  layout, independent softmax/log finite-difference and adjoint oracles, and
+  explicit CPU/CUDA dispatch. The resident CUDA graph remains a typed refusal
+  until inducing solves and softmax reductions are linked.
 - [ ] Finish the likelihood catalog: Gaussian, Bernoulli/probit, categorical,
   multinomial, Poisson/count, Gamma, Student-t, heteroskedastic, censored,
   ordinal, and warped links with constraints, stable tails, batch shapes, and
@@ -3706,10 +3711,18 @@ hyperparameter block. A deliberate train/validation leakage fixture must fail.
   `fortml-bench/results/TREE_SHAP.md` provide independent one-stump NumPy
   oracles. Monotone prediction checks, partial dependence, model-size/tree
   export diagnostics, and resident GPU explanation kernels remain open.
-- [ ] Extend categorical support beyond the ordered-gradient policy (exhaustive
-  partitions for very small cardinalities, categorical statistics/target
-  encoding, categorical interaction constraints) and add distributed/resident
-  GPU histogram implementations.
+- [x] Add bounded exhaustive categorical partitions for small-cardinality
+  XGBoost trees. `categorical_policy="partition"` enumerates every
+  nontrivial subset of sorted integer codes (fixing the first code left to
+  remove complement duplicates), evaluates weighted second-order gain and
+  missing defaults, persists policy metadata, and retains explicit discrete
+  JVP/VJP and CUDA refusal boundaries. The independent
+  `test_xgboost_categorical_partition` fixture and
+  `fortml-bench/results/xgboost_categorical_partition.csv` provide the hand
+  Newton oracle, persistence, malformed-code, warm-start, and device rows.
+- [ ] Extend categorical support with categorical statistics/target encoding,
+  categorical interaction constraints, and add distributed/resident GPU
+  histogram implementations.
 
 Acceptance: small trees reproduce exhaustive hand-enumerated split searches,
 including weighted and missing-value cases. Training loss is nonincreasing for
@@ -4164,6 +4177,14 @@ trials remain visible in the result schema.
   quadratic oracle covers the callback sequence, split continuation, and
   transactional callback-presence refusal. Validation callbacks remain
   process-local and host-owned.
+- [x] Make generic trainer fit diagnostics first-class and persistent. The
+  schema-7 `trainer_state_t` records successful `fit` calls, accepted optimizer
+  iterations, and FortOpt L-BFGS-B line-search/curvature counts; streaming
+  optimizers explicitly report zero for the bounded-solver counters. The
+  independent quadratic `test_trainer_fit_diagnostics` oracle checks the
+  bounded optimum, counter relationships, and transactional schema-7
+  checkpoint round trip. Quasi-Newton history itself remains fit-level and is
+  intentionally not claimed resumable by the generic trainer.
 - [x] Integrate the typed metric-aware plateau schedule into `mlp_train`.
   Epoch validation loss (or training loss without a held-out stream) drives a
   deterministic best-metric/bad-observation/reduction state machine.  The

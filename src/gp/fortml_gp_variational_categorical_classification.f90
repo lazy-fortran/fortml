@@ -103,11 +103,16 @@ module fortml_gp_variational_categorical_classification
             gvcc_elbo_likelihood_parameter_hvp
         procedure, public :: predict_latent => gvcc_predict_latent
         procedure, public :: predict_proba => gvcc_predict_proba
+        procedure, public :: predict_log_proba => gvcc_predict_log_proba
         procedure, public :: predict => gvcc_predict
         procedure, public :: predict_proba_parameter_jvp => &
             gvcc_predict_proba_parameter_jvp
         procedure, public :: predict_proba_parameter_vjp => &
             gvcc_predict_proba_parameter_vjp
+        procedure, public :: predict_log_proba_parameter_jvp => &
+            gvcc_predict_log_proba_parameter_jvp
+        procedure, public :: predict_log_proba_parameter_vjp => &
+            gvcc_predict_log_proba_parameter_vjp
         procedure, public :: likelihood_parameters => gvcc_likelihood_parameters
         procedure, public :: set_likelihood_parameters => gvcc_set_likelihood_parameters
         procedure, public :: likelihood_scale => gvcc_likelihood_scale
@@ -121,9 +126,16 @@ module fortml_gp_variational_categorical_classification
             gvcc_predict_proba_input_jvp
         procedure, public :: predict_proba_input_vjp => &
             gvcc_predict_proba_input_vjp
+        procedure, public :: predict_log_proba_input_jvp => &
+            gvcc_predict_log_proba_input_jvp
+        procedure, public :: predict_log_proba_input_vjp => &
+            gvcc_predict_log_proba_input_vjp
         procedure, public :: predict_proba_device => gvcc_predict_proba_device
         procedure, public :: predict_proba_parameter_vjp_device => &
             gvcc_predict_proba_parameter_vjp_device
+        procedure, public :: predict_log_proba_device => gvcc_predict_log_proba_device
+        procedure, public :: predict_log_proba_parameter_vjp_device => &
+            gvcc_predict_log_proba_parameter_vjp_device
         procedure, public :: predict_proba_likelihood_parameter_jvp_device => &
             gvcc_predict_proba_likelihood_parameter_jvp_device
         procedure, public :: predict_proba_likelihood_parameter_vjp_device => &
@@ -132,6 +144,8 @@ module fortml_gp_variational_categorical_classification
             gvcc_predict_proba_likelihood_parameter_hvp_device
         procedure, public :: predict_proba_input_vjp_device => &
             gvcc_predict_proba_input_vjp_device
+        procedure, public :: predict_log_proba_input_vjp_device => &
+            gvcc_predict_log_proba_input_vjp_device
         procedure, public :: elbo_device => gvcc_elbo_device
         procedure, public :: elbo_likelihood_parameter_hvp_device => &
             gvcc_elbo_likelihood_parameter_hvp_device
@@ -897,6 +911,38 @@ contains
         call logits_and_probabilities(self, means, variances, logits, probabilities, status)
     end subroutine gvcc_predict_proba
 
+    subroutine gvcc_predict_log_proba(self, x, log_probabilities, status)
+        !! Stable categorical ``predict_log_proba`` companion.
+        !!
+        !! The coupled softmax is evaluated with a row-wise max shift by
+        !! `gvcc_predict_proba`; taking the logarithm only after that
+        !! normalization preserves finite values for saturated logits while
+        !! retaining the exact sorted-label layout.
+        class(gp_variational_categorical_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: log_probabilities(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: probabilities(:, :)
+
+        log_probabilities = 0.0_dp
+        if (.not. probability_valid(self, x, log_probabilities, status)) return
+        allocate(probabilities(size(x, 1), self%n_classes))
+        call self%predict_proba(x, probabilities, status)
+        if (status%code /= FORTNUM_OK) return
+        if (any(probabilities <= 0.0_dp) .or. any(.not. ieee_is_finite(probabilities))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "categorical variational GP log probability: probabilities are invalid")
+            return
+        end if
+        log_probabilities = log(probabilities)
+        if (any(.not. ieee_is_finite(log_probabilities))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "categorical variational GP log probability: result is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gvcc_predict_log_proba
+
     subroutine gvcc_predict(self, x, labels, status)
         class(gp_variational_categorical_classification_t), intent(in) :: self
         real(dp), intent(in) :: x(:, :)
@@ -964,6 +1010,44 @@ contains
         call softmax_jvp(logits, logits_dot, probabilities, probabilities_dot, status)
     end subroutine gvcc_predict_proba_parameter_jvp
 
+    subroutine gvcc_predict_log_proba_parameter_jvp(self, x, direction, log_probabilities, &
+            log_probabilities_dot, status)
+        !! Fixed-state packed-parameter JVP of `predict_log_proba`.
+        class(gp_variational_categorical_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), direction(:)
+        real(dp), intent(out) :: log_probabilities(:, :), log_probabilities_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: probabilities(:, :), probabilities_dot(:, :)
+
+        log_probabilities = 0.0_dp
+        log_probabilities_dot = 0.0_dp
+        if (.not. probability_valid(self, x, log_probabilities, status)) return
+        if (any(shape(log_probabilities_dot) /= shape(log_probabilities))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "categorical variational GP log probability parameter JVP: output shape is invalid")
+            return
+        end if
+        allocate(probabilities(size(x, 1), self%n_classes), &
+            probabilities_dot(size(x, 1), self%n_classes))
+        call self%predict_proba_parameter_jvp(x, direction, probabilities, probabilities_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        if (any(probabilities <= 0.0_dp) .or. any(.not. ieee_is_finite(probabilities)) .or. &
+                any(.not. ieee_is_finite(probabilities_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "categorical variational GP log probability parameter JVP: probability is invalid")
+            return
+        end if
+        log_probabilities = log(probabilities)
+        log_probabilities_dot = probabilities_dot/probabilities
+        if (any(.not. ieee_is_finite(log_probabilities)) .or. &
+                any(.not. ieee_is_finite(log_probabilities_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "categorical variational GP log probability parameter JVP: result is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gvcc_predict_log_proba_parameter_jvp
+
     subroutine gvcc_predict_proba_parameter_vjp(self, x, probabilities_bar, parameter_bar, status)
         class(gp_variational_categorical_classification_t), intent(in) :: self
         real(dp), intent(in) :: x(:, :), probabilities_bar(:, :)
@@ -1013,6 +1097,35 @@ contains
         end if
         call status_set(status, FORTNUM_OK, "")
     end subroutine gvcc_predict_proba_parameter_vjp
+
+    subroutine gvcc_predict_log_proba_parameter_vjp(self, x, log_probabilities_bar, parameter_bar, status)
+        !! Reverse packed-parameter product of `predict_log_proba`.
+        class(gp_variational_categorical_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), log_probabilities_bar(:, :)
+        real(dp), intent(out) :: parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: probabilities(:, :), probability_bar(:, :)
+
+        parameter_bar = 0.0_dp
+        if (.not. probability_cotangent_valid(self, x, log_probabilities_bar, parameter_bar, status)) return
+        allocate(probabilities(size(x, 1), self%n_classes), &
+            probability_bar(size(x, 1), self%n_classes))
+        call self%predict_proba(x, probabilities, status)
+        if (status%code /= FORTNUM_OK) return
+        if (any(probabilities <= 0.0_dp) .or. any(.not. ieee_is_finite(probabilities)) .or. &
+                any(.not. ieee_is_finite(log_probabilities_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "categorical variational GP log probability parameter VJP: probability is invalid")
+            return
+        end if
+        probability_bar = log_probabilities_bar/probabilities
+        if (any(.not. ieee_is_finite(probability_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "categorical variational GP log probability parameter VJP: cotangent is not finite")
+            return
+        end if
+        call self%predict_proba_parameter_vjp(x, probability_bar, parameter_bar, status)
+    end subroutine gvcc_predict_log_proba_parameter_vjp
 
     subroutine gvcc_predict_proba_likelihood_parameter_jvp(self, x, direction, probabilities, &
             probabilities_dot, status)
@@ -1176,6 +1289,44 @@ contains
         call softmax_jvp(logits, logits_dot, probabilities, probabilities_dot, status)
     end subroutine gvcc_predict_proba_input_jvp
 
+    subroutine gvcc_predict_log_proba_input_jvp(self, x, x_dot, log_probabilities, &
+            log_probabilities_dot, status)
+        !! Fixed-state input JVP of `predict_log_proba`.
+        class(gp_variational_categorical_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), x_dot(:, :)
+        real(dp), intent(out) :: log_probabilities(:, :), log_probabilities_dot(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: probabilities(:, :), probabilities_dot(:, :)
+
+        log_probabilities = 0.0_dp
+        log_probabilities_dot = 0.0_dp
+        if (.not. probability_valid(self, x, log_probabilities, status)) return
+        if (any(shape(log_probabilities_dot) /= shape(log_probabilities))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "categorical variational GP log probability input JVP: output shape is invalid")
+            return
+        end if
+        allocate(probabilities(size(x, 1), self%n_classes), &
+            probabilities_dot(size(x, 1), self%n_classes))
+        call self%predict_proba_input_jvp(x, x_dot, probabilities, probabilities_dot, status)
+        if (status%code /= FORTNUM_OK) return
+        if (any(probabilities <= 0.0_dp) .or. any(.not. ieee_is_finite(probabilities)) .or. &
+                any(.not. ieee_is_finite(probabilities_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "categorical variational GP log probability input JVP: probability is invalid")
+            return
+        end if
+        log_probabilities = log(probabilities)
+        log_probabilities_dot = probabilities_dot/probabilities
+        if (any(.not. ieee_is_finite(log_probabilities)) .or. &
+                any(.not. ieee_is_finite(log_probabilities_dot))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "categorical variational GP log probability input JVP: result is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine gvcc_predict_log_proba_input_jvp
+
     subroutine gvcc_predict_proba_input_vjp(self, x, probabilities_bar, x_bar, status)
         class(gp_variational_categorical_classification_t), intent(in) :: self
         real(dp), intent(in) :: x(:, :), probabilities_bar(:, :)
@@ -1222,6 +1373,35 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine gvcc_predict_proba_input_vjp
 
+    subroutine gvcc_predict_log_proba_input_vjp(self, x, log_probabilities_bar, x_bar, status)
+        !! Reverse input product of `predict_log_proba`.
+        class(gp_variational_categorical_classification_t), intent(in) :: self
+        real(dp), intent(in) :: x(:, :), log_probabilities_bar(:, :)
+        real(dp), intent(out) :: x_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: probabilities(:, :), probability_bar(:, :)
+
+        x_bar = 0.0_dp
+        if (.not. probability_input_cotangent_valid(self, x, log_probabilities_bar, x_bar, status)) return
+        allocate(probabilities(size(x, 1), self%n_classes), &
+            probability_bar(size(x, 1), self%n_classes))
+        call self%predict_proba(x, probabilities, status)
+        if (status%code /= FORTNUM_OK) return
+        if (any(probabilities <= 0.0_dp) .or. any(.not. ieee_is_finite(probabilities)) .or. &
+                any(.not. ieee_is_finite(log_probabilities_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "categorical variational GP log probability input VJP: probability is invalid")
+            return
+        end if
+        probability_bar = log_probabilities_bar/probabilities
+        if (any(.not. ieee_is_finite(probability_bar))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "categorical variational GP log probability input VJP: cotangent is not finite")
+            return
+        end if
+        call self%predict_proba_input_vjp(x, probability_bar, x_bar, status)
+    end subroutine gvcc_predict_log_proba_input_vjp
+
     subroutine gvcc_predict_proba_device(self, device, x, probabilities, status)
         class(gp_variational_categorical_classification_t), intent(in) :: self
         type(fortml_device_t), intent(in) :: device
@@ -1246,6 +1426,32 @@ contains
                 "categorical variational GP device: device kind is invalid")
         end select
     end subroutine gvcc_predict_proba_device
+
+    subroutine gvcc_predict_log_proba_device(self, device, x, log_probabilities, status)
+        !! Device-dispatched categorical log-probability prediction.
+        class(gp_variational_categorical_classification_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: log_probabilities(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        log_probabilities = 0.0_dp
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "categorical variational GP log probability device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_log_proba(x, log_probabilities, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "categorical variational GP log probability device: resident CUDA graph is not linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "categorical variational GP log probability device: device kind is invalid")
+        end select
+    end subroutine gvcc_predict_log_proba_device
 
     subroutine gvcc_predict_proba_parameter_vjp_device(self, device, x, probabilities_bar, &
             parameter_bar, status)
@@ -1272,6 +1478,33 @@ contains
                 "categorical variational GP parameter VJP device: device kind is invalid")
         end select
     end subroutine gvcc_predict_proba_parameter_vjp_device
+
+    subroutine gvcc_predict_log_proba_parameter_vjp_device(self, device, x, &
+            log_probabilities_bar, parameter_bar, status)
+        !! Device boundary for the categorical log-probability parameter VJP.
+        class(gp_variational_categorical_classification_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :), log_probabilities_bar(:, :)
+        real(dp), intent(out) :: parameter_bar(:)
+        type(fortnum_status_t), intent(out) :: status
+
+        parameter_bar = 0.0_dp
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "categorical variational GP log probability parameter VJP device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_log_proba_parameter_vjp(x, log_probabilities_bar, parameter_bar, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "categorical variational GP log probability parameter VJP device: resident CUDA graph is not linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "categorical variational GP log probability parameter VJP device: device kind is invalid")
+        end select
+    end subroutine gvcc_predict_log_proba_parameter_vjp_device
 
     subroutine gvcc_predict_proba_likelihood_parameter_jvp_device(self, device, x, direction, &
             probabilities, probabilities_dot, status)
@@ -1380,6 +1613,33 @@ contains
                 "categorical variational GP input VJP device: device kind is invalid")
         end select
     end subroutine gvcc_predict_proba_input_vjp_device
+
+    subroutine gvcc_predict_log_proba_input_vjp_device(self, device, x, &
+            log_probabilities_bar, x_bar, status)
+        !! Device boundary for the categorical log-probability input VJP.
+        class(gp_variational_categorical_classification_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :), log_probabilities_bar(:, :)
+        real(dp), intent(out) :: x_bar(:, :)
+        type(fortnum_status_t), intent(out) :: status
+
+        x_bar = 0.0_dp
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "categorical variational GP log probability input VJP device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%predict_log_proba_input_vjp(x, log_probabilities_bar, x_bar, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "categorical variational GP log probability input VJP device: resident CUDA graph is not linked")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "categorical variational GP log probability input VJP device: device kind is invalid")
+        end select
+    end subroutine gvcc_predict_log_proba_input_vjp_device
 
     subroutine gvcc_elbo_device(self, device, x, labels, value, status, scale, sample_weight)
         class(gp_variational_categorical_classification_t), intent(in) :: self

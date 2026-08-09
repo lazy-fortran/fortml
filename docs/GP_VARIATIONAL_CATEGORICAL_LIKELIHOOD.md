@@ -18,6 +18,15 @@ where `c = pi/8` for the logistic approximation and `c = 1` for probit.  A
 stable row-wise softmax produces the simplex probabilities.  The scalar
 coordinate has exact CPU products:
 
+`predict_log_proba` is the stable scikit-learn-style companion to
+`predict_proba`. It takes the logarithm only after the max-shifted softmax has
+normalized each row, and therefore preserves finite values for saturated
+logits. `predict_log_proba_parameter_jvp`/`_vjp` and
+`predict_log_proba_input_jvp`/`_vjp` expose the corresponding fixed-state
+products. The reverse products convert their cotangents through the positive
+probabilities and then reuse the tested softmax reverse path, so the
+log-probability and probability products remain adjoint-consistent.
+
 - `predict_proba_likelihood_parameter_jvp` and
   `predict_proba_likelihood_parameter_vjp` differentiate the complete
   temperature-scaled softmax, and
@@ -39,7 +48,8 @@ final gradient.  Bounds are on the log coordinate, so the physical scale is
 always positive.
 
 The CPU implementation is the reference path.  The explicit device wrappers
-for likelihood JVP/VJP/HVP return `FORTNUM_NOT_IMPLEMENTED` for CUDA until the
+for log probabilities and likelihood JVP/VJP/HVP return
+`FORTNUM_NOT_IMPLEMENTED` for CUDA until the
 inducing solves and softmax reduction are resident; no host fallback is hidden
 behind a CUDA request.  The independent finite-difference, adjoint, and
 directional-Hessian oracle is

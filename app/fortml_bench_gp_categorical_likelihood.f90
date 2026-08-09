@@ -15,15 +15,27 @@ program fortml_bench_gp_categorical_likelihood
     type(kernel_t) :: kernel
     type(fortnum_status_t) :: status
     type(fortml_device_t) :: cuda
-    real(dp) :: x(6, 1), inducing(3, 1), probabilities(6, 3), probabilities_dot(6, 3)
+    real(dp) :: x(6, 1), x_dot(6, 1), inducing(3, 1)
+    real(dp) :: probabilities(6, 3), probabilities_dot(6, 3)
+    real(dp) :: probabilities_parameter(6, 3), probabilities_parameter_dot(6, 3)
+    real(dp) :: probabilities_input(6, 3), probabilities_input_dot(6, 3)
+    real(dp) :: log_probabilities(6, 3), log_probabilities_parameter_dot(6, 3)
+    real(dp) :: log_probabilities_input_dot(6, 3)
     real(dp) :: means(6, 3), variances(6, 3)
     real(dp) :: probabilities_bar(6, 3), parameter_bar(1), likelihood_gradient(1), value, tangent
     real(dp) :: likelihood_hvp(1), probability_hvp(1)
     real(dp) :: fit_seconds, t0, t1
+    real(dp) :: parameter_direction(27)
     real(dp), allocatable :: packed(:)
     integer :: labels(6), classes(3), clock_rate, clock_start, clock_stop, cuda_code, i, j
 
     x(:, 1) = [-1.2_dp, -0.7_dp, -0.15_dp, 0.25_dp, 0.8_dp, 1.3_dp]
+    x_dot(:, 1) = [0.03_dp, -0.02_dp, 0.01_dp, 0.04_dp, -0.03_dp, 0.02_dp]
+    parameter_direction = [ &
+        0.02_dp, -0.01_dp, 0.03_dp, 0.01_dp, -0.02_dp, 0.02_dp, -0.01_dp, &
+        0.03_dp, -0.02_dp, 0.01_dp, -0.03_dp, 0.02_dp, 0.01_dp, 0.02_dp, &
+        -0.01_dp, 0.02_dp, -0.02_dp, 0.01_dp, 0.03_dp, -0.01_dp, 0.02_dp, &
+        -0.03_dp, 0.01_dp, 0.02_dp, -0.02_dp, 0.01_dp, 0.03_dp]
     inducing(:, 1) = [-0.9_dp, 0.0_dp, 0.85_dp]
     labels = [30, 10, 20, 10, 30, 20]
     classes = [30, 10, 20]
@@ -66,6 +78,18 @@ program fortml_bench_gp_categorical_likelihood
     call model%predict_proba_likelihood_parameter_hvp(x, probabilities_bar, [1.0_dp], &
         probability_hvp, status)
     if (.not. status_ok(status)) error stop "categorical likelihood probability HVP failed"
+    call model%predict_log_proba_parameter_jvp(x, parameter_direction, log_probabilities, &
+        log_probabilities_parameter_dot, status)
+    if (.not. status_ok(status)) error stop "categorical log-probability parameter JVP failed"
+    call model%predict_log_proba_input_jvp(x, x_dot, log_probabilities, log_probabilities_input_dot, status)
+    if (.not. status_ok(status)) error stop "categorical log-probability input JVP failed"
+    call model%predict_proba_parameter_jvp(x, parameter_direction, probabilities_parameter, &
+        probabilities_parameter_dot, status)
+    if (.not. status_ok(status)) error stop "categorical probability parameter JVP failed"
+    call model%predict_proba_input_jvp(x, x_dot, probabilities_input, probabilities_input_dot, status)
+    if (.not. status_ok(status)) error stop "categorical probability input JVP failed"
+    call model%predict_log_proba(x, log_probabilities, status)
+    if (.not. status_ok(status)) error stop "categorical log-probability prediction failed"
     write (*, '(a,es24.16)') "gp_categorical_likelihood_scale,", model%likelihood_scale()
     write (*, '(a,es24.16)') "gp_categorical_likelihood_fit_seconds,", fit_seconds
     write (*, '(a,i0)') "gp_categorical_likelihood_iterations,", fit_state%iterations
@@ -80,6 +104,16 @@ program fortml_bench_gp_categorical_likelihood
                 i, ",", j, ",", means(i, j), ",", variances(i, j)
             write (*, '(a,i0,a,i0,a,es24.16,a,es24.16)') "gp_categorical_likelihood_probability,", &
                 i, ",", j, ",", probabilities(i, j), ",", probabilities_dot(i, j)
+            write (*, '(a,i0,a,i0,a,es24.16,a,es24.16)') &
+                "gp_categorical_likelihood_parameter_probability,", i, ",", j, ",", &
+                probabilities_parameter(i, j), ",", probabilities_parameter_dot(i, j)
+            write (*, '(a,i0,a,i0,a,es24.16,a,es24.16)') &
+                "gp_categorical_likelihood_input_probability,", i, ",", j, ",", &
+                probabilities_input(i, j), ",", probabilities_input_dot(i, j)
+            write (*, '(a,i0,a,i0,a,es24.16,a,es24.16,a,es24.16)') &
+                "gp_categorical_likelihood_log_probability,", i, ",", j, ",", &
+                log_probabilities(i, j), ",", log_probabilities_parameter_dot(i, j), ",", &
+                log_probabilities_input_dot(i, j)
         end do
     end do
     cuda%kind = FORTML_DEVICE_CUDA
@@ -96,4 +130,13 @@ program fortml_bench_gp_categorical_likelihood
     call model%elbo_likelihood_parameter_hvp_device(cuda, x, labels, [1.0_dp], likelihood_hvp, status)
     cuda_code = status%code
     write (*, '(a,i0)') "gp_categorical_likelihood_cuda_elbo_hvp,", cuda_code
+    call model%predict_log_proba_device(cuda, x, log_probabilities, status)
+    cuda_code = status%code
+    write (*, '(a,i0)') "gp_categorical_likelihood_cuda_log_probability,", cuda_code
+    call model%predict_log_proba_parameter_vjp_device(cuda, x, probabilities_bar, parameter_bar, status)
+    cuda_code = status%code
+    write (*, '(a,i0)') "gp_categorical_likelihood_cuda_log_parameter_vjp,", cuda_code
+    call model%predict_log_proba_input_vjp_device(cuda, x, probabilities_bar, x_dot, status)
+    cuda_code = status%code
+    write (*, '(a,i0)') "gp_categorical_likelihood_cuda_log_input_vjp,", cuda_code
 end program fortml_bench_gp_categorical_likelihood
