@@ -48,8 +48,8 @@ program test_trainer_fit_diagnostics
         "L-BFGS-B exposes line-search and curvature diagnostics", failures)
     call check(maxval(abs(lbfgsb%parameters() - [1.5_dp, -0.5_dp])) < 2.0e-7_dp, &
         "bounded fit reaches the independent quadratic optimum", failures)
-    call check(FORTML_TRAINER_CHECKPOINT_SCHEMA_VERSION == 7, &
-        "diagnostics use the versioned schema-7 state contract", failures)
+    call check(FORTML_TRAINER_CHECKPOINT_SCHEMA_VERSION == 8, &
+        "diagnostics use the versioned schema-8 state contract", failures)
 
     options = trainer_options_t()
     options%optimizer = FORTML_TRAIN_ADAM
@@ -69,7 +69,7 @@ program test_trainer_fit_diagnostics
         "streaming fit reports one accepted update and no L-BFGS-B counters", failures)
 
     call adam%save_checkpoint(checkpoint, status)
-    call check(status_ok(status), "schema-7 diagnostics checkpoint save", failures)
+    call check(status_ok(status), "schema-8 diagnostics checkpoint save", failures)
     call resumed%initialize(objective, [0.0_dp, 1.0_dp], status, options)
     call resumed%load_checkpoint(checkpoint, status)
     resumed_state = resumed%state_copy()
@@ -77,7 +77,7 @@ program test_trainer_fit_diagnostics
         resumed_state%optimizer_iterations == state%optimizer_iterations .and. &
         resumed_state%line_search_evaluations == state%line_search_evaluations .and. &
         resumed_state%curvature_updates == state%curvature_updates, &
-        "schema-7 checkpoint preserves fit diagnostics", failures)
+        "schema-8 checkpoint preserves fit diagnostics", failures)
     open (unit=91, file=checkpoint, status="old")
     close (91, status="delete")
 

@@ -38,7 +38,7 @@ module fortml_trainer
     integer, parameter, public :: FORTML_TRAIN_LION = 8
     character(*), parameter, public :: FORTML_TRAINER_CHECKPOINT_MAGIC = &
         "FORTML_TRAINER_CHECKPOINT_TEXT"
-    integer, parameter, public :: FORTML_TRAINER_CHECKPOINT_SCHEMA_VERSION = 7
+    integer, parameter, public :: FORTML_TRAINER_CHECKPOINT_SCHEMA_VERSION = 8
 
     abstract interface
         subroutine trainer_step_callback_proc(step, value, gradient_norm, stop, status)
@@ -81,6 +81,9 @@ module fortml_trainer
         logical :: nesterov = .false.
         real(dp) :: weight_decay = 0.0_dp
         real(dp) :: gradient_clip_norm = 0.0_dp
+        !! Optional per-coordinate gradient clipping.  A positive value
+        !! bounds every coordinate before norm clipping; zero disables it.
+        real(dp) :: gradient_clip_value = 0.0_dp
         real(dp) :: tolerance = 1.0e-8_dp
         real(dp) :: step_tolerance = 1.0e-12_dp
         real(dp) :: objective_tolerance = 1.0e-12_dp
@@ -114,6 +117,9 @@ module fortml_trainer
         logical :: stopped_by_callback = .false.
         logical :: stopped_by_validation = .false.
         integer :: clipped_steps = 0
+        !! Number of optimizer updates where at least one coordinate was
+        !! clipped by `gradient_clip_value`.
+        integer :: value_clipped_steps = 0
         integer :: validation_history_length = 0
         integer :: validation_bad_steps = 0
         integer :: validation_best_step = 0
@@ -325,6 +331,13 @@ contains
             return
         end if
 
+        if (self%options%gradient_clip_value > 0.0_dp) then
+            if (any(abs(gradient) > self%options%gradient_clip_value)) then
+                gradient = max(-self%options%gradient_clip_value, &
+                    min(self%options%gradient_clip_value, gradient))
+                self%state%value_clipped_steps = self%state%value_clipped_steps + 1
+            end if
+        end if
         norm = sqrt(max(0.0_dp, dot_product(gradient, gradient)))
         if (norm <= self%options%tolerance) then
             self%state%converged = .true.
@@ -689,6 +702,7 @@ contains
         if (ios == 0) call write_l(unit, "nesterov", self%options%nesterov, ios)
         if (ios == 0) call write_r(unit, "weight_decay", self%options%weight_decay, ios)
         if (ios == 0) call write_r(unit, "gradient_clip_norm", self%options%gradient_clip_norm, ios)
+        if (ios == 0) call write_r(unit, "gradient_clip_value", self%options%gradient_clip_value, ios)
         if (ios == 0) call write_r(unit, "tolerance", self%options%tolerance, ios)
         if (ios == 0) call write_r(unit, "step_tolerance", self%options%step_tolerance, ios)
         if (ios == 0) call write_r(unit, "objective_tolerance", self%options%objective_tolerance, ios)
@@ -734,6 +748,8 @@ contains
         if (ios == 0) call write_l(unit, "stopped_by_callback", self%state%stopped_by_callback, ios)
         if (ios == 0) call write_l(unit, "stopped_by_validation", self%state%stopped_by_validation, ios)
         if (ios == 0) call write_i(unit, "clipped_steps", self%state%clipped_steps, ios)
+        if (ios == 0) call write_i(unit, "value_clipped_steps", &
+            self%state%value_clipped_steps, ios)
         if (ios == 0) call write_i(unit, "validation_history_length", &
             self%state%validation_history_length, ios)
         if (ios == 0) call write_i(unit, "validation_bad_steps", &
@@ -875,6 +891,7 @@ contains
         if (ios == 0) call read_l(unit, "nesterov", options%nesterov, ios)
         if (ios == 0) call read_r(unit, "weight_decay", options%weight_decay, ios)
         if (ios == 0) call read_r(unit, "gradient_clip_norm", options%gradient_clip_norm, ios)
+        if (ios == 0) call read_r(unit, "gradient_clip_value", options%gradient_clip_value, ios)
         if (ios == 0) call read_r(unit, "tolerance", options%tolerance, ios)
         if (ios == 0) call read_r(unit, "step_tolerance", options%step_tolerance, ios)
         if (ios == 0) call read_r(unit, "objective_tolerance", options%objective_tolerance, ios)
@@ -924,6 +941,8 @@ contains
         if (ios == 0) call read_l(unit, "stopped_by_validation", &
             state%stopped_by_validation, ios)
         if (ios == 0) call read_i(unit, "clipped_steps", state%clipped_steps, ios)
+        if (ios == 0) call read_i(unit, "value_clipped_steps", &
+            state%value_clipped_steps, ios)
         if (ios == 0) call read_i(unit, "validation_history_length", &
             validation_history_length, ios)
         if (ios == 0) state%validation_history_length = validation_history_length
@@ -947,7 +966,8 @@ contains
             state%line_search_evaluations < 0 .or. state%curvature_updates < 0 .or. &
             validation_history_length < 0 .or. &
             validation_history_length > options%max_steps + 1 .or. &
-            state%validation_bad_steps < 0 .or. state%validation_best_step < 0) goto 900
+            state%validation_bad_steps < 0 .or. state%validation_best_step < 0 .or. &
+            state%clipped_steps < 0 .or. state%value_clipped_steps < 0) goto 900
         state%n_parameters = n
         call read_r_array(unit, "parameters_count", "parameters_item", n, state%parameters, ios)
         if (ios == 0) call read_r_array(unit, "ema_parameters_count", "ema_parameters_item", n, state%ema_parameters, ios)
@@ -1094,7 +1114,8 @@ contains
             h > size(self%state%value_history) .or. h > self%options%max_steps + 1 .or. &
             self%state%validation_history_length < 0 .or. &
             self%state%validation_history_length > self%options%max_steps + 1 .or. &
-            self%state%validation_bad_steps < 0 .or. self%state%validation_best_step < 0) then
+            self%state%validation_bad_steps < 0 .or. self%state%validation_best_step < 0 .or. &
+            self%state%clipped_steps < 0 .or. self%state%value_clipped_steps < 0) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "trainer checkpoint save: state is malformed or non-finite")
             return
@@ -1361,6 +1382,7 @@ contains
         self%stopped_by_callback = .false.
         self%stopped_by_validation = .false.
         self%clipped_steps = 0
+        self%value_clipped_steps = 0
         self%validation_history_length = 0
         self%validation_bad_steps = 0
         self%validation_best_step = 0
@@ -1486,6 +1508,7 @@ contains
             options%momentum >= 1.0_dp .or. (options%nesterov .and. options%momentum <= 0.0_dp) .or. &
             .not. ieee_is_finite(options%weight_decay) .or. options%weight_decay < 0.0_dp .or. &
             .not. ieee_is_finite(options%gradient_clip_norm) .or. options%gradient_clip_norm < 0.0_dp .or. &
+            .not. ieee_is_finite(options%gradient_clip_value) .or. options%gradient_clip_value < 0.0_dp .or. &
             .not. ieee_is_finite(options%tolerance) .or. options%tolerance < 0.0_dp .or. &
             .not. ieee_is_finite(options%step_tolerance) .or. options%step_tolerance < 0.0_dp .or. &
             .not. ieee_is_finite(options%objective_tolerance) .or. options%objective_tolerance < 0.0_dp .or. &

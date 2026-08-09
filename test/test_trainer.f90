@@ -70,6 +70,33 @@ program test_trainer
         state%final_value < state%initial_value, &
         "Adam and gradient clipping decrease the objective", failures)
 
+    ! Per-coordinate clipping is distinct from global norm clipping: the
+    ! quadratic gradient [-3, 6] is clamped to [-1, 1] before an SGD update.
+    options = trainer_options_t()
+    options%optimizer = FORTML_TRAIN_SGD
+    options%learning_rate = 0.1_dp
+    options%max_steps = 2
+    options%gradient_clip_value = 1.0_dp
+    options%tolerance = 0.0_dp
+    options%step_tolerance = 0.0_dp
+    options%objective_tolerance = 0.0_dp
+    call trainer%initialize(objective, [0.0_dp, 1.0_dp], status, options)
+    call trainer%step(status)
+    state = trainer%state_copy()
+    call check(status_ok(status) .and. state%value_clipped_steps == 1 .and. &
+        maxval(abs(trainer%parameters() - [0.1_dp, 0.9_dp])) < 1.0e-14_dp, &
+        "value clipping clamps each gradient coordinate before SGD", failures)
+    call trainer%save_checkpoint("trainer_value_clip_checkpoint_test.txt", status)
+    call check(status_ok(status), "value clipping checkpoint save", failures)
+    call resumed%initialize(objective, [0.0_dp, 1.0_dp], status, options)
+    call resumed%load_checkpoint("trainer_value_clip_checkpoint_test.txt", status)
+    state = resumed%state_copy()
+    call check(status_ok(status) .and. state%value_clipped_steps == 1 .and. &
+        maxval(abs(resumed%parameters() - [0.1_dp, 0.9_dp])) < 1.0e-14_dp, &
+        "value clipping diagnostics and option persist through checkpoint", failures)
+    open (unit=89, file="trainer_value_clip_checkpoint_test.txt", status="old")
+    close (89, status="delete")
+
     ! Lion uses the sign of the beta1 interpolation and keeps an explicit
     ! beta2 momentum.  The generic trainer and its checkpoint must preserve
     ! both the sign trajectory and the decoupled weight-decay state.
