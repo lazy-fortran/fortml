@@ -4177,7 +4177,7 @@ trials remain visible in the result schema.
   value/gradient/JVP/VJP and zero-moment/CUDA refusal tests. The correctness-
   gated release evidence is
   `fortml-bench/results/MLP_ADAM_OPTIMIZER_GROUP_HYPERGRADIENT.md` at bench
-  commit `1cbd89d` (FortML `c16d5a3`).
+  commit `ab169f9` (FortML `6b07c0e`).
   Optional bounded `[logit(beta1), logit(beta2)]` coordinates now share the
   same exact recurrence and independent oracle; mini-batch and resident-CUDA
   optimizer-group state remain open.
