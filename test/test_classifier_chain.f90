@@ -8,6 +8,7 @@ program test_classifier_chain
     implicit none
 
     type(classifier_chain_t) :: model, clone, destination, unfitted
+    type(classifier_chain_t) :: no_intercept_model, no_intercept_clone
     type(fortnum_status_t) :: status
     type(fortml_device_t) :: cpu, cuda
     real(dp) :: x(6, 2), x_dot(6, 2), probabilities(6, 2)
@@ -19,6 +20,8 @@ program test_classifier_chain
     real(dp) :: theta(7), theta_dot(7), theta_plus(7), theta_minus(7)
     real(dp) :: clone_probabilities(6, 2), source_probabilities(6, 2)
     real(dp) :: source_parameters(7), clone_parameters(7), changed_parameters(7)
+    real(dp) :: no_intercept_parameters(5), no_intercept_expected(6, 2)
+    real(dp) :: no_intercept_probabilities(6, 2), no_intercept_clone_probabilities(6, 2)
     real(dp) :: expected(6, 2), expected_plus, h, lhs, rhs
     real(dp) :: thresholds(2)
     integer :: labels(6, 2), predicted(6, 2), classes(2, 2), failures, clone_code
@@ -168,6 +171,25 @@ program test_classifier_chain
     call destination%predict_proba(x, clone_probabilities, status)
     call check(status_ok(status) .and. maxval(abs(clone_probabilities - source_probabilities)) < &
         1.0e-14_dp, "CPU clone dispatch", failures)
+
+    call no_intercept_model%fit(x, labels, status, fit_intercept=.false., &
+        l2=0.1_dp, max_iterations=1000, tolerance=1.0e-7_dp)
+    no_intercept_parameters = [0.3_dp, -0.2_dp, 0.4_dp, 0.1_dp, -0.25_dp]
+    call no_intercept_model%set_parameters(no_intercept_parameters, status)
+    do i = 1, 6
+        no_intercept_expected(i, 1) = sigmoid(x(i, 1)*no_intercept_parameters(1) + &
+            x(i, 2)*no_intercept_parameters(2))
+        no_intercept_expected(i, 2) = sigmoid(x(i, 1)*no_intercept_parameters(3) + &
+            x(i, 2)*no_intercept_parameters(4) + &
+            no_intercept_expected(i, 1)*no_intercept_parameters(5))
+    end do
+    call no_intercept_model%predict_proba(x, no_intercept_probabilities, status)
+    call no_intercept_model%clone(no_intercept_clone, status)
+    call no_intercept_clone%predict_proba(x, no_intercept_clone_probabilities, status)
+    call check(status_ok(status) .and. no_intercept_clone%parameter_count() == 5 .and. &
+        maxval(abs(no_intercept_probabilities - no_intercept_expected)) < 1.0e-13_dp .and. &
+        maxval(abs(no_intercept_clone_probabilities - no_intercept_expected)) < 1.0e-13_dp, &
+        "clone preserves no-intercept chain layout", failures)
 
     if (failures /= 0) error stop failures
     print '(a)', "test_classifier_chain: PASS"

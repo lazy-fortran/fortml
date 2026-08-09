@@ -833,7 +833,7 @@ contains
 
     logical function classifier_chain_valid(self) result(value)
         class(classifier_chain_t), intent(in) :: self
-        integer :: j, expected_parameters
+        integer :: j, expected_parameters, intercept_parameters
 
         value = .false.
         if (.not. self%is_fitted .or. self%n_outputs < 1 .or. &
@@ -848,9 +848,11 @@ contains
         if (any(.not. ieee_is_finite(self%decision_threshold)) .or. &
             any(self%decision_threshold <= 0.0_dp) .or. &
             any(self%decision_threshold >= 1.0_dp)) return
+        intercept_parameters = self%parameter_sizes(1) - self%n_features
+        if (intercept_parameters < 0 .or. intercept_parameters > 1) return
         do j = 1, self%n_outputs
             if (self%class_label(1, j) >= self%class_label(2, j)) return
-            expected_parameters = self%n_features + j - 1 + 1
+            expected_parameters = self%n_features + j - 1 + intercept_parameters
             if (self%parameter_sizes(j) /= expected_parameters) return
         end do
         value = .true.
