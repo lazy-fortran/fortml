@@ -1559,6 +1559,16 @@ discrete and are not differentiated. See
 [`CLASSIFIER_CHAIN_HVP.md`](CLASSIFIER_CHAIN_HVP.md) for the contract and
 finite-difference oracle.
 
+`clone(destination,status)` deep-copies a fitted chain, including every head,
+sorted class pair, threshold, and packed-parameter layout. The destination is
+updated transactionally: an unfitted or malformed source returns
+`FORTNUM_DOMAIN_ERROR` and leaves an existing destination unchanged.
+`clone_device` dispatches this operation for a selected CPU device and returns
+`FORTNUM_NOT_IMPLEMENTED` for CUDA until resident chain state is available; it
+does not hide a host fallback. See
+[`CLASSIFIER_CHAIN_CLONE.md`](CLASSIFIER_CHAIN_CLONE.md) for the behavioral
+oracle and device boundary.
+
 `device_supported(FORTML_DEVICE_CPU)` is true for fitted models. The selected
 CPU device methods dispatch to the host implementation; selected CUDA requests
 return `FORTNUM_NOT_IMPLEMENTED` until a resident classifier-chain kernel is

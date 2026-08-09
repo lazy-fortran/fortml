@@ -7,6 +7,7 @@ program fortml_bench_classifier_chain
 
     integer, parameter :: n_samples = 192, n_features = 4, n_outputs = 3
     integer, parameter :: prediction_repetitions = 64
+    integer, parameter :: clone_repetitions = 64
     integer, parameter :: parameter_count = n_outputs*n_features + &
         n_outputs*(n_outputs+1)/2
     real(dp) :: x(n_samples, n_features), probabilities(n_samples, n_outputs)
@@ -15,12 +16,13 @@ program fortml_bench_classifier_chain
     real(dp) :: x_hvp(n_samples, n_features)
     integer :: indicators(n_samples, n_outputs), predicted(n_samples, n_outputs)
     integer(int64) :: clock_start, clock_end, clock_rate
-    real(dp) :: fit_seconds, predict_seconds, hvp_seconds
+    real(dp) :: fit_seconds, predict_seconds, hvp_seconds, clone_seconds
+    real(dp) :: clone_probabilities(n_samples, n_outputs)
     real(dp), allocatable :: parameters(:)
     character(len=1024) :: oracle_path
     integer :: environment_status, unit, i, j, repetition
     type(fortnum_status_t) :: status
-    type(classifier_chain_t) :: model
+    type(classifier_chain_t) :: model, clone
 
     call get_environment_variable("FORTML_BENCH_CLASSIFIER_CHAIN_ORACLE", oracle_path, &
         status=environment_status)
@@ -39,6 +41,10 @@ program fortml_bench_classifier_chain
     call model%predict_proba(x, probabilities, status)
     call model%predict(x, predicted, status)
     if (.not. status_ok(status)) error stop "classifier chain benchmark prediction failed"
+    call model%clone(clone, status)
+    if (.not. status_ok(status)) error stop "classifier chain benchmark clone failed"
+    call clone%predict_proba(x, clone_probabilities, status)
+    if (.not. status_ok(status)) error stop "classifier chain benchmark clone prediction failed"
     parameters = model%parameters()
     call system_clock(clock_start, clock_rate)
     do repetition = 1, prediction_repetitions
@@ -56,12 +62,22 @@ program fortml_bench_classifier_chain
     if (.not. status_ok(status)) error stop "classifier chain benchmark HVP failed"
     hvp_seconds = real(clock_end-clock_start, dp)/real(clock_rate, dp) &
         /real(prediction_repetitions, dp)
+    call system_clock(clock_start, clock_rate)
+    do repetition = 1, clone_repetitions
+        call model%clone(clone, status)
+    end do
+    call system_clock(clock_end)
+    if (.not. status_ok(status)) error stop "classifier chain benchmark clone loop failed"
+    clone_seconds = real(clock_end-clock_start, dp)/real(clock_rate, dp) &
+        /real(clone_repetitions, dp)
     write (*, '(a,i0,a,i0,a,i0,a,es24.16)') "classifier_chain_fit,", &
         n_samples, ",", n_features, ",", n_outputs, ",", fit_seconds
     write (*, '(a,i0,a,i0,a,i0,a,es24.16)') "classifier_chain_predict,", &
         n_samples, ",", n_features, ",", n_outputs, ",", predict_seconds
     write (*, '(a,i0,a,i0,a,i0,a,es24.16)') "classifier_chain_hvp,", &
         n_samples, ",", n_features, ",", n_outputs, ",", hvp_seconds
+    write (*, '(a,i0,a,i0,a,i0,a,es24.16)') "classifier_chain_clone,", &
+        n_samples, ",", n_features, ",", n_outputs, ",", clone_seconds
 
     open (newunit=unit, file=trim(oracle_path), status="replace", action="write")
     write (unit, '(a)') "quantity,row,column,value"
@@ -83,6 +99,8 @@ program fortml_bench_classifier_chain
             write (unit, '(a,i0,a,i0,a,i0)') "prediction,", i, ",", j, ",", predicted(i, j)
             write (unit, '(a,i0,a,i0,a,es24.16)') "probability,", i, ",", j, ",", &
                 probabilities(i, j)
+            write (unit, '(a,i0,a,i0,a,es24.16)') "clone_probability,", i, ",", j, ",", &
+                clone_probabilities(i, j)
         end do
     end do
     do i = 1, size(parameters)

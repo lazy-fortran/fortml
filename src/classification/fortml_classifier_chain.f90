@@ -54,6 +54,8 @@ module fortml_classifier_chain
         procedure, public :: set_parameters => classifier_chain_set_parameters
         procedure, public :: thresholds => classifier_chain_thresholds
         procedure, public :: set_thresholds => classifier_chain_set_thresholds
+        procedure, public :: clone => classifier_chain_clone
+        procedure, public :: clone_device => classifier_chain_clone_device
         procedure, public :: fitted => classifier_chain_fitted
         procedure, public :: device_supported => classifier_chain_device_supported
     end type classifier_chain_t
@@ -68,6 +70,8 @@ module fortml_classifier_chain
     public :: classifier_chain_predict_proba_hvp
     public :: classifier_chain_predict_proba_hvp_device
     public :: classifier_chain_predict
+    public :: classifier_chain_clone
+    public :: classifier_chain_clone_device
 
 contains
 
@@ -756,6 +760,66 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine classifier_chain_set_thresholds
 
+    subroutine classifier_chain_clone(self, clone, status)
+        !! Deep-copy a fitted classifier chain transactionally.
+        !!
+        !! Intrinsic assignment copies every allocatable head, sorted class
+        !! pair, threshold, and packed-size block.  The candidate is built
+        !! before the destination is changed, so an unfitted or malformed
+        !! source leaves an existing destination untouched.  This is the
+        !! host-side reset seam used by model-selection and validation code.
+        class(classifier_chain_t), intent(in) :: self
+        type(classifier_chain_t), intent(inout) :: clone
+        type(classifier_chain_t) :: candidate
+        type(fortnum_status_t), intent(out) :: status
+        integer :: j
+
+        if (.not. classifier_chain_valid(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "classifier chain clone: source model is invalid")
+            return
+        end if
+        do j = 1, self%n_outputs
+            if (.not. self%models(j)%fitted()) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "classifier chain clone: source head is not fitted")
+                return
+            end if
+        end do
+        candidate = self
+        clone = candidate
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine classifier_chain_clone
+
+    subroutine classifier_chain_clone_device(self, device, clone, status)
+        !! Device-aware clone boundary; CUDA requires resident chain state.
+        class(classifier_chain_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        type(classifier_chain_t), intent(inout) :: clone
+        type(fortnum_status_t), intent(out) :: status
+
+        if (.not. classifier_chain_valid(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "classifier chain clone device: source model is invalid")
+            return
+        end if
+        if (.not. device%selected .or. .not. device%available) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "classifier chain clone device: device is not selected")
+            return
+        end if
+        select case (device%kind)
+        case (FORTML_DEVICE_CPU)
+            call self%clone(clone, status)
+        case (FORTML_DEVICE_CUDA)
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "classifier chain clone device: resident CUDA state is unavailable")
+        case default
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "classifier chain clone device: device kind is invalid")
+        end select
+    end subroutine classifier_chain_clone_device
+
     logical function classifier_chain_fitted(self) result(value)
         class(classifier_chain_t), intent(in) :: self
         value = self%is_fitted
@@ -766,6 +830,31 @@ contains
         integer, intent(in) :: device_kind
         value = self%is_fitted .and. device_kind == FORTML_DEVICE_CPU
     end function classifier_chain_device_supported
+
+    logical function classifier_chain_valid(self) result(value)
+        class(classifier_chain_t), intent(in) :: self
+        integer :: j, expected_parameters
+
+        value = .false.
+        if (.not. self%is_fitted .or. self%n_outputs < 1 .or. &
+            self%n_features < 1 .or. .not. allocated(self%models) .or. &
+            .not. allocated(self%class_label) .or. &
+            .not. allocated(self%decision_threshold) .or. &
+            .not. allocated(self%parameter_sizes)) return
+        if (any(shape(self%class_label) /= [2, self%n_outputs]) .or. &
+            size(self%models) /= self%n_outputs .or. &
+            size(self%decision_threshold) /= self%n_outputs .or. &
+            size(self%parameter_sizes) /= self%n_outputs) return
+        if (any(.not. ieee_is_finite(self%decision_threshold)) .or. &
+            any(self%decision_threshold <= 0.0_dp) .or. &
+            any(self%decision_threshold >= 1.0_dp)) return
+        do j = 1, self%n_outputs
+            if (self%class_label(1, j) >= self%class_label(2, j)) return
+            expected_parameters = self%n_features + j - 1 + 1
+            if (self%parameter_sizes(j) /= expected_parameters) return
+        end do
+        value = .true.
+    end function classifier_chain_valid
 
     logical function valid_query(self, x, values, status, operation) result(valid)
         class(classifier_chain_t), intent(in) :: self

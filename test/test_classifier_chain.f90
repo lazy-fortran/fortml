@@ -1,12 +1,13 @@
 program test_classifier_chain
     !! Independent analytic and finite-difference oracle for a logistic chain.
     use, intrinsic :: iso_fortran_env, only: dp => real64
-    use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_NOT_IMPLEMENTED
+    use fortnum_status, only: fortnum_status_t, status_ok, FORTNUM_DOMAIN_ERROR, &
+        FORTNUM_NOT_IMPLEMENTED
     use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU, FORTML_DEVICE_CUDA
     use fortml_classifier_chain, only: classifier_chain_t
     implicit none
 
-    type(classifier_chain_t) :: model
+    type(classifier_chain_t) :: model, clone, destination, unfitted
     type(fortnum_status_t) :: status
     type(fortml_device_t) :: cpu, cuda
     real(dp) :: x(6, 2), x_dot(6, 2), probabilities(6, 2)
@@ -16,9 +17,11 @@ program test_classifier_chain
     real(dp) :: theta_hvp(7), x_hvp(6, 2), theta_bar_plus(7), theta_bar_minus(7)
     real(dp) :: x_bar_plus(6, 2), x_bar_minus(6, 2)
     real(dp) :: theta(7), theta_dot(7), theta_plus(7), theta_minus(7)
+    real(dp) :: clone_probabilities(6, 2), source_probabilities(6, 2)
+    real(dp) :: source_parameters(7), clone_parameters(7), changed_parameters(7)
     real(dp) :: expected(6, 2), expected_plus, h, lhs, rhs
     real(dp) :: thresholds(2)
-    integer :: labels(6, 2), predicted(6, 2), classes(2, 2), failures
+    integer :: labels(6, 2), predicted(6, 2), classes(2, 2), failures, clone_code
     integer :: i
 
     x(:, 1) = [-1.0_dp, -0.5_dp, 0.0_dp, 0.5_dp, 1.0_dp, 1.5_dp]
@@ -63,6 +66,38 @@ program test_classifier_chain
         call check(predicted(i, 2) == merge(20, 10, expected(i, 2) >= thresholds(2)), &
             "second chain hard-label mapping", failures)
     end do
+
+    call model%clone(clone, status)
+    call clone%predict_proba(x, clone_probabilities, status)
+    source_parameters = model%parameters()
+    clone_parameters = clone%parameters()
+    call check(status_ok(status) .and. clone%fitted() .and. &
+        clone%output_count() == model%output_count() .and. &
+        clone%feature_count() == model%feature_count() .and. &
+        clone%parameter_count() == model%parameter_count() .and. &
+        maxval(abs(clone_probabilities - expected)) < 1.0e-13_dp .and. &
+        maxval(abs(clone_parameters - source_parameters)) < 1.0e-14_dp .and. &
+        maxval(abs(clone%thresholds() - thresholds)) < 1.0e-14_dp, &
+        "clone reproduces independent chain behavior", failures)
+    changed_parameters = clone_parameters
+    changed_parameters(1) = changed_parameters(1) + 0.35_dp
+    call clone%set_parameters(changed_parameters, status)
+    call clone%predict_proba(x, clone_probabilities, status)
+    call model%predict_proba(x, source_probabilities, status)
+    call check(status_ok(status) .and. &
+        maxval(abs(model%parameters() - source_parameters)) < 1.0e-14_dp .and. &
+        maxval(abs(source_probabilities - clone_probabilities)) > 1.0e-8_dp, &
+        "clone mutation does not alias source heads", failures)
+
+    call model%predict_proba(x, source_probabilities, status)
+    destination = model
+    call unfitted%clone(destination, status)
+    clone_code = status%code
+    call destination%predict_proba(x, clone_probabilities, status)
+    call check(clone_code == FORTNUM_DOMAIN_ERROR .and. status_ok(status) .and. &
+        maxval(abs(destination%parameters() - source_parameters)) < 1.0e-14_dp .and. &
+        maxval(abs(clone_probabilities - source_probabilities)) < 1.0e-14_dp, &
+        "invalid clone source leaves destination unchanged", failures)
 
     call model%predict_proba_jvp(x, x_dot, probabilities, probabilities_dot, status)
     call model%predict_proba(x+h*x_dot, probabilities_plus, status)
@@ -126,6 +161,13 @@ program test_classifier_chain
     call model%predict_proba_hvp_device(cuda, x, probabilities_bar, theta_dot, &
         x_dot, theta_hvp, x_hvp, status)
     call check(status%code == FORTNUM_NOT_IMPLEMENTED, "CUDA HVP refusal", failures)
+    call model%clone_device(cuda, destination, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED, "CUDA clone refusal", failures)
+    call cpu%select(FORTML_DEVICE_CPU, status)
+    call model%clone_device(cpu, destination, status)
+    call destination%predict_proba(x, clone_probabilities, status)
+    call check(status_ok(status) .and. maxval(abs(clone_probabilities - source_probabilities)) < &
+        1.0e-14_dp, "CPU clone dispatch", failures)
 
     if (failures /= 0) error stop failures
     print '(a)', "test_classifier_chain: PASS"
