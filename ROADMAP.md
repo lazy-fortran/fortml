@@ -206,6 +206,12 @@ these contracts. The migration must remove the old call sites in the same
 change. A parameter without a declared derivative or a device without a
 resident plan remains visible as a typed capability boundary.
 
+- [x] Reconciled the promoted wave 9 evidence. The benchmark tree now has 322
+  tracked CSVs, 177 strict-schema rows, and 145 migration rows that remain
+  excluded from release claims until their referenced scripts or wildcard
+  suites are migrated. The 19-row release gate, report prose checks, and clean
+  source and benchmark revisions are reproducible from `fortml-bench`.
+
 ## 2026-08 parity expansion backlog
 
 This backlog makes the requested scikit-learn/PyTorch/JAX/GPyTorch/XGBoost/
