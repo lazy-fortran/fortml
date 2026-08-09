@@ -17,7 +17,7 @@ nonnegative `coef0`, and integer `degree >= 1`. The finite training rows are
 the RKHS basis and FortOpt L-BFGS-B minimizes the weighted squared-hinge
 objective. Labels are sorted and retained rather than re-encoded in the public
 result. Probability columns follow that sorted order and are the stable
-sigmoid of the signed margin; they are not a fitted Platt calibration.
+sigmoid of the signed margin, not a fitted Platt calibration.
 
 The fit is transactional. A malformed shape, nonfinite value, invalid kernel
 parameter, zero effective weight mass, or failed optimizer convergence leaves
@@ -31,6 +31,6 @@ active-set changes, and hard labels are not claimed.
 
 CPU dispatch executes the same routines as the direct methods. CUDA requests
 return `FORTNUM_NOT_IMPLEMENTED` until a resident polynomial kernel and its
-workspace are linked; FortML never silently copies the request to the host.
+workspace are linked, and FortML never silently copies the request to the host.
 The independent release benchmark is the `polynomial_svm` lane in
 `fortml-bench`.
