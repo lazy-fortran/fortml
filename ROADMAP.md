@@ -4035,6 +4035,14 @@ trials remain visible in the result schema.
   HVP differentiated-VJP, optimizer, and CUDA-refusal tests cover the current
   scope. Buffers, frozen/tied blocks, masks, stateful layers, and alias-aware
   flattening remain open extensions of the general tree.
+- [x] Add transactional dense-MLP parameter-path freeze state. `set_trainable`
+  updates one named weight/bias block, `parameter_layout` reports the live
+  trainability role, and packed masks/counts are available for optimizer
+  routing. Frozen coordinates are ignored consistently by analytic JVP/VJP/
+  HVP products while full packed state remains loadable. The independent
+  `test_mlp_trainable_state` oracle covers deployment invariance, exact
+  coordinate masking, unfreeze replay, and unknown-path rollback; aliases,
+  tied blocks, mutable buffers, and resident GPU routing remain open.
 - [x] Add weighted multilabel BCE-with-logits and ordered cumulative-logit
   ordinal negative-log-likelihood products to the shared neural-loss facade.
   Both expose explicit mean/sum reductions, finite row weights, value/JVP/VJP

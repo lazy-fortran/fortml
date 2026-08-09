@@ -52,6 +52,10 @@ module fortml_mlp
         type(dense_layer_t), allocatable :: layer(:)
         integer :: hidden_activation = MLP_TANH
         integer :: output_activation = MLP_LINEAR
+        ! One trainability flag per named packed block.  The state is kept
+        ! beside the topology (rather than inferred from an optimizer) so
+        ! every value/JVP/VJP/HVP path observes the same freeze contract.
+        logical, allocatable :: block_trainable(:)
     contains
         procedure, public :: initialize => mlp_initialize
         procedure, public :: initialize_linear => mlp_initialize_linear
@@ -60,6 +64,9 @@ module fortml_mlp
         procedure, public :: parameter_block_count => mlp_parameter_block_count
         procedure, public :: parameter_layout => mlp_parameter_layout
         procedure, public :: parameter_range => mlp_parameter_range
+        procedure, public :: set_trainable => mlp_set_trainable
+        procedure, public :: trainable_mask => mlp_trainable_mask
+        procedure, public :: trainable_parameter_count => mlp_trainable_parameter_count
         procedure, public :: parameters => mlp_parameters
         procedure, public :: set_parameters => mlp_set_parameters
         procedure, public :: set_linear_parameters => mlp_set_linear_parameters
@@ -106,6 +113,8 @@ contains
         allocate(self%layer_sizes(size(layer_sizes)))
         self%layer_sizes = layer_sizes
         allocate(self%layer(size(layer_sizes) - 1))
+        allocate(self%block_trainable(2*(size(layer_sizes) - 1)))
+        self%block_trainable = .true.
         do i = 1, size(self%layer)
             allocate(self%layer(i)%weight(layer_sizes(i), layer_sizes(i + 1)))
             allocate(self%layer(i)%bias(layer_sizes(i + 1)))
@@ -295,7 +304,7 @@ contains
             layout(block)%last = first + size(self%layer(i)%weight) - 1
             layout(block)%rows = size(self%layer(i)%weight, 1)
             layout(block)%columns = size(self%layer(i)%weight, 2)
-            layout(block)%trainable = .true.
+            layout(block)%trainable = block_trainable_value(self, block)
             layout(block)%is_buffer = .false.
             first = layout(block)%last + 1
 
@@ -307,7 +316,7 @@ contains
             layout(block)%last = first + size(self%layer(i)%bias) - 1
             layout(block)%rows = size(self%layer(i)%bias)
             layout(block)%columns = 1
-            layout(block)%trainable = .true.
+            layout(block)%trainable = block_trainable_value(self, block)
             layout(block)%is_buffer = .false.
             first = layout(block)%last + 1
         end do
@@ -335,6 +344,60 @@ contains
             end if
         end do
     end subroutine mlp_parameter_range
+
+    subroutine mlp_set_trainable(self, name, trainable, status)
+        !! Set the trainability of one named parameter block transactionally.
+        !!
+        !! The packed parameter vector remains unchanged.  Frozen blocks are
+        !! ignored by all parameter tangent/cotangent products, so objectives
+        !! and FortOpt cannot accidentally update them through a hidden path.
+        class(mlp_t), intent(inout) :: self
+        character(*), intent(in) :: name
+        logical, intent(in) :: trainable
+        type(fortnum_status_t), intent(out) :: status
+        type(mlp_parameter_block_t), allocatable :: layout(:)
+        integer :: i
+
+        if (.not. model_allocated(self)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP set_trainable: model is uninitialized")
+            return
+        end if
+        layout = self%parameter_layout()
+        do i = 1, size(layout)
+            if (trim(layout(i)%name) == trim(name)) then
+                self%block_trainable(i) = trainable
+                call status_set(status, FORTNUM_OK, "")
+                return
+            end if
+        end do
+        call status_set(status, FORTNUM_DOMAIN_ERROR, &
+            "MLP set_trainable: unknown parameter path")
+    end subroutine mlp_set_trainable
+
+    function mlp_trainable_mask(self) result(mask)
+        !! Return one logical flag per packed coordinate.
+        class(mlp_t), intent(in) :: self
+        logical, allocatable :: mask(:)
+        type(mlp_parameter_block_t), allocatable :: layout(:)
+        integer :: i
+
+        allocate(mask(self%parameter_count()))
+        mask = .false.
+        if (size(mask) == 0) return
+        layout = self%parameter_layout()
+        do i = 1, size(layout)
+            mask(layout(i)%first:layout(i)%last) = layout(i)%trainable
+        end do
+    end function mlp_trainable_mask
+
+    integer function mlp_trainable_parameter_count(self) result(count)
+        class(mlp_t), intent(in) :: self
+        logical, allocatable :: mask(:)
+
+        mask = self%trainable_mask()
+        count = count_true(mask)
+    end function mlp_trainable_parameter_count
 
     function mlp_parameters(self) result(theta)
         class(mlp_t), intent(in) :: self
@@ -498,7 +561,7 @@ contains
         type(matrix_holder_t), allocatable :: activations(:), preactivations(:)
         real(dp), allocatable :: da(:, :), dz(:, :), next_da(:, :), derivative(:, :)
         real(dp), allocatable :: dweight(:, :), dbias(:)
-        integer :: i, position, nweight, nbias
+        integer :: i, position, nweight, nbias, block
 
         if (.not. valid_batch_shape(self, x, y) .or. any(shape(dx) /= shape(x)) .or. &
             any(shape(dy) /= shape(y)) .or. size(dtheta) /= self%parameter_count()) then
@@ -512,9 +575,11 @@ contains
         allocate(da(size(x, 1), size(x, 2)))
         da = dx
         position = 1
+        block = 0
         do i = 1, size(self%layer)
             nweight = size(self%layer(i)%weight)
             nbias = size(self%layer(i)%bias)
+            block = block + 1
             allocate(dweight, mold=self%layer(i)%weight)
             allocate(dbias, mold=self%layer(i)%bias)
             dweight = reshape(dtheta(position:position + nweight - 1), &
@@ -522,6 +587,8 @@ contains
             position = position + nweight
             dbias = dtheta(position:position + nbias - 1)
             position = position + nbias
+            if (.not. block_trainable_value(self, block)) dweight = 0.0_dp
+            if (.not. block_trainable_value(self, block + 1)) dbias = 0.0_dp
 
             allocate(dz(size(x, 1), size(self%layer(i)%bias)))
             dz = matmul(da, self%layer(i)%weight) + &
@@ -588,6 +655,7 @@ contains
             deallocate(dz, derivative, weight_bar, bias_bar, adjoint)
             call move_alloc(previous_adjoint, adjoint)
         end do
+        call mask_frozen_parameters(self, parameter_bar)
         x_bar = adjoint
     end subroutine mlp_vjp
 
@@ -609,7 +677,7 @@ contains
         real(dp), allocatable :: weight_hvp(:, :), bias_hvp(:)
         real(dp), allocatable :: previous_adjoint(:, :), &
             previous_adjoint_tangent(:, :)
-        integer :: i, position, nweight, nbias
+        integer :: i, position, nweight, nbias, block
 
         if (.not. valid_batch_shape(self, x, u)) then
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -632,6 +700,7 @@ contains
         allocate(tangent_layer(size(self%layer)))
         allocate(tangent_activations(1)%value, source=dx)
         position = 1
+        block = 0
         do i = 1, size(self%layer)
             nweight = size(self%layer(i)%weight)
             nbias = size(self%layer(i)%bias)
@@ -643,6 +712,9 @@ contains
             position = position + nweight
             tangent_layer(i)%bias = dtheta(position:position + nbias - 1)
             position = position + nbias
+            block = block + 1
+            if (.not. block_trainable_value(self, block)) tangent_layer(i)%weight = 0.0_dp
+            if (.not. block_trainable_value(self, block + 1)) tangent_layer(i)%bias = 0.0_dp
 
             allocate(tangent_preactivations(i)%value(size(x, 1), &
                 size(self%layer(i)%bias)))
@@ -704,6 +776,7 @@ contains
             call move_alloc(previous_adjoint, adjoint)
             call move_alloc(previous_adjoint_tangent, adjoint_tangent)
         end do
+        call mask_frozen_parameters(self, parameter_hvp)
         x_hvp = adjoint_tangent
     end subroutine mlp_hvp
 
@@ -767,6 +840,43 @@ contains
         valid = size(self%layer_sizes) >= 2 .and. &
             size(self%layer) == size(self%layer_sizes) - 1
     end function model_allocated
+
+    logical function block_trainable_value(self, block) result(value)
+        class(mlp_t), intent(in) :: self
+        integer, intent(in) :: block
+
+        ! A manually assembled legacy value (without the metadata array) is
+        ! treated as fully trainable.  Objects produced by initialize always
+        ! carry the explicit state.
+        value = .true.
+        if (allocated(self%block_trainable)) then
+            if (block >= 1) then
+                if (block <= size(self%block_trainable)) then
+                    value = self%block_trainable(block)
+                end if
+            end if
+        end if
+    end function block_trainable_value
+
+    subroutine mask_frozen_parameters(self, values)
+        class(mlp_t), intent(in) :: self
+        real(dp), intent(inout) :: values(:)
+        logical, allocatable :: mask(:)
+
+        if (size(values) == 0) return
+        mask = self%trainable_mask()
+        if (size(mask) == size(values)) values = merge(values, 0.0_dp, mask)
+    end subroutine mask_frozen_parameters
+
+    integer function count_true(values) result(number)
+        logical, intent(in) :: values(:)
+        integer :: i
+
+        number = 0
+        do i = 1, size(values)
+            if (values(i)) number = number + 1
+        end do
+    end function count_true
 
     logical function valid_linear_state(weight1, bias1, weight2, bias2) result(valid)
         real(dp), intent(in) :: weight1(:, :), bias1(:)

@@ -364,6 +364,19 @@ have no mutable buffers, so `is_buffer` is false for every descriptor; the
 explicit role field keeps checkpoint, optimizer, and pipeline selectors
 forward-compatible with future non-trainable state.
 
+`set_trainable(name,trainable,status)` changes the trainability of one dense
+block by its exact parameter path (for example `layer_1.weight`). The update
+is metadata-only and transactional: an unknown path returns
+`FORTNUM_DOMAIN_ERROR` and leaves the model unchanged. `trainable_mask()` and
+`trainable_parameter_count()` expose the corresponding packed-coordinate
+selection. Frozen coordinates remain in `parameters()` and may still be
+loaded explicitly for deployment or checkpoint restore, but MLP parameter
+JVPs, VJPs, and HVPs ignore their directions/cotangents. Thus existing
+objective and FortOpt callbacks automatically preserve frozen blocks without
+an optimizer-specific mask or finite-difference fallback. This first slice is
+CPU and fixed-state; tied/aliased blocks, mutable buffers, and resident GPU
+optimizer routing remain separate roadmap contracts.
+
 ## Regression and basis maps
 
 ### `fortml_linear_autoencoder`
