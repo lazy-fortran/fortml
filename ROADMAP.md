@@ -21,7 +21,7 @@ boosted-tree partial-dependence/ICE, learned basis fan-in, fixed-full-batch
 SGD clipping hypergradient, and fixed-shape Gamma-GP likelihood slices.
 The broad parity
 gate is still open, so this work does not move or recreate that tag.
-The checklist currently records 424 completed and 148 open items. Open rows are
+The checklist currently records 424 completed and 155 open items. Open rows are
 retained until their implementation, independent oracle, device/refusal
 behavior, and benchmark evidence land together.
 
@@ -249,6 +249,56 @@ Wave 10 closure evidence now promotes the completed vertical slices:
 
 Composition/release closure remains open until the broader basis/pipeline,
 matched external-library, and scaling tiers are complete.
+
+### Wave 11 full-parity production matrix
+
+Wave 11 is the next clean-break implementation contract. Each row remains open
+until the public API, independent behavioral oracle, derivative/refusal matrix,
+CPU/GPU execution path, and pinned benchmark evidence land together. A typed
+unavailable result is valid evidence for an unsupported backend, but it is not
+counted as GPU parity or silently routed through the host.
+
+- [ ] **Estimator and classification parity:** unify binary, multinomial, OVR,
+  OVO, multilabel, classifier-chain, ordinal, calibration, Naive Bayes,
+  discriminant, SVM, neighbor, tree, forest, bagging, boosting, and GP/neural
+  heads behind one transactional fit/partial-fit/warm-start/clone/persist
+  protocol with sorted labels, sample/class weights, score/decision/probability
+  APIs, schema validation, and output-preserving refusal behavior.
+- [ ] **Production neural training:** complete the module/buffer tree,
+  deterministic data-loader and reduction contracts, microbatch accumulation,
+  optimizer groups, schedules, clipping, EMA, validation/early stopping,
+  callbacks, checkpoint/resume/RNG replay, mixed precision and overflow state,
+  distributed-state serialization, and resident device training for the
+  supported module families.
+- [ ] **Differentiable optimization and HPO:** expose value, JVP, VJP, and HVP
+  products through every smooth model, loss, optimizer, schedule, validation,
+  basis, kernel, likelihood, and initialization coordinate; route the same
+  callbacks through FortOpt L-BFGS-B with bounds, active-set diagnostics,
+  multistart, best-state retention, implicit-solve boundaries, and typed
+  stochastic/device refusals.
+- [ ] **GP method parity:** finish the generated kernel/likelihood/method matrix
+  for value, derivative, operator-valued, multitask, sparse/inducing, SKI/lazy,
+  Laplace, variational, local, matrix-free, physics-consistent, Hamiltonian,
+  symplectic, and deep-kernel paths, including hyperparameter products,
+  serialization, solve-state provenance, and resident factorization/solve
+  accounting.
+- [ ] **Composable basis and pipeline graph:** make polynomial, spline,
+  Fourier/random-Fourier, radial, Chebyshev, PCA, autoencoder, encoder,
+  imputer, scaler, kernel, and neural nodes composable in sequential,
+  residual, fan-out/fan-in, conditional, and DAG graphs with feature names,
+  parameter paths, sparse layouts, fit/transform state, clone/persistence,
+  leakage guards, products, and device plans preserved end to end.
+- [ ] **Tree and boosting parity:** complete scikit-learn/XGBoost/LightGBM
+  exact, histogram, quantile, categorical, ranking, survival, DART/GOSS/EFB,
+  monotonic/interaction, staged/warm-start, contribution/SHAP, distributed,
+  and resident histogram/prediction contracts with explicit split-topology
+  derivative boundaries and transfer/workspace counters.
+- [ ] **GPU and benchmark parity:** provide resident OpenACC/CUDA implementations
+  wherever algebra permits, use FortSym-generated kernels and FortAD products
+  where appropriate, and publish matched NumPy/scikit-learn/PyTorch/JAX/
+  GPyTorch/GPflow/Flux/Lux/XGBoost/LightGBM tiers for compile, warmup,
+  transfer, steady-state, throughput, memory, precision, initialization,
+  convergence, and energy with clean provenance.
 
 ## 2026-08 parity expansion backlog
 
