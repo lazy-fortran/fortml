@@ -23,8 +23,8 @@ program fortml_bench_lightgbm_multiclass
     logical :: refused
 
     call make_fixture(x, labels)
-    validation_x = x(1:6, :)
-    validation_labels = labels(1:6)
+    validation_x(:, 1) = [-3.5_dp, -1.5_dp, -0.2_dp, 0.8_dp, 2.2_dp, 3.7_dp]
+    validation_labels = [-8, -8, 2, 2, 11, 11]
     validation_weight = [1.0_dp, 2.0_dp, 1.0_dp, 1.0_dp, 2.0_dp, 3.0_dp]
     query(:, 1) = [-3.31_dp, 0.37_dp, 2.29_dp]
     query_dot(:, 1) = [0.07_dp, -0.03_dp, 0.02_dp]
