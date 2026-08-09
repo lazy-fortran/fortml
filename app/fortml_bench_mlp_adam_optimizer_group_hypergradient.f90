@@ -12,7 +12,7 @@ program fortml_bench_mlp_adam_optimizer_group_hypergradient
     integer, parameter :: n_train = 4, n_validation = 3, repetitions = 32
     real(dp) :: train_x(n_train, 1), train_target(n_train, 1)
     real(dp) :: validation_x(n_validation, 1), validation_target(n_validation, 1)
-    real(dp) :: parameters(4), direction(4), gradient(4)
+    real(dp) :: parameters(6), direction(6), gradient(6)
     real(dp) :: value, tangent, elapsed
     integer(int64) :: clock_start, clock_end, clock_rate
     integer :: oracle_unit, environment_status, repetition
@@ -33,6 +33,7 @@ program fortml_bench_mlp_adam_optimizer_group_hypergradient
     options%beta1 = 0.85_dp
     options%beta2 = 0.97_dp
     options%epsilon = 1.0e-7_dp
+    options%optimize_moment_parameters = .true.
     options%optimizer = MLP_OPTIMIZER_GROUP_ADAM
     options%lower_log_learning_rate = -6.0_dp
     options%upper_log_learning_rate = 0.0_dp
@@ -57,7 +58,7 @@ program fortml_bench_mlp_adam_optimizer_group_hypergradient
     parameters = objective%parameters()
     call objective%value_gradient(parameters, value, gradient, status)
     if (.not. status_ok(status)) error stop "grouped Adam benchmark product failed"
-    direction = [0.17_dp, -0.13_dp, 0.11_dp, -0.09_dp]
+    direction = [0.17_dp, -0.13_dp, 0.07_dp, -0.05_dp, 0.11_dp, -0.09_dp]
     call objective%jvp(parameters, direction, value, tangent, status)
     if (.not. status_ok(status)) error stop "grouped Adam benchmark JVP failed"
 
@@ -73,6 +74,8 @@ program fortml_bench_mlp_adam_optimizer_group_hypergradient
         write (oracle_unit, '(a,es26.17e3)') "gradient,2,", gradient(2)
         write (oracle_unit, '(a,es26.17e3)') "gradient,3,", gradient(3)
         write (oracle_unit, '(a,es26.17e3)') "gradient,4,", gradient(4)
+        write (oracle_unit, '(a,es26.17e3)') "gradient,5,", gradient(5)
+        write (oracle_unit, '(a,es26.17e3)') "gradient,6,", gradient(6)
         close (oracle_unit)
     end if
     if (oracle_only_requested()) stop
