@@ -7,6 +7,8 @@ module fortml_lightgbm
         FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED
     use fortml_device, only: fortml_device_t, FORTML_DEVICE_CPU, &
         FORTML_DEVICE_CUDA
+    use fortml_cuda_boosted_tree_api, only: cuda_boosted_tree_plan_t, &
+        fortml_cuda_boosted_tree_available
     use fortml_xgboost, only: xgb_histogram_cut_positions, xgb_pairwise_loss, &
         xgb_pairwise_derivatives
     implicit none
@@ -1516,13 +1518,108 @@ contains
         case (FORTML_DEVICE_CPU)
             call self%predict(x, y, status)
         case (FORTML_DEVICE_CUDA)
-            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
-                "lightgbm device prediction: no resident CUDA histogram kernel is linked")
+            call lgbm_predict_cuda_resident(self, device, x, y, status)
         case default
             call status_set(status, FORTNUM_DOMAIN_ERROR, &
                 "lightgbm device prediction: device kind is invalid")
         end select
     end subroutine lgbm_predict_device
+
+    !> Evaluate a fitted numeric LightGBM ensemble through the resident tree
+    !> ABI.  LightGBM's leaf-wise growth has a different fit policy from
+    !> XGBoost, but its fitted numeric node topology is the same flattened
+    !> additive-tree contract: each round contributes a scaled leaf value to
+    !> one raw margin.  The host model is never used as a fallback when the
+    !> native plan is unavailable.
+    subroutine lgbm_predict_cuda_resident(self, device, x, y, status)
+        class(lightgbm_t), intent(in) :: self
+        type(fortml_device_t), intent(in) :: device
+        real(dp), intent(in) :: x(:, :)
+        real(dp), intent(out) :: y(:)
+        type(fortnum_status_t), intent(out) :: status
+        type(cuda_boosted_tree_plan_t) :: plan
+        integer, allocatable :: tree_offset(:), node_feature(:), node_left(:), &
+            node_right(:), node_missing_left(:)
+        real(dp), allocatable :: node_threshold(:), node_weight(:), tree_scale(:), &
+            margin(:)
+        integer :: tree, node, cursor, n_nodes, flat_node
+        type(fortnum_status_t) :: destroy_status
+
+        if (.not. self%initialized .or. size(x, 2) /= self%n_inputs .or. &
+                size(x, 1) < 1 .or. size(y) /= size(x, 1) .or. &
+                any(.not. ieee_is_finite(x))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm CUDA prediction: model, shape, or finite-input contract failed")
+            return
+        end if
+        if (fortml_cuda_boosted_tree_available() == 0) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "lightgbm CUDA prediction: resident native plan is unavailable")
+            return
+        end if
+
+        n_nodes = 0
+        do tree = 1, size(self%estimator)
+            n_nodes = n_nodes + self%estimator(tree)%n_nodes
+        end do
+        if (n_nodes < 1) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "lightgbm CUDA prediction: fitted ensemble has no nodes")
+            return
+        end if
+        allocate(tree_offset(size(self%estimator) + 1), node_feature(n_nodes), &
+            node_left(n_nodes), node_right(n_nodes), node_missing_left(n_nodes), &
+            node_threshold(n_nodes), node_weight(n_nodes), &
+            tree_scale(size(self%estimator)))
+        tree_offset(1) = 0
+        cursor = 0
+        do tree = 1, size(self%estimator)
+            tree_scale(tree) = self%estimator(tree)%scale
+            do node = 1, self%estimator(tree)%n_nodes
+                cursor = cursor + 1
+                flat_node = cursor
+                node_threshold(flat_node) = self%estimator(tree)%node(node)%threshold
+                node_weight(flat_node) = self%estimator(tree)%node(node)%weight
+                ! The bounded LightGBM path accepts finite numeric inputs only,
+                ! so NaN default routing is disabled in the resident plan.
+                node_missing_left(flat_node) = 0
+                if (self%estimator(tree)%node(node)%leaf) then
+                    node_feature(flat_node) = -1
+                    node_left(flat_node) = -1
+                    node_right(flat_node) = -1
+                else
+                    ! LightGBM stores feature and child indices one-based;
+                    ! the C ABI uses zero-based split features/children.
+                    node_feature(flat_node) = self%estimator(tree)%node(node)%feature - 1
+                    node_left(flat_node) = tree_offset(tree) + &
+                        self%estimator(tree)%node(node)%left_child - 1
+                    node_right(flat_node) = tree_offset(tree) + &
+                        self%estimator(tree)%node(node)%right_child - 1
+                end if
+            end do
+            tree_offset(tree + 1) = cursor
+        end do
+
+        call plan%create(tree_offset, node_feature, node_left, node_right, &
+            node_threshold, node_weight, node_missing_left, tree_scale, &
+            self%base_score, self%learning_rate, device%device_index, status, &
+            n_inputs=self%n_inputs)
+        if (status%code /= FORTNUM_OK) return
+        allocate(margin(size(y)))
+        call plan%predict(x, margin, status)
+        call plan%destroy(destroy_status)
+        if (status%code /= FORTNUM_OK) return
+        if (destroy_status%code /= FORTNUM_OK) then
+            status = destroy_status
+            return
+        end if
+        if (self%objective_code == LIGHTGBM_OBJECTIVE_BINARY) then
+            y = stable_sigmoid_array(margin)
+        else
+            y = margin
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine lgbm_predict_cuda_resident
 
     subroutine lgbm_predict_jvp(self, x, x_dot, y, y_dot, status)
         class(lightgbm_t), intent(in) :: self
@@ -1769,6 +1866,11 @@ contains
         integer, intent(in) :: device_kind
 
         supported = self%initialized .and. device_kind == FORTML_DEVICE_CPU
+        if (self%initialized .and. device_kind == FORTML_DEVICE_CUDA) then
+            ! Every fitted LightGBM tree currently uses the numeric node schema
+            ! consumed by the resident CUDA additive-tree ABI.
+            supported = fortml_cuda_boosted_tree_available() /= 0
+        end if
     end function lgbm_device_supported
 
     logical function lgbm_fitted(self) result(value)

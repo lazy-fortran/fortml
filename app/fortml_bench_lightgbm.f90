@@ -6,7 +6,8 @@ program fortml_bench_lightgbm
     implicit none
 
     integer, parameter :: n = 192, d = 3
-    real(real64) :: x(n, d), target(n), labels(n), weight(n), prediction(n), margin(n)
+    real(real64) :: x(n, d), target(n), labels(n), weight(n), prediction(n), &
+        host_prediction(n), margin(n)
     real(real64) :: staged(n, 8), warm_staged(n, 8), contributions(n, 9), sliced_prediction(n)
     real(real64) :: sx(6, 1), sy(6), expected(6), tiny_prediction(6)
     type(lightgbm_t) :: regression, binary, tiny, prefix, restored, warm
@@ -43,6 +44,7 @@ program fortml_bench_lightgbm
     call regression%predict(x, prediction, status)
     call cpu_time(finished)
     if (status%code /= FORTNUM_OK) error stop "lightgbm regression predict failed"
+    host_prediction = prediction
     mse = sum(weight*(prediction-target)**2)/sum(weight)
     write (*, '(a,i0,a,i0,a,es24.16,a,es24.16,a,es24.16)') "lightgbm_predict,", n, ",", d, ",", &
         real(regression%tree_depth(1), real64), ",", max(0.0_real64, finished-started), ",", mse
@@ -140,5 +142,11 @@ program fortml_bench_lightgbm
     cuda%selected = .true.
     cuda%available = .true.
     call regression%predict_device(cuda, x, prediction, status)
+    if (status%code == FORTNUM_OK) then
+        product_error = maxval(abs(prediction-host_prediction))
+    else
+        product_error = -1.0_real64
+    end if
+    write (*, '(a,i0,a,es24.16)') "lightgbm_cuda_result,", status%code, ",", product_error
     write (*, '(a,i0)') "lightgbm_cuda,", status%code
 end program fortml_bench_lightgbm
