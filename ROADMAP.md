@@ -21,7 +21,7 @@ boosted-tree partial-dependence/ICE, learned basis fan-in, fixed-full-batch
 SGD clipping hypergradient, and fixed-shape Gamma-GP likelihood slices.
 The broad parity
 gate is still open, so this work does not move or recreate that tag.
-The checklist currently records 409 completed and 149 open items. Open rows are
+The checklist currently records 410 completed and 149 open items. Open rows are
 retained until their implementation, independent oracle, device/refusal
 behavior, and benchmark evidence land together.
 
@@ -324,6 +324,13 @@ it is checked off.
 - [ ] Add ranking and survival-style objectives with pair/group metadata,
   NDCG/MAP or concordance metrics, weighted query boundaries, and independent
   XGBoost/LightGBM fixtures.
+- [x] Add the standalone grouped NDCG reduction used by tree-ranking
+  validation. It accepts arbitrary positive query IDs, per-query cutoffs,
+  weighted exponential gains, deterministic score ties, and explicit CPU/CUDA
+  capability status. The independent hand fixture and release evidence are
+  pinned in `docs/RANKING_METRICS.md` and
+  `fortml-bench/results/RANKING_METRICS.md`; split growth and resident GPU
+  reductions remain open.
 - [ ] Add resident CUDA/OpenACC histogram, quantile-sketch, categorical, and
   prediction kernels with transfer/memory accounting and deterministic
   float32/float64 reductions; distributed workers remain explicit state.
