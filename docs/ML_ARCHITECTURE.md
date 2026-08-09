@@ -117,6 +117,51 @@ oracle. OpenACC and generated CUDA kernels are added only after a FortSym or
 hand-derived identity, a CPU oracle, a resident-state test, and a transfer-aware
 benchmark agree.
 
+## Production trainer state machine
+
+The trainer is a state machine with one transition per declared update. A batch
+transition validates the data view and row mass, runs the model forward pass,
+reduces the loss, forms derivatives, applies the active loss scale, checks
+finite values, unscales gradients, clips the declared norm, updates the
+optimizer, updates schedules and EMA state, and records an event. Validation,
+early stopping, checkpointing, and callbacks run at explicit boundaries between
+updates. Each transition either commits all owned state or returns a status
+with the previous state intact.
+
+The persistent execution state contains the batch cursor and permutation,
+sample-weight mass, optimizer moments, schedule counters, clipping statistics,
+loss-scale state, overflow count, validation history, best-state snapshot,
+EMA parameters, callback event index, RNG cursor, precision, and device plan.
+The model topology and parameter registry are immutable during a run. A
+checkpoint therefore has enough information to replay a batch and verify the
+parameter, optimizer, and diagnostic checksums before resuming.
+
+The HPO bridge wraps the same state transition in a deterministic replay
+context. FortOpt receives a transformed hyperparameter vector and calls the
+trainer objective for value, gradient, JVP, VJP, and HVP products. The replay
+context restores the initial train state for every trial, applies bounds before
+the first transition, and reports active bounds, line-search status, evaluation
+count, and the retained best state. A stochastic or validation decision that
+has no declared derivative is recorded as a fixed-state boundary or returns a
+typed refusal.
+
+Mixed precision has three separate states. Model parameters and activations use
+the requested compute dtype. Master parameters and optimizer accumulators use
+the declared accumulation dtype. A loss-scale record stores the scale, growth
+interval, backoff factor, finite-update count, overflow count, and last status.
+Overflow detection occurs before any optimizer mutation. A skipped update
+advances only the loss-scale state and event counters, so a replay can compare
+the exact same branch. FP64 remains the reference trajectory. FP32, FP16, and
+BF16 require an independent accuracy and derivative oracle before a device or
+performance row is promoted.
+
+The resident device plan owns the parameter mirror, batches, workspaces,
+optimizer state, derivative buffers, and transfer counters. A complete device
+transition returns a device result with no implicit host copy. A missing kernel
+returns a typed refusal and leaves output and train state unchanged. Transfer-
+inclusive measurements are separate records and include compile, warmup,
+transfer, steady-state, and peak-memory fields.
+
 ## Common differentiable model contract
 
 Models that implement the optimizer-facing product contract use a stable flat
