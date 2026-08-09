@@ -23,7 +23,7 @@ module fortml_mlp_hypergradient
     use fortnum_status, only: fortnum_status_t, status_set, FORTNUM_OK, &
         FORTNUM_DOMAIN_ERROR, FORTNUM_NOT_IMPLEMENTED, FORTNUM_CONVERGENCE_ERROR
     use fortml_device, only: FORTML_DEVICE_CPU
-    use fortml_mlp, only: mlp_t
+    use fortml_mlp, only: mlp_t, MLP_LINEAR
     use fortml_mlp_training, only: mlp_loss_value_gradient, mlp_loss_hvp, &
         MLP_OPTIMIZER_SGD, MLP_OPTIMIZER_ADAMW, MLP_OPTIMIZER_RMSPROP
     use fortopt_objective, only: objective_t
@@ -351,6 +351,8 @@ module fortml_mlp_hypergradient
 
     type, public :: mlp_rmsprop_hypergradient_objective_t
         !! Exact value/JVP/VJP products through a fixed RMSprop trajectory.
+        !! The affine one-layer branch also exposes an exact outer HVP;
+        !! nonlinear trajectories return a typed third-derivative refusal.
         private
         type(mlp_t), pointer :: model => null()
         real(dp), allocatable :: train_x(:, :), train_target(:, :)
@@ -372,6 +374,7 @@ module fortml_mlp_hypergradient
         procedure, public :: value_gradient => mlp_rmsprop_hypergradient_value_gradient
         procedure, public :: jvp => mlp_rmsprop_hypergradient_jvp
         procedure, public :: vjp => mlp_rmsprop_hypergradient_vjp
+        procedure, public :: hvp => mlp_rmsprop_hypergradient_hvp
         procedure, public :: fortopt => mlp_rmsprop_hypergradient_fortopt
         procedure, public :: is_initialized => mlp_rmsprop_hypergradient_is_initialized
     end type mlp_rmsprop_hypergradient_objective_t
@@ -803,6 +806,327 @@ contains
         gradient = output_bar*gradient
         call status_set(status, FORTNUM_OK, "")
     end subroutine mlp_rmsprop_hypergradient_vjp
+
+    subroutine mlp_rmsprop_hypergradient_hvp(self, parameters, direction, product, &
+            status)
+        !! Exact outer Hessian-vector product on the one-layer affine branch.
+        !!
+        !! The recurrence carries the mixed sensitivities
+        !! `d/d(direction) d(theta)/d(parameter_i)` through the square-average,
+        !! centered-average, and momentum states.  An affine network has a
+        !! parameter-independent data Hessian, so the second trajectory product
+        !! needs no third network derivative.  Nonlinear or multilayer models
+        !! return `FORTNUM_NOT_IMPLEMENTED` instead of silently using a
+        !! finite-difference approximation.  The centered variance uses the
+        !! same positive-variance branch as the first-order RMSprop product.
+        class(mlp_rmsprop_hypergradient_objective_t), intent(inout) :: self
+        real(dp), intent(in) :: parameters(:), direction(:)
+        real(dp), intent(out) :: product(:)
+        type(fortnum_status_t), intent(out) :: status
+        real(dp) :: learning_rate, l2, decay, epsilon, momentum
+        real(dp) :: learning_rate_direction, l2_direction, decay_direction
+        real(dp) :: epsilon_direction, momentum_direction
+        real(dp) :: learning_rate_dot, l2_dot, decay_dot, epsilon_dot
+        real(dp) :: momentum_dot, l2_second
+        real(dp) :: train_value, l2_gradient, scalar_hvp
+        real(dp) :: validation_value, validation_l2_gradient
+        real(dp), allocatable :: theta(:), theta_direction(:)
+        real(dp), allocatable :: theta_dot(:, :), theta_dd(:, :)
+        real(dp), allocatable :: square_average(:), square_direction(:)
+        real(dp), allocatable :: square_dot(:, :), square_dd(:, :)
+        real(dp), allocatable :: gradient_average(:), gradient_average_direction(:)
+        real(dp), allocatable :: gradient_average_dot(:, :), gradient_average_dd(:, :)
+        real(dp), allocatable :: momentum_buffer(:), momentum_buffer_direction(:)
+        real(dp), allocatable :: momentum_buffer_dot(:, :), momentum_buffer_dd(:, :)
+        real(dp), allocatable :: square_previous(:), square_previous_direction(:)
+        real(dp), allocatable :: gradient_average_previous(:), gradient_average_previous_direction(:)
+        real(dp), allocatable :: momentum_buffer_previous(:), momentum_buffer_previous_direction(:)
+        real(dp), allocatable :: raw_gradient(:), gradient_direction(:)
+        real(dp), allocatable :: gradient_dot(:, :), gradient_dd(:, :), hvp(:)
+        real(dp), allocatable :: variance(:), variance_direction(:)
+        real(dp), allocatable :: variance_dot(:, :), variance_dd(:, :)
+        real(dp), allocatable :: denominator(:), denominator_direction(:)
+        real(dp), allocatable :: denominator_dot(:, :), denominator_dd(:, :)
+        real(dp), allocatable :: direction_step(:), direction_step_direction(:)
+        real(dp), allocatable :: direction_step_dot(:, :), direction_step_dd(:, :)
+        real(dp), allocatable :: validation_gradient(:), validation_hvp(:)
+        integer :: n_parameters, step, parameter_index
+
+        product = 0.0_dp
+        if (.not. self%is_initialized()) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP RMSprop hypergradient HVP: objective is not initialized")
+            return
+        end if
+        if (size(product) /= MLP_RMSPROP_HYPERPARAMETER_COUNT .or. &
+            size(direction) /= MLP_RMSPROP_HYPERPARAMETER_COUNT .or. &
+            any(.not. ieee_is_finite(direction)) .or. &
+            .not. finite_rmsprop_parameters(parameters, learning_rate, l2, decay, &
+            epsilon, momentum)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP RMSprop hypergradient HVP: packed shape or values are invalid")
+            return
+        end if
+        if (size(self%model%layer) /= 1 .or. self%model%output_activation /= MLP_LINEAR) then
+            call status_set(status, FORTNUM_NOT_IMPLEMENTED, &
+                "MLP RMSprop hypergradient HVP: nonlinear network needs third derivatives")
+            return
+        end if
+
+        n_parameters = size(self%initial_parameters)
+        allocate(theta, source=self%initial_parameters)
+        allocate(theta_direction(n_parameters))
+        allocate(theta_dot(n_parameters, MLP_RMSPROP_HYPERPARAMETER_COUNT))
+        allocate(theta_dd(n_parameters, MLP_RMSPROP_HYPERPARAMETER_COUNT))
+        allocate(square_average(n_parameters), square_direction(n_parameters))
+        allocate(square_dot(n_parameters, MLP_RMSPROP_HYPERPARAMETER_COUNT))
+        allocate(square_dd(n_parameters, MLP_RMSPROP_HYPERPARAMETER_COUNT))
+        allocate(gradient_average(n_parameters), gradient_average_direction(n_parameters))
+        allocate(gradient_average_dot(n_parameters, MLP_RMSPROP_HYPERPARAMETER_COUNT))
+        allocate(gradient_average_dd(n_parameters, MLP_RMSPROP_HYPERPARAMETER_COUNT))
+        allocate(momentum_buffer(n_parameters), momentum_buffer_direction(n_parameters))
+        allocate(momentum_buffer_dot(n_parameters, MLP_RMSPROP_HYPERPARAMETER_COUNT))
+        allocate(momentum_buffer_dd(n_parameters, MLP_RMSPROP_HYPERPARAMETER_COUNT))
+        allocate(square_previous(n_parameters), square_previous_direction(n_parameters))
+        allocate(gradient_average_previous(n_parameters), &
+            gradient_average_previous_direction(n_parameters))
+        allocate(momentum_buffer_previous(n_parameters), &
+            momentum_buffer_previous_direction(n_parameters))
+        allocate(raw_gradient(n_parameters), gradient_direction(n_parameters))
+        allocate(gradient_dot(n_parameters, MLP_RMSPROP_HYPERPARAMETER_COUNT))
+        allocate(gradient_dd(n_parameters, MLP_RMSPROP_HYPERPARAMETER_COUNT))
+        allocate(hvp(n_parameters))
+        allocate(variance(n_parameters), variance_direction(n_parameters))
+        allocate(variance_dot(n_parameters, MLP_RMSPROP_HYPERPARAMETER_COUNT))
+        allocate(variance_dd(n_parameters, MLP_RMSPROP_HYPERPARAMETER_COUNT))
+        allocate(denominator(n_parameters), denominator_direction(n_parameters))
+        allocate(denominator_dot(n_parameters, MLP_RMSPROP_HYPERPARAMETER_COUNT))
+        allocate(denominator_dd(n_parameters, MLP_RMSPROP_HYPERPARAMETER_COUNT))
+        allocate(direction_step(n_parameters), direction_step_direction(n_parameters))
+        allocate(direction_step_dot(n_parameters, MLP_RMSPROP_HYPERPARAMETER_COUNT))
+        allocate(direction_step_dd(n_parameters, MLP_RMSPROP_HYPERPARAMETER_COUNT))
+        theta_dot = 0.0_dp
+        theta_dd = 0.0_dp
+        square_average = 0.0_dp
+        square_direction = 0.0_dp
+        square_dot = 0.0_dp
+        square_dd = 0.0_dp
+        gradient_average = 0.0_dp
+        gradient_average_direction = 0.0_dp
+        gradient_average_dot = 0.0_dp
+        gradient_average_dd = 0.0_dp
+        momentum_buffer = 0.0_dp
+        momentum_buffer_direction = 0.0_dp
+        momentum_buffer_dot = 0.0_dp
+        momentum_buffer_dd = 0.0_dp
+        learning_rate_direction = learning_rate*direction(MLP_RMSPROP_LOG_LEARNING_RATE)
+        l2_direction = l2*direction(MLP_RMSPROP_LOG_L2)
+        decay_direction = direction(MLP_RMSPROP_DECAY)
+        epsilon_direction = epsilon*direction(MLP_RMSPROP_LOG_EPSILON)
+        momentum_direction = direction(MLP_RMSPROP_MOMENTUM)
+
+        do step = 1, self%layout%inner_steps
+            call self%model%set_parameters(theta, status)
+            if (status%code /= FORTNUM_OK) return
+            call mlp_loss_value_gradient(self%model, self%train_x, self%train_target, &
+                l2, train_value, raw_gradient, l2_gradient, status)
+            if (status%code /= FORTNUM_OK) return
+            theta_direction = matmul(theta_dot, direction)
+            gradient_direction = 0.0_dp
+            do parameter_index = 1, MLP_RMSPROP_HYPERPARAMETER_COUNT
+                l2_dot = 0.0_dp
+                if (parameter_index == MLP_RMSPROP_LOG_L2) l2_dot = l2
+                call mlp_loss_hvp(self%model, self%train_x, self%train_target, l2, &
+                    theta_dot(:, parameter_index), l2_dot, hvp, scalar_hvp, status)
+                if (status%code /= FORTNUM_OK) return
+                gradient_dot(:, parameter_index) = hvp
+                gradient_direction = gradient_direction + &
+                    direction(parameter_index)*gradient_dot(:, parameter_index)
+                call mlp_loss_hvp(self%model, self%train_x, self%train_target, l2, &
+                    theta_dd(:, parameter_index), 0.0_dp, hvp, scalar_hvp, status)
+                if (status%code /= FORTNUM_OK) return
+                l2_second = 0.0_dp
+                if (parameter_index == MLP_RMSPROP_LOG_L2) l2_second = l2_direction
+                gradient_dd(:, parameter_index) = hvp + l2_direction*theta_dot(:, parameter_index) + &
+                    l2_dot*theta_direction + l2_second*theta
+            end do
+
+            square_previous = square_average
+            square_previous_direction = square_direction
+            gradient_average_previous = gradient_average
+            gradient_average_previous_direction = gradient_average_direction
+            momentum_buffer_previous = momentum_buffer
+            momentum_buffer_previous_direction = momentum_buffer_direction
+            square_direction = matmul(square_dot, direction)
+            gradient_average_direction = matmul(gradient_average_dot, direction)
+            momentum_buffer_direction = matmul(momentum_buffer_dot, direction)
+
+            do parameter_index = 1, MLP_RMSPROP_HYPERPARAMETER_COUNT
+                decay_dot = 0.0_dp
+                if (parameter_index == MLP_RMSPROP_DECAY) decay_dot = 1.0_dp
+                square_dd(:, parameter_index) = decay_direction*square_dot(:, parameter_index) + &
+                    decay*square_dd(:, parameter_index) + &
+                    (square_previous_direction-2.0_dp*raw_gradient*gradient_direction)*decay_dot - &
+                    decay_direction*2.0_dp*raw_gradient*gradient_dot(:, parameter_index) + &
+                    (1.0_dp-decay)*2.0_dp*(gradient_direction*gradient_dot(:, parameter_index) + &
+                    raw_gradient*gradient_dd(:, parameter_index))
+                if (self%centered) then
+                    gradient_average_dd(:, parameter_index) = decay_direction* &
+                        gradient_average_dot(:, parameter_index) + decay*gradient_average_dd(:, parameter_index) + &
+                        (gradient_average_previous_direction-gradient_direction)*decay_dot - &
+                        decay_direction*gradient_dot(:, parameter_index) + &
+                        (1.0_dp-decay)*gradient_dd(:, parameter_index)
+                else
+                    gradient_average_dd(:, parameter_index) = 0.0_dp
+                end if
+            end do
+            square_average = decay*square_previous + (1.0_dp-decay)*raw_gradient*raw_gradient
+            square_direction = decay_direction*square_previous + decay*square_previous_direction - &
+                decay_direction*raw_gradient*raw_gradient + &
+                (1.0_dp-decay)*2.0_dp*raw_gradient*gradient_direction
+            do parameter_index = 1, MLP_RMSPROP_HYPERPARAMETER_COUNT
+                decay_dot = 0.0_dp
+                if (parameter_index == MLP_RMSPROP_DECAY) decay_dot = 1.0_dp
+                square_dot(:, parameter_index) = decay*square_dot(:, parameter_index) + &
+                    (square_previous-raw_gradient*raw_gradient)*decay_dot + &
+                    (1.0_dp-decay)*2.0_dp*raw_gradient*gradient_dot(:, parameter_index)
+                if (self%centered) then
+                    gradient_average_dot(:, parameter_index) = decay* &
+                        gradient_average_dot(:, parameter_index) + &
+                        (gradient_average_previous-raw_gradient)*decay_dot + &
+                        (1.0_dp-decay)*gradient_dot(:, parameter_index)
+                end if
+            end do
+            if (self%centered) then
+                gradient_average = decay*gradient_average_previous + &
+                    (1.0_dp-decay)*raw_gradient
+                gradient_average_direction = decay_direction*gradient_average_previous + &
+                    decay*gradient_average_previous_direction - decay_direction*raw_gradient + &
+                    (1.0_dp-decay)*gradient_direction
+                variance = square_average-gradient_average*gradient_average
+                variance_direction = square_direction-2.0_dp*gradient_average* &
+                    gradient_average_direction
+            else
+                gradient_average = 0.0_dp
+                gradient_average_direction = 0.0_dp
+                variance = square_average
+                variance_direction = square_direction
+                gradient_average_dot = 0.0_dp
+                gradient_average_dd = 0.0_dp
+            end if
+            if (any(.not. ieee_is_finite(square_average)) .or. &
+                any(.not. ieee_is_finite(variance)) .or. &
+                any(variance < 0.0_dp)) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP RMSprop hypergradient HVP: variance state is invalid")
+                return
+            end if
+            denominator = sqrt(variance)+epsilon
+            denominator_direction = 0.0_dp
+            where (variance > 0.0_dp)
+                denominator_direction = variance_direction/(2.0_dp*sqrt(variance)) + &
+                    epsilon_direction
+            elsewhere
+                denominator_direction = epsilon_direction
+            end where
+            direction_step = raw_gradient/denominator
+            direction_step_direction = (gradient_direction*denominator - &
+                raw_gradient*denominator_direction)/(denominator*denominator)
+            do parameter_index = 1, MLP_RMSPROP_HYPERPARAMETER_COUNT
+                if (self%centered) then
+                    variance_dot(:, parameter_index) = square_dot(:, parameter_index) - &
+                        2.0_dp*gradient_average*gradient_average_dot(:, parameter_index)
+                else
+                    variance_dot(:, parameter_index) = square_dot(:, parameter_index)
+                end if
+                denominator_dot(:, parameter_index) = 0.0_dp
+                where (variance > 0.0_dp)
+                    denominator_dot(:, parameter_index) = variance_dot(:, parameter_index)/ &
+                        (2.0_dp*sqrt(variance))
+                end where
+                epsilon_dot = 0.0_dp
+                if (parameter_index == MLP_RMSPROP_LOG_EPSILON) epsilon_dot = epsilon
+                denominator_dot(:, parameter_index) = denominator_dot(:, parameter_index) + epsilon_dot
+                direction_step_dot(:, parameter_index) = (gradient_dot(:, parameter_index)*denominator - &
+                    raw_gradient*denominator_dot(:, parameter_index))/(denominator*denominator)
+                if (self%centered) then
+                    variance_dd(:, parameter_index) = square_dd(:, parameter_index) - &
+                        2.0_dp*(gradient_average_direction*gradient_average_dot(:, parameter_index) + &
+                        gradient_average*gradient_average_dd(:, parameter_index))
+                else
+                    variance_dd(:, parameter_index) = square_dd(:, parameter_index)
+                end if
+                denominator_dd(:, parameter_index) = 0.0_dp
+                where (variance > 0.0_dp)
+                    denominator_dd(:, parameter_index) = variance_dd(:, parameter_index)/ &
+                        (2.0_dp*sqrt(variance)) - variance_dot(:, parameter_index)*variance_direction/ &
+                        (4.0_dp*variance**1.5_dp)
+                end where
+                if (parameter_index == MLP_RMSPROP_LOG_EPSILON) then
+                    denominator_dd(:, parameter_index) = denominator_dd(:, parameter_index) + &
+                        epsilon_direction
+                end if
+                direction_step_dd(:, parameter_index) = gradient_dd(:, parameter_index)/denominator - &
+                    gradient_dot(:, parameter_index)*denominator_direction/(denominator*denominator) - &
+                    gradient_direction*denominator_dot(:, parameter_index)/(denominator*denominator) - &
+                    raw_gradient*denominator_dd(:, parameter_index)/(denominator*denominator) + &
+                    2.0_dp*raw_gradient*denominator_dot(:, parameter_index)*denominator_direction/ &
+                    (denominator**3)
+                momentum_dot = 0.0_dp
+                if (parameter_index == MLP_RMSPROP_MOMENTUM) momentum_dot = 1.0_dp
+                momentum_buffer_dd(:, parameter_index) = momentum_direction*momentum_buffer_dot(:, parameter_index) + &
+                    momentum*momentum_buffer_dd(:, parameter_index) + momentum_dot* &
+                    momentum_buffer_previous_direction + direction_step_dd(:, parameter_index)
+                momentum_buffer_dot(:, parameter_index) = momentum* &
+                    momentum_buffer_dot(:, parameter_index) + momentum_dot* &
+                    momentum_buffer_previous + direction_step_dot(:, parameter_index)
+            end do
+            momentum_buffer = momentum*momentum_buffer_previous + direction_step
+            momentum_buffer_direction = momentum_direction*momentum_buffer_previous + &
+                momentum*momentum_buffer_previous_direction + direction_step_direction
+            do parameter_index = 1, MLP_RMSPROP_HYPERPARAMETER_COUNT
+                learning_rate_dot = 0.0_dp
+                if (parameter_index == MLP_RMSPROP_LOG_LEARNING_RATE) learning_rate_dot = learning_rate
+                theta_dd(:, parameter_index) = theta_dd(:, parameter_index) - &
+                    learning_rate_direction*momentum_buffer_dot(:, parameter_index) - &
+                    learning_rate*momentum_buffer_dd(:, parameter_index) - &
+                    learning_rate_dot*momentum_buffer_direction - &
+                    (merge(learning_rate*direction(MLP_RMSPROP_LOG_LEARNING_RATE), 0.0_dp, &
+                    parameter_index == MLP_RMSPROP_LOG_LEARNING_RATE))*momentum_buffer
+                theta_dot(:, parameter_index) = theta_dot(:, parameter_index) - &
+                    learning_rate_dot*momentum_buffer - learning_rate*momentum_buffer_dot(:, parameter_index)
+            end do
+            theta = theta-learning_rate*momentum_buffer
+            theta_direction = theta_direction-learning_rate_direction*momentum_buffer - &
+                learning_rate*momentum_buffer_direction
+            if (any(.not. ieee_is_finite(theta)) .or. any(.not. ieee_is_finite(theta_dot)) .or. &
+                any(.not. ieee_is_finite(theta_dd)) .or. any(.not. ieee_is_finite(momentum_buffer_dd))) then
+                call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                    "MLP RMSprop hypergradient HVP: trajectory is not finite")
+                return
+            end if
+        end do
+
+        call self%model%set_parameters(theta, status)
+        if (status%code /= FORTNUM_OK) return
+        allocate(validation_gradient(n_parameters), validation_hvp(n_parameters))
+        call mlp_loss_value_gradient(self%model, self%validation_x, self%validation_target, &
+            0.0_dp, validation_value, validation_gradient, validation_l2_gradient, status)
+        if (status%code /= FORTNUM_OK) return
+        call mlp_loss_hvp(self%model, self%validation_x, self%validation_target, 0.0_dp, &
+            theta_direction, 0.0_dp, validation_hvp, scalar_hvp, status)
+        if (status%code /= FORTNUM_OK) return
+        do parameter_index = 1, MLP_RMSPROP_HYPERPARAMETER_COUNT
+            product(parameter_index) = dot_product(validation_gradient, theta_dd(:, parameter_index)) + &
+                dot_product(theta_dot(:, parameter_index), validation_hvp)
+        end do
+        if (any(.not. ieee_is_finite(product))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP RMSprop hypergradient HVP: product is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine mlp_rmsprop_hypergradient_hvp
 
     subroutine mlp_rmsprop_hypergradient_fortopt(self, objective, status)
         class(mlp_rmsprop_hypergradient_objective_t), target, intent(inout) :: self

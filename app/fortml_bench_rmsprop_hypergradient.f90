@@ -12,7 +12,7 @@ program fortml_bench_rmsprop_hypergradient
     integer, parameter :: steps = 4
     real(dp) :: train_x(n_train, 1), train_target(n_train, 1)
     real(dp) :: validation_x(n_validation, 1), validation_target(n_validation, 1)
-    real(dp) :: parameters(5), direction(5), gradient(5)
+    real(dp) :: parameters(5), direction(5), gradient(5), hvp_product(5)
     real(dp) :: value, tangent, elapsed
     integer(int64) :: clock_start, clock_end, clock_rate
     integer :: oracle_unit, environment_status, repetition
@@ -57,6 +57,8 @@ program fortml_bench_rmsprop_hypergradient
     direction = [0.31_dp, -0.27_dp, 0.17_dp, -0.13_dp, 0.19_dp]
     call objective%jvp(parameters, direction, value, tangent, status)
     if (.not. status_ok(status)) error stop "RMSprop hypergradient JVP failed"
+    call objective%hvp(parameters, direction, hvp_product, status)
+    if (.not. status_ok(status)) error stop "RMSprop affine outer HVP failed"
 
     oracle_unit = -1
     call get_environment_variable("FORTML_BENCH_RMSPROP_HYPERGRADIENT_ORACLE", &
@@ -72,6 +74,11 @@ program fortml_bench_rmsprop_hypergradient
         write (oracle_unit, '(a,es26.17e3)') "gradient,4,", gradient(4)
         write (oracle_unit, '(a,es26.17e3)') "gradient,5,", gradient(5)
         write (oracle_unit, '(a,es26.17e3)') "jvp,1,", tangent
+        write (oracle_unit, '(a,es26.17e3)') "hvp,1,", hvp_product(1)
+        write (oracle_unit, '(a,es26.17e3)') "hvp,2,", hvp_product(2)
+        write (oracle_unit, '(a,es26.17e3)') "hvp,3,", hvp_product(3)
+        write (oracle_unit, '(a,es26.17e3)') "hvp,4,", hvp_product(4)
+        write (oracle_unit, '(a,es26.17e3)') "hvp,5,", hvp_product(5)
         close (oracle_unit)
     end if
     if (oracle_only_requested()) stop
@@ -85,6 +92,15 @@ program fortml_bench_rmsprop_hypergradient
     elapsed = real(clock_end-clock_start, dp)/real(clock_rate, dp) &
         /real(repetitions, dp)
     write (*, '(a,es24.16)') "rmsprop_hypergradient_value_gradient,", elapsed
+    call system_clock(clock_start)
+    do repetition = 1, repetitions
+        call objective%hvp(parameters, direction, hvp_product, status)
+        if (.not. status_ok(status)) error stop "RMSprop HVP timing failed"
+    end do
+    call system_clock(clock_end)
+    elapsed = real(clock_end-clock_start, dp)/real(clock_rate, dp) &
+        /real(repetitions, dp)
+    write (*, '(a,es24.16)') "rmsprop_hypergradient_hvp,", elapsed
 
 contains
 

@@ -225,7 +225,7 @@ repeated resident-batch evidence.
 | `mlp_hypergradient_objective_t` | Validation MSE after fixed full-batch GD trajectory | Outer `[log(learning_rate),log(l2)]` JVP | Exact trajectory value gradient and scalar VJP | Reverse trajectory products; inner MLP HVP |
 | `mlp_adamw_full_hypergradient_objective_t` | Validation MSE after fixed full-batch AdamW trajectory | Packed `[log(learning_rate),log(l2),log(weight_decay),logit(beta1),logit(beta2)]` JVP | Exact trajectory value gradient and scalar VJP | Forward state sensitivities through moments, bias correction, and decoupled decay |
 | `mlp_adam_hypergradient_objective_t` | Validation MSE after fixed full-batch coupled-L2 Adam trajectory | Packed `[log(learning_rate),log(l2),logit(beta1),logit(beta2)]` JVP | Exact trajectory value gradient and scalar VJP | Forward state sensitivities through coupled loss, moments, and bias correction |
-| `mlp_rmsprop_hypergradient_objective_t` | Validation MSE after fixed full-batch RMSprop trajectory | Packed `[log(learning_rate),log(l2),decay,log(epsilon),momentum]` JVP | Exact trajectory value gradient and scalar VJP | Forward state sensitivities; inner MLP HVP |
+| `mlp_rmsprop_hypergradient_objective_t` | Validation MSE after fixed full-batch RMSprop trajectory | Packed `[log(learning_rate),log(l2),decay,log(epsilon),momentum]` JVP | Exact trajectory value gradient and scalar VJP | Forward square-average/centered-average/momentum sensitivities, exact affine one-layer outer HVP, nonlinear third-derivative refusal, inner MLP HVP |
 | `mlp_adagrad_hypergradient_objective_t` | Validation MSE after fixed full-batch Adagrad trajectory | Packed `[log(learning_rate),log(l2),log(epsilon)]` JVP | Exact trajectory value gradient and scalar VJP | Exact affine one-layer outer HVP, nonlinear multi-layer outer HVP is a typed refusal, forward accumulated-square sensitivities and inner MLP HVP |
 | `mlp_adafactor_hypergradient_objective_t` | Validation MSE after fixed full-batch unfactored Adafactor trajectory | Packed `[log(learning_rate),log(l2),decay,log(epsilon),log(clip_threshold)]` JVP | Exact trajectory value gradient and scalar VJP | Forward second-moment, update-RMS clipping, and denominator sensitivities; active-set and discrete branches refuse |
 | `adafactor_factored_t` | Layout-aware matrix-factorized Adafactor with vector fallback | Parameter update | Dense second-moment inspection | Explicit row/column state for matrix blocks; CPU recurrence; formatted and in-memory schema-11 checkpoint migration; CUDA remains a typed refusal |
@@ -2717,8 +2717,12 @@ RMSprop trajectory contract. Its packed vector is
 `[log(learning_rate),log(l2),decay,log(epsilon),momentum]`. Square-average,
 centered gradient-average, and momentum-buffer recurrences are differentiated
 with the analytic MLP HVP; both centered and uncentered modes use the same
-value/JVP/VJP products. `mlp_optimize_rmsprop_hyperparameters` routes these
-products to FortOpt L-BFGS-B with explicit bounds for every packed component.
+value/JVP/VJP products. On a one-layer affine network, `hvp` carries the mixed
+second state sensitivities and returns an exact outer Hessian-vector product.
+Multilayer or nonlinear HVP requests return `FORTNUM_NOT_IMPLEMENTED` because
+the trajectory would require a third network derivative.
+`mlp_optimize_rmsprop_hyperparameters` routes the value-gradient products to
+FortOpt L-BFGS-B with explicit bounds for every packed component.
 The `centered` flag is a fixed discrete branch rather than a differentiable
 variable, and changing it requires a new objective adapter. Mini-batch,
 schedules, clipping, and CUDA-resident RMSprop state remain typed follow-up

@@ -5,6 +5,7 @@ program test_mlp_rmsprop_hypergradient
     use fortml_device, only: FORTML_DEVICE_CUDA
     use fortml_mlp, only: mlp_t
     use fortml_mlp_training, only: MLP_OPTIMIZER_ADAM
+    use fortopt_objective, only: objective_t
     use fortml_mlp_hypergradient, only: &
         mlp_rmsprop_hypergradient_objective_t, &
         mlp_rmsprop_hypergradient_options_t, mlp_rmsprop_hypergradient_result_t, &
@@ -15,7 +16,8 @@ program test_mlp_rmsprop_hypergradient
     implicit none
 
     type(mlp_t), target :: model
-    type(mlp_rmsprop_hypergradient_objective_t) :: objective
+    type(mlp_rmsprop_hypergradient_objective_t), target :: objective
+    type(objective_t) :: fortopt_objective
     type(mlp_rmsprop_hypergradient_options_t) :: options, bad_options
     type(mlp_rmsprop_hypergradient_result_t) :: result
     type(mlp_rmsprop_hypergradient_metadata_t) :: metadata
@@ -27,6 +29,10 @@ program test_mlp_rmsprop_hypergradient
     real(dp) :: gradient(MLP_RMSPROP_HYPERPARAMETER_COUNT)
     real(dp) :: vjp_gradient(MLP_RMSPROP_HYPERPARAMETER_COUNT)
     real(dp) :: value, value_plus, value_minus, tangent, h
+    real(dp) :: hvp_product(MLP_RMSPROP_HYPERPARAMETER_COUNT)
+    real(dp) :: gradient_plus(MLP_RMSPROP_HYPERPARAMETER_COUNT)
+    real(dp) :: gradient_minus(MLP_RMSPROP_HYPERPARAMETER_COUNT)
+    real(dp) :: adapter_value, adapter_gradient(MLP_RMSPROP_HYPERPARAMETER_COUNT)
     integer :: i, failures
 
     failures = 0
@@ -96,6 +102,24 @@ program test_mlp_rmsprop_hypergradient
     call check(maxval(abs(vjp_gradient-1.7_dp*gradient)) < 2.0e-12_dp, &
         "RMSprop scalar VJP adjoint", failures)
 
+    ! The affine branch has a parameter-independent MSE Hessian.  Its outer
+    ! RMSprop HVP is therefore analytic; compare it with an independent
+    ! central difference of the tested gradient oracle.
+    direction = [0.23_dp, -0.17_dp, 0.11_dp, -0.13_dp, 0.19_dp]
+    call objective%hvp(parameters, direction, hvp_product, status)
+    call check(status_ok(status), "affine RMSprop HVP product", failures)
+    call objective%value_gradient(parameters+h*direction, value_plus, gradient_plus, status)
+    call objective%value_gradient(parameters-h*direction, value_minus, gradient_minus, status)
+    call check(status_ok(status) .and. maxval(abs(hvp_product - &
+        (gradient_plus-gradient_minus)/(2.0_dp*h))) < 3.0e-5_dp, &
+        "affine RMSprop HVP central-difference oracle", failures)
+    call objective%fortopt(fortopt_objective, status)
+    call check(status_ok(status), "RMSprop FortOpt adapter initialization", failures)
+    call fortopt_objective%value_gradient(parameters, adapter_value, adapter_gradient, status)
+    call check(status_ok(status) .and. abs(adapter_value-value) < 2.0e-12_dp .and. &
+        maxval(abs(adapter_gradient-gradient)) < 2.0e-12_dp, &
+        "RMSprop FortOpt adapter value/gradient", failures)
+
     options%max_iterations = 80
     options%gradient_tolerance = 1.0e-5_dp
     call mlp_optimize_rmsprop_hyperparameters(model, train_x, train_target, &
@@ -112,6 +136,13 @@ program test_mlp_rmsprop_hypergradient
     parameters = objective%parameters()
     call objective%value_gradient(parameters, value, gradient, status)
     call check(status_ok(status), "uncentered RMSprop products", failures)
+    call objective%hvp(parameters, direction, hvp_product, status)
+    call check(status_ok(status), "uncentered affine RMSprop HVP", failures)
+    call objective%value_gradient(parameters+h*direction, value_plus, gradient_plus, status)
+    call objective%value_gradient(parameters-h*direction, value_minus, gradient_minus, status)
+    call check(status_ok(status) .and. maxval(abs(hvp_product - &
+        (gradient_plus-gradient_minus)/(2.0_dp*h))) < 3.0e-5_dp, &
+        "uncentered RMSprop HVP central-difference oracle", failures)
     bad_options = options
     bad_options%optimizer = MLP_OPTIMIZER_ADAM
     call objective%initialize(model, train_x, train_target, validation_x, &
@@ -124,6 +155,13 @@ program test_mlp_rmsprop_hypergradient
         validation_target, bad_options, status)
     call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
         "CUDA RMSprop hypergradient refusal", failures)
+
+    call model%initialize([1, 2, 1], status, initialization_seed=23)
+    call objective%initialize(model, train_x, train_target, validation_x, &
+        validation_target, options, status)
+    call objective%hvp(objective%parameters(), direction, hvp_product, status)
+    call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
+        "nonlinear RMSprop HVP typed refusal", failures)
 
     if (failures > 0) error stop 1
     write (*, '(a)') "PASS MLP RMSprop hypergradient independent behavioral oracles"
