@@ -18,7 +18,7 @@ resident CUDA dense trainer, and variational multiclass-GP log-probability
 slices are also post-tag additions.
 The broad parity
 gate is still open, so this work does not move or recreate that tag.
-The checklist currently records 396 completed and 150 open items. Open rows are
+The checklist currently records 399 completed and 150 open items. Open rows are
 retained until their implementation, independent oracle, device/refusal
 behavior, and benchmark evidence land together.
 
@@ -998,11 +998,18 @@ lane records the analogous reduction boundary in
 
 The trainer diagnostics lane persists successful fit-call counts, accepted
 optimizer iterations, and L-BFGS-B line-search and curvature counters in the
-schema-7 checkpoint. The categorical-tree lane adds bounded exhaustive
+schema-8 checkpoint. The categorical-tree lane adds bounded exhaustive
 partition search for small integer-coded feature cardinalities, including
 missing defaults, persistence metadata, and discrete product refusals. These
 contracts remain separate from the open shared-state, GPU-histogram, mixed
 precision, distributed, and full likelihood parity rows.
+
+The continuation slices now also cover ordinal-GP log probabilities with
+packed parameter/query JVP/VJP products, generic-trainer per-coordinate
+gradient-value clipping with checkpoint diagnostics, and per-output
+XGBoost/LightGBM validation metadata. Each has an independent behavioral
+oracle, a release app or focused test, and a pinned benchmark row; CUDA is
+recorded as a typed refusal where the fitted state is not resident.
 
 Sparse variational-GP ELBOs now expose fixed-state kernel-log-parameter JVP and
 VJP products. The reverse product includes the inducing solve, cross-covariance,
@@ -4205,13 +4212,20 @@ trials remain visible in the result schema.
   transactional callback-presence refusal. Validation callbacks remain
   process-local and host-owned.
 - [x] Make generic trainer fit diagnostics first-class and persistent. The
-  schema-7 `trainer_state_t` records successful `fit` calls, accepted optimizer
+  schema-8 `trainer_state_t` records successful `fit` calls, accepted optimizer
   iterations, and FortOpt L-BFGS-B line-search/curvature counts; streaming
   optimizers explicitly report zero for the bounded-solver counters. The
   independent quadratic `test_trainer_fit_diagnostics` oracle checks the
-  bounded optimum, counter relationships, and transactional schema-7
+  bounded optimum, counter relationships, and transactional schema-8
   checkpoint round trip. Quasi-Newton history itself remains fit-level and is
   intentionally not claimed resumable by the generic trainer.
+- [x] Add generic-trainer per-coordinate gradient-value clipping. The
+  `gradient_clip_value` option clamps each finite objective-gradient
+  coordinate before optional norm clipping, records `value_clipped_steps`,
+  persists both through schema-8 checkpoints, and leaves failed updates
+  transactional. The independent quadratic oracle and
+  [`results/TRAINER_VALUE_CLIPPING.md`](../fortml-bench/results/TRAINER_VALUE_CLIPPING.md)
+  cover the exact update, diagnostics, persistence, and typed CUDA boundary.
 - [x] Integrate the typed metric-aware plateau schedule into `mlp_train`.
   Epoch validation loss (or training loss without a held-out stream) drives a
   deterministic best-metric/bad-observation/reduction state machine.  The
@@ -4957,6 +4971,15 @@ peak memory, and batch-size scaling with the same correctness gate as training.
   probit links, packed-state and fixed-state input JVP/VJP products, and
   explicit CPU/CUDA dispatch. The independent NumPy log-sum-exp/JVP oracle and
   release app are recorded in [`results/GP_VARIATIONAL_MULTICLASS_LOG_PROBA.md`](../fortml-bench/results/GP_VARIATIONAL_MULTICLASS_LOG_PROBA.md).
+- [x] Add ordinal-GP `predict_log_proba` with finite-tail flooring and packed
+  parameter/query JVP/VJP products. The independent finite-difference and
+  adjoint oracle covers the CPU path and the typed CUDA refusal in
+  [`results/GP_ORDINAL_LOG_PROBA.md`](../fortml-bench/results/GP_ORDINAL_LOG_PROBA.md).
+- [x] Add per-output validation metadata to the XGBoost/LightGBM multi-output
+  adapters. `best_iteration`, `best_validation_loss`, and `early_stopped`
+  survive transactional child fits and are checked against an independent
+  two-leaf Newton-stump oracle in
+  [`results/XGBOOST_MULTIOUTPUT_VALIDATION_METADATA.md`](../fortml-bench/results/XGBOOST_MULTIOUTPUT_VALIDATION_METADATA.md).
 - [ ] Define one versioned result schema for correctness, train time, predict
   time, peak host and device memory, compiler, flags, dependency revisions,
   hardware, seed, warmup, repetitions, and refusal reason.
