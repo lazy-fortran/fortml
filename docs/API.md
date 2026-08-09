@@ -1963,6 +1963,24 @@ each hidden layer. `metadata()` records the prior and
 deterministic finite-MLP initialization. `covariance_cuda` returns a typed,
 no-mutation CUDA refusal. See [`RELU_NNGP.md`](RELU_NNGP.md).
 
+### `fortml_mlp_regressor`
+
+`mlp_regressor_t` is the estimator-facing dense multi-output MLP regression
+facade. `mlp_regressor_options_t%layer_sizes` must begin with the feature
+count and end with the target count; omitted topology selects a linear
+two-layer network. `fit` uses the deterministic production trainer with
+validation/checkpoint state, or selects the exact full-batch FortOpt
+MSE+L2/L-BFGS-B path with `use_lbfgsb`. Fit is transactional and commits the
+candidate network only after a successful status.
+
+`predict`, `predict_jvp`, and `predict_vjp` expose fixed-state values and
+packed parameter/input products. `loss_gradient` and `loss_hvp` expose the
+weighted MSE plus L2 hyperparameter block, including mixed parameter/L2 HVPs.
+The CPU implementation is the reference; `predict_device` reports a typed
+CUDA refusal until resident model, optimizer, and checkpoint state are linked.
+See [`MLP_REGRESSOR.md`](MLP_REGRESSOR.md) and the independent
+`fortml-bench` `MLP_REGRESSOR` report.
+
 ### `fortml_mlp_chain`
 
 `mlp_chain_t` is the composable neural-module seam. Initialize it with the

@@ -70,6 +70,16 @@ oracles and covers streaming continuation, averaging, malformed labels, and
 the typed CUDA refusal. A resident accelerator trainer and stochastic
 hypergradients remain open.
 
+The dense `mlp_regressor_t` slice adds a transactional, multi-output MLP
+regressor with deterministic Adam (or the shared trainer) fitting, optional
+FortOpt L-BFGS-B optimization, stable parameter/state/checkpoint metadata,
+prediction input JVP/VJP products, and loss gradient/HVP products. The
+independent `test_mlp_regressor` compares the Adam recurrence and affine
+L-BFGS-B solution against NumPy-style hand oracles and checks the typed CUDA
+boundary; `fortml-bench/results/MLP_REGRESSOR.md` records the pinned CPU and
+CUDA-refusal rows. Sample-weighted fitting, sparse/streaming loaders,
+mixed-precision state, and resident multilayer GPU training remain open.
+
 ## Next production parity wave
 
 The next waves preserve the shared registry/objective/device/state contract and
@@ -1634,6 +1644,13 @@ when a lower-level primitive already exists.
 - [x] Linear, logistic, softmax, one-vs-rest, GaussianNB, BernoulliNB,
   MultinomialNB, ComplementNB, CategoricalNB, CART, MLP, binary Laplace GP,
   one-vs-rest Laplace GP, and exact XGBoost-style squared/logistic estimators.
+- [x] Transactional dense multi-output `mlp_regressor_t` with deterministic
+  Adam/shared-trainer fitting, bounded FortOpt L-BFGS-B fitting, stable
+  parameter/state/checkpoint metadata, prediction input JVP/VJP products,
+  loss gradients/HVPs, independent recurrence and affine least-squares
+  oracles, and typed CUDA refusal evidence. Sample-weighted fitting,
+  streaming/sparse loaders, mixed precision, and resident multilayer GPU
+  training remain open.
 - [x] Weighted multi-output/vector ridge regression with nonnegative
   regularization, optional intercept, positive-mass sample weights, packed
   coefficient state, and fixed-fit input/parameter JVP/VJP products. The SVD
