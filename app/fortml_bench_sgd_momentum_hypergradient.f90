@@ -1,5 +1,6 @@
 program fortml_bench_sgd_momentum_hypergradient
-    !! Release workload for the fixed full-batch SGD momentum hypergradient.
+    !! Release workload for the fixed SGD momentum hypergradient with
+    !! deterministic microbatch accumulation.
     use, intrinsic :: iso_fortran_env, only: dp => real64, int64
     use fortml_mlp, only: mlp_t
     use fortml_mlp_sgd_momentum_hypergradient, only: &
@@ -27,6 +28,8 @@ program fortml_bench_sgd_momentum_hypergradient
     validation_x(:, 1) = [-1.5_dp, 0.5_dp, 1.75_dp]
     validation_target(:, 1) = 0.7_dp*validation_x(:, 1) - 0.2_dp
     options%steps = steps
+    options%microbatch_size = 2
+    options%accumulation_steps = 3
     options%learning_rate = 0.12_dp
     options%l2 = 0.07_dp
     options%momentum = 0.31_dp

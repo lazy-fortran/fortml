@@ -402,5 +402,12 @@ The classification-specific acceptance matrix is in
 PINN residual balancing can inspect exact named-term parameter gradients and
 HVPs through `term_gradients` and `term_hvps`; columns use the stable
 `[data,residual,boundary,conservation]` order and inactive terms are zero.
+The SGD-momentum trajectory adapter also exposes deterministic contiguous
+`microbatch_size`/`accumulation_steps` metadata. Each update reduces every
+training row by its row mass before updating velocity, and value/JVP/VJP/HVP
+products and the FortOpt L-BFGS-B callback consume that same accumulated
+objective. See [`docs/MLP_SGD_MOMENTUM_HYPERGRADIENT.md`](docs/MLP_SGD_MOMENTUM_HYPERGRADIENT.md)
+and the pinned accumulation benchmark for its independent oracle and typed
+CUDA boundary.
 The package is
 distributed under the [MIT license](LICENSE).

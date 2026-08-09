@@ -42,6 +42,8 @@ program test_mlp_sgd_momentum_hypergradient
     call model%initialize([1, 1], status, initialization_seed=23)
     call model%set_parameters([0.15_dp, -0.1_dp], status)
     options%steps = 4
+    options%microbatch_size = 2
+    options%accumulation_steps = 3
     options%learning_rate = 0.12_dp
     options%l2 = 0.07_dp
     options%momentum = 0.31_dp
@@ -60,6 +62,8 @@ program test_mlp_sgd_momentum_hypergradient
     call check(metadata%log_learning_rate_index == MLP_SGD_LOG_LEARNING_RATE .and. &
         metadata%log_l2_index == MLP_SGD_LOG_L2 .and. &
         metadata%momentum_index == MLP_SGD_MOMENTUM .and. metadata%inner_steps == 4 .and. &
+        metadata%microbatch_size == 2 .and. metadata%accumulation_steps == 3 .and. &
+        metadata%samples_per_update == 5 .and. &
         .not. metadata%nesterov, "momentum packed metadata", failures)
     parameters = objective%parameters()
     call objective%value_gradient(parameters, value, gradient, status)
@@ -133,6 +137,12 @@ program test_mlp_sgd_momentum_hypergradient
         validation_target, bad_options, status)
     call check(status%code == FORTNUM_NOT_IMPLEMENTED, &
         "CUDA SGD hypergradient refusal", failures)
+    bad_options = options
+    bad_options%microbatch_size = 2
+    bad_options%accumulation_steps = 2
+    call objective%initialize(nesterov_model, train_x, train_target, validation_x, &
+        validation_target, bad_options, status)
+    call check(status%code /= 0, "incomplete accumulation layout refusal", failures)
 
     ! The affine one-layer branch has a constant network Hessian and therefore
     ! an exact outer hyper-HVP.  Compare it against an independent gradient

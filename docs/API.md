@@ -2664,16 +2664,19 @@ example.
 
 ### `fortml_mlp_sgd_momentum_hypergradient`
 
-`mlp_sgd_momentum_hypergradient_objective_t` provides the exact fixed
-full-batch SGD momentum/Nesterov trajectory contract. Its packed vector is
+`mlp_sgd_momentum_hypergradient_objective_t` provides the exact fixed SGD
+momentum/Nesterov trajectory contract. Its packed vector is
 `[log(learning_rate),log(l2),momentum]`; the velocity state and, for Nesterov,
 the look-ahead direction are differentiated with the analytic MLP HVP. Both
 classical and Nesterov modes expose `value_gradient`, `jvp`, scalar `vjp`, and
 a bounded FortOpt L-BFGS-B adapter through
-`mlp_optimize_sgd_momentum_hyperparameters`. The Nesterov branch is a fixed
-discrete choice and requires a positive momentum bound. Mini-batch, schedules,
-clipping, stochastic/device-resident state, and CUDA products remain typed
-refusals until their full state derivatives are available. The `hvp` entry
+`mlp_optimize_sgd_momentum_hyperparameters`. Set `microbatch_size` and
+`accumulation_steps` to form each update from deterministic contiguous
+microbatches; the pair must cover every training row exactly once and short
+last batches are weighted by row mass. The Nesterov branch is a fixed
+discrete choice and requires a positive momentum bound. Schedules, clipping,
+stochastic/device-resident state, and CUDA products remain typed refusals until
+their full state derivatives are available. The `hvp` entry
 point is exact for a one-layer MLP with linear output (constant network Hessian) and
 returns `FORTNUM_NOT_IMPLEMENTED` for nonlinear or multilayer models. An
 optional `validation_weight(:)` argument defines a finite positive-support

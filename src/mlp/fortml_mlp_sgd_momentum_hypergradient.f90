@@ -1,10 +1,13 @@
 module fortml_mlp_sgd_momentum_hypergradient
-    !! Exact fixed full-batch SGD momentum/Nesterov trajectory products.
+    !! Exact fixed SGD momentum/Nesterov trajectory products with deterministic
+    !! microbatch accumulation.
     !!
     !! The packed outer vector is
     !! `[log(learning_rate), log(l2), momentum]`.  The inner trajectory starts
     !! from the parameters present when `initialize` is called and performs a
-    !! fixed number of full-batch updates.  Both classical momentum and the
+    !! fixed number of updates.  Each update accumulates a weighted mean over
+    !! a deterministic set of contiguous microbatches before touching the
+    !! momentum state.  Both classical momentum and the
     !! Nesterov look-ahead update use the same recurrence as `fortopt_sgd`.
     !! Forward sensitivities use the MLP analytic Hessian-vector product; no
     !! finite differences or optimizer fallback are used.  A positive,
@@ -39,6 +42,9 @@ module fortml_mlp_sgd_momentum_hypergradient
         integer :: log_l2_index = MLP_SGD_LOG_L2
         integer :: momentum_index = MLP_SGD_MOMENTUM
         integer :: inner_steps = 0
+        integer :: microbatch_size = 0
+        integer :: accumulation_steps = 1
+        integer :: samples_per_update = 0
         logical :: nesterov = .false.
         !! A non-uniform validation measure has exact value/JVP/VJP products;
         !! its second trajectory product remains an explicit boundary until
@@ -47,8 +53,13 @@ module fortml_mlp_sgd_momentum_hypergradient
     end type mlp_sgd_momentum_hypergradient_metadata_t
 
     type, public :: mlp_sgd_momentum_hypergradient_options_t
-        !! Fixed full-batch SGD momentum/Nesterov trajectory configuration.
+        !! Fixed SGD momentum/Nesterov trajectory configuration.
         integer :: steps = 8
+        !! A zero microbatch size selects all rows.  The accumulation count
+        !! determines how many contiguous microbatches are reduced before an
+        !! optimizer update; the configured pair must cover every row exactly.
+        integer :: microbatch_size = 0
+        integer :: accumulation_steps = 1
         real(dp) :: learning_rate = 1.0e-2_dp
         real(dp) :: l2 = 1.0e-4_dp
         real(dp) :: momentum = 0.9_dp
@@ -146,6 +157,12 @@ contains
                 "MLP SGD momentum hypergradient: model or data is invalid")
             return
         end if
+        if (.not. valid_accumulation_layout(size(train_x, 1), options%microbatch_size, &
+                options%accumulation_steps)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP SGD momentum hypergradient: accumulation layout must cover each training row once")
+            return
+        end if
         if (present(validation_weight)) then
             if (.not. valid_validation_weight(validation_weight, size(validation_x, 1))) then
                 call status_set(status, FORTNUM_DOMAIN_ERROR, &
@@ -167,6 +184,13 @@ contains
         end if
         allocate(self%initial_parameters, source=model%parameters())
         self%layout%inner_steps = options%steps
+        if (options%microbatch_size > 0) then
+            self%layout%microbatch_size = options%microbatch_size
+        else
+            self%layout%microbatch_size = size(train_x, 1)
+        end if
+        self%layout%accumulation_steps = options%accumulation_steps
+        self%layout%samples_per_update = size(train_x, 1)
         self%layout%nesterov = options%nesterov
         self%layout%validation_weights_nonuniform = present(validation_weight) .and. &
             .not. uniform_validation_weight(self%validation_weight)
@@ -369,8 +393,8 @@ contains
         do step = 1, self%layout%inner_steps
             call self%model%set_parameters(theta, status)
             if (status%code /= FORTNUM_OK) return
-            call mlp_loss_value_gradient(self%model, self%train_x, self%train_target, &
-                l2, train_value, raw_gradient, l2_gradient, status)
+            call accumulated_loss_value_gradient(self, l2, train_value, raw_gradient, &
+                l2_gradient, status)
             if (status%code /= FORTNUM_OK) return
             velocity_old = velocity
             theta_dot_old = theta_dot
@@ -391,8 +415,8 @@ contains
                 else
                     momentum_i = 1.0_dp
                 end if
-                call mlp_loss_hvp(self%model, self%train_x, self%train_target, l2, &
-                    theta_dot_old(:, i), l2_i, raw_gradient_dot(:, i), scalar_hvp, status)
+                call accumulated_loss_hvp(self, l2, theta_dot_old(:, i), l2_i, &
+                    raw_gradient_dot(:, i), scalar_hvp, status)
                 if (status%code /= FORTNUM_OK) return
                 velocity_dot_new(:, i) = momentum*velocity_dot_old(:, i) + &
                     momentum_i*velocity_old + raw_gradient_dot(:, i)
@@ -429,8 +453,8 @@ contains
                     momentum_i = 1.0_dp
                 end if
                 momentum_d = direction(MLP_SGD_MOMENTUM)
-                call mlp_loss_hvp(self%model, self%train_x, self%train_target, l2, &
-                    theta_ddot(:, i), l2_id, raw_gradient_ddot, scalar_hvp, status)
+                call accumulated_loss_hvp(self, l2, theta_ddot(:, i), l2_id, &
+                    raw_gradient_ddot, scalar_hvp, status)
                 if (status%code /= FORTNUM_OK) return
                 raw_gradient_ddot = raw_gradient_ddot + l2_dir*theta_dot_old(:, i) + &
                     l2_i*theta_dir
@@ -595,6 +619,107 @@ contains
         call status_set(status, FORTNUM_OK, "")
     end subroutine mlp_optimize_sgd_momentum_hyperparameters
 
+    subroutine accumulated_loss_value_gradient(self, l2, value, gradient, &
+            l2_gradient, status)
+        !! Reduce contiguous microbatch products into one exact mean objective.
+        !!
+        !! Each microbatch is evaluated with zero regularisation and weighted
+        !! by its row mass.  The L2 term is added once after reduction, so
+        !! accumulation changes only the reduction order and not the objective
+        !! semantics.  This helper is intentionally private to the trajectory
+        !! adapter; the public trainer owns its more general weighted cursor.
+        class(mlp_sgd_momentum_hypergradient_objective_t), intent(inout) :: self
+        real(dp), intent(in) :: l2
+        real(dp), intent(out) :: value, gradient(:), l2_gradient
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: part_gradient(:), theta(:)
+        real(dp) :: part_value, part_l2_gradient, scale
+        integer :: n_samples, first, last, microbatch
+
+        value = 0.0_dp
+        gradient = 0.0_dp
+        l2_gradient = 0.0_dp
+        n_samples = size(self%train_x, 1)
+        if (size(gradient) /= self%model%parameter_count() .or. &
+                .not. valid_accumulation_layout(n_samples, self%layout%microbatch_size, &
+                self%layout%accumulation_steps)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP SGD momentum hypergradient: accumulation state is invalid")
+            return
+        end if
+        allocate(part_gradient(size(gradient)))
+        first = 1
+        do microbatch = 1, self%layout%accumulation_steps
+            if (first > n_samples) exit
+            last = min(n_samples, first + self%layout%microbatch_size - 1)
+            call mlp_loss_value_gradient(self%model, self%train_x(first:last, :), &
+                self%train_target(first:last, :), 0.0_dp, part_value, part_gradient, &
+                part_l2_gradient, status)
+            if (status%code /= FORTNUM_OK) return
+            scale = real(last-first+1, dp)/real(n_samples, dp)
+            value = value + scale*part_value
+            gradient = gradient + scale*part_gradient
+            first = last + 1
+        end do
+        theta = self%model%parameters()
+        l2_gradient = 0.5_dp*sum(theta*theta)
+        value = value + l2*l2_gradient
+        gradient = gradient + l2*theta
+        if (.not. ieee_is_finite(value) .or. any(.not. ieee_is_finite(gradient))) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP SGD momentum hypergradient: accumulated loss is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine accumulated_loss_value_gradient
+
+    subroutine accumulated_loss_hvp(self, l2, dtheta, l2_direction, parameter_hvp, &
+            l2_hvp, status)
+        !! Reduce exact per-microbatch parameter Hessian-vector products.
+        class(mlp_sgd_momentum_hypergradient_objective_t), intent(inout) :: self
+        real(dp), intent(in) :: l2, dtheta(:), l2_direction
+        real(dp), intent(out) :: parameter_hvp(:), l2_hvp
+        type(fortnum_status_t), intent(out) :: status
+        real(dp), allocatable :: part_hvp(:), theta(:)
+        real(dp) :: part_l2_hvp, scale
+        integer :: n_samples, first, last, microbatch
+
+        parameter_hvp = 0.0_dp
+        l2_hvp = 0.0_dp
+        n_samples = size(self%train_x, 1)
+        if (size(dtheta) /= self%model%parameter_count() .or. &
+                size(parameter_hvp) /= size(dtheta) .or. &
+                .not. valid_accumulation_layout(n_samples, self%layout%microbatch_size, &
+                self%layout%accumulation_steps)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP SGD momentum hypergradient: accumulation HVP state is invalid")
+            return
+        end if
+        allocate(part_hvp(size(parameter_hvp)))
+        first = 1
+        do microbatch = 1, self%layout%accumulation_steps
+            if (first > n_samples) exit
+            last = min(n_samples, first + self%layout%microbatch_size - 1)
+            call mlp_loss_hvp(self%model, self%train_x(first:last, :), &
+                self%train_target(first:last, :), 0.0_dp, dtheta, 0.0_dp, part_hvp, &
+                part_l2_hvp, status)
+            if (status%code /= FORTNUM_OK) return
+            scale = real(last-first+1, dp)/real(n_samples, dp)
+            parameter_hvp = parameter_hvp + scale*part_hvp
+            first = last + 1
+        end do
+        theta = self%model%parameters()
+        l2_hvp = dot_product(theta, dtheta)
+        parameter_hvp = parameter_hvp + l2*dtheta + l2_direction*theta
+        if (any(.not. ieee_is_finite(parameter_hvp)) .or. &
+                .not. ieee_is_finite(l2_hvp)) then
+            call status_set(status, FORTNUM_DOMAIN_ERROR, &
+                "MLP SGD momentum hypergradient: accumulated HVP is not finite")
+            return
+        end if
+        call status_set(status, FORTNUM_OK, "")
+    end subroutine accumulated_loss_hvp
+
     subroutine sgd_momentum_forward(self, parameters, direction, value, tangent, &
             gradient, status)
         class(mlp_sgd_momentum_hypergradient_objective_t), intent(inout) :: self
@@ -632,8 +757,8 @@ contains
         do step = 1, self%layout%inner_steps
             call self%model%set_parameters(theta, status)
             if (status%code /= FORTNUM_OK) return
-            call mlp_loss_value_gradient(self%model, self%train_x, self%train_target, &
-                l2, train_value, raw_gradient, l2_gradient, status)
+            call accumulated_loss_value_gradient(self, l2, train_value, raw_gradient, &
+                l2_gradient, status)
             if (status%code /= FORTNUM_OK) return
             velocity_old = velocity
             velocity = momentum*velocity_old + raw_gradient
@@ -651,8 +776,8 @@ contains
                 else
                     momentum_dot = 1.0_dp
                 end if
-                call mlp_loss_hvp(self%model, self%train_x, self%train_target, l2, &
-                    theta_dot(:, parameter_index), l2_dot, hvp, scalar_hvp, status)
+                call accumulated_loss_hvp(self, l2, theta_dot(:, parameter_index), l2_dot, &
+                    hvp, scalar_hvp, status)
                 if (status%code /= FORTNUM_OK) return
                 raw_gradient_dot = hvp
                 velocity_dot_new(:, parameter_index) = momentum* &
@@ -727,7 +852,8 @@ contains
     logical function valid_options(options) result(valid)
         type(mlp_sgd_momentum_hypergradient_options_t), intent(in) :: options
 
-        valid = options%steps >= 1 .and. options%optimizer == MLP_OPTIMIZER_SGD .and. &
+        valid = options%steps >= 1 .and. options%microbatch_size >= 0 .and. &
+            options%accumulation_steps >= 1 .and. options%optimizer == MLP_OPTIMIZER_SGD .and. &
             options%device_kind == FORTML_DEVICE_CPU .and. &
             ieee_is_finite(options%learning_rate) .and. ieee_is_finite(options%l2) .and. &
             ieee_is_finite(options%momentum) .and. options%learning_rate > 0.0_dp .and. &
@@ -754,6 +880,22 @@ contains
         if (options%nesterov) valid = valid .and. options%momentum > 0.0_dp .and. &
             options%lower_momentum > 0.0_dp
     end function valid_options
+
+    logical function valid_accumulation_layout(n_samples, microbatch_size, &
+            accumulation_steps) result(valid)
+        integer, intent(in) :: n_samples, microbatch_size, accumulation_steps
+        integer :: effective_size
+
+        effective_size = microbatch_size
+        if (effective_size == 0) effective_size = n_samples
+        valid = n_samples >= 1 .and. effective_size >= 1 .and. accumulation_steps >= 1
+        if (.not. valid) return
+        ! The last microbatch may be short, but no row may be omitted or
+        ! silently reused.  This makes the reduction deterministic and gives
+        ! every update the same data measure as the full-batch objective.
+        valid = effective_size*(accumulation_steps-1) < n_samples .and. &
+            effective_size*accumulation_steps >= n_samples
+    end function valid_accumulation_layout
 
     logical function valid_data(model, x, target) result(valid)
         class(mlp_t), intent(in) :: model
